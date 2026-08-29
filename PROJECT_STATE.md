@@ -43,13 +43,21 @@
 - **8/8** in `test_browser.py` (file browser API)
 
 ### Currently Running
-- **Web server**: not running (stale `web.pid` cleaned up 2026-08-29 during M1.prep prep)
+- **Web server**: not running
 - **Start with**: `python start_server.py 8100 127.0.0.1`
 - **Logs** (when running): `C:\Users\user\sweave\web.log` and `web_err.log`
 - **Stop with**: `python stop_server.py`
 
-### M1.prep plan
-- See `docs/M1_PREP_PLAN.md` for the execution contract (file layout, event vocabulary, atomic-JSON contract, ordering, risks).
+### M1.prep — done 2026-08-29
+- **Plan of record**: `docs/M1_PREP_PLAN.md`
+- **Test results**: 62/62 pytest, 13/13 `run.py --check`, 40/40 `test_full.py`, 8/8 `test_browser.py`, 8/8 `test_projects.py`, ALL GREEN on `test_agents_loader.py`
+- **New files**: `sweave/web/{state,deps,events}.py`, `sweave/web/routers/{projects,agents,tasks,worktrees,memory,config,fs,delegations}.py`, `sweave/runtime/{__init__,locking,trace_log,delegation_store,job_runner}.py`, `tests/{conftest,test_seed_agents,test_atomic_write,test_locking,test_ws_event_bus,test_trace_log,test_delegation_store,test_job_runner,test_projects_atomic,test_projects_lock,test_routers_smoke}.py`
+- **Deleted**: `sweave/web/api.py` (stale duplicate, never mounted)
+- **New endpoints**: `POST /api/v2/tasks` (async — returns `{delegation_id, status: queued}`), `GET /api/delegations`, `GET /api/delegations/{id}`, `POST /api/delegations/{id}/wait`
+- **Sync `/api/tasks` kept** for backward compat; deprecated in OpenAPI, slated for removal in M1.4+
+- **WS event bus**: `WSEventBus` (sweave/web/events.py) is the single pub/sub; legacy event names (`agent_created`, `model_changed`, `task_completed`, `worktrees_cleaned`, `worktree_removed`, `rule_added`) preserved on the wire
+- **Trace log**: `~/.sweave/traces/{delegation_id}.jsonl` (one JSON object per line)
+- **Git history**: 8 commits on `master` since the rebuild started
 
 ---
 
@@ -326,6 +334,7 @@ python run.py --host 127.0.0.1 --port 8100
 python run.py --check              # 13 endpoint tests
 python test_browser.py 8100        # 8 file browser tests
 python test_full.py                # 40 comprehensive UI tests
+python -m pytest tests/            # 62 unit/integration tests (source of truth)
 
 # CLI commands
 sweave run "Build a REST API"
@@ -403,13 +412,18 @@ The user wants:
 - 5 themes (dark, light, dracula, nord, catppuccin) with data-theme attribute
 - 42/42 verification tests pass
 
-### Session 9 (latest): App visibility fix
-- **Bug**: Everything was hidden after loading
-- **Root cause**: The `app` div starts with `class="app hidden"` but `showProjectMode()` and `showWelcome()` never removed the `hidden` class
-- **Fix**: Added `app.classList.remove('hidden')` in the setTimeout that hides the loader
-- **Result**: 40/40 tests pass, app is now visible
+### Session 9 (latest): M1.prep — Backend foundations
+- 8-step refactor: docs/M1_PREP_PLAN.md → AppState+lifespan → routers split →
+  atomic JSON+per-project locks → WSEventBus → trace log → JobRunner+Delegation
+  store+v2 endpoints → pytest skeleton (62 tests) → cleanup+docs
+- `POST /api/v2/tasks` is the new async path; `POST /api/tasks` kept for
+  backward compat (deprecated, slated for M1.4+ removal)
+- `sweave/web/api.py` deleted (was a dead duplicate from an earlier iteration)
+- 8 commits on `master`; test counts: 62 pytest + 13 endpoint smoke + 40 UI + 8
+  file-browser + 8 projects endpoints, all green
 
-The current implementation is clean, working, and reliable. All reported bugs have been fixed and verified.
+The current implementation is clean, working, and reliable. All reported bugs
+have been fixed and verified.
 
 ---
 

@@ -151,7 +151,7 @@ Data flow of a delegated task (today, real):
 WorktreeManager.create_worktree → AgentSpec(prompt, model, worktree) →
 OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → result string.
 
-## 4. Component status (audit 2026-08-29)
+## 4. Component status (audit 2026-08-29, post-M1.prep)
 
 | Component | Status | Notes |
 |---|---|---|
@@ -159,15 +159,20 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | RuleRouter matching + `{{templates}}` | ✅ | first-match regex/keyword |
 | RuleRouter `_llm_fallback` | ⚠️ | keyword heuristic, no LLM call |
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |
-| Agent lifecycle (wait/terminate/attach) | ⚠️ | send returns response; no completion tracking; `attach` respawns; `_active_agents` never cleaned |
-| Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing) |
+| Agent lifecycle (wait/terminate/attach) | ⚠️ | send returns response; no completion tracking; `attach` respawns; `_active_agents` never cleaned — fixed in M1.3/4 |
+| Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing — M1.7) |
 | Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
-| `/ws` realtime | ✅ | `websockets` dep added; handshake verified 2026-08-29 |
+| `/ws` realtime | ✅ | `websockets` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
 | OpenCode spawn path | ⚠️ | repaired (exe resolution + log-file port discovery, no pipes); live serve verify pending |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
-| Git history | ❌ | **zero commits** — all knowledge unversioned |
+| **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
+| **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
+| **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
+| **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
+| **pytest suite** | ✅ | M1.prep — 62 tests across 10 files; `pytest` is the new source of truth |
+| Git history | ✅ | M1.prep — 8 commits; `docs/M1_PREP_PLAN.md` is the plan of record |
 
 ## 5. Locked decisions
 
@@ -202,14 +207,17 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
 Planned as 10 gated steps (~11 sessions incl. prep + streaming); critical chain
 M1.0→M1.3→M1.4/5→M1.6→M1.7.
-- **M1.prep Backend foundations** (~1.5): split server.py into router modules + FastAPI
-  lifespan app state (no import-time singletons); **in-process asyncio job runner** for
-  delegations (submit → delegation id → poll/WS status; no broker — Delegation records
-  are the queue, per §8 decision); atomic JSON writes + per-project lock; unified `/ws`
-  event vocabulary (delegation.status_changed, specialist.idle/running, model.changed);
-  **structured per-delegation trace logs** (one file per delegation: prompts, outputs,
-  status transitions — feeds Children detail view + debugging); `tests/` skeleton
-  with pytest ports of the logic-test scripts.
+- **M1.prep Backend foundations** — ✅ done 2026-08-29. split server.py into
+  router modules + FastAPI lifespan app state (no import-time singletons);
+  in-process asyncio JobRunner for delegations (submit → delegation id → poll/WS
+  status; no broker — Delegation records ARE the queue, per §8 decision);
+  atomic JSON writes + per-project lock; unified `/ws` event vocabulary
+  (`delegation.status_changed`, `model.changed`, legacy names preserved);
+  structured per-delegation JSONL trace logs at `~/.sweave/traces/{id}.jsonl`;
+  `tests/` pytest skeleton with ports of the logic-test scripts. 62 pytest
+  tests, 13 run.py --check, 40 test_full.py, 8 test_browser.py, 8 test_projects
+  endpoints all green. **Sync `POST /api/tasks` kept for backward compat; new
+  async path is `POST /api/v2/tasks` (returns `{delegation_id, status: queued}`)**.
 - **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
   session resume across serve restarts, per-message model params, completion signal.
   Requires safe-window serve launch (file-logging spawn path). Branch point: resume
