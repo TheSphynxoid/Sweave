@@ -207,7 +207,9 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   delegations (submit → delegation id → poll/WS status; no broker — Delegation records
   are the queue, per §8 decision); atomic JSON writes + per-project lock; unified `/ws`
   event vocabulary (delegation.status_changed, specialist.idle/running, model.changed);
-  `tests/` skeleton with pytest ports of the logic-test scripts.
+  **structured per-delegation trace logs** (one file per delegation: prompts, outputs,
+  status transitions — feeds Children detail view + debugging); `tests/` skeleton
+  with pytest ports of the logic-test scripts.
 - **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
   session resume across serve restarts, per-message model params, completion signal.
   Requires safe-window serve launch (file-logging spawn path). Branch point: resume
@@ -215,7 +217,9 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - **M1.1 Record split** (~1): `Delegation` (persistent: task_id, specialist, worktree/
   branch/PR URL, status queued→running→review→done/failed, parent chain, optional
   `manifest` self-report: files touched, intent, confidence, breaking_change) vs
-  `SubAgentRun` (ephemeral). Per-project storage; API returns both; Children tab badges;
+  `SubAgentRun` (ephemeral). Per-project storage; **`schema_version` field on all
+  persisted JSON + forward-compatible loader** (migrations policy starts here — user
+  data in ~/.sweave outlives code); API returns both; Children tab badges;
   UI v1 compat. Gate: test_projects.py + test_full.py green.
 - **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
   `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
@@ -286,6 +290,14 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
+- **Remote access (optional add-on)**: `cloudflared` Tunnel + Access in front of the
+  local server — use your Sweave UI from anywhere with zero-trust auth, no port
+  forwarding (§8 Cloudflare map). Config-gated, off by default.
+- **Cross-platform verification**: CI or manual pass on macOS + Linux (Windows-first
+  until here; start/stop scripts, paths, process handling are the risk spots).
+- **Escalation UX v1**: human resolution flow for the R2 resolution queue — see the
+  diff3 + manifests, choose resolve / re-queue / escalate, resolution recorded as a
+  gold label (feeds R6 dispatch training).
 
 ### R6 — Local orchestrator thesis (📐 future bet — the differentiator)Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
 discussion; cheap model as PM, strong models as engineers.
