@@ -1,8 +1,22 @@
 # M1.1 — Record split: Delegation v2 + SubAgentRun (execution plan)
 
-Status: planned, not started. Est. ~1–1.5 sessions. Predecessor: M1.prep (done).
-Re-scoped 2026-08-29 against what M1.prep actually built (this plan supersedes the
-one-bullet sketch in DESIGN.md §6 R1).
+Status: ✅ done 2026-08-29 (5 steps + 1 plan refinement). Predecessor: M1.prep
+(done). Re-scoped 2026-08-29 against what M1.prep actually built (this plan
+supersedes the one-bullet sketch in DESIGN.md §6 R1).
+
+## Deviations from the plan (post-implementation)
+
+Only one substantive deviation; the rest of the plan executed as written.
+
+- **Step 2 (per-project persistence) — locking.** The original plan
+  said to reuse the existing `ProjectLockRegistry` from
+  `runtime/locking.py` for DelegationStore writes. The implemented
+  code uses a per-store `asyncio.Lock` instead. The deviation is
+  documented in detail in step 2 (see the "Locking (amended 2026-08-29
+  after M1.1 step 2 implementation)" bullet). The short version: the
+  registry is for `ProjectManager`'s disk writes; the store's
+  in-memory state needs its own lock; mixing them would be wrong or
+  redundant. **Code is correct, plan is amended to match.**
 
 ## Starting point (from M1.prep — do NOT rebuild)
 - `runtime/delegation_store.py`: `Delegation` v1 dataclass (delegation_id, task_id,
@@ -16,8 +30,10 @@ one-bullet sketch in DESIGN.md §6 R1).
 - JobRunner wired to the store; `POST /api/v2/tasks`, `GET /api/delegations[/{id}]`,
   `POST /api/delegations/{id}/wait`; JSONL trace logs per delegation.
 - `runtime/locking.py` atomic writes + a `ProjectLockRegistry` (per-project
-  `asyncio.Lock`) already on `AppState.project_locks`. Reuse this registry for
-  DelegationStore writes — no second lock map.
+  `asyncio.Lock`) already on `AppState.project_locks`. The registry
+  coordinates ProjectManager's disk writes (project.json, session
+  files); DelegationStore has its own per-store `asyncio.Lock` for
+  in-memory state — see step 2 "Locking (amended 2026-08-29)".
 
 ## Goal state
 Delegations are **persisted per project** with the full M1.1 field set (worktree, PR,
@@ -48,11 +64,53 @@ exists as a distinct type, and the UI v1 Children tab keeps working via a bridge
   no debounce).
 - AppState holds `dict[project_name, DelegationStore]`, lazily created on first
   delegation for that project; startup does NOT eagerly load all projects.
-- **Locking**: reuse the existing `ProjectLockRegistry` from `runtime/locking.py`
-  (already on `AppState.project_locks`) for DelegationStore writes. Acquire
-  `state.project_locks.lock_for(project_name)` around each atomic write — no second
-  lock map grows here. Cross-project writes are independent; the registry's
-  `lazy_create` + `meta_lock` already handle the race-free first-call case.
+- **Locking** *(amended 2026-08-29 after M1.1 step 2 implementation)*:
+  the original plan said to reuse the existing `ProjectLockRegistry` from
+  `runtime/locking.py` (already on `AppState.project_locks`) for
+  DelegationStore writes. **On implementation we kept a separate
+  `asyncio.Lock` inside `DelegationStore` and did NOT take a registry
+  lock per write.** Justification:
+
+  - The `ProjectLockRegistry` is a per-project `asyncio.Lock` map that
+    serialises **disk** writes for `ProjectManager.save_project` /
+    `save_session` — i.e. JSON file writes that the ProjectManager
+    performs via `runtime.locking.atomic_write_json_sync`. That is
+    where cross-task contention for the *same project's JSON file*
+    needs to be serialised.
+  - `DelegationStore` also writes its own JSON file
+    (`{project}/.sweave/delegations.json`) but it has *two* kinds of
+    contention to manage:
+    1. **In-memory state** (a status transition reading + mutating the
+       same record under concurrent updates) — this is what the
+       store's own `asyncio.Lock` protects. The registry is `asyncio`
+       too, so using it here would work, but the registry's purpose is
+       to coordinate *disk* writes; the in-memory lock is local,
+       cheaper, and conceptually owned by the store.
+    2. **Disk writes** to the store's JSON file — the store calls
+       `atomic_write_json` synchronously inside its lock, which is
+       fine because the critical section is small (one JSON
+       serialise + one write) and runs in an event-loop-friendly way
+       (the actual `os.replace` is sync, but it's microseconds).
+       Adding a second lock around it would buy nothing.
+
+  The original plan was *consistent* but slightly off-target: the
+  registry is for ProjectManager's writes, the store's lock is for
+  the store's own state machine. Two locks, two purposes, no
+  interference. The amended record (above) is what the code
+  implements; the registry is left untouched for ProjectManager
+  only. If a future design needs cross-store coordination (e.g.
+  writing delegations and project metadata in the same critical
+  section), revisit — but that need is not present in M1.1.
+
+  **Alternative considered and rejected**: take the registry lock
+  *outside* the store's own lock, on every `add`/`update`. This adds
+  a registry-key lookup + acquire for every delegation write, with
+  no correctness benefit (the store's internal lock already
+  serialises the in-memory mutation, and the atomic-write pattern
+  already serialises the disk write). It would only matter if a
+  future caller (e.g. M1.6's DelegationManager) needed to
+  coordinate a delegation write with a project-metadata write —
+  not in scope for M1.1.
 - Crash recovery: partial/truncated JSON file → last-good load (atomic rename makes
   this rare) + warning log; never 500 the API on a bad file.
 - Tests: roundtrip via temp project dir; concurrent add/update under lock; corrupted
