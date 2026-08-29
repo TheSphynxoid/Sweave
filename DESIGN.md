@@ -188,11 +188,11 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 Planned as 10 gated steps (~11 sessions incl. prep + streaming); critical chain
 M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - **M1.prep Backend foundations** (~1.5): split server.py into router modules + FastAPI
-  lifespan app state (no import-time singletons); async job submission for delegations
-  (submit → delegation id → poll/WS status — blocking-request model dies here); atomic
-  JSON writes + per-project lock; unified `/ws` event vocabulary
-  (delegation.status_changed, specialist.idle/running, model.changed); `tests/` skeleton
-  with pytest ports of the logic-test scripts.
+  lifespan app state (no import-time singletons); **in-process asyncio job runner** for
+  delegations (submit → delegation id → poll/WS status; no broker — Delegation records
+  are the queue, per §8 decision); atomic JSON writes + per-project lock; unified `/ws`
+  event vocabulary (delegation.status_changed, specialist.idle/running, model.changed);
+  `tests/` skeleton with pytest ports of the logic-test scripts.
 - **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
   session resume across serve restarts, per-message model params, completion signal.
   Requires safe-window serve launch (file-logging spawn path). Branch point: resume
@@ -299,6 +299,39 @@ discussion; cheap model as PM, strong models as engineers.
 - JSON-file storage for projects/sessions is fine single-user; SQLite migration deferred.
 - models.dev catalog cache staleness → refresh endpoint in R4.
 - Windows subprocess lifecycle (orphaned opencode.exe on crash) — add PID sweep in R1.
+
+## 8. Third-party stack (policy + candidates)
+
+Policy (user-locked 2026-08-29): open to third-party libraries for help **and
+inspiration**. Prefer stdlib + small maintained libs; permissive licenses only
+(Apache-2.0/MIT/BSD); avoid heavy frameworks that would own the orchestration layer
+(Celery/LangChain/Letta runtimes — Sweave IS the orchestrator; borrow patterns, not
+runtimes). Every adoption gets recorded here.
+
+### Adopt now
+| Need | Library | Why | Where |
+|---|---|---|---|
+| Orphan process sweep | `psutil` | find/kill process trees by cmdline reliably on Windows | M1.3 |
+| Chain cost budgets | `tiktoken` | token counting for per-chain budget enforcement (approximate for non-OpenAI BPE — fine for budgets) | M1.6 |
+| 3-way merge simulation | `merge3` | diff3 merge without touching git — resolution-queue payload + Stage-0 overlap checks | R2 |
+| Harness tests w/o live opencode | `respx` | httpx mocking; test spawn/send logic deterministically | M1 tests |
+
+### Deliberately NOT adopted (and why)
+| Category | Candidates | Why not |
+|---|---|---|
+| Broker task queues | Taskiq, Streaq, Celery, Dramatiq, ARQ | all need Redis/RabbitMQ — wrong weight for local-first single-user; ARQ maintenance-only. Delegation records + in-process asyncio runner ARE the queue (M1.prep decision) |
+| Agent runtimes | Letta/MemGPT, CrewAI, AutoGen, LangGraph | they own the agent loop; Sweave's value is owning it. Inspiration only |
+| Memory frameworks | mem0, Zep, Letta | hindsight already integrated behind `MemoryBackend` protocol. **Borrow**: mem0's single-pass ADD-only extraction + multi-signal retrieval fusion; Zep's temporal validity (`valid_at`/`invalid_at`) for project lore |
+| Git libraries | GitPython, pygit2 | subprocess porcelain parsing is simple and dependency-free |
+
+### Adopt later (R6 scope)
+- Encoders: `sentence-transformers` / `FlagEmbedding` (bge-class shared backbone),
+  `onnxruntime` for 20–50ms CPU inference
+- Grammar-constrained decoding: llama.cpp GBNF / `outlines` (1.5–3B decoder fallback)
+- Compaction scheduler: `APScheduler` (hourly/per-task-event cadence) — or plain asyncio
+  task if one-shot suffices
+- Model cost map: models.dev metadata (already planned via catalog API); litellm's
+  registry as inspiration only
 - **Native candidates (C++, only if pain shows up — user speciality)**: (1) process
   supervisor via Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` per serve)
   replaces the Python orphan sweep properly; (2) high-frequency serve-log watcher
