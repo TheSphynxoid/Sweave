@@ -17,7 +17,10 @@ Non-negotiable principles (inherited from Polly):
 1. **The orchestrator never writes code.** It decomposes, delegates, synthesizes.
 2. **Worktree isolation.** Every delegated task runs in `.worktrees/{task_id}/{agent}`.
 3. **The PR is the deliverable.** Agents never merge; cross-review before "done".
-4. **Human merges.** `git merge` / `gh pr merge` are human-only actions.
+4. **Human merges to main.** `git merge` / `gh pr merge` into the base branch are
+   human-only actions. Exception (user-locked 2026-08-29): specialists may auto-merge
+   clean work into per-task **integration branches** after the Stage-0 overlap check and
+   cross-review pass — the base branch itself is never auto-merged.
 5. **Harness-agnostic specs.** Agents are declared in YAML; the executor is swappable
    (OpenCode today; Claude Code / Codex on the roadmap).
 
@@ -41,6 +44,13 @@ SubAgentRun EPHEMERAL traditional sub-agent: disposable context, for exploration
             read-only investigation, quick fanout. Dies when done; no durable identity.
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)
 Worktree  git isolation unit, branch sweave/{task_id}/{agent}, PR via gh or REST
+Integration branch  per-task branch where clean parallel work auto-merges (after the
+            Stage-0 overlap check + cross-review pass); the base branch stays human-only
+Manifest  JSON self-report attached to a Delegation (files touched, intent,
+            confidence, breaking_change flag) — cheap intent proxy for mediation
+Resolution queue  async queue consumed by the Resolution Skill (conflict mediator:
+            resolve / re-queue / escalate-human); keeps the orchestrator a router,
+            not a chokepoint
 Memory    hindsight-backed banks: global / project-{name} / session-{id}
 Router    pattern → (specialist, model) decision; roles are MODEL TIERS (models.yaml:
           orchestrator/backend/frontend/reviewer as default model buckets), not a closed
@@ -175,20 +185,30 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
   launch window; M1 runtime must feature-detect resume at runtime.
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
-Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.4/5→M1.6→M1.7.
+Planned as 10 gated steps (~11 sessions incl. prep + streaming); critical chain
+M1.0→M1.3→M1.4/5→M1.6→M1.7.
+- **M1.prep Backend foundations** (~1.5): split server.py into router modules + FastAPI
+  lifespan app state (no import-time singletons); async job submission for delegations
+  (submit → delegation id → poll/WS status — blocking-request model dies here); atomic
+  JSON writes + per-project lock; unified `/ws` event vocabulary
+  (delegation.status_changed, specialist.idle/running, model.changed); `tests/` skeleton
+  with pytest ports of the logic-test scripts.
 - **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
   session resume across serve restarts, per-message model params, completion signal.
   Requires safe-window serve launch (file-logging spawn path). Branch point: resume
   semantics decide M1.3 shape (restart-safe vs alive-serve + memory replay, ~+1 session).
 - **M1.1 Record split** (~1): `Delegation` (persistent: task_id, specialist, worktree/
-  branch/PR URL, status queued→running→review→done/failed, parent chain) vs
+  branch/PR URL, status queued→running→review→done/failed, parent chain, optional
+  `manifest` self-report: files touched, intent, confidence, breaking_change) vs
   `SubAgentRun` (ephemeral). Per-project storage; API returns both; Children tab badges;
   UI v1 compat. Gate: test_projects.py + test_full.py green.
 - **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
   `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
   status); resolution project → global → seed templates; orchestrator singleton
   auto-seeded per project (context per-Session per §2.1); specialists CRUD API +
-  `PUT /specialists/{name}/model`. Gate: endpoint tests, singleton enforcement.
+  `PUT /specialists/{name}/model`; **routing-override logging** (every user
+  reassignment is stored as an active-learning gold label). Gate: endpoint tests,
+  singleton enforcement.
 - **M1.3 Shared serve + durable context** (~2, risk sink): `SpecialistRuntime` per
   project — one lazy `opencode serve`, specialist→session map, resume stored sessions
   (feature-detected per M1.0), `fresh:` flag, worktree re-injected per delegation,
@@ -196,7 +216,8 @@ Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.
   delegation to same specialist resumes context.
 - **M1.4 Lifecycle completion** (~1): completion detection (per M1.0), Delegation status
   transitions wired to runtime, terminate-on-done, `_active_agents` cleanup, real
-  `attach`. Gate: 3 consecutive delegations reach done/failed, no process leaks.
+  `attach`, **stuck detection** (heartbeat / output-staleness / timeout — decide per
+  M1.0 findings). Gate: 3 consecutive delegations reach done/failed, no process leaks.
 - **M1.5 Model at request time** (~1): harness contract `send(message, model)` in
   base.py; OpenCode per-message providerID/modelID; idle-switch immediate, running-switch
   queued; M1.2 endpoint wired to runtime. Gate: idle model switch demonstrably applied
@@ -210,18 +231,29 @@ Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.
   orchestrator specialist (per-session context), delegation via M1.6, replies persisted;
   polling status (ws broadcast bonus). Gate: E2E — chat → orchestrator reply → delegation
   in Children tab.
+- **M1.8 Streaming** (~1): orchestrator chat + specialist output streamed over `/ws`
+  (SSE fallback); delegation progress events from M1.prep's event vocabulary. Gate:
+  chat replies render incrementally.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.
 
 ### R2 — Orchestrator skills (Polly's core loop)
 - `/fanout`: parallel-safe subtasks → routed across the specialist pool (one Delegation,
-  worktree and PR each; overflow queues — §2.1).
+  worktree and PR each; overflow queues — §2.1). Merge handling: **Stage-0 heuristic**
+  (path-overlap check, 0 tokens) → clean work auto-merges into the per-task **integration
+  branch** (principle 4 exception); overlapping work goes to the **resolution queue**.
 - `/cross-review`: implementer's diff → *different-role* reviewer Delegation; blocking
   issues loop back as fixes. (Same-vendor rule becomes: reviewer model ≠ implementer
-  model, later different harness.)
+  model, later different harness.) Cross-review is also the semantic-conflict layer Git
+  cannot see (e.g. frontend calls an API backend didn't add).
 - `/investigate`: read-only SubAgentRuns (no worktree, no PR), synthesized findings.
-- Skills = skills/{name}/SKILL.md conventions + delegation presets; human merges, always.
+- Skills = skills/{name}/SKILL.md conventions + delegation presets; human merges main,
+  always.
+- **Resolution queue** (from the 2026-08-29 architecture discussion): async queue with
+  diff3 + both manifests as payload; the Resolution Skill consumes it asynchronously
+  (resolve / re-queue / escalate-human). v1 consumer = rule-based + reviewer Delegation;
+  the small-model consumer is R6 scope.
 
 ### R3 — Multi-harness
 - `ClaudeCodeHarness`, `CodexHarness` implementing AgentProcess (subprocess/headless),
@@ -239,6 +271,27 @@ Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
 
+### R6 — Local orchestrator thesis (📐 future bet — the differentiator)
+Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
+discussion; cheap model as PM, strong models as engineers.
+- **Shared-backbone encoder heads** (~150MB, 20–50ms CPU): intent (task↔specialist
+  matching), dispatch, resolution (merge_auto / defer / split / escalate), mediation
+  (trivial vs needs-review) — heads on ONE backbone (bge-small / jina-v2-small-code
+  class), never separate models. No separate encoder instances (RAM fragmentation).
+- **Decoder fallback** (1.5–3B, e.g. Qwen2.5-Coder) only for generative outputs
+  (subtask descriptions, complex deferrals), grammar-constrained (GBNF).
+- **Dispatch bootstrapping** (the hard problem): hand rules → encoder mimicry →
+  strong-model distillation ($20–50 oracle runs) → self-play simulation → active
+  learning from logged routing overrides (collected since M1.2).
+- **Resolution Skill v2**: small-model consumer of the resolution queue; escalation UX
+  (what the human sees on `escalate_human`, and how their resolution feeds training).
+- **Memory compaction cadence**: raw → RAG immediately; episodic compaction (hourly/
+  per-task event); weekly project-lore extraction. Rule: compact the why, keep paths
+  and signatures verbatim (over-compaction trap).
+- **Orchestrator scope decision** (open): does the orchestrator get its own RAG over
+  project docs/manifests (markdown-only knowledge), vs re-reading session state?
+  Latency question (local orchestrator + cloud specialists) also lands here.
+
 ## 7. Risks / open questions
 - OpenCode serve port discovery (probe 4096-4199) is fragile — revisit with `--port 0`
   stdout parsing only.
@@ -246,3 +299,8 @@ Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.
 - JSON-file storage for projects/sessions is fine single-user; SQLite migration deferred.
 - models.dev catalog cache staleness → refresh endpoint in R4.
 - Windows subprocess lifecycle (orphaned opencode.exe on crash) — add PID sweep in R1.
+- **Native candidates (C++, only if pain shows up — user speciality)**: (1) process
+  supervisor via Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` per serve)
+  replaces the Python orphan sweep properly; (2) high-frequency serve-log watcher
+  (overlapped I/O) if N-serves-per-project ever materializes. Small bounded helper exes
+  (`sweave-supervisor`) behind a named-pipe/stdio protocol; Python host stays.
