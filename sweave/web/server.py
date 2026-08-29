@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     """Initialise services on startup, clean up on shutdown."""
     from sweave.runtime.delegation_store import PerProjectDelegationStores
     from sweave.runtime.job_runner import JobRunner
+    from sweave.runtime.subagent_store import SubAgentRunStore
     from sweave.web.events import WSEventBus
 
     config_manager = ConfigManager()
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
     state = AppState.build(config_manager)
     state.event_bus = WSEventBus()
     state.delegation_stores = PerProjectDelegationStores()
+    state.subagent_runs = SubAgentRunStore()
     state.job_runner = JobRunner(
         delegate_tool=state.delegate_tool,
         # JobRunner uses the per-project store registry; it picks a store

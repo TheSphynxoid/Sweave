@@ -20,6 +20,13 @@ from sweave.runtime.locking import (
     atomic_write_json,
     atomic_write_json_sync,
 )
+from sweave.runtime.subagent_store import (
+    MAX_RUNS,
+    SubAgentRun,
+    SubAgentRunStore,
+    SubAgentPurpose,
+    SubAgentStatus,
+)
 from sweave.runtime.trace_log import TraceLog, read_trace
 
 __all__ = [
@@ -35,4 +42,9 @@ __all__ = [
     "JobRunner",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_PREP",
+    "SubAgentRun",
+    "SubAgentRunStore",
+    "SubAgentPurpose",
+    "SubAgentStatus",
+    "MAX_RUNS",
 ]

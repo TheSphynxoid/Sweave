@@ -68,6 +68,11 @@ class AppState:
     # the canonical accessor; the attribute may be ``None`` only
     # during lifespan setup (before the lifespan hook runs).
     delegation_stores: Any = None  # type: ignore[assignment]
+    # Ephemeral sub-agent run store (M1.1 step 3). Per-process, in-memory
+    # only, capped at MAX_RUNS. R2's /investigate will populate it; M1.1
+    # only delivers the type + store + lifecycle primitives (the API
+    # endpoints arrive in step 4).
+    subagent_runs: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":
