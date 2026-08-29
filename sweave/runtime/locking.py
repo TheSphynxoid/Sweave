@@ -28,7 +28,19 @@ async def atomic_write_json(
     *,
     use_yaml: bool = False,
 ) -> None:
-    """Write *data* to *path* atomically.
+    """Async wrapper around :func:`atomic_write_json_sync` for callers that
+    want to await. Both share the same on-disk contract.
+    """
+    atomic_write_json_sync(path, data, use_yaml=use_yaml)
+
+
+def atomic_write_json_sync(
+    path: Path | str,
+    data: Any,
+    *,
+    use_yaml: bool = False,
+) -> None:
+    """Write *data* to *path* atomically (synchronous).
 
     The write goes to a sibling temp file, is fsynced, then ``os.replace``-d
     onto the destination. ``os.replace`` is atomic on both Windows and POSIX.

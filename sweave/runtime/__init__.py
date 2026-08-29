@@ -6,6 +6,10 @@ graph. Step 1 introduces only :mod:`sweave.runtime.locking`; the other modules
 arrive in steps 4-6.
 """
 
-from sweave.runtime.locking import ProjectLockRegistry, atomic_write_json
+from sweave.runtime.locking import (
+    ProjectLockRegistry,
+    atomic_write_json,
+    atomic_write_json_sync,
+)
 
-__all__ = ["ProjectLockRegistry", "atomic_write_json"]
+__all__ = ["ProjectLockRegistry", "atomic_write_json", "atomic_write_json_sync"]

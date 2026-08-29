@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import json
-import uuid
+
+from sweave.runtime.locking import atomic_write_json_sync
 
 
 @dataclass
@@ -250,62 +254,116 @@ class ProjectManager:
         self._sessions: dict[str, Session] = {}
         self._active_project: str | None = None
         self._active_session: str | None = None
+        # Per-project write locks. Created lazily. threading.Lock (not asyncio)
+        # because ProjectManager is currently sync; the lock is the cheapest
+        # thing that serialises concurrent JSON writes for the same project.
+        # M1.6 (delegation/deferral async paths) may introduce a parallel
+        # asyncio.Lock set on the AppState.
+        self._project_locks: dict[str, threading.Lock] = {}
+        self._project_locks_meta = threading.Lock()
 
     def load(self):
-        """Load projects and sessions from disk."""
+        """Load projects and sessions from disk.
+
+        Skips stray ``*.tmp`` files (left behind if a write was interrupted
+        before the atomic rename). Malformed project/session JSON is logged
+        and skipped so one bad file does not poison the whole load.
+        """
         # Load global config
         if self.global_config_path.exists():
-            with open(self.global_config_path) as f:
-                global_config = json.load(f)
-            self._active_project = global_config.get("active_project")
-            self._active_session = global_config.get("active_session")
+            try:
+                with open(self.global_config_path) as f:
+                    global_config = json.load(f)
+                self._active_project = global_config.get("active_project")
+                self._active_session = global_config.get("active_session")
+            except (OSError, json.JSONDecodeError):
+                # Corrupt global config shouldn't kill the server; the
+                # active-project pointers will be None and the user can
+                # re-set them via /api/projects/{name}/active.
+                self._active_project = None
+                self._active_session = None
 
         # Load projects
         for project_dir in self.projects_dir.iterdir():
-            if project_dir.is_dir():
-                config_file = project_dir / "project.json"
-                if config_file.exists():
-                    with open(config_file) as f:
-                        data = json.load(f)
-                    project = Project.from_dict(data)
-                    self._projects[project.name] = project
+            if not project_dir.is_dir():
+                continue
+            config_file = project_dir / "project.json"
+            if not config_file.exists():
+                continue
+            try:
+                with open(config_file) as f:
+                    data = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            try:
+                project = Project.from_dict(data)
+            except (KeyError, ValueError):
+                continue
+            self._projects[project.name] = project
 
-                    # Load sessions for this project
-                    sessions_dir = project_dir / "sessions"
-                    if sessions_dir.exists():
-                        for session_file in sessions_dir.glob("*.json"):
-                            with open(session_file) as f:
-                                session_data = json.load(f)
-                            session = Session.from_dict(session_data)
-                            self._sessions[session.id] = session
+            # Load sessions for this project
+            sessions_dir = project_dir / "sessions"
+            if not sessions_dir.exists():
+                continue
+            for session_file in sessions_dir.glob("*.json"):
+                # Skip tmp files left by an interrupted atomic_write_json.
+                if session_file.name.endswith(".tmp"):
+                    continue
+                try:
+                    with open(session_file) as f:
+                        session_data = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                try:
+                    session = Session.from_dict(session_data)
+                except (KeyError, ValueError):
+                    continue
+                self._sessions[session.id] = session
 
     def save_global(self):
-        """Save global config."""
+        """Save global config (atomic)."""
         config = {
             "active_project": self._active_project,
             "active_session": self._active_session,
         }
-        with open(self.global_config_path, "w") as f:
-            json.dump(config, f, indent=2)
+        atomic_write_json_sync(self.global_config_path, config)
+
+    def _lock_for(self, project_name: str) -> threading.Lock:
+        """Return the per-project write lock, creating it lazily.
+
+        The first call for *project_name* creates a fresh ``threading.Lock``;
+        subsequent calls return the same lock. A meta-lock serialises the
+        ``_project_locks`` dict itself so two concurrent first-callers can't
+        race to insert.
+        """
+        existing = self._project_locks.get(project_name)
+        if existing is not None:
+            return existing
+        with self._project_locks_meta:
+            existing = self._project_locks.get(project_name)
+            if existing is None:
+                existing = threading.Lock()
+                self._project_locks[project_name] = existing
+            return existing
 
     def save_project(self, project: Project):
-        """Save project config."""
+        """Save project config (atomic, per-project lock)."""
         project.updated_at = datetime.now()
         project_dir = self.projects_dir / project.name
         project_dir.mkdir(parents=True, exist_ok=True)
         config_file = project_dir / "project.json"
-        with open(config_file, "w") as f:
-            json.dump(project.to_dict(), f, indent=2)
+        with self._lock_for(project.name):
+            atomic_write_json_sync(config_file, project.to_dict())
 
     def save_session(self, session: Session):
-        """Save session."""
+        """Save session (atomic, per-project lock)."""
         session.updated_at = datetime.now()
         project_dir = self.projects_dir / session.project_name
         sessions_dir = project_dir / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         session_file = sessions_dir / f"{session.id}.json"
-        with open(session_file, "w") as f:
-            json.dump(session.to_dict(), f, indent=2)
+        with self._lock_for(session.project_name):
+            atomic_write_json_sync(session_file, session.to_dict())
 
     # Project operations
     def create_project(self, name: str, path: Path, description: str = "") -> Project:
