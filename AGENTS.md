@@ -14,6 +14,8 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
   Never amend a pushed commit.
 - No build step for the web UI: no npm/bundler in `sweave/web/static/`. Vanilla ES6 only.
 - Python style: ruff line-length 100, pydantic v2, `from __future__ import annotations`.
+- New dependency? Check DESIGN.md §8 policy first: small, maintained, permissive license;
+  no framework that owns the agent loop. Record every adoption in §8.
 
 ## Key files
 | Path | What |
