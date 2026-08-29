@@ -55,7 +55,21 @@ class Message:
 
 @dataclass
 class ChildSession:
-    """A specialist agent session spawned from a parent session."""
+    """A specialist agent session spawned from a parent session.
+
+    The ``delegation_id`` field (M1.1) is the M1.prep-era link to the
+    runtime :class:`~sweave.runtime.delegation_store.Delegation` record.
+    The Children tab in the UI v1 render path reads this field to
+    jump from a child entry to the corresponding delegation's full
+    trace / manifest. Bridge writes happen in
+    :meth:`sweave.runtime.job_runner.JobRunner._run` — a new child
+    entry is added to the parent session the moment a delegation is
+    submitted. Pre-M1.1 child entries have ``delegation_id=None`` and
+    the UI falls back to the v1 fields.
+
+    R4 removes the bridge entirely when the Children tab reads
+    delegations directly.
+    """
     id: str
     parent_session_id: str
     agent_name: str
@@ -66,6 +80,9 @@ class ChildSession:
     completed_at: datetime | None = None
     output: str = ""
     error: str | None = None
+    # M1.1: link to the runtime Delegation record (None for pre-M1.1
+    # children; the UI v1 render path treats None as "legacy entry").
+    delegation_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +96,7 @@ class ChildSession:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "output": self.output,
             "error": self.error,
+            "delegation_id": self.delegation_id,
         }
 
     @classmethod
@@ -94,6 +112,8 @@ class ChildSession:
             completed_at=datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None,
             output=data.get("output", ""),
             error=data.get("error"),
+            # M1.1: optional on read; legacy JSON files predate the field.
+            delegation_id=data.get("delegation_id"),
         )
 
 

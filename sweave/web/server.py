@@ -35,6 +35,30 @@ logger = logging.getLogger(__name__)
 get_state = _get_state
 
 
+def _add_child_to_session(child, project_manager) -> None:
+    """UI v1 compat bridge: add *child* to its parent session and persist.
+
+    The JobRunner calls this on every delegation submit. If the
+    parent session can't be resolved (e.g. an orchestrator that
+    hasn't created a session yet) the bridge write is a no-op —
+    the delegation still stands on its own in the per-project store
+    and the UI's R4 children-reads-delegations path will surface it.
+
+    Defined at module level (rather than inside the lifespan) so the
+    closure is reusable and easy to mock in tests.
+    """
+    parent = project_manager.get_session(child.parent_session_id)
+    if parent is None:
+        return
+    # Re-attach the existing child if a re-submit happened (idempotency:
+    # a duplicate bridge write shouldn't create a second ChildSession).
+    for existing in parent.children:
+        if existing.id == child.id:
+            return
+    parent.children.append(child)
+    project_manager.save_session(parent)
+
+
 # ============================================================================
 # Jinja templates (kept for any server-rendered fallback pages)
 # ============================================================================
@@ -86,6 +110,13 @@ async def lifespan(app: FastAPI):
             project_manager.get_project(name).path
             if project_manager.get_project(name) is not None
             else None
+        ),
+        # UI v1 compat bridge (M1.1 step 4): the runner hands us a
+        # ChildSession, we add it to the parent session and persist.
+        # R4 removes the bridge; until then, the Children tab keeps
+        # rendering without any UI change.
+        child_session_adder=lambda child: _add_child_to_session(
+            child, project_manager
         ),
     )
     await state.load_dynamic_agents()

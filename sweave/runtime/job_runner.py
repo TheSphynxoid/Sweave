@@ -66,6 +66,7 @@ class JobRunner:
         event_bus: "WSEventBus | None" = None,
         traces_dir: Any = None,
         project_dir_resolver: Callable[[str | None], Path | None] | None = None,
+        child_session_adder: Callable[[Any], None] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -77,6 +78,12 @@ class JobRunner:
         # is recorded in the "global" project — a per-process store
         # rooted at ~/.sweave — so it is never lost, just un-scoped.
         self.project_dir_resolver = project_dir_resolver
+        # M1.1 step 4: UI v1 compat bridge. On every delegation submit
+        # we add a ChildSession entry to the parent session so the
+        # Children tab keeps rendering. The AppState supplies a closure
+        # that knows about Session + project_manager; the runner
+        # itself stays domain-agnostic.
+        self.child_session_adder = child_session_adder
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -104,12 +111,22 @@ class JobRunner:
         model: str | None = None,
         parent_session_id: str | None = None,
         project_name: str | None = None,
+        manifest: Any = None,
+        parent_task_id: str | None = None,
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
         The delegation is in status ``queued``; the actual work happens on
         a background asyncio task. Use :meth:`wait` or poll the store /
         WebSocket for completion.
+
+        M1.1 step 4:
+        * ``parent_task_id`` plumbs the deferral chain (M1.6 will use
+          this to detect loops). None means orchestrator-initiated.
+        * ``manifest`` is a self-report the specialist fills in via
+          prompt convention. Stored as-is; M1.1 does not generate.
+        * A ``ChildSession`` entry is written to the parent session
+          (bridge) so the UI v1 Children tab keeps rendering.
         """
         delegation = Delegation(
             agent=agent,
@@ -117,10 +134,39 @@ class JobRunner:
             task=task,
             parent_session_id=parent_session_id,
             project_name=project_name,
+            parent_task_id=parent_task_id,
+            manifest=manifest,
             status="queued",
         )
         store = await self._store_for(delegation)
         await store.add(delegation)
+
+        # UI v1 compat bridge: write a ChildSession entry into the
+        # parent session so the Children tab keeps rendering without
+        # any UI change. The bridge write is best-effort: if the parent
+        # session can't be resolved (test fixtures, edge cases) the
+        # delegation still stands on its own.
+        if self.child_session_adder is not None and parent_session_id:
+            try:
+                from sweave.projects import ChildSession
+
+                self.child_session_adder(
+                    ChildSession(
+                        id=delegation.task_id,  # match v1 child id shape
+                        parent_session_id=parent_session_id,
+                        agent_name=agent,
+                        task=task,
+                        worktree_path=None,  # filled by the runtime when set
+                        status="running",
+                        delegation_id=delegation.delegation_id,
+                    )
+                )
+            except Exception as e:  # noqa: BLE001
+                # Never let a bridge failure kill a delegation.
+                logger.warning(
+                    "JobRunner: child-session bridge write failed for %s: %s",
+                    delegation.delegation_id, e,
+                )
 
         trace = TraceLog(delegation.delegation_id, base_dir=self.traces_dir)
         trace.append("status_changed", {"status": "queued", "agent": agent})
