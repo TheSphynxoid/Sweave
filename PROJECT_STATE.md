@@ -39,30 +39,37 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-08-29 late)
-- **80/80** in `pytest tests/` (source of truth for logic tests)
+- **122/122** in `pytest tests/` (source of truth for logic tests; +14 M1.1 step 4)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
+- **8/8** in `test_browser.py` (file browser API)
+- **8/8** in `test_projects.py` (project/session endpoints)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 
 ### Currently Running
-- **Web server**: PID 7028 on `http://127.0.0.1:8100` (restarted 2026-08-29 late,
-  running the M1.prep router-split code)
+- **Web server**: not running (stopped after final M1.1 sweep 2026-08-29)
 - **Start with**: `python start_server.py 8100 127.0.0.1` (from repo root!)
 - **Stop with**: `python stop_server.py` (from repo root — web.pid is CWD-relative)
 - **Logs**: `web.log` / `web_err.log`
-- **Active project**: `sweave` (this repo itself) with session `sweave-20260829-021043-ce4123`
 
-### M1 progress (after M1.prep + M1.0 partial)
-- ✅ **M1.prep** — all 8 steps (see below)
-- ◐ **M1.0 Live serve probe** — done: real API shape discovered and implemented
-  (v2 paths `/session` + `/session/{id}/message` — the legacy `/api/session` now
-  serves web UI HTML; body = `parts[].text`; **per-message model**
-  `{providerID, modelID}` supported; responses are chunked JSON streams, text parts
-  concatenated). Verified against a live serve; real provider errors
-  (`AI_APICallError`) surface verbatim into traces.
-  Still open (M1.3 branch point): session resume across serve **restarts**,
-  completion signal semantics.
-- ▶ **Next**: M1.1 record split (Delegation vs SubAgentRun, schema_version)
+### M1 progress (after M1.prep + M1.0 + M1.1)
+- ✅ **M1.prep** — all 8 steps (9 commits; see below)
+- ✅ **M1.0 Live serve probe** — done: real API shape discovered and implemented
+  (v2 paths `/session` + `/session/{id}/message`; body `parts[].text`; per-message
+  model `{providerID, modelID}`; chunked JSON stream responses; provider errors
+  surface verbatim). Still open (M1.3 branch point): session resume across
+  serve **restarts**, completion signal semantics.
+- ✅ **M1.1 Record split** — done: Delegation v2 schema (worktree_path, branch,
+  pr_url, parent_task_id, manifest; schema_version=2; v1→v2 migration in
+  `from_dict`); per-project disk persistence via
+  `PerProjectDelegationStores` (`{project}/.sweave/delegations.json`, atomic
+  write-through); `SubAgentRun` ephemeral type (`runtime/subagent_store.py`,
+  in-memory, FIFO-capped at 500); API filters on `/api/delegations`
+  (`?project_name=&status=&parent_task_id=`); v2 task accepts
+  `parent_task_id` + `manifest` passthrough; `SubAgentRun` endpoints
+  (`POST/GET/finish`); UI v1 compat bridge writes a `ChildSession` carrying
+  `delegation_id` on submit (R4 removes the bridge).
+- ▶ **Next**: M1.2 specialist store + CRUD (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`
@@ -73,7 +80,7 @@
 - **Sync `/api/tasks` kept** for backward compat; deprecated in OpenAPI, slated for removal in M1.4+
 - **WS event bus**: `WSEventBus` (sweave/web/events.py) is the single pub/sub; legacy event names (`agent_created`, `model_changed`, `task_completed`, `worktrees_cleaned`, `worktree_removed`, `rule_added`) preserved on the wire
 - **Trace log**: `~/.sweave/traces/{delegation_id}.jsonl` (one JSON object per line)
-- **Git history**: 26 commits on `master` (M0 rebuild → design docs → M1.prep → M1.0 fix)
+- **Git history**: 32 commits on `master` (M0 rebuild → design docs → M1.prep → M1.0 → M1.1)
 
 ---
 
@@ -428,18 +435,33 @@ The user wants:
 - 5 themes (dark, light, dracula, nord, catppuccin) with data-theme attribute
 - 42/42 verification tests pass
 
-### Session 9 (latest): M1.prep — Backend foundations + M1.0 API discovery
-- 8-step refactor: docs/M1_PREP_PLAN.md → AppState+lifespan → routers split →
-  atomic JSON+per-project locks → WSEventBus → trace log → JobRunner+Delegation
-  store+v2 endpoints → pytest skeleton (now 80 tests) → cleanup+docs
-- `POST /api/v2/tasks` is the new async path; `POST /api/tasks` kept for
-  backward compat (deprecated, slated for M1.4+ removal)
-- `sweave/web/api.py` deleted (was a dead duplicate from an earlier iteration)
-- **M1.0 fix**: OpenCode serve exposes a v2 HTTP API (no `/api/` prefix) — the legacy
-  `/api/session` path returns web UI HTML. Switched to `/session` +
-  `/session/{id}/message` with `parts[].text` body, per-message model
-  (`{providerID, modelID}`), chunked JSON stream response handling
-- 26 commits on `master`; all gates green (80 pytest, 13 smoke, 40 UI)
+### Session 10 (latest): M1.1 — Record split (Delegation v2 + SubAgentRun + UI v1 bridge)
+- 5-step refactor per `docs/M1_1_PLAN.md`:
+  1. Delegation v2 fields + v1→v2 migration (`SCHEMA_VERSION=2`,
+     `Manifest` TypedDict, `_migrate_v1_to_v2` helper)
+  2. Per-project disk persistence via `PerProjectDelegationStores`
+     (`{project}/.sweave/delegations.json`, atomic write-through via
+     `runtime.locking.atomic_write_json_sync`, lazy per-project loading,
+     corruption recovery)
+  3. `SubAgentRun` ephemeral type (`runtime/subagent_store.py`,
+     per-process, in-memory, FIFO-capped at 500, R2's `/investigate`
+     will consume it)
+  4. API filters on `/api/delegations` (`?project_name=&status=&parent_task_id=`),
+     v2 task accepts `parent_task_id` + `manifest` passthrough,
+     `SubAgentRun` endpoints (`POST/GET/finish`), UI v1 compat bridge
+     writes a `ChildSession` carrying `delegation_id` on submit
+  5. Gates + docs (this session)
+- `ChildSession.delegation_id` field added; `from_dict` reads it with
+  `.get()` so pre-M1.1 JSON files load with `delegation_id=None` (the
+  UI v1 render path treats None as legacy entry)
+- JobRunner now holds `PerProjectDelegationStores` + a
+  `project_dir_resolver` callback (so it stays domain-agnostic; the
+  AppState supplies the closure over `project_manager`)
+- 122/122 pytest (was 80 after M1.0; +42 across M1.1: 10 schema + 9
+  JobRunner + 16 SubAgentRun + 14 step 4)
+- 13/13 run.py --check, 40/40 test_full, 8/8 test_browser, ALL GREEN
+  test_agents_loader
+- 14 new commits on `master` across M1.0 + M1.1 (4 + 5 + 5)
 
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.

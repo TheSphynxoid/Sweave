@@ -171,8 +171,11 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
 | **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
-| **pytest suite** | ✅ | M1.prep — 62 tests across 10 files; `pytest` is the new source of truth |
-| Git history | ✅ | M1.prep — 8 commits; `docs/M1_PREP_PLAN.md` is the plan of record |
+| **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
+| **SubAgentRun (ephemeral, capped)** | ✅ | M1.1 — `runtime/subagent_store.py`; per-process, in-memory, FIFO-capped at 500; serves R2's `/investigate` |
+| **UI v1 compat bridge (ChildSession)** | ✅ | M1.1 — `ChildSession.delegation_id` field + JobRunner bridge write on submit; R4 removes the bridge |
+| **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 — 122 tests across 14 files; `pytest` is the new source of truth |
+| Git history | ✅ | M1.prep + M1.0 + M1.1 — 13 commits; `docs/M1_PREP_PLAN.md` + `docs/M1_1_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
 
@@ -223,11 +226,18 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   web UI HTML; body `parts[].text`; per-message `{providerID, modelID}`; chunked JSON
   stream responses; provider errors surface verbatim in traces). **Still open** (decides
   M1.3 shape): session resume across serve **restarts**, completion signal semantics.
-- **M1.1 Record split** (~1, planned in detail: `docs/M1_1_PLAN.md`): Delegation v2
-  (worktree/branch/pr_url, `parent_task_id` deferral chain, `manifest` self-report,
-  schema v1→v2 migration), per-project disk persistence (atomic, write-through),
-  `SubAgentRun` ephemeral type (in-memory, capped), API filters, ChildSession bridge
-  for UI v1 compat. Gate: pytest + test_full.py + test_projects.py green.
+- **M1.1 Record split** — ✅ done 2026-08-29. Delegation v2 schema (`worktree_path`,
+  `branch`, `pr_url`, `parent_task_id`, `manifest`; schema_version=2; v1→v2
+  migration in `from_dict`); per-project disk persistence
+  (`{project}/.sweave/delegations.json`, atomic write-through via
+  `runtime.locking.atomic_write_json_sync`); `SubAgentRun` ephemeral
+  type (`runtime/subagent_store.py`, in-memory, FIFO-capped at 500);
+  API filters on `/api/delegations` (`?project_name=&status=&parent_task_id=`)
+  and v2 task accepts `parent_task_id` + `manifest` passthrough; UI v1
+  compat bridge writes a `ChildSession` carrying `delegation_id` on
+  submit (R4 removes the bridge); `SubAgentRun` endpoints
+  (`POST/GET/finish`); 122 pytest across 14 files, 13/13 run.py --check,
+  40/40 test_full, 8/8 test_browser, ALL GREEN test_agents_loader.
 - **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
   `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
   status); resolution project → global → seed templates; orchestrator singleton

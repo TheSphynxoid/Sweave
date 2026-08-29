@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -112,20 +113,18 @@ def test_v2_task_round_trips_manifest_partial(client: TestClient):
 
 
 def _make_two_projects(client: TestClient, tmp_path: Path) -> tuple[str, str]:
-    """Create two projects (per-test unique names) and submit one delegation in each.
+    """Create two projects (per-call unique names) and submit one delegation in each.
 
-    Returns (p1_name, p2_name). Names use a counter so that the
-    singleton ProjectManager (module-level) doesn't collide across
-    tests that share a tmp_path fixture.
+    Returns (p1_name, p2_name). Names use uuid4 so the singleton
+    ProjectManager (module-level) never collides across tests that
+    share a tmp_path fixture or run in any order.
     """
     p1 = tmp_path / "p1"
     p2 = tmp_path / "p2"
     p1.mkdir()
     p2.mkdir()
-    counter = _make_two_projects.counter
-    _make_two_projects.counter += 1
-    p1_name = f"p1-{counter}"
-    p2_name = f"p2-{counter}"
+    p1_name = f"p1-{uuid.uuid4().hex[:8]}"
+    p2_name = f"p2-{uuid.uuid4().hex[:8]}"
     r1 = client.post(
         "/api/projects", json={"name": p1_name, "path": str(p1), "description": ""}
     )
@@ -137,20 +136,15 @@ def _make_two_projects(client: TestClient, tmp_path: Path) -> tuple[str, str]:
     return p1_name, p2_name
 
 
-_make_two_projects.counter = 0
-
-
 def _create_session(
     client: TestClient, tmp_path: Path, label: str
 ) -> tuple[str, str]:
     """Create a project + session, return (project_name, session_id).
 
-    Project name is per-test unique (counter-based) to avoid clashes
-    with the module-level ProjectManager singleton.
+    Project name is per-call unique (uuid4) to avoid clashes with the
+    module-level ProjectManager singleton across tests in any order.
     """
-    counter = _make_two_projects.counter
-    _make_two_projects.counter += 1
-    name = f"p-{label}-{counter}"
+    name = f"p-{label}-{uuid.uuid4().hex[:8]}"
     proj_dir = tmp_path / name
     proj_dir.mkdir()
     r = client.post(
