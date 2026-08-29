@@ -48,12 +48,7 @@ async def get_models(state: AppState = Depends(get_state)):
 async def set_model(request: ModelUpdateRequest, state: AppState = Depends(get_state)):
     state.config_manager.update_model(request.role, request.model)
     payload = {"role": request.role, "model": request.model}
-    if state.event_bus is not None:
-        await state.event_bus.publish("model_changed", payload)
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(state, "model_changed", payload)
+    await state.publish("model_changed", payload)
     return {"success": True, "role": request.role, "model": request.model}
 
 
@@ -73,12 +68,7 @@ async def get_rules(state: AppState = Depends(get_state)):
 async def add_rule(request: RuleAddRequest, state: AppState = Depends(get_state)):
     state.config_manager.add_routing_rule(request.pattern, request.agent, request.model)
     payload = {"pattern": request.pattern, "agent": request.agent, "model": request.model}
-    if state.event_bus is not None:
-        await state.event_bus.publish("rule_added", payload)
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(state, "rule_added", payload)
+    await state.publish("rule_added", payload)
     return {"success": True}
 
 

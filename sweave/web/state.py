@@ -11,13 +11,10 @@ impossible to instantiate twice in one process (e.g. for tests).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from fastapi import WebSocket
 
 from sweave.config.manager import ConfigManager
 from sweave.config.schemas import AgentSpec
@@ -60,10 +57,10 @@ class AppState:
     dynamic_agents: dict[str, AgentSpec] = field(default_factory=dict)
     dynamic_agents_path: Path = field(default_factory=lambda: Path("agents.yaml"))
 
-    active_connections: list[WebSocket] = field(default_factory=list)
-    active_connections_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-    event_bus: Any = None  # set in lifespan; type is WSEventBus from sweave.web.events
+    # WSEventBus is the single pub/sub for everything that wants to reach
+    # connected WebSocket clients. Constructed in lifespan and assigned to
+    # ``event_bus``; routers always read it from the state object.
+    event_bus: Any = None  # type: ignore[assignment]
     job_runner: "JobRunner | None" = None  # set in lifespan
 
     @classmethod
@@ -134,3 +131,15 @@ class AppState:
         await atomic_write_json(
             self.dynamic_agents_path, {"agents": agents_data}, use_yaml=True
         )
+
+    async def publish(self, event: str, data: dict[str, Any]) -> None:
+        """Publish a WebSocket event through the event bus.
+
+        No-op if the bus is not yet constructed (e.g. tests that build an
+        ``AppState`` without going through :func:`build` + lifespan). All
+        routers SHOULD call this instead of touching the bus directly so
+        the fallback behaviour stays in one place.
+        """
+        if self.event_bus is None:
+            return
+        await self.event_bus.publish(event, data)

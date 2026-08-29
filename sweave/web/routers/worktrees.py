@@ -33,12 +33,7 @@ async def clean_worktrees(state: AppState = Depends(get_state)):
     worktrees = state.worktree_manager.list_worktrees()
     for wt in worktrees:
         state.worktree_manager.remove_worktree(wt.task_id, wt.agent_name, force=True)
-    if state.event_bus is not None:
-        await state.event_bus.publish("worktrees_cleaned", {"count": len(worktrees)})
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(state, "worktrees_cleaned", {"count": len(worktrees)})
+    await state.publish("worktrees_cleaned", {"count": len(worktrees)})
     return {"success": True, "cleaned": len(worktrees)}
 
 
@@ -48,14 +43,7 @@ async def remove_worktree_endpoint(
 ):
     success = state.worktree_manager.remove_worktree(task_id, agent_name, force=True)
     if success:
-        if state.event_bus is not None:
-            await state.event_bus.publish(
-                "worktree_removed", {"task_id": task_id, "agent": agent_name}
-            )
-        else:
-            from sweave.web.server import _broadcast
-
-            await _broadcast(
-                state, "worktree_removed", {"task_id": task_id, "agent": agent_name}
-            )
+        await state.publish(
+            "worktree_removed", {"task_id": task_id, "agent": agent_name}
+        )
     return {"success": success}

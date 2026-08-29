@@ -63,29 +63,15 @@ async def run_task(request: TaskRequest, state: AppState = Depends(get_state)):
         task=request.task,
         model=request.model or decision.model,
     )
-    if state.event_bus is not None:
-        await state.event_bus.publish(
-            "task_completed",
-            {
-                "task": request.task,
-                "agent": result.agent,
-                "task_id": result.task_id,
-                "success": result.success,
-            },
-        )
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(
-            state,
-            "task_completed",
-            {
-                "task": request.task,
-                "agent": result.agent,
-                "task_id": result.task_id,
-                "success": result.success,
-            },
-        )
+    await state.publish(
+        "task_completed",
+        {
+            "task": request.task,
+            "agent": result.agent,
+            "task_id": result.task_id,
+            "success": result.success,
+        },
+    )
     return TaskResponse(
         success=result.success,
         agent=result.agent,

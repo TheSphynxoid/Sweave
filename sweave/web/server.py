@@ -15,10 +15,8 @@ Route definitions were split out in M1.prep step 2; see ``sweave/web/routers``.
 
 from __future__ import annotations
 
-import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 
 import jinja2
@@ -62,26 +60,30 @@ def render_template(template_name: str, context: dict) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise services on startup, clean up on shutdown."""
+    from sweave.web.events import WSEventBus
+
     config_manager = ConfigManager()
     config_manager.load()
     project_manager.load()
 
     state = AppState.build(config_manager)
+    state.event_bus = WSEventBus()
     await state.load_dynamic_agents()
     app.state.app_state = state
-    logger.info("AppState built; %d dynamic agents loaded", len(state.dynamic_agents))
+    logger.info(
+        "AppState built; %d dynamic agents loaded", len(state.dynamic_agents)
+    )
 
     try:
         yield
     finally:
         # Close any open WS connections cleanly
-        async with state.active_connections_lock:
-            for ws in list(state.active_connections):
+        if state.event_bus is not None:
+            for ws in list(state.event_bus._subscribers):  # noqa: SLF001
                 try:
                     await ws.close()
                 except Exception:
                     pass
-            state.active_connections.clear()
 
 
 def build_app() -> FastAPI:
@@ -115,43 +117,20 @@ app.mount("/static", StaticFiles(directory="sweave/web/static"), name="static")
 # ============================================================================
 
 
-async def _broadcast(state: AppState, event: str, data: dict) -> None:
-    """Broadcast a JSON message to all connected WebSocket clients."""
-    payload = {
-        "event": event,
-        "data": data,
-        "timestamp": datetime.now().isoformat(),
-    }
-    msg = json.dumps(payload)
-    async with state.active_connections_lock:
-        dead: list[WebSocket] = []
-        for ws in state.active_connections:
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            try:
-                state.active_connections.remove(ws)
-            except ValueError:
-                pass
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     state: AppState = websocket.app.state.app_state
     await websocket.accept()
-    async with state.active_connections_lock:
-        state.active_connections.append(websocket)
+    if state.event_bus is not None:
+        await state.event_bus.subscribe(websocket)
     try:
         while True:
+            # Clients don't currently send anything; the receive drains the
+            # socket so disconnect detection still works.
             await websocket.receive_text()
     except WebSocketDisconnect:
-        async with state.active_connections_lock:
-            try:
-                state.active_connections.remove(websocket)
-            except ValueError:
-                pass
+        if state.event_bus is not None:
+            await state.event_bus.unsubscribe(websocket)
 
 
 # ============================================================================

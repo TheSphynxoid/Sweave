@@ -86,16 +86,7 @@ async def create_agent(agent: AgentCreate, state: AppState = Depends(get_state))
     )
     state.dynamic_agents[agent.name] = spec
     await state.save_dynamic_agents()
-    if state.event_bus is not None:
-        await state.event_bus.publish(
-            "agent_created", {"name": agent.name, "role": agent.role}
-        )
-    else:  # legacy broadcast for prep step 1/2 only
-        from sweave.web.server import _broadcast
-
-        await _broadcast(
-            state, "agent_created", {"name": agent.name, "role": agent.role}
-        )
+    await state.publish("agent_created", {"name": agent.name, "role": agent.role})
     return {"success": True, "agent": agent.name}
 
 
@@ -146,12 +137,7 @@ async def update_agent(
     if update.harness:
         spec.harness = update.harness
     await state.save_dynamic_agents()
-    if state.event_bus is not None:
-        await state.event_bus.publish("agent_updated", {"name": name})
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(state, "agent_updated", {"name": name})
+    await state.publish("agent_updated", {"name": name})
     return {"success": True, "agent": name}
 
 
@@ -161,10 +147,5 @@ async def delete_agent(name: str, state: AppState = Depends(get_state)):
         raise HTTPException(404, f"Dynamic agent '{name}' not found")
     del state.dynamic_agents[name]
     await state.save_dynamic_agents()
-    if state.event_bus is not None:
-        await state.event_bus.publish("agent_deleted", {"name": name})
-    else:
-        from sweave.web.server import _broadcast
-
-        await _broadcast(state, "agent_deleted", {"name": name})
+    await state.publish("agent_deleted", {"name": name})
     return {"success": True}
