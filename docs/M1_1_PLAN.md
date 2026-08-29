@@ -8,10 +8,16 @@ one-bullet sketch in DESIGN.md §6 R1).
 - `runtime/delegation_store.py`: `Delegation` v1 dataclass (delegation_id, task_id,
   agent, model, task, status closed-set queued→running→review→done/failed, timestamps,
   parent_session_id, project_name, output, error), in-memory store + asyncio.Lock,
-  status validation, `schema_version=1` + forward-compatible `from_dict`.
+  status validation, `schema_version=1` carried on the record. The current `from_dict`
+  does `setdefault("schema_version", 1)` and field-filters to known fields — i.e. it
+  *plans* for forward compatibility by carrying the version on the wire, but does
+  **not** actually migrate across versions. The v1→v2 migration is this step's
+  deliverable (see step 1).
 - JobRunner wired to the store; `POST /api/v2/tasks`, `GET /api/delegations[/{id}]`,
   `POST /api/delegations/{id}/wait`; JSONL trace logs per delegation.
-- `runtime/locking.py` atomic writes; per-project locks in ProjectManager.
+- `runtime/locking.py` atomic writes + a `ProjectLockRegistry` (per-project
+  `asyncio.Lock`) already on `AppState.project_locks`. Reuse this registry for
+  DelegationStore writes — no second lock map.
 
 ## Goal state
 Delegations are **persisted per project** with the full M1.1 field set (worktree, PR,
@@ -37,10 +43,16 @@ exists as a distinct type, and the UI v1 Children tab keeps working via a bridge
 ### Step 2 — Per-project persistence
 - `DelegationStore` gains a project scope: `DelegationStore.load(project_dir)` reads
   `{project_dir}/.sweave/delegations.json` (single file, atomic write via
-  `runtime/locking.py`, same contract as ProjectManager) into memory; every `add`/
-  `update` persists (write-through — record volume is small; no debounce).
+  `runtime/locking.atomic_write_json_sync`, same contract as ProjectManager) into
+  memory; every `add`/`update` persists (write-through — record volume is small;
+  no debounce).
 - AppState holds `dict[project_name, DelegationStore]`, lazily created on first
   delegation for that project; startup does NOT eagerly load all projects.
+- **Locking**: reuse the existing `ProjectLockRegistry` from `runtime/locking.py`
+  (already on `AppState.project_locks`) for DelegationStore writes. Acquire
+  `state.project_locks.lock_for(project_name)` around each atomic write — no second
+  lock map grows here. Cross-project writes are independent; the registry's
+  `lazy_create` + `meta_lock` already handle the race-free first-call case.
 - Crash recovery: partial/truncated JSON file → last-good load (atomic rename makes
   this rare) + warning log; never 500 the API on a bad file.
 - Tests: roundtrip via temp project dir; concurrent add/update under lock; corrupted
