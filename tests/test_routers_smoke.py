@@ -37,6 +37,22 @@ def client(monkeypatch, tmp_path) -> TestClient:
     def build_with_stub_agents(cls, config_manager):  # type: ignore[no-untyped-def]
         state = original_build.__func__(cls, config_manager)  # type: ignore[attr-defined]
         state.dynamic_agents_path = tmp_path / "agents.yaml"
+        # Replace the delegate_tool with a stub so the legacy /api/tasks
+        # endpoint doesn't actually try to spawn opencode (which can hang
+        # in environments where the harness reaches a real serve but the
+        # configured LLM provider is unreachable). M1.prep step 6 added
+        # JobRunner as the recommended path; the legacy sync endpoint is
+        # here only for backward compat.
+        from sweave.tools import DelegationResult
+
+        class _StubDelegateTool:
+            async def execute(self, agent, task, model=None, task_id=None):
+                return DelegationResult(
+                    success=False, agent=agent, task_id=task_id or "stub",
+                    output="", error="stubbed in test",
+                )
+
+        state.delegate_tool = _StubDelegateTool()
         return state
 
     monkeypatch.setattr(state_mod.AppState, "build", build_with_stub_agents)
@@ -135,14 +151,12 @@ def test_api_delegation_get_unknown_returns_404(client: TestClient):
 def test_legacy_tasks_endpoint_still_works(client: TestClient):
     """POST /api/tasks is the deprecated sync path; it must still return a result.
 
-    The actual agent call will fail (no opencode in the test env) but the
-    endpoint itself must respond with a TaskResponse-shaped payload, not 500.
+    The fixture stubs ``delegate_tool`` so the harness call returns
+    immediately (success=False) instead of trying to spawn opencode.
+    The endpoint shape (TaskResponse) is what we care about.
     """
     r = client.post("/api/tasks", json={"task": "x", "agent": "backend"})
-    # Either 200 (with a failed result) or 500 from the harness — what we
-    # care about is that the endpoint is wired and reachable.
-    assert r.status_code in (200, 500), f"unexpected status: {r.status_code}"
-    if r.status_code == 200:
-        data = r.json()
-        # success=False because the stub harness isn't there
-        assert data["success"] is False
+    assert r.status_code == 200
+    data = r.json()
+    assert data["success"] is False
+    assert "agent" in data and "task_id" in data

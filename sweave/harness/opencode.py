@@ -23,9 +23,70 @@ from .base import (
 )
 
 
+def _parse_provider_model(model: str) -> tuple[str | None, str | None]:
+    """Split a ``provider/model`` string into ``(providerID, modelID)``.
+
+    Returns ``(None, None)`` for an empty / unqualified string.
+    """
+    if not model or "/" not in model:
+        return None, None
+    provider, _, model_id = model.partition("/")
+    provider = provider.strip() or None
+    model_id = model_id.strip() or None
+    return provider, model_id
+
+
+def _split_json_stream(chunk: str) -> list[str]:
+    """Split a chunk from a v2 message stream into individual JSON objects.
+
+    The v2 endpoint emits one JSON object per write; with httpx's text
+    streaming they often arrive in a single buffer. We split on the
+    ``}`` boundary that closes the outermost object, which is sufficient
+    for the flat part-list shape the v2 endpoint uses. A more robust
+    parser (incremental JSON, e.g. ijson) can replace this when we
+    encounter nested events.
+    """
+    pieces: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(chunk):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                pieces.append(chunk[start : i + 1])
+                start = -1
+    return pieces
+
+
 class OpenCodeProcess:
-    """Handle to a running OpenCode server process."""
-    
+    """Handle to a running OpenCode server process.
+
+    OpenCode serve exposes a v2 HTTP API (no ``/api/`` prefix) that
+    returns JSON for session + message endpoints. We use that, not the
+    legacy v1 ``/api/session`` path, which now serves the web UI HTML
+    for ``POST /api/session/{id}/message`` (this was the R0 bug fixed
+    in M1.0). The serve picks the project via the ``x-opencode-directory``
+    HTTP header; the model can be set per-message via
+    ``{"model": {"providerID": "...", "modelID": "..."}, ...}``.
+    """
+
     def __init__(
         self,
         spec: AgentSpec,
@@ -36,59 +97,134 @@ class OpenCodeProcess:
         self.spec = spec
         self.process = process
         self.base_url = base_url
-        self.session_id = session_id
+        self._session_id = session_id
         self.pid = process.pid
+        # 300s default per-request timeout; streaming responses for long
+        # LLM calls can take a while. Override via spec.env if needed.
         self._client = httpx.AsyncClient(base_url=base_url, timeout=300.0)
         self._session_created = False
-    
+
     @property
     def session_id(self) -> str:
         return self._session_id
-    
+
     @session_id.setter
-    def session_id(self, value: str):
+    def session_id(self, value: str) -> None:
         self._session_id = value
-    
+
+    def _default_headers(self) -> dict[str, str]:
+        """Headers applied to every request to the serve.
+
+        ``x-opencode-directory`` tells the serve which project to use for
+        this request. One serve can host many projects; each request
+        declares which one.
+        """
+        wd = str(self.spec.worktree_path) if self.spec.worktree_path else ""
+        return {"x-opencode-directory": wd} if wd else {}
+
     async def _ensure_session(self) -> str:
-        """Ensure a session exists, create if needed."""
+        """Ensure a session exists, create if needed (v2 ``POST /session``)."""
         if self._session_created:
             return self._session_id
-        
-        # Create session via OpenCode API
-        response = await self._client.post("/api/session", json={})
+
+        response = await self._client.post(
+            "/session", json={}, headers=self._default_headers()
+        )
         response.raise_for_status()
         data = response.json()
         self._session_id = data.get("id", str(uuid.uuid4()))
         self._session_created = True
         return self._session_id
-    
+
     async def send(self, message: Message) -> AgentResult:
-        """Send a message to the OpenCode session."""
+        """Send a message via v2 ``POST /session/{id}/message``.
+
+        The response is a chunked JSON stream of the assistant message +
+        parts. We concatenate any text parts and return them as the
+        output. Streaming errors (e.g. ``AI_APICallError: Cannot connect
+        to API``) are surfaced verbatim so the M1.prep trace captures
+        the real failure.
+        """
         try:
             session_id = await self._ensure_session()
-            
-            # Send message via OpenCode API
-            response = await self._client.post(
-                f"/api/session/{session_id}/message",
-                json={
-                    "content": message.content,
-                    "role": message.type,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            return AgentResult(
-                success=True,
-                output=data.get("content", ""),
-                metadata=data,
-            )
+
+            # v2 body shape: parts[].text, optional agent, optional model.
+            body: dict[str, Any] = {
+                "parts": [{"type": "text", "text": message.content}],
+            }
+            if self.spec.model:
+                provider_id, model_id = _parse_provider_model(self.spec.model)
+                if provider_id and model_id:
+                    body["model"] = {"providerID": provider_id, "modelID": model_id}
+                elif model_id:
+                    # Unqualified; serve resolves from its own default.
+                    body["model"] = model_id
+
+            text_parts: list[str] = []
+            saw_terminal = False
+            last_error: str | None = None
+            try:
+                async with self._client.stream(
+                    "POST",
+                    f"/session/{session_id}/message",
+                    json=body,
+                    headers=self._default_headers(),
+                ) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_text():
+                        if not chunk:
+                            continue
+                        for piece in _split_json_stream(chunk):
+                            try:
+                                obj = json.loads(piece)
+                            except json.JSONDecodeError:
+                                # Partial chunk; next read will complete it.
+                                continue
+                            if not isinstance(obj, dict):
+                                continue
+                            for part in obj.get("parts", []) or []:
+                                if not isinstance(part, dict):
+                                    continue
+                                if part.get("type") == "text":
+                                    text_parts.append(part.get("text", ""))
+                                elif part.get("type") == "error":
+                                    last_error = (
+                                        part.get("text")
+                                        or part.get("error")
+                                        or str(part)
+                                    )
+                            if (
+                                obj.get("info", {}).get("role") == "assistant"
+                                and obj.get("parts")
+                            ):
+                                saw_terminal = True
+            except httpx.HTTPStatusError as e:
+                upstream = e.response.text.strip() if e.response is not None else ""
+                return AgentResult(
+                    success=False,
+                    output="",
+                    error=(
+                        f"opencode serve "
+                        f"{e.response.status_code if e.response else '?'}: "
+                        f"{upstream or str(e)}"
+                    ),
+                )
+
+            output = "".join(text_parts).strip()
+            if last_error and not output:
+                return AgentResult(success=False, output="", error=last_error)
+            if not output and not saw_terminal:
+                return AgentResult(
+                    success=False,
+                    output="",
+                    error=(
+                        "opencode serve: empty response "
+                        "(provider unreachable or no model configured?)"
+                    ),
+                )
+            return AgentResult(success=True, output=output, metadata={})
         except Exception as e:
-            return AgentResult(
-                success=False,
-                output="",
-                error=str(e),
-            )
+            return AgentResult(success=False, output="", error=str(e))
     
     async def terminate(self) -> None:
         """Terminate the OpenCode process."""
@@ -128,7 +264,27 @@ class OpenCodeProcess:
 
 
 class OpenCodeHarness(Harness):
-    """OpenCode harness implementation using `opencode serve`."""
+    """OpenCode harness implementation using `opencode serve`.
+
+The serve exposes two parallel HTTP surfaces:
+
+* **v2 (stable, what we use)**: no ``/api/`` prefix. ``POST /session``
+  creates a session; ``POST /session/{id}/message`` sends a prompt and
+  streams a JSON response containing the assistant message + parts.
+* **v1 (legacy, do not use)**: ``/api/session`` etc. ``POST /api/session/{id}/message``
+  now serves the web UI HTML (this was the R0 bug fixed in M1.0).
+
+The serve picks the project via the ``x-opencode-directory`` HTTP
+header; the model can be set per-message via
+``{"model": {"providerID": "ollama", "modelID": "qwen3:8b"}, ...}``.
+
+Streaming response handling: the v2 message endpoint returns a chunked
+JSON stream. ``OpenCodeProcess.send`` consumes it incrementally,
+concatenates any text parts, and returns the joined text as
+``AgentResult.output``. Upstream errors (e.g. ``AI_APICallError:
+Cannot connect to API``) are surfaced verbatim so the M1.prep trace
+captures the real failure.
+"""
     
     name = "opencode"
     
