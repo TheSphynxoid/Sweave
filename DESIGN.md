@@ -223,13 +223,11 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   web UI HTML; body `parts[].text`; per-message `{providerID, modelID}`; chunked JSON
   stream responses; provider errors surface verbatim in traces). **Still open** (decides
   M1.3 shape): session resume across serve **restarts**, completion signal semantics.
-- **M1.1 Record split** (~1): `Delegation` (persistent: task_id, specialist, worktree/
-  branch/PR URL, status queued→running→review→done/failed, parent chain, optional
-  `manifest` self-report: files touched, intent, confidence, breaking_change) vs
-  `SubAgentRun` (ephemeral). Per-project storage; **`schema_version` field on all
-  persisted JSON + forward-compatible loader** (migrations policy starts here — user
-  data in ~/.sweave outlives code); API returns both; Children tab badges;
-  UI v1 compat. Gate: test_projects.py + test_full.py green.
+- **M1.1 Record split** (~1, planned in detail: `docs/M1_1_PLAN.md`): Delegation v2
+  (worktree/branch/pr_url, `parent_task_id` deferral chain, `manifest` self-report,
+  schema v1→v2 migration), per-project disk persistence (atomic, write-through),
+  `SubAgentRun` ephemeral type (in-memory, capped), API filters, ChildSession bridge
+  for UI v1 compat. Gate: pytest + test_full.py + test_projects.py green.
 - **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
   `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
   status); resolution project → global → seed templates; orchestrator singleton
