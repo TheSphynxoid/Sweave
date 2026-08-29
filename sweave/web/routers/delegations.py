@@ -4,6 +4,11 @@ M1.prep step 6 wires the :class:`JobRunner` and the v2 async submit. The
 synchronous ``POST /api/tasks`` endpoint keeps working for now and is
 marked deprecated in OpenAPI; it will be removed once the UI migrates
 (M1.4+).
+
+M1.1 step 2: DelegationStores are per-project. The routers below
+scan the known stores on read paths (``list``, ``get``) because
+``delegation_id`` is unique across all projects and the read API is
+global. Filtering by ``project_name`` arrives in step 4.
 """
 
 from __future__ import annotations
@@ -29,6 +34,12 @@ class TaskSubmitV2(BaseModel):
     agent: Optional[str] = None
     model: Optional[str] = None
     parent_session_id: Optional[str] = None
+    # M1.1: optional project pin. When set, the delegation is filed
+    # in that project's per-project store; when None, the runner uses
+    # the active project (if any) or falls back to the global store at
+    # ~/.sweave/. The full ``?project_name=&status=`` filter on the read
+    # side arrives in step 4.
+    project_name: Optional[str] = None
 
 
 class TaskSubmitV2Response(BaseModel):
@@ -67,11 +78,19 @@ async def submit_task_v2(
         agent = decision.agent
         model = request.model or decision.model
 
+    # Project pin: explicit request wins, else fall back to the active
+    # project so the runner can file the record correctly.
+    project_name = request.project_name
+    if project_name is None:
+        active = state.active_project_name() if hasattr(state, "active_project_name") else None
+        project_name = active
+
     delegation = await state.job_runner.submit(
         agent=agent,
         task=request.task,
         model=model,
         parent_session_id=request.parent_session_id,
+        project_name=project_name,
     )
     return TaskSubmitV2Response(
         delegation_id=delegation.delegation_id,
@@ -87,25 +106,36 @@ async def submit_task_v2(
 # ---------------------------------------------------------------------------
 
 
+def _all_stores(state: AppState) -> list:
+    """Snapshot of the per-project stores known to the registry.
+
+    Empty list if the registry isn't initialised (e.g. test fixture
+    that bypasses lifespan).
+    """
+    if state.delegation_stores is None:
+        return []
+    return state.delegation_stores.known_projects_stores()
+
+
 @router.get("/api/delegations")
 async def list_delegations(state: AppState = Depends(get_state)):
-    if state.delegation_store is None:
-        return {"delegations": []}
-    return {
-        "delegations": [d.to_dict() for d in state.delegation_store.list()]
-    }
+    records = []
+    for store in _all_stores(state):
+        records.extend(store.list())
+    # Newest first; sort by created_at desc (ISO string sorts correctly).
+    records.sort(key=lambda d: d.created_at, reverse=True)
+    return {"delegations": [d.to_dict() for d in records]}
 
 
 @router.get("/api/delegations/{delegation_id}")
 async def get_delegation(
     delegation_id: str, state: AppState = Depends(get_state)
 ):
-    if state.delegation_store is None:
-        raise HTTPException(503, "DelegationStore not initialised")
-    delegation = state.delegation_store.get(delegation_id)
-    if delegation is None:
-        raise HTTPException(404, f"Delegation '{delegation_id}' not found")
-    return delegation.to_dict()
+    for store in _all_stores(state):
+        rec = store.get(delegation_id)
+        if rec is not None:
+            return rec.to_dict()
+    raise HTTPException(404, f"Delegation '{delegation_id}' not found")
 
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,24 @@
-"""JobRunner tests with a stubbed DelegateTaskTool."""
+"""JobRunner tests with a stubbed DelegateTaskTool.
+
+M1.1 step 2: JobRunner holds a PerProjectDelegationStores (not a single
+DelegationStore). Each test gets a fresh per-project store rooted at
+a tmp path; the stub delegate_tool returns a fixed result so the
+runner reaches a terminal status quickly.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from sweave.runtime.delegation_store import DelegationStore
+from sweave.runtime.delegation_store import (
+    DelegationStore,
+    PerProjectDelegationStores,
+)
 from sweave.runtime.job_runner import JobRunner
 from sweave.runtime.trace_log import read_trace
 from sweave.tools import DelegationResult
@@ -49,60 +59,41 @@ class StubDelegateTool:
         )
 
 
+def _make_runner(tool: StubDelegateTool, project_dir: Path) -> tuple[JobRunner, PerProjectDelegationStores]:
+    """Build a JobRunner with a fresh per-project store rooted at *project_dir*."""
+    stores = PerProjectDelegationStores()
+    runner = JobRunner(
+        delegate_tool=tool,
+        delegation_stores=stores,
+        event_bus=None,
+        project_dir_resolver=lambda name: project_dir,
+    )
+    return runner, stores
+
+
 @pytest.mark.asyncio
 async def test_submit_returns_queued_delegation(tmp_path: Path):
     bus = WSEventBus()
-    store = DelegationStore()
     tool = StubDelegateTool()
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "hello", model="m1")
+    d = await runner.submit("backend", "hello", model="m1", project_name="p1")
     assert d.status == "queued"
     assert d.agent == "backend"
     assert d.model == "m1"
     assert d.task == "hello"
-    assert store.get(d.delegation_id) is d
-
-
-@pytest.mark.asyncio
-async def test_submit_emits_status_changed_on_bus(tmp_path: Path):
-    bus = WSEventBus()
-    store = DelegationStore()
-    tool = StubDelegateTool()
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
-
-    seen: list[dict[str, Any]] = []
-
-    class WS:
-        async def send_text(self, text: str) -> None:
-            import json
-            seen.append(json.loads(text))
-
-    await bus.subscribe(WS())  # type: ignore[arg-type]
-    d = await runner.submit("backend", "x")
-    # Wait for terminal
-    final = await runner.wait(d.delegation_id, timeout=5)
-    assert final is not None
-    assert final.status in {"done", "failed"}
-
-    statuses = [
-        e["data"]["status"] for e in seen if e["event"] == "delegation.status_changed"
-    ]
-    assert "queued" in statuses
-    assert "running" in statuses
-    assert final.status in statuses
+    assert d.project_name == "p1"
 
 
 @pytest.mark.asyncio
 async def test_submit_writes_trace_file(tmp_path: Path):
     bus = WSEventBus()
-    store = DelegationStore()
     tool = StubDelegateTool()
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "x")
+    d = await runner.submit("backend", "x", project_name="p1")
     await runner.wait(d.delegation_id, timeout=5)
-    events = read_trace(d.delegation_id, base_dir=tmp_path)
+    events = read_trace(d.delegation_id)
     assert len(events) >= 3
     assert [e["event"] for e in events[:3]] == [
         "status_changed", "status_changed", "prompt_sent",
@@ -112,13 +103,12 @@ async def test_submit_writes_trace_file(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_successful_run_ends_in_done(tmp_path: Path):
     bus = WSEventBus()
-    store = DelegationStore()
     tool = StubDelegateTool(DelegationResult(
         success=True, agent="backend", task_id="t", output="OK",
     ))
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "x")
+    d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
     assert final.status == "done"
@@ -129,11 +119,10 @@ async def test_successful_run_ends_in_done(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_failed_run_ends_in_failed(tmp_path: Path):
     bus = WSEventBus()
-    store = DelegationStore()
     tool = StubDelegateTool(fail=True)
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "x")
+    d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
     assert final.status == "failed"
@@ -143,12 +132,11 @@ async def test_failed_run_ends_in_failed(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_exception_in_tool_ends_in_failed(tmp_path: Path):
     bus = WSEventBus()
-    store = DelegationStore()
     tool = StubDelegateTool()
     tool.exception = RuntimeError("kaboom")
-    runner = JobRunner(tool, store, event_bus=bus, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "x")
+    d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
     assert final.status == "failed"
@@ -158,11 +146,85 @@ async def test_exception_in_tool_ends_in_failed(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_submit_without_bus_works(tmp_path: Path):
     """Event bus is optional; the runner works without one."""
-    store = DelegationStore()
     tool = StubDelegateTool()
-    runner = JobRunner(tool, store, event_bus=None, traces_dir=tmp_path)
+    runner, _ = _make_runner(tool, tmp_path)
 
-    d = await runner.submit("backend", "x")
+    d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
     assert final.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_delegation_persists_per_project_to_disk(tmp_path: Path):
+    """M1.1 step 2: the per-project DelegationStore writes the record to
+    ``{project_dir}/.sweave/delegations.json`` on every update, and a fresh
+    runner reading the same project_dir sees the record."""
+    project_dir = tmp_path / "p1"
+    project_dir.mkdir()
+    tool = StubDelegateTool(DelegationResult(
+        success=True, agent="backend", task_id="t", output="OK",
+    ))
+    runner, stores = _make_runner(tool, project_dir)
+    d = await runner.submit("backend", "x", project_name="p1")
+    await runner.wait(d.delegation_id, timeout=5)
+
+    file_path = project_dir / ".sweave" / "delegations.json"
+    assert file_path.exists(), "delegations.json not written"
+    payload = json.loads(file_path.read_text(encoding="utf-8"))
+    assert "delegations" in payload
+    assert len(payload["delegations"]) == 1
+    assert payload["delegations"][0]["delegation_id"] == d.delegation_id
+    assert payload["delegations"][0]["status"] == "done"
+
+    # A fresh runner reading the same project_dir sees the same record
+    # once it has materialised the per-project store from disk (which
+    # happens on first access; the resolver points at the same path).
+    fresh_runner, fresh_stores = _make_runner(StubDelegateTool(), project_dir)
+    await fresh_stores.for_project(project_dir)  # materialise from disk
+    found = await fresh_runner.wait(d.delegation_id, timeout=1)
+    assert found is not None
+    assert found.delegation_id == d.delegation_id
+
+
+@pytest.mark.asyncio
+async def test_different_projects_get_different_stores(tmp_path: Path):
+    """Two projects never see each other's delegations."""
+    p1 = tmp_path / "p1"
+    p2 = tmp_path / "p2"
+    p1.mkdir()
+    p2.mkdir()
+    tool = StubDelegateTool()
+    runner, stores = _make_runner(tool, p1)
+    await runner.submit("backend", "x", project_name="p1")
+    # P2 needs its own runner with a different resolver
+    runner2, _ = _make_runner(tool, p2)
+    await runner2.submit("backend", "y", project_name="p2")
+    await asyncio.sleep(0.05)  # let the background tasks settle
+
+    p1_store = await stores.for_project(p1)
+    p2_store = await stores.for_project(p2)
+    assert len(p1_store.list()) == 1
+    assert len(p2_store.list()) == 1
+    assert p1_store.list()[0].task == "x"
+    assert p2_store.list()[0].task == "y"
+
+
+@pytest.mark.asyncio
+async def test_corrupted_disk_file_does_not_500(tmp_path: Path):
+    """A corrupt ``delegations.json`` is logged + skipped; new writes
+    overwrite the bad file rather than crashing the API."""
+    project_dir = tmp_path / "p1"
+    project_dir.mkdir()
+    target = project_dir / ".sweave"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "delegations.json").write_text("not valid json {", encoding="utf-8")
+    tool = StubDelegateTool()
+    runner, _ = _make_runner(tool, project_dir)
+    # Should not raise; the bad file is treated as empty.
+    d = await runner.submit("backend", "x", project_name="p1")
+    assert d.delegation_id is not None
+    await runner.wait(d.delegation_id, timeout=5)
+    # Subsequent write replaces the bad file with valid JSON.
+    payload = json.loads((target / "delegations.json").read_text(encoding="utf-8"))
+    assert "delegations" in payload

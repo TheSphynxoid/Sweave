@@ -60,7 +60,7 @@ def render_template(template_name: str, context: dict) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise services on startup, clean up on shutdown."""
-    from sweave.runtime.delegation_store import DelegationStore
+    from sweave.runtime.delegation_store import PerProjectDelegationStores
     from sweave.runtime.job_runner import JobRunner
     from sweave.web.events import WSEventBus
 
@@ -70,11 +70,21 @@ async def lifespan(app: FastAPI):
 
     state = AppState.build(config_manager)
     state.event_bus = WSEventBus()
-    state.delegation_store = DelegationStore()
+    state.delegation_stores = PerProjectDelegationStores()
     state.job_runner = JobRunner(
         delegate_tool=state.delegate_tool,
-        delegation_store=state.delegation_store,
+        # JobRunner uses the per-project store registry; it picks a store
+        # for the project on each delegation. M1.1 step 2.
+        delegation_stores=state.delegation_stores,
         event_bus=state.event_bus,
+        # Resolve project_name -> project.path via the singleton
+        # ProjectManager. Returns None for unknown names (delegation
+        # falls through to the global store at ~/.sweave/).
+        project_dir_resolver=lambda name: (
+            project_manager.get_project(name).path
+            if project_manager.get_project(name) is not None
+            else None
+        ),
     )
     await state.load_dynamic_agents()
     app.state.app_state = state

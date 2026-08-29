@@ -62,7 +62,12 @@ class AppState:
     # ``event_bus``; routers always read it from the state object.
     event_bus: Any = None  # type: ignore[assignment]
     job_runner: "JobRunner | None" = None  # set in lifespan
-    delegation_store: Any = None  # set in lifespan (DelegationStore)
+    # Per-project delegation store registry (M1.1 step 2). Lazy: no
+    # project files are opened at startup; a store is constructed on
+    # first delegation for that project. ``delegation_stores_for()`` is
+    # the canonical accessor; the attribute may be ``None`` only
+    # during lifespan setup (before the lifespan hook runs).
+    delegation_stores: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":
@@ -144,3 +149,31 @@ class AppState:
         if self.event_bus is None:
             return
         await self.event_bus.publish(event, data)
+
+    async def delegation_stores_for(self, project_dir: Path) -> Any:
+        """Return the :class:`DelegationStore` for *project_dir*.
+
+        Lazy-creates on first access. If the registry isn't yet
+        initialised (e.g. during lifespan setup), returns a fresh
+        in-memory :class:`PerProjectDelegationStores` and assigns it
+        so subsequent calls share the same registry.
+        """
+        if self.delegation_stores is None:
+            from sweave.runtime.delegation_store import PerProjectDelegationStores
+
+            self.delegation_stores = PerProjectDelegationStores()
+        return await self.delegation_stores.for_project(project_dir)
+
+    def active_project_name(self) -> str | None:
+        """Return the active project name from the singleton
+        :class:`ProjectManager`, or ``None`` if no project is active.
+
+        Used by the routers as a default for the v2 task's
+        ``project_name`` field so a delegation filed without an
+        explicit project pin still lands in the right per-project
+        store.
+        """
+        from sweave.projects import project_manager
+
+        active = project_manager.get_active_project()
+        return active.name if active is not None else None

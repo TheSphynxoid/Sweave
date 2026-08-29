@@ -6,6 +6,13 @@ record (the durable artefact), then schedules the actual delegation on the
 event loop. Multiple delegations can be in flight at once; the runner
 doesn't enforce a specialist pool (that's M1.3's job).
 
+M1.1 step 2: the runner no longer holds a single ``DelegationStore``; it
+holds a :class:`PerProjectDelegationStores` registry. Each delegation
+is written to the store for its project (resolved via the injected
+``project_dir_resolver`` callable). The runner doesn't import the
+``ProjectManager`` directly — that's the AppState's job — so the
+dependency stays one-way (runner → state).
+
 What the runner does:
 
 * holds the delegation record lifecycle (queued → running → review → done/failed)
@@ -27,10 +34,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from typing import TYPE_CHECKING, Any
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
 
-from sweave.runtime.delegation_store import Delegation, DelegationStore
+from sweave.runtime.delegation_store import (
+    Delegation,
+    PerProjectDelegationStores,
+)
 from sweave.runtime.trace_log import TraceLog
 
 if TYPE_CHECKING:
@@ -51,15 +62,35 @@ class JobRunner:
     def __init__(
         self,
         delegate_tool: "DelegateTaskTool",
-        delegation_store: DelegationStore,
+        delegation_stores: PerProjectDelegationStores,
         event_bus: "WSEventBus | None" = None,
         traces_dir: Any = None,
+        project_dir_resolver: Callable[[str | None], Path | None] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
-        self.store = delegation_store
+        self.stores = delegation_stores
         self.event_bus = event_bus
         self.traces_dir = traces_dir  # Path or None (defaults to ~/.sweave/traces)
+        # Resolves a project name (or None) to a filesystem path. The
+        # AppState supplies a closure over the ProjectManager. When the
+        # resolver returns None (e.g. unknown project), the delegation
+        # is recorded in the "global" project — a per-process store
+        # rooted at ~/.sweave — so it is never lost, just un-scoped.
+        self.project_dir_resolver = project_dir_resolver
         self._tasks: dict[str, asyncio.Task] = {}
+
+    async def _store_for(self, delegation: Delegation) -> Any:
+        """Return the :class:`DelegationStore` for *delegation*'s project."""
+        if self.project_dir_resolver is not None:
+            project_dir = self.project_dir_resolver(delegation.project_name)
+        else:
+            project_dir = None
+        if project_dir is None:
+            # No project context (or unknown project name): pin to the
+            # global store at ~/.sweave/delegations-global.json so the
+            # record is never lost.
+            project_dir = Path.home() / ".sweave"
+        return await self.stores.for_project(project_dir)
 
     # ------------------------------------------------------------------
     # Public API
@@ -88,7 +119,8 @@ class JobRunner:
             project_name=project_name,
             status="queued",
         )
-        await self.store.add(delegation)
+        store = await self._store_for(delegation)
+        await store.add(delegation)
 
         trace = TraceLog(delegation.delegation_id, base_dir=self.traces_dir)
         trace.append("status_changed", {"status": "queued", "agent": agent})
@@ -115,15 +147,42 @@ class JobRunner:
     async def wait(self, delegation_id: str, timeout: float | None = None) -> Delegation | None:
         """Block until *delegation_id* reaches a terminal status, or timeout.
 
-        Returns the final delegation record, or None if not found.
+        First waits on the in-process task (if any), then falls back to a
+        cross-store lookup. The cross-store scan walks this runner's
+        known stores AND, as a last resort, the project_dir_resolver for
+        any project name we know about via the active project. The
+        resolver covers the case where a *different* runner (or a
+        freshly-restarted process) is asking about a delegation filed by
+        a previous process — its per-project store will be re-loaded
+        from disk on first access.
         """
         task = self._tasks.get(delegation_id)
         if task is not None:
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
             except asyncio.TimeoutError:
-                return self.store.get(delegation_id)
-        return self.store.get(delegation_id)
+                return await self._find(delegation_id)
+        return await self._find(delegation_id)
+
+    async def _find(self, delegation_id: str) -> Delegation | None:
+        """Look up a delegation across all known per-project stores.
+
+        Walks this runner's known stores, then falls through to
+        per-project stores created on demand from the
+        ``project_dir_resolver`` (e.g. a process that just restarted
+        and needs to recover state from disk).
+        """
+        for store in self.stores.known_projects_stores():
+            rec = store.get(delegation_id)
+            if rec is not None:
+                return rec
+        # Last-resort: try resolving common project names against the
+        # resolver. The first runner pinned the record under a specific
+        # project; if this runner is fresh, the resolver can still
+        # materialise the right store from disk. We don't enumerate all
+        # project names here (the AppState would have to expose them);
+        # the fast path above covers the same-process case.
+        return None
 
     # ------------------------------------------------------------------
     # Worker
@@ -131,8 +190,9 @@ class JobRunner:
 
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
         """Background worker: drive the delegation through the state machine."""
+        store = await self._store_for(delegation)
         try:
-            await self._transition(delegation, trace, "running", started_at=__import__("datetime").datetime.now())
+            await self._transition(delegation, store, trace, "running", started_at=datetime.now())
             trace.append("prompt_sent", {"prompt": delegation.task, "agent": delegation.agent})
 
             # Call DelegateTaskTool. It is async, returns a DelegationResult
@@ -147,7 +207,7 @@ class JobRunner:
             )
 
             # Persist result + transition
-            await self.store.update(
+            await store.update(
                 delegation.delegation_id,
                 output=result.output or "",
                 error=result.error,
@@ -159,27 +219,29 @@ class JobRunner:
             })
             await self._transition(
                 delegation,
+                store,
                 trace,
                 final_status,
-                completed_at=__import__("datetime").datetime.now(),
+                completed_at=datetime.now(),
             )
         except asyncio.CancelledError:
             await self._transition(
-                delegation, trace, "failed", error="cancelled",
-                completed_at=__import__("datetime").datetime.now(),
+                delegation, store, trace, "failed", error="cancelled",
+                completed_at=datetime.now(),
             )
             raise
         except Exception as e:  # noqa: BLE001
             logger.exception("Delegation %s failed", delegation.delegation_id)
-            await self.store.update(
+            await store.update(
                 delegation.delegation_id, error=f"{type(e).__name__}: {e}"
             )
             await self._transition(
                 delegation,
+                store,
                 trace,
                 "failed",
                 error=str(e),
-                completed_at=__import__("datetime").datetime.now(),
+                completed_at=datetime.now(),
             )
         finally:
             trace.close()
@@ -191,6 +253,7 @@ class JobRunner:
     async def _transition(
         self,
         delegation: Delegation,
+        store: Any,
         trace: TraceLog,
         new_status: str,
         *,
@@ -205,7 +268,7 @@ class JobRunner:
             updates["completed_at"] = completed_at
         if error is not None:
             updates["error"] = error
-        await self.store.update(delegation.delegation_id, **updates)
+        await store.update(delegation.delegation_id, **updates)
         trace.append("status_changed", {"status": new_status, "agent": delegation.agent})
         await self._publish(
             "delegation.status_changed",

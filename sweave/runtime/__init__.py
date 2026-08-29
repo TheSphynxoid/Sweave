@@ -8,8 +8,11 @@ arrive in steps 4-6.
 
 from sweave.runtime.delegation_store import (
     SCHEMA_VERSION,
+    SCHEMA_VERSION_PREP,
     Delegation,
     DelegationStore,
+    Manifest,
+    PerProjectDelegationStores,
 )
 from sweave.runtime.job_runner import JobRunner
 from sweave.runtime.locking import (
@@ -27,6 +30,9 @@ __all__ = [
     "read_trace",
     "Delegation",
     "DelegationStore",
+    "PerProjectDelegationStores",
+    "Manifest",
     "JobRunner",
     "SCHEMA_VERSION",
+    "SCHEMA_VERSION_PREP",
 ]

@@ -50,8 +50,8 @@ def test_delegation_from_dict_handles_missing_optionals():
 
 
 @pytest.mark.asyncio
-async def test_store_add_get_list():
-    store = DelegationStore()
+async def test_store_add_get_list(tmp_path):
+    store = DelegationStore(tmp_path)
     d1 = Delegation(agent="a", task="t1")
     d2 = Delegation(agent="b", task="t2")
     await store.add(d1)
@@ -62,8 +62,8 @@ async def test_store_add_get_list():
 
 
 @pytest.mark.asyncio
-async def test_store_update_changes_fields():
-    store = DelegationStore()
+async def test_store_update_changes_fields(tmp_path):
+    store = DelegationStore(tmp_path)
     d = Delegation(agent="a", task="t")
     await store.add(d)
     out = await store.update(d.delegation_id, status="running", started_at=d.created_at)
@@ -73,8 +73,8 @@ async def test_store_update_changes_fields():
 
 
 @pytest.mark.asyncio
-async def test_store_update_rejects_invalid_status():
-    store = DelegationStore()
+async def test_store_update_rejects_invalid_status(tmp_path):
+    store = DelegationStore(tmp_path)
     d = Delegation(agent="a", task="t")
     await store.add(d)
     with pytest.raises(ValueError):
@@ -82,8 +82,8 @@ async def test_store_update_rejects_invalid_status():
 
 
 @pytest.mark.asyncio
-async def test_store_update_missing_returns_none():
-    store = DelegationStore()
+async def test_store_update_missing_returns_none(tmp_path):
+    store = DelegationStore(tmp_path)
     out = await store.update("does-not-exist", status="running")
     assert out is None
 

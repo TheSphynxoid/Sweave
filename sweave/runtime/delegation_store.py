@@ -21,10 +21,17 @@ Schema history
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, TypedDict
+
+from sweave.runtime.locking import atomic_write_json
+
+logger = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 2
@@ -153,27 +160,90 @@ def _migrate_v1_to_v2(d: dict[str, Any]) -> dict[str, Any]:
 
 
 class DelegationStore:
-    """In-memory store of :class:`Delegation` records.
+    """In-memory + on-disk store of :class:`Delegation` records for one project.
 
-    M1.prep keeps records in process memory only. M1.1 step 2 will add
-    per-project disk persistence (per-project JSON file, atomic writes
-    via :func:`runtime.locking.atomic_write_json_sync`, write-through).
-    This class is the single source of truth for the store API; the
-    :class:`JobRunner` reads/writes through it.
+    M1.1 step 2 adds per-project disk persistence. The store loads from
+    ``{project_dir}/.sweave/delegations.json`` on first access; every
+    ``add``/``update`` writes the whole file through atomically. Records
+    are kept in memory after the initial load (the working set per
+    project is small; write-through is the simplest correct contract).
 
-    A per-store :class:`asyncio.Lock` serialises status transitions; the
-    dict-level reads (``get``) are lock-free because Python dict reads of
-    a stable key are safe under single-writer-multiple-reader and we
-    always copy the record out before mutating.
+    Locking: callers wrap writes with :class:`ProjectLockRegistry`'s
+    per-project lock (already on :class:`AppState`); this class keeps a
+    *separate* in-process asyncio lock for status-transition atomicity.
+    Two locks is fine: the registry lock serialises *disk writes* (so
+    we don't fsync-stomp), the store lock serialises *in-memory state*
+    (so :meth:`update` is a compare-and-set under contention).
+
+    Crash recovery: a partial/truncated JSON file is loaded as
+    ``{"delegations": []}`` with a warning logged; the API never 500s
+    on a bad file. The atomic write makes this rare (a crash mid-write
+    leaves the old file intact because we write to ``.tmp`` then
+    ``os.replace``).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, project_dir: Path) -> None:
+        self.project_dir = Path(project_dir)
+        self.file_path = self.project_dir / ".sweave" / "delegations.json"
         self._records: dict[str, Delegation] = {}
         self._lock = asyncio.Lock()
+        # Eagerly load on construction; cheap for small record sets.
+        # Failures are logged + the store starts empty rather than
+        # raising — see _load for the recovery contract.
+        self._load()
+
+    # ---- persistence ----------------------------------------------------
+
+    def _load(self) -> None:
+        """Load records from disk. Bad file -> empty store + warning."""
+        if not self.file_path.exists():
+            return
+        try:
+            text = self.file_path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.warning(
+                "DelegationStore: cannot read %s: %s -- starting empty",
+                self.file_path, e,
+            )
+            return
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "DelegationStore: %s is corrupt (%s) -- starting empty",
+                self.file_path, e,
+            )
+            return
+        if not isinstance(data, dict) or "delegations" not in data:
+            logger.warning(
+                "DelegationStore: %s has unexpected shape -- starting empty",
+                self.file_path,
+            )
+            return
+        for entry in data["delegations"]:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                d = Delegation.from_dict(entry)
+            except (TypeError, ValueError) as e:
+                logger.warning(
+                    "DelegationStore: skipping bad entry in %s: %s",
+                    self.file_path, e,
+                )
+                continue
+            self._records[d.delegation_id] = d
+
+    async def _persist(self) -> None:
+        """Write the current in-memory state to disk atomically."""
+        payload = {"delegations": [d.to_dict() for d in self._records.values()]}
+        await atomic_write_json(self.file_path, payload)
+
+    # ---- in-memory API --------------------------------------------------
 
     async def add(self, delegation: Delegation) -> None:
         async with self._lock:
             self._records[delegation.delegation_id] = delegation
+            await self._persist()
 
     def get(self, delegation_id: str) -> Delegation | None:
         return self._records.get(delegation_id)
@@ -197,4 +267,57 @@ class DelegationStore:
                 if hasattr(rec, k):
                     setattr(rec, k, v)
             rec.updated_at = _now()
+            await self._persist()
             return rec
+
+
+class PerProjectDelegationStores:
+    """Lazy map of project_name -> :class:`DelegationStore`.
+
+    Holds the per-project in-process state. The :class:`JobRunner` looks
+    stores up by ``project_name``; missing projects get a fresh store
+    on first delegation. The map is never eagerly populated at startup
+    (per the M1.1 plan: a server with N projects doesn't touch N files
+    on boot).
+
+    Project deletion hooks: see :meth:`drop`. The lifecycle owner
+    (``ProjectManager``) calls this when a project is removed so we
+    don't leak in-memory state.
+
+    Trace logs are intentionally NOT moved per-project here — they
+    live at ``~/.sweave/traces/{delegation_id}.jsonl`` (keyed by
+    delegation_id, not project) and are written by :class:`JobRunner`
+    directly via :class:`TraceLog`.
+    """
+
+    def __init__(self) -> None:
+        self._stores: dict[str, DelegationStore] = {}
+        self._meta_lock = asyncio.Lock()
+
+    async def for_project(self, project_dir: Path) -> DelegationStore:
+        """Return the store for *project_dir*, creating it on first access."""
+        # We key on the resolved path string so the same project always
+        # maps to the same store regardless of how the path is spelled.
+        key = str(Path(project_dir).resolve())
+        existing = self._stores.get(key)
+        if existing is not None:
+            return existing
+        async with self._meta_lock:
+            existing = self._stores.get(key)
+            if existing is None:
+                existing = DelegationStore(project_dir)
+                self._stores[key] = existing
+            return existing
+
+    def known_projects(self) -> list[str]:
+        return list(self._stores.keys())
+
+    def known_projects_stores(self) -> list[DelegationStore]:
+        """Return the live store objects (for cross-store lookups)."""
+        return list(self._stores.values())
+
+    async def drop(self, project_dir: Path) -> bool:
+        """Forget the in-memory store for *project_dir*. Returns True if one was dropped."""
+        key = str(Path(project_dir).resolve())
+        async with self._meta_lock:
+            return self._stores.pop(key, None) is not None
