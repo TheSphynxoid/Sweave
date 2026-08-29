@@ -119,6 +119,20 @@ async def lifespan(app: FastAPI):
             child, project_manager
         ),
     )
+    # M1.2 step 2: build the specialist resolver and hand it to the
+    # delegate tool so the model-precedence chain (task_override >
+    # specialist.current_model > resolve_model(role_ref) > legacy
+    # config.resolve_model(agent)) kicks in. The resolver uses the
+    # same anchored path (~/.sweave/agents.yaml) that
+    # ``load_dynamic_agents`` reads, so they share state.
+    from sweave.runtime.specialist_store import SpecialistResolver
+
+    state.specialist_resolver = SpecialistResolver()
+    state.delegate_tool.specialist_resolver = state.specialist_resolver
+    # One-time legacy import: if the anchored file is absent but the
+    # in-memory dynamic_agents dict has entries (from the legacy CWD-
+    # relative file), bring them into the new global store.
+    await state.bootstrap_specialists()
     await state.load_dynamic_agents()
     app.state.app_state = state
     logger.info(

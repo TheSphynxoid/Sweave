@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from sweave.router.router import RuleRouter
     from sweave.runtime.job_runner import JobRunner
     from sweave.runtime.locking import ProjectLockRegistry
+    from sweave.runtime.specialist_store import SpecialistResolver
     from sweave.tools import (
         DelegateTaskTool,
         MemoryTool,
@@ -33,6 +34,15 @@ if TYPE_CHECKING:
     from sweave.workspace.manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
+
+
+def _anchored_agents_path() -> Path:
+    """The home-anchored path that replaces the M1.prep CWD-relative
+    ``Path('agents.yaml')`` (amendment E). Created on first use by the
+    AppState constructor; tests that point ``dynamic_agents_path`` at a
+    tmp dir still work because the field overrides the default.
+    """
+    return Path.home() / ".sweave" / "agents.yaml"
 
 
 @dataclass
@@ -54,8 +64,13 @@ class AppState:
 
     project_locks: "ProjectLockRegistry"
 
+    # Legacy dynamic-agents mechanism (M1.prep era). Kept as a *derived view*
+    # for the existing routers and the rule-router until R4 folds them. The
+    # source of truth is now the :class:`SpecialistResolver` (M1.2); the
+    # ``dynamic_agents_path`` is the home-anchored ``~/.sweave/agents.yaml``
+    # (amendment E -- kills the CWD-relative gotcha).
     dynamic_agents: dict[str, AgentSpec] = field(default_factory=dict)
-    dynamic_agents_path: Path = field(default_factory=lambda: Path("agents.yaml"))
+    dynamic_agents_path: Path = field(default_factory=_anchored_agents_path)
 
     # WSEventBus is the single pub/sub for everything that wants to reach
     # connected WebSocket clients. Constructed in lifespan and assigned to
@@ -73,6 +88,10 @@ class AppState:
     # only delivers the type + store + lifecycle primitives (the API
     # endpoints arrive in step 4).
     subagent_runs: Any = None  # type: ignore[assignment]
+    # Specialist resolver (M1.2). Lazy: constructed in lifespan; the
+    # routers in step 3 use it for /api/specialists CRUD. May be ``None``
+    # before lifespan (e.g. in tests that build the AppState directly).
+    specialist_resolver: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":
@@ -104,11 +123,17 @@ class AppState:
             worktree_tool=WorktreeTool(worktree_manager),
             memory_tool=MemoryTool(config_manager),
             project_locks=ProjectLockRegistry(),
-            dynamic_agents_path=Path("agents.yaml"),
         )
 
     async def load_dynamic_agents(self) -> None:
-        """Load dynamic agents from ``agents.yaml`` (if present)."""
+        """Load dynamic agents from the anchored ``agents.yaml`` (if present).
+
+        The path is now home-anchored (M1.2 amendment E); the file is
+        also the same file the :class:`SpecialistResolver`'s global store
+        reads/writes. ``load_dynamic_agents`` populates the in-memory
+        ``dynamic_agents`` dict as a *derived view* for the legacy
+        router; the source of truth is the resolver.
+        """
         from dataclasses import asdict
         import yaml
 
@@ -128,7 +153,11 @@ class AppState:
             self.dynamic_agents[spec.name] = spec
 
     async def save_dynamic_agents(self) -> None:
-        """Persist dynamic agents back to ``agents.yaml`` (atomic write)."""
+        """Persist dynamic agents back to the anchored ``agents.yaml`` (atomic).
+
+        Same file the resolver's global store writes. Writes go through
+        ``atomic_write_json`` (yaml mode) so the file is replaced atomically.
+        """
         from dataclasses import asdict
         import yaml
 
@@ -142,6 +171,64 @@ class AppState:
         await atomic_write_json(
             self.dynamic_agents_path, {"agents": agents_data}, use_yaml=True
         )
+
+    def ensure_specialist_resolver(self) -> "SpecialistResolver":
+        """Return the resolver, constructing it on first call.
+
+        The resolver uses the same ``dynamic_agents_path`` as the legacy
+        view, so writes through the resolver and reads through
+        ``load_dynamic_agents`` see the same file.
+        """
+        if self.specialist_resolver is None:
+            from sweave.runtime.specialist_store import SpecialistResolver
+
+            self.specialist_resolver = SpecialistResolver()
+        return self.specialist_resolver
+
+    async def bootstrap_specialists(self) -> None:
+        """One-time import of legacy dynamic agents into the new resolver.
+
+        Triggered from lifespan after the dynamic_agents file is loaded.
+        The import is **one-way**: the new store is the source of truth
+        going forward. We only import when the *new* global store file
+        (anchored path) is absent, so a user who already has a populated
+        file isn't re-imported on every restart.
+
+        The legacy file at the same anchored path is the same physical
+        file the resolver reads; we only do a shape conversion (AgentSpec
+        list -> Specialist list) and a one-time write if the resolver's
+        global store has never been touched.
+        """
+        resolver = self.ensure_specialist_resolver()
+        # The resolver already loaded the file (or created an empty store)
+        # on construction. We only need to import if the anchored file
+        # is absent AND the legacy dynamic_agents dict has entries.
+        anchored = Path.home() / ".sweave" / "agents.yaml"
+        if anchored.exists():
+            return  # file present, no legacy import needed
+        if not self.dynamic_agents:
+            return
+        # Map each AgentSpec to a Specialist (global scope, role_ref=None
+        # -- the legacy spec doesn't carry a role hint; the model field
+        # becomes current_model).
+        for spec in self.dynamic_agents.values():
+            from sweave.runtime.specialist_store import Specialist
+
+            try:
+                rec = Specialist(
+                    name=spec.name,
+                    scope="global",
+                    is_orchestrator=False,
+                    role_ref=None,
+                    description="",
+                    system_prompt=spec.system_prompt,
+                    harness=spec.harness or "opencode",
+                    current_model=spec.model or None,
+                )
+                resolver.create(rec)
+                logger.info("Imported legacy dynamic agent %s -> global", spec.name)
+            except ValueError as e:
+                logger.warning("Skipped legacy agent %s: %s", spec.name, e)
 
     async def publish(self, event: str, data: dict[str, Any]) -> None:
         """Publish a WebSocket event through the event bus.

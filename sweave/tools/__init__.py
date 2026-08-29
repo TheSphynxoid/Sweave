@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from dataclasses import dataclass
 
 from sweave.config.manager import ConfigManager
@@ -12,6 +12,9 @@ from sweave.workspace.manager import WorktreeManager
 from sweave.harness.base import Harness, AgentSpec, harness_registry
 from sweave.memory.backends import MemoryFactory
 from sweave.projects import project_manager
+
+if TYPE_CHECKING:
+    from sweave.runtime.specialist_store import SpecialistResolver
 
 
 @dataclass
@@ -80,16 +83,51 @@ class RouteTaskTool:
 
 class DelegateTaskTool:
     """Tool for delegating a task to a specialist agent."""
-    
+
     def __init__(
         self,
         config_manager: ConfigManager,
         worktree_manager: WorktreeManager,
+        specialist_resolver: "SpecialistResolver | None" = None,
     ):
         self.config = config_manager
         self.worktree_manager = worktree_manager
+        # M1.2: optional resolver. When present, the model-precedence
+        # chain (task_override > specialist.current_model > resolve_model
+        # of role_ref > orchestrator.default) kicks in. When absent, the
+        # legacy ``config.resolve_model(agent)`` path is used.
+        self.specialist_resolver: SpecialistResolver | None = specialist_resolver
         self._active_agents: dict[str, Any] = {}  # session_id -> agent process
-    
+
+    def _resolve_model(
+        self,
+        agent: str,
+        task_override: str | None,
+    ) -> str:
+        """Layered model resolution (M1.2 step 2).
+
+        Precedence: task_override > specialist.current_model >
+        config.resolve_model(role_ref) > config.resolve_model(agent).
+        The last fallback is the legacy path: ``config.resolve_model``
+        treats ``agent`` as a role key in models.yaml. The first two
+        levels require the resolver to find a record; when the resolver
+        is absent or the record is missing, the chain short-circuits
+        to the next level.
+        """
+        if task_override:
+            return task_override
+        if self.specialist_resolver is not None:
+            rec = self.specialist_resolver.resolve(agent)
+            if rec is not None and rec.current_model:
+                return rec.current_model
+            if rec is not None and rec.role_ref:
+                # Optional hint; unknown role_ref falls through to the
+                # orchestrator's default (handled inside resolve_model).
+                return self.config.resolve_model(rec.role_ref)
+        # Legacy path: agent name treated as a role key. This is the
+        # gate that keeps the M1.prep-era rule-router working.
+        return self.config.resolve_model(agent)
+
     async def execute(
         self,
         agent: str,
@@ -99,9 +137,9 @@ class DelegateTaskTool:
     ) -> DelegationResult:
         """Delegate a task to a specialist agent."""
         task_id = task_id or str(uuid.uuid4())[:8]
-        
-        # Resolve model
-        resolved_model = model or self.config.resolve_model(agent)
+
+        # Resolve model (M1.2 step 2: layered precedence chain).
+        resolved_model = self._resolve_model(agent, task_override=model)
         
         # Create worktree
         worktree_info = await self.worktree_manager.async_create_worktree(task_id, agent)
