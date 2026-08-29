@@ -24,6 +24,41 @@ class DelegationResult:
     error: str | None = None
 
 
+# Built-in prompts used only when sweave/agents/<role>/config.yaml is missing
+# or lacks a `prompt:` field.
+FALLBACK_PROMPTS = {
+    "backend": """You are a backend engineering specialist. You excel at:
+- API design and implementation (REST, GraphQL, gRPC)
+- Database design, migrations, and optimization
+- Authentication, authorization, and security
+- Server-side architecture and patterns
+- Testing and deployment
+
+Work in your assigned worktree. Write clean, well-tested code. Open PRs when complete.""",
+    "frontend": """You are a frontend engineering specialist. You excel at:
+- React, Vue, Svelte component development
+- State management, routing, and data fetching
+- CSS, styling, and responsive design
+- TypeScript and modern frontend tooling
+- Accessibility and performance
+
+Work in your assigned worktree. Write clean, accessible code. Open PRs when complete.""",
+    "reviewer": """You are a code review specialist. You excel at:
+- Code quality and best practices
+- Security vulnerability detection
+- Performance optimization
+- Architecture and design review
+- Testing strategy review
+
+Review code thoroughly. Provide actionable feedback. Approve or request changes.""",
+    "orchestrator": """You are the orchestrator. You coordinate specialist agents.
+- Route tasks to appropriate specialists
+- Synthesize results from multiple agents
+- Manage worktrees and delegations
+- Track progress and dependencies""",
+}
+
+
 class RouteTaskTool:
     """Tool for routing a task to the appropriate specialist agent."""
     
@@ -114,49 +149,35 @@ class DelegateTaskTool:
             )
     
     def _get_agent_spec(self, agent: str, model: str, worktree_info) -> AgentSpec:
-        """Get agent specification for a specialist."""
-        from sweave.config.schemas import AgentSpec
-        
-        prompts = {
-            "backend": """You are a backend engineering specialist. You excel at:
-- API design and implementation (REST, GraphQL, gRPC)
-- Database design, migrations, and optimization
-- Authentication, authorization, and security
-- Server-side architecture and patterns
-- Testing and deployment
+        """Get agent specification for a specialist.
 
-Work in your assigned worktree. Write clean, well-tested code. Open PRs when complete.""",
-            "frontend": """You are a frontend engineering specialist. You excel at:
-- React, Vue, Svelte component development
-- State management, routing, and data fetching
-- CSS, styling, and responsive design
-- TypeScript and modern frontend tooling
-- Accessibility and performance
+        Prefers the Omnigent-spec definition from sweave/agents/<role>/config.yaml;
+        falls back to built-in prompts when the definition or a field is missing.
+        """
+        from sweave.agents.loader import get_agent_definition
 
-Work in your assigned worktree. Write clean, accessible code. Open PRs when complete.""",
-            "reviewer": """You are a code review specialist. You excel at:
-- Code quality and best practices
-- Security vulnerability detection
-- Performance optimization
-- Architecture and design review
-- Testing strategy review
+        defn = get_agent_definition(agent)
 
-Review code thoroughly. Provide actionable feedback. Approve or request changes.""",
-            "orchestrator": """You are the orchestrator. You coordinate specialist agents.
-- Route tasks to appropriate specialists
-- Synthesize results from multiple agents
-- Manage worktrees and delegations
-- Track progress and dependencies""",
-        }
-        
+        if defn and defn.prompt:
+            system_prompt = defn.prompt
+        else:
+            system_prompt = FALLBACK_PROMPTS.get(agent, FALLBACK_PROMPTS["backend"])
+
+        name = defn.name if defn and defn.name else f"{agent}-specialist"
+        tools = (
+            defn.tools
+            if defn and defn.tools
+            else ["hindsight_recall", "hindsight_retain", "hindsight_reflect"]
+        )
+
         return AgentSpec(
-            name=f"{agent}-specialist",
+            name=name,
             role=agent,
             model=model,
-            system_prompt=prompts.get(agent, prompts["backend"]),
+            system_prompt=system_prompt,
             worktree_path=worktree_info.path,
             memory_bank=self.config.get().memory.hindsight.bank_id,
-            tools=["hindsight_recall", "hindsight_retain", "hindsight_reflect"],
+            tools=tools,
             harness=self.config.get().harness.default,
         )
     
