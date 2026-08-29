@@ -238,13 +238,14 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   submit (R4 removes the bridge); `SubAgentRun` endpoints
   (`POST/GET/finish`); 122 pytest across 14 files, 13/13 run.py --check,
   40/40 test_full, 8/8 test_browser, ALL GREEN test_agents_loader.
-- **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
-  `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
-  status); resolution project → global → seed templates; orchestrator singleton
-  auto-seeded per project (context per-Session per §2.1); specialists CRUD API +
-  `PUT /specialists/{name}/model`; **routing-override logging** (every user
-  reassignment is stored as an active-learning gold label). Gate: endpoint tests,
-  singleton enforcement.
+- **M1.2 Specialist store + CRUD** (~1, planned in detail: `docs/M1_2_PLAN.md`):
+  `Specialist` persisted per scope (global `~/.sweave/agents.yaml` migrated from legacy
+  agents.yaml + per-project `.sweave/agents.json`), resolution project → global → seed
+  views, orchestrator protected singleton, **derived** idle/running status (from open
+  delegations — never stored), model precedence chain at submit, `/api/specialists`
+  CRUD + `PUT /{name}/model`, override logging (gold labels, R6), `/api/agents` bridge
+  — **fixes the discovered Agents-tab render bug + prompt-overwrite bug** (step 4,
+  test-first). Gate: pytest + render smoke + test_full.py green.
 - **M1.3 Shared serve + durable context** (~2, risk sink): `SpecialistRuntime` per
   project — one lazy `opencode serve`, specialist→session map, resume stored sessions
   (feature-detected per M1.0), `fresh:` flag, worktree re-injected per delegation,
