@@ -157,12 +157,20 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 ## 6. Roadmap
 
 ### R0 — Hygiene (before any feature)
-- **First git commit** (the design was lost once; unversioned = lost again).
+- **First git commit** (the design was lost once; unversioned = lost again). ✅ done 2026-08-29
 - Agent YAML loader: `sweave/agents/loader.py` parses `agents/*/config.yaml`
   (spec_version, executor, prompt, os_env, tools.builtins) → replaces hardcoded prompts
   in DelegateTaskTool; keep hardcoded dict as fallback for missing fields.
 - Fix `/ws` 404; fix CLI bug `router.router._llm_fallback` (main.py:68).
 - Remove dead deps from pyproject (`omnigent`, `asyncio-mqtt` if unused).
+- **Harness spawn repair (from 2026-08-29 spike)**: (1) `opencode` resolves to a `.cmd`
+  shim → `create_subprocess_exec` fails WinError 2; resolve the shim target
+  (`npm/node_modules/opencode-ai/bin/opencode.exe`). (2) opencode.py:199 wraps async
+  `readline()` in `to_thread` — port-from-stdout can never work; read properly or use a
+  port file. (3) Launch serve with stdout/stderr redirected to log files — pipe-held
+  output triggered a Bun "illegal instruction" crash + machine freeze during the spike;
+  never hold serve pipes. Live serve verification (session-resume, per-message model)
+  deferred until a safe launch window; M1 runtime must feature-detect resume at runtime.
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
 - **Record split**: rename v1 `ChildSession` into `Delegation` (persistent: worktree,
