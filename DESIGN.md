@@ -29,14 +29,19 @@ per folder on disk), hierarchical memory banks, model routing by role + rules, W
 ```
 Project   a folder on disk, opened via backend file browser; owns agents, sessions, memory
 Session   an orchestrated conversation inside a project (parent = supervisor)
-Specialist  a PERSISTENT worker: identity + durable context + current_model (idle between
-            tasks; conversation resumed across delegations; not temporary like a sub-agent)
-ChildSession  one delegated work item, executed ON a specialist: own worktree, own PR,
-            own status. Work item, not worker.
+Specialist  a PERSISTENT, DYNAMICALLY CREATED worker (per project or globally): identity +
+            durable context + current_model; idle between tasks; conversation resumes.
+            NOT a fixed role taxonomy — users create their own. Sole exception: the
+            orchestrator, a singleton (one supervisor per project).
+ChildSession  a TRADITIONAL ephemeral sub-agent run: disposable context, for exploration,
+            read-only investigation, quick fanout. Dies when done; no durable identity.
+            (Worktree + PR flows belong to specialists, not sub-agent runs.)
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)
 Worktree  git isolation unit, branch sweave/{task_id}/{agent}, PR via gh or REST
 Memory    hindsight-backed banks: global / project-{name} / session-{id}
-Router    pattern → (agent, model) decision, templates like {{models.backend.default}}
+Router    pattern → (specialist, model) decision; roles are MODEL TIERS (models.yaml:
+          orchestrator/backend/frontend/reviewer as default model buckets), not a closed
+          agent set; rules target specialist names.
 ```
 
 ### 2.1 Specialist model semantics (user-locked 2026-08-29)
@@ -58,6 +63,25 @@ Router    pattern → (agent, model) decision, templates like {{models.backend.d
 - **Runtime shape**: one shared `opencode serve` per project hosting all specialist
   sessions (HTTP), instead of one process per child run; idle specialists keep their
   session, only processes are shared.
+
+### 2.2 Specialist creation & scope (user-locked 2026-08-29)
+
+- **Dynamic, not fixed.** Specialists are created/edited/deleted at runtime — via UI,
+  API, or YAML — scoped **per project** or **globally**. The four `sweave/agents/*`
+  YAMLs are seed templates, not a closed taxonomy.
+- **The orchestrator is the sole singleton.** Exactly one supervisor per project; it is
+  not deletable or duplicable. Every other specialist is user-defined.
+- **Storage**: global specialists in `~/.sweave/agents.yaml` (the existing dynamic-agents
+  store); project specialists in `{project}/.sweave/agents.json`. Resolution order for
+  a specialist name: project → global → seed templates.
+- **Roles are model tiers.** `models.yaml` roles stay as default-model buckets
+  (orchestrator/backend/frontend/reviewer); a specialist references a role for its
+  default model and may override with any catalog model. Routing rules resolve against
+  specialist names (roles used only as model-tier aliases).
+- **Child runs = traditional sub-agents**: ephemeral, used for exploration/investigation
+  (Polly's `/investigate` pattern); no worktree or PR by default. Delegation of
+  *implementation* work goes to specialists in worktrees; delegation of *read* work
+  goes to sub-agent runs.
 
 ## 3. Architecture
 
@@ -129,9 +153,11 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 - Remove dead deps from pyproject (`omnigent`, `asyncio-mqtt` if unused).
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
-- **Specialist store**: per-project `specialists.json` (name, role, harness,
-  current_model, durable `session_id`, status idle/running) — the persistent worker
-  identity from §2.1; loader seeds it from `agents/*/config.yaml` (R0) + UI-created.
+- **Specialist store**: per §2.2 — global `~/.sweave/agents.yaml` + per-project
+  `{project}/.sweave/agents.json` (name, role-ref, harness, current_model, durable
+  `session_id`, status idle/running); CRUD API/UI for dynamic creation in both scopes;
+  orchestrator singleton enforced per project; loader seeds resolution order
+  project → global → seed templates (`agents/*/config.yaml`).
 - **Durable context**: delegation resumes the specialist's stored session on a shared
   `opencode serve` per project; `fresh: true` per task = clean slate. Retire
   one-process-per-run in favor of shared serve + per-specialist sessions.
