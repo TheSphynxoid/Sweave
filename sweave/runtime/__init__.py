@@ -11,5 +11,12 @@ from sweave.runtime.locking import (
     atomic_write_json,
     atomic_write_json_sync,
 )
+from sweave.runtime.trace_log import TraceLog, read_trace
 
-__all__ = ["ProjectLockRegistry", "atomic_write_json", "atomic_write_json_sync"]
+__all__ = [
+    "ProjectLockRegistry",
+    "atomic_write_json",
+    "atomic_write_json_sync",
+    "TraceLog",
+    "read_trace",
+]
