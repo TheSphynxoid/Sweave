@@ -29,13 +29,35 @@ per folder on disk), hierarchical memory banks, model routing by role + rules, W
 ```
 Project   a folder on disk, opened via backend file browser; owns agents, sessions, memory
 Session   an orchestrated conversation inside a project (parent = supervisor)
-ChildSession  one delegated agent run: own worktree, own context, own memory scope
-Agent     persistent specialist declared in YAML (Omnigent-spec compatible) or UI-created
+Specialist  a PERSISTENT worker: identity + durable context + current_model (idle between
+            tasks; conversation resumed across delegations; not temporary like a sub-agent)
+ChildSession  one delegated work item, executed ON a specialist: own worktree, own PR,
+            own status. Work item, not worker.
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)
 Worktree  git isolation unit, branch sweave/{task_id}/{agent}, PR via gh or REST
 Memory    hindsight-backed banks: global / project-{name} / session-{id}
 Router    pattern → (agent, model) decision, templates like {{models.backend.default}}
 ```
+
+### 2.1 Specialist model semantics (user-locked 2026-08-29)
+
+- **Specialists are not sub-agents.** They persist per project with their own context.
+  Current v1 behavior (fresh session per delegation) is transitional; R1 introduces
+  durable context via stored `session_id` + resume (`fresh: true` per task = clean slate).
+- **Deferral, not spawning.** Specialists never spawn specialists. A specialist returns a
+  structured `defer{target, task}` result; only the orchestrator/runtime performs the
+  spawn. One authority; mirrors Polly's supervisor-only delegation.
+- **DelegationManager** (R1) enforces: depth cap (default 2), loop detection (A→B→A),
+  per-chain cost budget, and records every deferral as a ChildSession (Children tab
+  shows the full tree).
+- **Model at request time.** Model is no longer baked into AgentSpec at spawn: every
+  `send()` carries `providerID/modelID` (OpenCode's message API supports per-message
+  model; fallback: resume session with new env). Switching while idle → next request;
+  while running → queued for next request (never mid-request). Precedence:
+  per-task override > specialist.current_model > role default (models.yaml).
+- **Runtime shape**: one shared `opencode serve` per project hosting all specialist
+  sessions (HTTP), instead of one process per child run; idle specialists keep their
+  session, only processes are shared.
 
 ## 3. Architecture
 
@@ -106,7 +128,18 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 - Fix `/ws` 404; fix CLI bug `router.router._llm_fallback` (main.py:68).
 - Remove dead deps from pyproject (`omnigent`, `asyncio-mqtt` if unused).
 
-### R1 — Agent runtime completion (make delegation trustworthy)
+### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
+- **Specialist store**: per-project `specialists.json` (name, role, harness,
+  current_model, durable `session_id`, status idle/running) — the persistent worker
+  identity from §2.1; loader seeds it from `agents/*/config.yaml` (R0) + UI-created.
+- **Durable context**: delegation resumes the specialist's stored session on a shared
+  `opencode serve` per project; `fresh: true` per task = clean slate. Retire
+  one-process-per-run in favor of shared serve + per-specialist sessions.
+- **DelegationManager**: deferral protocol (`defer{target, task}` results; orchestrator
+  performs spawns), depth cap, loop detection, per-chain budget; every deferral recorded
+  as a ChildSession (tree visible in Children tab).
+- **Model at request time**: `send(task, model=...)`; specialist.current_model switchable
+  while idle (queued if running); settings/API endpoint to switch; precedence per §2.1.
 - AgentProcess lifecycle: completion detection (opencode session status / idle timeout),
   terminate on done, cleanup `_active_agents`, real `attach`.
 - ChildSession records worktree/branch/PR URL + status transitions (queued→running→
@@ -130,7 +163,8 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 - Phase 1: statusline topbar (project + visible CWD), session dropdown w/ search,
   Ctrl+K palette, `GET /api/models/catalog` (live harness models + models.dev cache).
 - Phase 2: model combobox grouped by provider with live/catalog badges.
-- Phase 3: agents workbench (two-pane, ▶ Run → child, activity, pulse via /ws).
+- Phase 3: agents workbench (two-pane, specialists grouped by scope with idle/running
+  status, inline model switch on idle specialists, ▶ Run → child, activity, pulse via /ws).
 - Regression harness: Playwright+Edge scripts (see test_sidebar_nav.js pattern).
 
 ### R5 — Packaging
