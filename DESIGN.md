@@ -33,9 +33,12 @@ Specialist  a PERSISTENT, DYNAMICALLY CREATED worker (per project or globally): 
             durable context + current_model; idle between tasks; conversation resumes.
             NOT a fixed role taxonomy — users create their own. Sole exception: the
             orchestrator, a singleton (one supervisor per project).
-ChildSession  a TRADITIONAL ephemeral sub-agent run: disposable context, for exploration,
+Delegation  PERSISTENT record of implementation work delegated to a specialist:
+            worktree, branch, PR URL, status (queued→running→review→done/failed), cost.
+            The deferral tree and /fanout nodes are Delegations. v1 code calls these
+            ChildSession — R1 renames.
+SubAgentRun EPHEMERAL traditional sub-agent: disposable context, for exploration,
             read-only investigation, quick fanout. Dies when done; no durable identity.
-            (Worktree + PR flows belong to specialists, not sub-agent runs.)
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)
 Worktree  git isolation unit, branch sweave/{task_id}/{agent}, PR via gh or REST
 Memory    hindsight-backed banks: global / project-{name} / session-{id}
@@ -44,22 +47,31 @@ Router    pattern → (specialist, model) decision; roles are MODEL TIERS (model
           agent set; rules target specialist names.
 ```
 
-### 2.1 Specialist model semantics (user-locked 2026-08-29)
+### 2.1 Specialist model semantics (user-locked 2026-08-29; consistency audit same day)
 
 - **Specialists are not sub-agents.** They persist per project with their own context.
   Current v1 behavior (fresh session per delegation) is transitional; R1 introduces
   durable context via stored `session_id` + resume (`fresh: true` per task = clean slate).
+- **Context is conversational, never filesystem.** A specialist's durable context is its
+  transcript + memory bank; worktrees are per-task and may be removed after merge. Each
+  delegation re-injects the current worktree path; a removed worktree never invalidates
+  the session or the shared serve process.
+- **One active task per specialist.** Parallel work (/fanout) routes across the
+  specialist pool; tasks exceeding the pool queue. "Idle/running" is therefore
+  load-bearing state, and model switches queue while running.
+- **Context scoping**: specialist context is per-project; the orchestrator's context is
+  per-Session (a project may run several independent orchestrated conversations).
 - **Deferral, not spawning.** Specialists never spawn specialists. A specialist returns a
   structured `defer{target, task}` result; only the orchestrator/runtime performs the
   spawn. One authority; mirrors Polly's supervisor-only delegation.
-- **DelegationManager** (R1) enforces: depth cap (default 2), loop detection (A→B→A),
-  per-chain cost budget, and records every deferral as a ChildSession (Children tab
-  shows the full tree).
-- **Model at request time.** Model is no longer baked into AgentSpec at spawn: every
-  `send()` carries `providerID/modelID` (OpenCode's message API supports per-message
-  model; fallback: resume session with new env). Switching while idle → next request;
-  while running → queued for next request (never mid-request). Precedence:
-  per-task override > specialist.current_model > role default (models.yaml).
+- **DelegationManager** (R1) enforces: depth cap (default 2), loop detection (A→B→A,
+  tracked on the deferral chain it holds), per-chain cost budget, and records every
+  deferral as a Delegation (Children tab shows the full tree).
+- **Model at request time.** Model is part of the harness contract: `send(task, model)`.
+  OpenCode implements it per-message (providerID/modelID); claude/codex adapters via
+  per-invocation flag/config. Switching while idle → next request; while running →
+  queued for next request (never mid-request). Precedence: per-task override >
+  specialist.current_model > role default (models.yaml).
 - **Runtime shape**: one shared `opencode serve` per project hosting all specialist
   sessions (HTTP), instead of one process per child run; idle specialists keep their
   session, only processes are shared.
@@ -153,19 +165,24 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 - Remove dead deps from pyproject (`omnigent`, `asyncio-mqtt` if unused).
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
+- **Record split**: rename v1 `ChildSession` into `Delegation` (persistent: worktree,
+  PR, status, cost — the deferral/fanout tree) and `SubAgentRun` (ephemeral sub-agent).
+  API/DB/UI updated in the same change.
 - **Specialist store**: per §2.2 — global `~/.sweave/agents.yaml` + per-project
   `{project}/.sweave/agents.json` (name, role-ref, harness, current_model, durable
   `session_id`, status idle/running); CRUD API/UI for dynamic creation in both scopes;
-  orchestrator singleton enforced per project; loader seeds resolution order
-  project → global → seed templates (`agents/*/config.yaml`).
+  orchestrator singleton enforced per project (context per-Session per §2.1); loader
+  seeds resolution order project → global → seed templates (`agents/*/config.yaml`).
 - **Durable context**: delegation resumes the specialist's stored session on a shared
-  `opencode serve` per project; `fresh: true` per task = clean slate. Retire
+  `opencode serve` per project; `fresh: true` per task = clean slate; worktree path
+  re-injected per delegation (context is conversational — §2.1). Retire
   one-process-per-run in favor of shared serve + per-specialist sessions.
 - **DelegationManager**: deferral protocol (`defer{target, task}` results; orchestrator
-  performs spawns), depth cap, loop detection, per-chain budget; every deferral recorded
-  as a ChildSession (tree visible in Children tab).
-- **Model at request time**: `send(task, model=...)`; specialist.current_model switchable
-  while idle (queued if running); settings/API endpoint to switch; precedence per §2.1.
+  performs spawns), depth cap, loop detection on the deferral chain, per-chain budget;
+  every deferral recorded as a Delegation (tree visible in Children tab).
+- **Model at request time**: extend `AgentProcess.send(message)` with model in the
+  harness contract (base.py + all adapters); specialist.current_model switchable while
+  idle (queued if running); settings/API endpoint to switch; precedence per §2.1.
 - AgentProcess lifecycle: completion detection (opencode session status / idle timeout),
   terminate on done, cleanup `_active_agents`, real `attach`.
 - ChildSession records worktree/branch/PR URL + status transitions (queued→running→
@@ -174,10 +191,12 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
   of persist-only.
 
 ### R2 — Orchestrator skills (Polly's core loop)
-- `/fanout`: parallel-safe subtasks → one worktree + one child each → PR per child.
-- `/cross-review`: implementer's diff → *different-role* reviewer child; blocking issues
-  loop back as fixes. (Same-vendor rule becomes: reviewer model ≠ implementer model.)
-- `/investigate`: read-only children (no worktree commit), synthesized findings.
+- `/fanout`: parallel-safe subtasks → routed across the specialist pool (one Delegation,
+  worktree and PR each; overflow queues — §2.1).
+- `/cross-review`: implementer's diff → *different-role* reviewer Delegation; blocking
+  issues loop back as fixes. (Same-vendor rule becomes: reviewer model ≠ implementer
+  model, later different harness.)
+- `/investigate`: read-only SubAgentRuns (no worktree, no PR), synthesized findings.
 - Skills = skills/{name}/SKILL.md conventions + delegation presets; human merges, always.
 
 ### R3 — Multi-harness
