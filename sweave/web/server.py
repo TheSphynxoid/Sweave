@@ -1,85 +1,77 @@
+"""Sweave web server entry point.
+
+Top-level wiring only. Routes live in :mod:`sweave.web.routers`; the long-lived
+service objects live on :class:`sweave.web.state.AppState` and are constructed
+in the ``lifespan`` hook. This module owns:
+
+* the FastAPI ``app`` instance (``build_app()``)
+* the lifespan context (loads config, projects, dynamic agents)
+* the SPA routes (index, /agents, /tasks, /worktrees, /memory, /settings)
+* the static file mount
+* the ``/ws`` WebSocket endpoint (broadcast on the unified event bus)
+
+Route definitions were split out in M1.prep step 2; see ``sweave/web/routers``.
+"""
+
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
-from typing import Optional
 import asyncio
-import uuid
 import json
-from pathlib import Path
+import logging
+import os
+from contextlib import asynccontextmanager
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Optional
+
+import jinja2
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from sweave.config.manager import ConfigManager
-from sweave.config.schemas import AgentSpec, RoutingRule
-from sweave.router.router import RuleRouter
-from sweave.workspace.manager import WorktreeManager
-from sweave.harness.base import harness_registry, Message, AgentResult
-from sweave.tools import DelegateTaskTool, RouteTaskTool, WorktreeTool, MemoryTool
-from sweave.memory.backends import MemoryFactory
+from sweave.config.schemas import AgentSpec
 from sweave.projects import project_manager
-from sweave.api.projects import (
-    create_project, list_projects, get_project, set_active_project, delete_project,
-    create_session, list_sessions, get_active_session, set_active_session, get_active_project,
-    get_session, add_message, delete_session, get_memory_banks,
-    ProjectCreate, SessionCreate, MessageCreate
-)
+from sweave.web.deps import get_state as _get_state  # re-exported below as get_state
+from sweave.web.state import AppState
+
+logger = logging.getLogger(__name__)
+
+# Re-export the dependency for routers that import ``sweave.web.server.get_state``.
+get_state = _get_state
 
 
-# Global instances
-config_manager = ConfigManager()
-router: RuleRouter | None = None
-worktree_manager: WorktreeManager | None = None
-delegate_tool: DelegateTaskTool | None = None
-route_tool: RouteTaskTool | None = None
-worktree_tool: WorktreeTool | None = None
-memory_tool: MemoryTool | None = None
-
-# Load projects on startup
-project_manager.load()
-
-# WebSocket connections for real-time updates
-active_connections: list[WebSocket] = []
-
-# Agent registry for dynamic agents
-dynamic_agents: dict[str, AgentSpec] = {}
-
-
-app = FastAPI(title="Sweave", description="Multi-agent orchestration platform")
-
-# Static files and templates
-app.mount("/static", StaticFiles(directory="sweave/web/static"), name="static")
-# Simple template rendering function - avoids Jinja2Templates cache issues on Windows
-import jinja2
+# ============================================================================
+# Jinja templates (kept for any server-rendered fallback pages)
+# ============================================================================
 
 _jinja_env = jinja2.Environment(
     loader=jinja2.FileSystemLoader("sweave/web/templates"),
     autoescape=True,
-    enable_async=False,  # Use sync rendering to avoid event loop issues
-    cache_size=-1,  # Disable cache
+    enable_async=False,
+    cache_size=-1,
 )
 
-def render_template(template_name, context):
-    """Render a template with the given context."""
+
+def render_template(template_name: str, context: dict) -> str:
     template = _jinja_env.get_template(template_name)
     return template.render(context)
 
-class Templates:
-    """Simple template wrapper matching Jinja2Templates interface."""
-    @staticmethod
-    def TemplateResponse(template_name, context, status_code=200, headers=None, media_type=None):
-        from fastapi.responses import HTMLResponse
-        content = render_template(template_name, context)
-        return HTMLResponse(content, status_code=status_code, headers=headers, media_type=media_type)
 
-templates = Templates()
+# ============================================================================
+# Request models
+# ============================================================================
 
 
 class AgentCreate(BaseModel):
-    """Request model for creating a specialist agent."""
     name: str = Field(..., description="Unique agent name")
     role: str = Field(..., description="Role identifier (e.g., backend, frontend)")
     model: str = Field(..., description="Model to use (from models.yaml)")
@@ -90,7 +82,6 @@ class AgentCreate(BaseModel):
 
 
 class AgentUpdate(BaseModel):
-    """Request model for updating an agent."""
     model: Optional[str] = None
     system_prompt: Optional[str] = None
     description: Optional[str] = None
@@ -99,14 +90,12 @@ class AgentUpdate(BaseModel):
 
 
 class TaskRequest(BaseModel):
-    """Request model for running a task."""
     task: str
     agent: Optional[str] = None
     model: Optional[str] = None
 
 
 class TaskResponse(BaseModel):
-    """Response model for task execution."""
     success: bool
     agent: str
     task_id: str
@@ -116,6 +105,14 @@ class TaskResponse(BaseModel):
 
 class RoutingRequest(BaseModel):
     task: str
+
+
+class RoutingResponse(BaseModel):
+    agent: str
+    model: str
+    confidence: float
+    reasoning: str
+    matched_rule: Optional[str] = None
 
 
 class ModelUpdateRequest(BaseModel):
@@ -129,157 +126,182 @@ class RuleAddRequest(BaseModel):
     model: Optional[str] = None
 
 
-class RoutingResponse(BaseModel):
-    agent: str
-    model: str
-    confidence: float
-    reasoning: str
-    matched_rule: Optional[str] = None
+class ProjectCreateRequest(BaseModel):
+    name: str
+    path: str
+    description: str = ""
 
 
-@app.on_event("startup")
-async def startup():
-    """Initialize services on startup."""
-    global router, worktree_manager, delegate_tool, route_tool, worktree_tool, memory_tool
-    
+class SessionCreateRequest(BaseModel):
+    name: str
+    project_name: Optional[str] = None
+
+
+# ============================================================================
+# Lifespan: build AppState and attach to the app
+# ============================================================================
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise services on startup, clean up on shutdown."""
+    config_manager = ConfigManager()
     config_manager.load()
-    config = config_manager.get()
-    
-    # Load projects
     project_manager.load()
-    
-    router = RuleRouter(config_manager)
-    worktree_manager = WorktreeManager(config.git.worktree_base)
-    delegate_tool = DelegateTaskTool(config_manager, worktree_manager)
-    route_tool = RouteTaskTool(config_manager)
-    worktree_tool = WorktreeTool(worktree_manager)
-    memory_tool = MemoryTool(config_manager)
-    
-    # Load dynamic agents from config
-    await load_dynamic_agents()
+
+    state = AppState.build(config_manager)
+    await state.load_dynamic_agents()
+    app.state.app_state = state
+    logger.info("AppState built; %d dynamic agents loaded", len(state.dynamic_agents))
+
+    try:
+        yield
+    finally:
+        # Close any open WS connections cleanly
+        async with state.active_connections_lock:
+            for ws in list(state.active_connections):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            state.active_connections.clear()
 
 
-async def load_dynamic_agents():
-    """Load dynamic agents from config file."""
-    global dynamic_agents
-    agents_file = Path("agents.yaml")
-    if agents_file.exists():
-        import yaml
-        with open(agents_file) as f:
-            data = yaml.safe_load(f) or {}
-        for agent_data in data.get("agents", []):
-            spec = AgentSpec(**agent_data)
-            dynamic_agents[spec.name] = spec
+def build_app() -> FastAPI:
+    """Construct a fresh FastAPI app.
+
+    Kept as a factory so tests can build an isolated app with stubbed state.
+    Production code uses the module-level ``app`` (instantiated below) so
+    that all ``@app.<verb>(...)`` decorators in this file register against
+    the same object that ``uvicorn`` loads.
+
+    For tests, ``build_app()`` returns a *new* app; the decorator-registered
+    routes in this module are not re-applied. Tests that exercise routes
+    defined in this file should use ``app`` directly via ``TestClient(app)``.
+    """
+    return FastAPI(
+        title="Sweave",
+        description="Multi-agent orchestration platform",
+        lifespan=lifespan,
+    )
 
 
-async def save_dynamic_agents():
-    """Save dynamic agents to config file."""
-    agents_file = Path("agents.yaml")
-    agents_data = []
-    for spec in dynamic_agents.values():
-        d = asdict(spec)
-        # Convert Path to string for YAML serialization
-        d["worktree_path"] = str(d["worktree_path"])
-        agents_data.append(d)
-    data = {"agents": agents_data}
-    import yaml
-    with open(agents_file, "w") as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+# Module-level app singleton. Decorators throughout this file attach routes
+# to this object. Production: ``uvicorn sweave.web.server:app``. Tests: use
+# the same object via starlette.testclient.TestClient.
+app = build_app()
+app.mount("/static", StaticFiles(directory="sweave/web/static"), name="static")
 
 
-async def broadcast_update(event: str, data: dict):
-    """Broadcast update to all connected WebSocket clients."""
-    message = json.dumps({"event": event, "data": data, "timestamp": datetime.now().isoformat()})
-    for ws in active_connections:
-        try:
-            await ws.send_text(message)
-        except Exception:
-            pass
+# ============================================================================
+# WebSocket
+# ============================================================================
 
 
-# WebSocket endpoint for real-time updates
+async def _broadcast(state: AppState, event: str, data: dict) -> None:
+    """Broadcast a JSON message to all connected WebSocket clients."""
+    payload = {
+        "event": event,
+        "data": data,
+        "timestamp": datetime.now().isoformat(),
+    }
+    msg = json.dumps(payload)
+    async with state.active_connections_lock:
+        dead: list[WebSocket] = []
+        for ws in state.active_connections:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                state.active_connections.remove(ws)
+            except ValueError:
+                pass
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    state: AppState = websocket.app.state.app_state
     await websocket.accept()
-    active_connections.append(websocket)
+    async with state.active_connections_lock:
+        state.active_connections.append(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
+        async with state.active_connections_lock:
+            try:
+                state.active_connections.remove(websocket)
+            except ValueError:
+                pass
 
 
-# ==================== Agent Management API ====================
+# ============================================================================
+# Agent routes
+# ============================================================================
+
 
 @app.get("/api/agents")
-async def list_agents():
-    """List all specialist agents (built-in + dynamic)."""
-    config = config_manager.get()
-    builtin = {}
-    
-    # Built-in agents from models config
+async def list_agents(state: AppState = Depends(get_state)):
+    config = state.config_manager.get()
+    builtin: dict = {}
     for role in config.models.roles:
-        if role != "orchestrator":
-            builtin[role] = {
-                "name": role,
-                "role": role,
-                "model": config_manager.resolve_model(role),
-                "description": f"Built-in {role} specialist",
-                "builtin": True,
-                "dynamic": False,
-            }
-    
-    # Dynamic agents
-    dynamic = {}
-    for name, spec in dynamic_agents.items():
+        if role == "orchestrator":
+            continue
+        builtin[role] = {
+            "name": role,
+            "role": role,
+            "model": state.config_manager.resolve_model(role),
+            "description": f"Built-in {role} specialist",
+            "builtin": True,
+            "dynamic": False,
+        }
+    dynamic: dict = {}
+    for name, spec in state.dynamic_agents.items():
         dynamic[name] = {
             "name": spec.name,
             "role": spec.role,
             "model": spec.model,
             "system_prompt": spec.system_prompt,
-            "description": spec.system_prompt[:100] + "..." if len(spec.system_prompt) > 100 else spec.system_prompt,
+            "description": (
+                spec.system_prompt[:100] + "..."
+                if len(spec.system_prompt) > 100
+                else spec.system_prompt
+            ),
             "builtin": False,
             "dynamic": True,
         }
-    
     return {"builtin": builtin, "dynamic": dynamic}
 
 
 @app.post("/api/agents")
-async def create_agent(agent: AgentCreate):
-    """Create a new specialist agent."""
-    if agent.name in dynamic_agents:
+async def create_agent(agent: AgentCreate, state: AppState = Depends(get_state)):
+    if agent.name in state.dynamic_agents:
         raise HTTPException(400, f"Agent '{agent.name}' already exists")
-    
-    # Check if role conflicts with built-in
-    config = config_manager.get()
+    config = state.config_manager.get()
     if agent.role in config.models.roles and agent.role != "orchestrator":
         raise HTTPException(400, f"Role '{agent.role}' is a built-in role")
-    
     spec = AgentSpec(
         name=agent.name,
         role=agent.role,
         model=agent.model,
         system_prompt=agent.system_prompt,
-        worktree_path=Path(""),  # Will be set per task
+        worktree_path=Path(""),
         memory_bank=config.memory.hindsight.bank_id,
         tools=agent.tools,
         harness=agent.harness,
     )
-    
-    dynamic_agents[agent.name] = spec
-    await save_dynamic_agents()
-    await broadcast_update("agent_created", {"name": agent.name, "role": agent.role})
-    
+    state.dynamic_agents[agent.name] = spec
+    await state.save_dynamic_agents()
+    await _broadcast(state, "agent_created", {"name": agent.name, "role": agent.role})
     return {"success": True, "agent": agent.name}
 
 
 @app.get("/api/agents/{name}")
-async def get_agent(name: str):
-    """Get agent details."""
-    # Check dynamic first
-    if name in dynamic_agents:
-        spec = dynamic_agents[name]
+async def get_agent(name: str, state: AppState = Depends(get_state)):
+    if name in state.dynamic_agents:
+        spec = state.dynamic_agents[name]
         return {
             "name": spec.name,
             "role": spec.role,
@@ -289,9 +311,7 @@ async def get_agent(name: str):
             "harness": spec.harness,
             "dynamic": True,
         }
-    
-    # Check built-in
-    config = config_manager.get()
+    config = state.config_manager.get()
     if name in config.models.roles and name != "orchestrator":
         return {
             "name": name,
@@ -301,84 +321,76 @@ async def get_agent(name: str):
             "builtin": True,
             "dynamic": False,
         }
-    
     raise HTTPException(404, f"Agent '{name}' not found")
 
 
 @app.put("/api/agents/{name}")
-async def update_agent(name: str, update: AgentUpdate):
-    """Update a dynamic agent."""
-    if name not in dynamic_agents:
+async def update_agent(
+    name: str, update: AgentUpdate, state: AppState = Depends(get_state)
+):
+    if name not in state.dynamic_agents:
         raise HTTPException(404, f"Dynamic agent '{name}' not found")
-    
-    # Can't update built-in agents
-    config = config_manager.get()
+    config = state.config_manager.get()
     if name in config.models.roles and name != "orchestrator":
         raise HTTPException(400, "Cannot update built-in agent")
-    
-    spec = dynamic_agents[name]
+    spec = state.dynamic_agents[name]
     if update.model:
         spec.model = update.model
     if update.system_prompt:
         spec.system_prompt = update.system_prompt
     if update.description:
-        spec.system_prompt = update.description  # Using description as prompt prefix
+        spec.system_prompt = update.description
     if update.tools:
         spec.tools = update.tools
     if update.harness:
         spec.harness = update.harness
-    
-    await save_dynamic_agents()
-    await broadcast_update("agent_updated", {"name": name})
-    
+    await state.save_dynamic_agents()
+    await _broadcast(state, "agent_updated", {"name": name})
     return {"success": True, "agent": name}
 
 
 @app.delete("/api/agents/{name}")
-async def delete_agent(name: str):
-    """Delete a dynamic agent."""
-    if name not in dynamic_agents:
+async def delete_agent(name: str, state: AppState = Depends(get_state)):
+    if name not in state.dynamic_agents:
         raise HTTPException(404, f"Dynamic agent '{name}' not found")
-    
-    del dynamic_agents[name]
-    await save_dynamic_agents()
-    await broadcast_update("agent_deleted", {"name": name})
-    
+    del state.dynamic_agents[name]
+    await state.save_dynamic_agents()
+    await _broadcast(state, "agent_deleted", {"name": name})
     return {"success": True}
 
 
-# ==================== Task Execution API ====================
+# ============================================================================
+# Tasks
+# ============================================================================
+
 
 @app.post("/api/tasks", response_model=TaskResponse)
-async def run_task(request: TaskRequest):
-    """Execute a task through the orchestrator."""
-    if not router or not delegate_tool:
+async def run_task(request: TaskRequest, state: AppState = Depends(get_state)):
+    if not state.router or not state.delegate_tool:
         raise HTTPException(503, "Services not initialized")
-    
-    # Route task
     if request.agent:
-        decision = router._llm_fallback(request.task)
+        decision = state.router._llm_fallback(request.task)
         decision.agent = request.agent
-        decision.model = request.model or config_manager.resolve_model(request.agent)
+        decision.model = request.model or state.config_manager.resolve_model(request.agent)
     else:
-        decision = router.route(request.task)
+        decision = state.router.route(request.task)
         if request.model:
             decision.model = request.model
-    
-    # Execute
-    result = await delegate_tool.execute(
+    result = await state.delegate_tool.execute(
         agent=decision.agent,
         task=request.task,
         model=request.model or decision.model,
     )
-    
-    await broadcast_update("task_completed", {
-        "task": request.task,
-        "agent": result.agent,
-        "task_id": result.task_id,
-        "success": result.success,
-    })
-    
+    await _broadcast(
+        state,
+        "task_completed",
+        {
+            "task": request.task,
+            "agent": result.agent,
+            "task_id": result.task_id,
+            "success": result.success,
+        },
+    )
     return TaskResponse(
         success=result.success,
         agent=result.agent,
@@ -389,12 +401,8 @@ async def run_task(request: TaskRequest):
 
 
 @app.post("/api/route", response_model=RoutingResponse)
-async def route_task(request: RoutingRequest):
-    """Get routing decision for a task without executing."""
-    if not router:
-        raise HTTPException(503, "Router not initialized")
-    
-    decision = router.route(request.task)
+async def route_task(request: RoutingRequest, state: AppState = Depends(get_state)):
+    decision = state.router.route(request.task)
     return RoutingResponse(
         agent=decision.agent,
         model=decision.model or "",
@@ -404,15 +412,14 @@ async def route_task(request: RoutingRequest):
     )
 
 
-# ==================== Worktree API ====================
+# ============================================================================
+# Worktrees
+# ============================================================================
+
 
 @app.get("/api/worktrees")
-async def list_worktrees():
-    """List all active worktrees."""
-    if not worktree_manager:
-        raise HTTPException(503, "Worktree manager not initialized")
-    
-    worktrees = worktree_manager.list_worktrees()
+async def list_worktrees(state: AppState = Depends(get_state)):
+    worktrees = state.worktree_manager.list_worktrees()
     return {
         "worktrees": [
             {
@@ -429,64 +436,65 @@ async def list_worktrees():
 
 
 @app.post("/api/worktrees/clean")
-async def clean_worktrees():
-    """Clean merged worktrees."""
-    if not worktree_manager:
-        raise HTTPException(503, "Worktree manager not initialized")
-    
-    worktrees = worktree_manager.list_worktrees()
+async def clean_worktrees(state: AppState = Depends(get_state)):
+    worktrees = state.worktree_manager.list_worktrees()
     for wt in worktrees:
-        worktree_manager.remove_worktree(wt.task_id, wt.agent_name, force=True)
-    
-    await broadcast_update("worktrees_cleaned", {"count": len(worktrees)})
+        state.worktree_manager.remove_worktree(wt.task_id, wt.agent_name, force=True)
+    await _broadcast(state, "worktrees_cleaned", {"count": len(worktrees)})
     return {"success": True, "cleaned": len(worktrees)}
 
 
-# ==================== Memory API ====================
+@app.delete("/api/worktrees/{task_id}/{agent_name}")
+async def remove_worktree_endpoint(
+    task_id: str, agent_name: str, state: AppState = Depends(get_state)
+):
+    success = state.worktree_manager.remove_worktree(task_id, agent_name, force=True)
+    if success:
+        await _broadcast(
+            state, "worktree_removed", {"task_id": task_id, "agent": agent_name}
+        )
+    return {"success": success}
+
+
+# ============================================================================
+# Memory
+# ============================================================================
+
 
 @app.post("/api/memory/recall")
-async def memory_recall(query: str, bank_id: Optional[str] = None, limit: int = 10):
-    """Recall memories."""
-    if not memory_tool:
-        raise HTTPException(503, "Memory tool not initialized")
-    
-    result = await memory_tool.execute("recall", query=query, bank_id=bank_id, limit=limit)
-    return result
+async def memory_recall(
+    query: str, bank_id: Optional[str] = None, limit: int = 10, state: AppState = Depends(get_state)
+):
+    return await state.memory_tool.execute("recall", query=query, bank_id=bank_id, limit=limit)
 
 
 @app.post("/api/memory/retain")
-async def memory_retain(content: str, bank_id: Optional[str] = None, tags: list[str] = None):
-    """Retain a memory."""
-    if not memory_tool:
-        raise HTTPException(503, "Memory tool not initialized")
-    
-    result = await memory_tool.execute("retain", content=content, bank_id=bank_id, tags=tags)
-    return result
+async def memory_retain(
+    content: str, bank_id: Optional[str] = None, tags: list[str] = None, state: AppState = Depends(get_state)
+):
+    return await state.memory_tool.execute("retain", content=content, bank_id=bank_id, tags=tags)
 
 
 @app.post("/api/memory/reflect")
-async def memory_reflect(query: str, bank_id: Optional[str] = None):
-    """Reflect on memories."""
-    if not memory_tool:
-        raise HTTPException(503, "Memory tool not initialized")
-    
-    result = await memory_tool.execute("reflect", query=query, bank_id=bank_id)
-    return result
+async def memory_reflect(
+    query: str, bank_id: Optional[str] = None, state: AppState = Depends(get_state)
+):
+    return await state.memory_tool.execute("reflect", query=query, bank_id=bank_id)
 
 
-# ==================== Config API ====================
+# ============================================================================
+# Config / models / rules / harnesses
+# ============================================================================
+
 
 @app.get("/api/config")
-async def get_config():
-    """Get current configuration."""
-    config = config_manager.get()
-    return config.model_dump(exclude_none=True)
+async def get_config(state: AppState = Depends(get_state)):
+    return state.config_manager.get().model_dump(exclude_none=True)
 
 
 @app.get("/api/models")
-async def get_models():
-    """Get model configuration."""
-    models = config_manager.get_models()
+async def get_models(state: AppState = Depends(get_state)):
+    models = state.config_manager.get_models()
     return {
         "roles": {
             role: {
@@ -500,17 +508,17 @@ async def get_models():
 
 
 @app.post("/api/models")
-async def set_model(request: ModelUpdateRequest):
-    """Set model for a role."""
-    config_manager.update_model(request.role, request.model)
-    await broadcast_update("model_changed", {"role": request.role, "model": request.model})
+async def set_model(request: ModelUpdateRequest, state: AppState = Depends(get_state)):
+    state.config_manager.update_model(request.role, request.model)
+    await _broadcast(
+        state, "model_changed", {"role": request.role, "model": request.model}
+    )
     return {"success": True, "role": request.role, "model": request.model}
 
 
 @app.get("/api/rules")
-async def get_rules():
-    """Get routing rules."""
-    routing = config_manager.get_routing()
+async def get_rules(state: AppState = Depends(get_state)):
+    routing = state.config_manager.get_routing()
     return {
         "routes": [
             {"pattern": r.pattern, "agent": r.agent, "model": r.model}
@@ -521,21 +529,22 @@ async def get_rules():
 
 
 @app.post("/api/rules")
-async def add_rule(request: RuleAddRequest):
-    """Add a routing rule."""
-    config_manager.add_routing_rule(request.pattern, request.agent, request.model)
-    await broadcast_update("rule_added", {"pattern": request.pattern, "agent": request.agent, "model": request.model})
+async def add_rule(request: RuleAddRequest, state: AppState = Depends(get_state)):
+    state.config_manager.add_routing_rule(request.pattern, request.agent, request.model)
+    await _broadcast(
+        state,
+        "rule_added",
+        {"pattern": request.pattern, "agent": request.agent, "model": request.model},
+    )
     return {"success": True}
 
 
 @app.get("/api/harnesses")
 async def get_harnesses():
-    """Get available harnesses."""
     from sweave.harness import detect_all_harnesses, get_opencode_models
-    
+
     harnesses = await detect_all_harnesses()
     models = await get_opencode_models()
-    
     return {
         "harnesses": [
             {
@@ -552,148 +561,16 @@ async def get_harnesses():
     }
 
 
-# ==================== Project/Session API ====================
-
-class ProjectCreateRequest(BaseModel):
-    name: str
-    path: str
-    description: str = ""
-
-
-class SessionCreateRequest(BaseModel):
-    name: str
-    project_name: Optional[str] = None
-
-
-@app.post("/api/projects")
-async def api_create_project(request: ProjectCreateRequest):
-    """Create a new project from a folder path."""
-    try:
-        project = await create_project(ProjectCreate(
-            name=request.name,
-            path=request.path,
-            description=request.description,
-        ))
-        return {"success": True, "project": project}
-    except Exception as e:
-        raise HTTPException(400, str(e))
-
-
-@app.get("/api/projects")
-async def api_list_projects():
-    return {"projects": await list_projects()}
-
-
-@app.get("/api/projects/active")
-async def api_get_active_project():
-    return await get_active_project()
-
-
-@app.get("/api/projects/{name}")
-async def api_get_project(name: str):
-    project = await get_project(name)
-    if not project:
-        raise HTTPException(404, f"Project '{name}' not found")
-    return project
-
-
-@app.post("/api/projects/{name}/active")
-async def api_set_active_project(name: str):
-    try:
-        return await set_active_project(name)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.delete("/api/projects/{name}")
-async def api_delete_project(name: str):
-    return await delete_project(name)
-
-
-# ==================== Sessions ====================
-
-@app.post("/api/sessions")
-async def api_create_session(request: SessionCreateRequest):
-    try:
-        session = await create_session(SessionCreate(
-            name=request.name,
-            project_name=request.project_name,
-        ))
-        return {"success": True, "session": session}
-    except Exception as e:
-        raise HTTPException(400, str(e))
-
-
-@app.get("/api/sessions")
-async def api_list_sessions(project_name: Optional[str] = None):
-    return {"sessions": await list_sessions(project_name)}
-
-
-@app.get("/api/sessions/{session_id}")
-async def api_get_session(session_id: str):
-    session = await get_session(session_id)
-    if not session:
-        raise HTTPException(404, f"Session '{session_id}' not found")
-    return session
-
-
-@app.post("/api/sessions/{session_id}/active")
-async def api_set_active_session(session_id: str):
-    try:
-        return await set_active_session(session_id)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.get("/api/sessions/active")
-async def api_get_active_session():
-    session = await get_active_session()
-    if session:
-        return session
-    return None
-
-
-@app.delete("/api/sessions/{session_id}")
-async def api_delete_session(session_id: str):
-    return await delete_session(session_id)
-
-
-@app.post("/api/sessions/{session_id}/messages")
-async def api_add_message(session_id: str, message: MessageCreate):
-    try:
-        msg = await add_message(session_id, message)
-        return {"success": True, "message": msg}
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.get("/api/memory/banks")
-async def api_get_memory_banks():
-    """Get available memory banks (global, project, session)."""
-    return {"banks": await get_memory_banks()}
-
-
-# ==================== Models / Memory Init / Worktree Delete ====================
-
-@app.delete("/api/worktrees/{task_id}/{agent_name}")
-async def remove_worktree_endpoint(task_id: str, agent_name: str):
-    """Remove a specific worktree."""
-    if not worktree_manager:
-        raise HTTPException(503, "Worktree manager not initialized")
-    success = worktree_manager.remove_worktree(task_id, agent_name, force=True)
-    if success:
-        await broadcast_update("worktree_removed", {"task_id": task_id, "agent": agent_name})
-    return {"success": success}
-
-
 @app.post("/api/models/regenerate")
 async def api_regenerate_models():
-    """Regenerate models.yaml from models.dev."""
+    import subprocess
+
     try:
-        import subprocess
         result = subprocess.run(
             ["python", "scripts/generate_models.py"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         return {
             "success": result.returncode == 0,
@@ -706,16 +583,157 @@ async def api_regenerate_models():
 
 @app.post("/api/memory/init")
 async def api_init_memory():
-    """Initialize memory backend (placeholder - full init requires manual script)."""
     return {
         "success": True,
         "message": "Memory backend configuration updated. Run 'python scripts/setup_hindsight.py init' for full setup.",
     }
 
 
-# ==================== Directory Browser (for Project Picker) ====================
+# ============================================================================
+# Projects / sessions (delegated to sweave.api.projects which still holds the
+# helpers today; the routers/ split in step 2 will own these.)
+# ============================================================================
 
-from pathlib import Path as PathLib
+
+@app.post("/api/projects")
+async def api_create_project(request: ProjectCreateRequest):
+    from sweave.api.projects import ProjectCreate, create_project
+
+    try:
+        project = await create_project(
+            ProjectCreate(
+                name=request.name, path=request.path, description=request.description
+            )
+        )
+        return {"success": True, "project": project}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/projects")
+async def api_list_projects():
+    from sweave.api.projects import list_projects
+
+    return {"projects": await list_projects()}
+
+
+@app.get("/api/projects/active")
+async def api_get_active_project():
+    from sweave.api.projects import get_active_project
+
+    return await get_active_project()
+
+
+@app.get("/api/projects/{name}")
+async def api_get_project(name: str):
+    from sweave.api.projects import get_project
+
+    project = await get_project(name)
+    if not project:
+        raise HTTPException(404, f"Project '{name}' not found")
+    return project
+
+
+@app.post("/api/projects/{name}/active")
+async def api_set_active_project(name: str):
+    from sweave.api.projects import set_active_project
+
+    try:
+        return await set_active_project(name)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.delete("/api/projects/{name}")
+async def api_delete_project(name: str):
+    from sweave.api.projects import delete_project
+
+    return await delete_project(name)
+
+
+@app.post("/api/sessions")
+async def api_create_session(request: SessionCreateRequest):
+    from sweave.api.projects import SessionCreate, create_session
+
+    try:
+        session = await create_session(
+            SessionCreate(name=request.name, project_name=request.project_name)
+        )
+        return {"success": True, "session": session}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/sessions")
+async def api_list_sessions(project_name: Optional[str] = None):
+    from sweave.api.projects import list_sessions
+
+    return {"sessions": await list_sessions(project_name)}
+
+
+@app.get("/api/sessions/active")
+async def api_get_active_session():
+    from sweave.api.projects import get_active_session
+
+    session = await get_active_session()
+    if session:
+        return session
+    return None
+
+
+@app.get("/api/sessions/{session_id}")
+async def api_get_session(session_id: str):
+    from sweave.api.projects import get_session
+
+    session = await get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    return session
+
+
+@app.post("/api/sessions/{session_id}/active")
+async def api_set_active_session(session_id: str):
+    from sweave.api.projects import set_active_session
+
+    try:
+        return await set_active_session(session_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.delete("/api/sessions/{session_id}")
+async def api_delete_session(session_id: str):
+    from sweave.api.projects import delete_session
+
+    return await delete_session(session_id)
+
+
+@app.post("/api/sessions/{session_id}/messages")
+async def api_add_message(session_id: str, message: dict):
+    from sweave.api.projects import MessageCreate, add_message
+
+    try:
+        msg = await add_message(session_id, MessageCreate(**message))
+        return {"success": True, "message": msg}
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except TypeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/memory/banks")
+async def api_get_memory_banks():
+    from sweave.api.projects import get_memory_banks
+
+    return {"banks": await get_memory_banks()}
+
+
+# ============================================================================
+# File-system browser
+# ============================================================================
+
+
+from pathlib import Path as PathLib  # noqa: E402  (kept here for diff clarity)
 
 
 class DirectoryBrowser:
@@ -723,69 +741,45 @@ class DirectoryBrowser:
 
     @staticmethod
     def get_drives() -> list[dict]:
-        """Get list of available drives/roots."""
         import platform
         import string
-        system = platform.system()
 
+        system = platform.system()
         if system == "Windows":
-            # Windows: list drive letters C:, D:, etc.
-            drives = []
+            drives: list[dict] = []
             for letter in string.ascii_uppercase:
                 drive = f"{letter}:\\"
                 if PathLib(drive).exists():
-                    drives.append({
-                        "name": f"{letter}:",
-                        "path": drive,
-                        "is_dir": True,
-                    })
+                    drives.append({"name": f"{letter}:", "path": drive, "is_dir": True})
             return drives
-        else:
-            # Unix: just root
-            return [{"name": "/", "path": "/", "is_dir": True}]
+        return [{"name": "/", "path": "/", "is_dir": True}]
 
     @staticmethod
     def list_directory(path: str) -> dict:
-        """List contents of a directory."""
-        import os
         try:
             p = PathLib(path).expanduser().resolve()
             if not p.exists():
                 return {"error": f"Path does not exist: {path}"}
             if not p.is_dir():
                 return {"error": f"Not a directory: {path}"}
-
             parent = str(p.parent) if p.parent != p else None
-            entries = []
-
-            # Add parent entry
+            entries: list[dict] = []
             if parent and parent != str(p):
-                entries.append({
-                    "name": "..",
-                    "path": parent,
-                    "is_dir": True,
-                })
-
+                entries.append({"name": "..", "path": parent, "is_dir": True})
             try:
                 for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
                     try:
-                        is_dir = entry.is_dir()
-                        if not is_dir:
-                            continue  # Skip files
-                        entries.append({
-                            "name": entry.name,
-                            "path": str(entry),
-                            "is_dir": True,
-                        })
+                        if not entry.is_dir():
+                            continue
+                        entries.append({"name": entry.name, "path": str(entry), "is_dir": True})
                     except (PermissionError, OSError):
                         continue
             except PermissionError:
                 return {"error": f"Permission denied: {path}"}
-
             return {
                 "path": str(p),
                 "parent": parent,
-                "entries": entries[:200],  # Limit to 200 entries
+                "entries": entries[:200],
                 "total": len(entries),
             }
         except Exception as e:
@@ -793,31 +787,24 @@ class DirectoryBrowser:
 
     @staticmethod
     def validate_path(path: str) -> dict:
-        """Check if a path is valid and can be used as a project."""
         try:
             p = PathLib(path).expanduser().resolve()
             if not p.exists():
                 return {"valid": False, "error": "Path does not exist"}
             if not p.is_dir():
                 return {"valid": False, "error": "Path is not a directory"}
-            return {
-                "valid": True,
-                "path": str(p),
-                "name": p.name,
-            }
+            return {"valid": True, "path": str(p), "name": p.name}
         except Exception as e:
             return {"valid": False, "error": str(e)}
 
 
 @app.get("/api/fs/drives")
 async def api_get_drives():
-    """Get available drives/roots for the file browser."""
     return {"drives": DirectoryBrowser.get_drives()}
 
 
 @app.get("/api/fs/list")
 async def api_list_directory(path: str):
-    """List contents of a directory path."""
     result = DirectoryBrowser.list_directory(path)
     if "error" in result:
         raise HTTPException(400, result["error"])
@@ -826,110 +813,89 @@ async def api_list_directory(path: str):
 
 @app.post("/api/fs/validate")
 async def api_validate_path(request: Request):
-    """Validate a project path."""
     body = await request.json()
-    path = body.get("path", "")
-    return DirectoryBrowser.validate_path(path)
+    return DirectoryBrowser.validate_path(body.get("path", ""))
 
 
 @app.post("/api/fs/create")
 async def api_create_directory(request: Request):
-    """Create a new directory for a project."""
     body = await request.json()
     path = body.get("path", "")
     name = body.get("name", "")
-
     if not path or not name:
         raise HTTPException(400, "Path and name required")
-
     try:
-        # Sanitize name (no slashes, no special chars)
-        safe_name = "".join(c for c in name if c.isalnum() or c in ('-', '_', ' ')).strip()
+        safe_name = "".join(c for c in name if c.isalnum() or c in ("-", "_", " ")).strip()
         if not safe_name:
             raise HTTPException(400, "Invalid name")
-
-        # If path is a file (selected file), use parent
         p = PathLib(path).expanduser()
         if p.is_file():
             p = p.parent
         elif not p.is_dir():
-            # Maybe it's the parent of the new project
             p = PathLib(path).parent
-
         new_path = (p / safe_name).resolve()
-
         if new_path.exists():
             raise HTTPException(400, f"Path already exists: {new_path}")
-
         new_path.mkdir(parents=True, exist_ok=False)
-
-        return {
-            "success": True,
-            "path": str(new_path),
-            "name": safe_name,
-        }
+        return {"success": True, "path": str(new_path), "name": safe_name}
     except FileExistsError:
-        raise HTTPException(400, f"Path already exists")
+        raise HTTPException(400, "Path already exists")
     except PermissionError:
-        raise HTTPException(403, f"Permission denied")
+        raise HTTPException(403, "Permission denied")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, str(e))
 
 
-# ==================== Web UI ====================
+# ============================================================================
+# SPA routes
+# ============================================================================
 
-# Serve the new single-page app (Odysseus-inspired) from static
+
 INDEX_HTML = Path("sweave/web/static/index.html")
 
 
 def _read_index_html() -> str:
-    """Read the index.html file fresh each time (avoids caching issues)."""
     if INDEX_HTML.exists():
-        with open(INDEX_HTML, encoding="utf-8") as f:
-            return f.read()
+        return INDEX_HTML.read_text(encoding="utf-8")
     return "<h1>Sweave UI not found</h1><p>index.html missing</p>"
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Main app entry — serves the single-page application."""
     return HTMLResponse(_read_index_html())
 
 
 @app.get("/agents", response_class=HTMLResponse)
 async def agents_page():
-    """Same SPA — client-side routing."""
     return HTMLResponse(_read_index_html())
 
 
 @app.get("/tasks", response_class=HTMLResponse)
 async def tasks_page():
-    """Same SPA — client-side routing."""
     return HTMLResponse(_read_index_html())
 
 
 @app.get("/worktrees", response_class=HTMLResponse)
 async def worktrees_page():
-    """Same SPA — client-side routing."""
     return HTMLResponse(_read_index_html())
 
 
 @app.get("/memory", response_class=HTMLResponse)
 async def memory_page():
-    """Same SPA — client-side routing."""
     return HTMLResponse(_read_index_html())
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page():
-    """Same SPA — client-side routing."""
     return HTMLResponse(_read_index_html())
 
 
 def main():
-    """Run the web server."""
     import uvicorn
-    config = config_manager.get()
+
+    config = ConfigManager().get()
     uvicorn.run(app, host=config.server.host, port=config.server.port)
 
 
