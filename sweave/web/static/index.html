@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sweave</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="loader" class="loader">
+    <div class="loader-text">Sweave</div>
+  </div>
+
+  <div id="error-box" class="error-box hidden"></div>
+
+  <div id="app" class="app hidden">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="icon-btn" id="sidebar-toggle" type="button">☰</button>
+        <span class="logo">Sweave</span>
+      </div>
+      <div class="topbar-center">
+        <button class="topbar-link" id="project-link" type="button">No project</button>
+        <span class="separator">/</span>
+        <button class="topbar-link" id="session-link" type="button">No session</button>
+      </div>
+      <div class="topbar-right">
+        <span class="status-dot" id="status-dot"></span>
+        <button class="btn btn-primary btn-sm" id="new-session-btn" type="button">+ Session</button>
+      </div>
+    </header>
+
+    <!-- Main Area -->
+    <div class="main-wrapper">
+      <!-- Sidebar -->
+      <aside class="sidebar" id="sidebar">
+        <nav class="nav">
+          <button class="nav-item active" data-tab="chat" type="button">
+            <span>Chat</span>
+          </button>
+          <button class="nav-item" data-tab="children" type="button">
+            <span>Children</span>
+            <span class="badge" id="children-badge">0</span>
+          </button>
+          <button class="nav-item" data-tab="agents" type="button">
+            <span>Agents</span>
+          </button>
+          <button class="nav-item" data-tab="memory" type="button">
+            <span>Memory</span>
+          </button>
+          <button class="nav-item" data-tab="settings" type="button">
+            <span>Settings</span>
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <span id="conn-text">Connecting...</span>
+        </div>
+      </aside>
+
+      <!-- Content -->
+      <main class="content">
+        <!-- Welcome (no project) -->
+        <div class="welcome hidden" id="welcome">
+          <h1>Welcome to Sweave</h1>
+          <p>Open or create a project to start.</p>
+          <div class="welcome-actions">
+            <button class="btn btn-primary" id="btn-open-folder" type="button">Open Project</button>
+            <button class="btn btn-secondary" id="btn-create-project" type="button">New Project</button>
+            <button class="btn btn-secondary" id="btn-recent" type="button">Recent Projects</button>
+          </div>
+          <div id="recent-list"></div>
+        </div>
+
+        <!-- Tab: Chat -->
+        <section class="tab hidden active" id="tab-chat">
+          <div class="panel-head"><h2>Chat</h2></div>
+          <div class="chat-messages" id="chat-messages">
+            <div class="empty">Start a conversation.</div>
+          </div>
+          <div class="chat-input-area">
+            <textarea id="chat-input" placeholder="Describe a task..." rows="2"></textarea>
+            <div class="chat-input-footer">
+              <button class="btn btn-primary" id="send-btn" type="button" disabled>Send</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab: Children -->
+        <section class="tab hidden" id="tab-children">
+          <div class="panel-head"><h2>Children</h2><span class="hint">Specialist agent runs</span></div>
+          <div class="list" id="children-list">
+            <div class="empty">No child sessions yet.</div>
+          </div>
+        </section>
+
+        <!-- Tab: Agents -->
+        <section class="tab hidden" id="tab-agents">
+          <div class="panel-head"><h2>Agents</h2></div>
+          <div class="grid" id="agents-list">
+            <div class="empty">No agents.</div>
+          </div>
+        </section>
+
+        <!-- Tab: Memory -->
+        <section class="tab hidden" id="tab-memory">
+          <div class="panel-head"><h2>Memory</h2></div>
+          <div class="memory-layout">
+            <div class="memory-left">
+              <label>Bank</label>
+              <select id="memory-bank" class="select"></select>
+              <div class="memory-actions">
+                <button class="btn btn-primary" id="m-tab-recall" type="button">Recall</button>
+                <button class="btn btn-secondary" id="m-tab-reflect" type="button">Reflect</button>
+                <button class="btn btn-secondary" id="m-tab-retain" type="button">Retain</button>
+              </div>
+            </div>
+            <div class="memory-right">
+              <div class="memory-pane active" id="pane-recall">
+                <textarea id="recall-q" placeholder="Query..." rows="3"></textarea>
+                <button class="btn btn-primary" id="recall-btn" type="button">Recall</button>
+              </div>
+              <div class="memory-pane" id="pane-reflect">
+                <textarea id="reflect-q" placeholder="Reflect on..." rows="3"></textarea>
+                <button class="btn btn-primary" id="reflect-btn" type="button">Reflect</button>
+              </div>
+              <div class="memory-pane" id="pane-retain">
+                <textarea id="retain-c" placeholder="Content..." rows="3"></textarea>
+                <input type="text" id="retain-t" placeholder="Tags">
+                <button class="btn btn-primary" id="retain-btn" type="button">Retain</button>
+              </div>
+              <div class="memory-results" id="memory-results"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab: Settings -->
+        <section class="tab hidden" id="tab-settings">
+          <div class="panel-head"><h2>Settings</h2></div>
+          <div class="settings-nav">
+            <button class="settings-tab active" data-stab="general" type="button">General</button>
+            <button class="settings-tab" data-stab="models" type="button">Models</button>
+            <button class="settings-tab" data-stab="routing" type="button">Routing</button>
+            <button class="settings-tab" data-stab="memory" type="button">Memory</button>
+            <button class="settings-tab" data-stab="theme" type="button">Theme</button>
+          </div>
+          <div class="settings-content">
+            <div class="settings-pane active" id="pane-general">
+              <p>Configuration loaded from server.</p>
+            </div>
+            <div class="settings-pane" id="pane-models">
+              <div id="model-roles"></div>
+            </div>
+            <div class="settings-pane" id="pane-routing">
+              <div id="routing-rules"></div>
+            </div>
+            <div class="settings-pane" id="pane-memory">
+              <div id="memory-settings-form"></div>
+            </div>
+            <div class="settings-pane" id="pane-theme">
+              <div id="theme-grid"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- Modals -->
+  <div class="modal hidden" id="project-modal">
+    <div class="modal-bg"></div>
+    <div class="modal-box wide">
+      <div class="modal-head"><h3>Open Project</h3><button class="x" data-close type="button">×</button></div>
+      <div class="modal-body">
+        <div class="file-browser">
+          <div class="fb-side">
+            <div class="fb-label">Drives</div>
+            <div id="fb-drives"></div>
+            <div class="fb-label" style="margin-top:12px">Project</div>
+            <input id="proj-name" class="input" placeholder="Name">
+            <textarea id="proj-desc" class="input" placeholder="Description (optional)" rows="2"></textarea>
+            <label class="check"><input type="checkbox" id="proj-new-folder"> Create as new folder</label>
+          </div>
+          <div class="fb-main">
+            <div class="fb-bar">
+              <button class="ibtn" id="fb-up" type="button" title="Up">↑</button>
+              <input id="fb-path" class="input mono" placeholder="Path">
+            </div>
+            <div class="fb-list" id="fb-list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" data-close type="button">Cancel</button>
+        <button class="btn btn-primary" id="open-project-btn" type="button">Open</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="session-modal">
+    <div class="modal-bg"></div>
+    <div class="modal-box">
+      <div class="modal-head"><h3>Sessions</h3><button class="x" data-close type="button">×</button></div>
+      <div class="modal-body">
+        <div id="session-list"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" data-close type="button">Close</button>
+        <button class="btn btn-primary" id="new-session-modal-btn" type="button">+ New</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="agent-modal">
+    <div class="modal-bg"></div>
+    <div class="modal-box">
+      <div class="modal-head"><h3>Create Agent</h3><button class="x" data-close type="button">×</button></div>
+      <div class="modal-body">
+        <input id="ag-name" class="input" placeholder="Name">
+        <input id="ag-role" class="input" placeholder="Role">
+        <select id="ag-model" class="select"></select>
+        <textarea id="ag-prompt" class="input" placeholder="System prompt" rows="6"></textarea>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" data-close type="button">Cancel</button>
+        <button class="btn btn-primary" id="save-agent-btn" type="button">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

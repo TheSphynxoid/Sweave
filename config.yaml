@@ -1,0 +1,43 @@
+# Sweave Configuration
+# Copy to config.yaml and customize
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+harness:
+  default: "opencode"
+  opencode:
+    command: "opencode"
+    serve_args: ["--port", "0"]
+    env: {}
+
+memory:
+  backend: "hindsight"
+  hindsight:
+    mode: "embedded_slim"  # embedded_slim | docker_full | docker_slim | cloud
+    api_key:  # Set via HINDSIGHT_API_KEY env var
+    api_url:  # Set via HINDSIGHT_API_URL env var
+    embeddings_provider: "openai"  # openai | cohere | tei | local
+    embeddings_api_key:  # Set via OPENAI_API_KEY env var
+    embeddings_model: "text-embedding-3-small"
+    reranker_provider: "openai"
+    reranker_api_key: 
+    bank_id: "project-memory"
+
+git:
+  provider: "github"
+  token:  # Set via GITHUB_TOKEN env var
+  worktree_base: ".worktrees"
+  auto_pr: true
+  pr_base_branch: "main"
+
+models:
+  registry_path: "models.yaml"
+  rules_path: "rules.yaml"
+  hot_reload: true
+  roles: {}  # Populated from models.yaml
+
+routing:
+  routes: []  # Populated from rules.yaml
+  fallback: "llm"

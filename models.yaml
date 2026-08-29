@@ -1,0 +1,29 @@
+models:
+  orchestrator:
+    default: deepseek-flash
+    aliases:
+    - deepseek-chat
+    - gpt-4o-mini
+    - claude-3.5-haiku
+    provider: opencode
+  backend:
+    default: hy3
+    aliases:
+    - deepseek-coder
+    - qwen2.5-coder
+    - codellama
+    - gpt-4o
+    provider: opencode
+  frontend:
+    default: hy3
+    aliases:
+    - claude-3.5-sonnet
+    - gpt-4o
+    - qwen2.5-vl
+    provider: opencode
+  reviewer:
+    default: deepseek-flash
+    aliases:
+    - gpt-4o
+    - claude-3-opus
+    provider: opencode

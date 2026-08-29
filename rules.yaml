@@ -1,0 +1,20 @@
+routes:
+- pattern: backend|api|database|server|sql|auth|orm|migration|endpoint
+  agent: backend
+  model: '{{models.backend.default}}'
+- pattern: frontend|ui|react|vue|svelte|component|css|html|styling|responsive|accessibility
+  agent: frontend
+  model: '{{models.frontend.default}}'
+- pattern: review|audit|security|lint|check|vulnerability|quality
+  agent: reviewer
+  model: '{{models.reviewer.default}}'
+- pattern: test|testing|spec|pytest|jest|vitest
+  agent: backend
+  model: '{{models.backend.default}}'
+- pattern: deploy|ci|cd|docker|kubernetes|k8s|pipeline
+  agent: backend
+  model: '{{models.backend.default}}'
+- pattern: custom|special
+  agent: backend
+  model: deepseek-coder
+fallback: llm
