@@ -236,7 +236,8 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - **M1.5 Model at request time** (~1): harness contract `send(message, model)` in
   base.py; OpenCode per-message providerID/modelID; idle-switch immediate, running-switch
   queued; M1.2 endpoint wired to runtime. Gate: idle model switch demonstrably applied
-  to next delegation.
+  to next delegation. Cost-budget enforcement: local tiktoken estimates by default;
+  **Cloudflare AI Gateway** as opt-in native enforcement for cloud providers (§8 map).
 - **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
   protocol (prompt convention + output parser), orchestrator-mediated spawn, depth cap
   (default 2), loop detection on the deferral chain, per-chain budget; deferrals recorded
@@ -364,6 +365,20 @@ runtimes). Every adoption gets recorded here.
   deps; free tier sufficient for our scale; `namespace` == bank hierarchy; eventually
   consistent inserts; not local-first → opt-in only). Embeddings: Workers AI REST or
   Ollama. See §2.3 + R7.
+
+### Cloudflare platform map (survey 2026-08-29, user-initiated)
+All Cloudflare, all opt-in (local-first principle holds); single CF account covers all.
+| Product | Utility to Sweave | Verdict |
+|---|---|---|
+| AI Gateway | Proxy before any provider: cost analytics (GraphQL), response caching, spend budgets w/ auto-block, retries + model fallback, BYOK. Core features free; provider costs pass through unmarked. Integrates by pointing opencode provider base URLs at it (custom endpoints already in use) | **Adopt M1.6/R2** — native enforcement for chain budgets + per-project spend in UI v2 |
+| Vectorize | R7 vector store (see above) | ✅ Adopted |
+| Workers AI | Embeddings for Vectorize; reranking; 10K neurons/day free | Adopt in R7 |
+| AI Search (ex-AutoRAG) | Managed RAG over R2/sites; /search + /chat + built-in MCP endpoint; hybrid retrieval; free in beta | Future R6 — orchestrator project-docs knowledge (open question Q3) |
+| Tunnel + Access | Outbound tunnel + zero-trust auth → remote access to the local UI, no port forwarding | R5+ candidate ("remote access") |
+| R2 | Raw memory text backing store beside Vectorize vectors; AI Search source | R7 ext |
+| Agents SDK | Stateful-agent framework on Durable Objects | Skip — owns the loop (policy); pattern inspiration (HITL, MCP) |
+| Workflows / DO / Queues | Durable execution semantics | Inspiration for DelegationManager durability only |
+| Browser Run / Containers / Hyperdrive / KV | — | Skip for now |
 - **Native candidates (C++, only if pain shows up — user speciality)**: (1) process
   supervisor via Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` per serve)
   replaces the Python orphan sweep properly; (2) high-frequency serve-log watcher
