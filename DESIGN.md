@@ -136,9 +136,10 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |
 | Agent lifecycle (wait/terminate/attach) | ⚠️ | send returns response; no completion tracking; `attach` respawns; `_active_agents` never cleaned |
 | Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing) |
-| Agent definitions `sweave/agents/*/config.yaml` | ❌ | never loaded; prompts **hardcoded** in tools/__init__.py:120-150 |
+| Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
-| `/ws` realtime | ⚠️ | route exists (server.py:201) but client saw 404 — re-verify after restart |
+| `/ws` realtime | ✅ | `websockets` dep added; handshake verified 2026-08-29 |
+| OpenCode spawn path | ⚠️ | repaired (exe resolution + log-file port discovery, no pipes); live serve verify pending |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
 | Git history | ❌ | **zero commits** — all knowledge unversioned |
@@ -156,21 +157,22 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 
 ## 6. Roadmap
 
-### R0 — Hygiene (before any feature)
-- **First git commit** (the design was lost once; unversioned = lost again). ✅ done 2026-08-29
-- Agent YAML loader: `sweave/agents/loader.py` parses `agents/*/config.yaml`
-  (spec_version, executor, prompt, os_env, tools.builtins) → replaces hardcoded prompts
-  in DelegateTaskTool; keep hardcoded dict as fallback for missing fields.
-- Fix `/ws` 404; fix CLI bug `router.router._llm_fallback` (main.py:68).
-- Remove dead deps from pyproject (`omnigent`, `asyncio-mqtt` if unused).
-- **Harness spawn repair (from 2026-08-29 spike)**: (1) `opencode` resolves to a `.cmd`
-  shim → `create_subprocess_exec` fails WinError 2; resolve the shim target
-  (`npm/node_modules/opencode-ai/bin/opencode.exe`). (2) opencode.py:199 wraps async
-  `readline()` in `to_thread` — port-from-stdout can never work; read properly or use a
-  port file. (3) Launch serve with stdout/stderr redirected to log files — pipe-held
-  output triggered a Bun "illegal instruction" crash + machine freeze during the spike;
-  never hold serve pipes. Live serve verification (session-resume, per-message model)
-  deferred until a safe launch window; M1 runtime must feature-detect resume at runtime.
+### R0 — Hygiene (before any feature) — ✅ done 2026-08-29
+- **First git commit** (the design was lost once; unversioned = lost again). ✅
+- Agent YAML loader ✅ (`sweave/agents/loader.py` parses `agents/*/config.yaml`,
+  replaces hardcoded prompts in DelegateTaskTool; FALLBACK_PROMPTS kept for missing
+  fields; gated by test_agents_loader.py).
+- Fix `/ws` 404 ✅ (root cause: uvicorn had no websocket implementation; added
+  `websockets>=13` dep). Fix CLI bug `router.router._llm_fallback` ✅.
+- Remove dead deps ✅ (`omnigent`, `asyncio-mqtt`, `pygit2`, `python-dotenv` — none
+  imported anywhere).
+- **Harness spawn repair** ✅ code / ⚠️ live-verify pending: (1) `.cmd` shim → resolves
+  the npm shim's target `opencode.exe` (`_resolve_command`). (2) replaced broken
+  `to_thread(readline)` port discovery with log-file polling (`_wait_for_server_ready`
+  reads a serve log file, no pipes). (3) serve stdout/stderr redirected to a temp log
+  file (pipe-held output triggered the Bun illegal-instruction crash + freeze).
+  Live serve verification (session-resume, per-message model) deferred to a safe
+  launch window; M1 runtime must feature-detect resume at runtime.
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
 - **Record split**: rename v1 `ChildSession` into `Delegation` (persistent: worktree,
