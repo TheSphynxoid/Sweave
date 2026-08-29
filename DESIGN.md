@@ -38,8 +38,8 @@ Specialist  a PERSISTENT, DYNAMICALLY CREATED worker (per project or globally): 
             orchestrator, a singleton (one supervisor per project).
 Delegation  PERSISTENT record of implementation work delegated to a specialist:
             worktree, branch, PR URL, status (queued→running→review→done/failed), cost.
-            The deferral tree and /fanout nodes are Delegations. v1 code calls these
-            ChildSession — R1 renames.
+            The deferral tree and /fanout nodes are Delegations. Persisted per project
+            since M1.1 (schema v2); UI v1 compat via a ChildSession bridge (removed R4).
 SubAgentRun EPHEMERAL traditional sub-agent: disposable context, for exploration,
             read-only investigation, quick fanout. Dies when done; no durable identity.
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)

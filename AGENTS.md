@@ -33,8 +33,9 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
 ## Known gotchas (burned us once — don't relearn)
 1. `start_server.py`/`stop_server.py` resolve `web.pid` **relative to CWD** — run them
    from the repo root only, or they silently no-op while an old server keeps serving.
-2. `ProjectManager` is an **in-memory singleton**; editing `~/.sweave/config.json` while
-   the server runs does nothing until restart.
+2. `ProjectManager` is **AppState-owned and loaded once at server startup**
+   (M1.prep lifespan, not an import-time singleton anymore) — editing
+   `~/.sweave/config.json` while the server runs still does nothing until restart.
 3. UI: `#app` starts `hidden`; the loader timeout in `start()` MUST remove it
    (app.js:930ish). Welcome mode adds `.hidden` (display:none !important) to all `.tab`
    panels — `switchTab()` gating lives at the top of app.js. Don't "simplify" it away.
