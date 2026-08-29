@@ -43,11 +43,13 @@
 - **8/8** in `test_browser.py` (file browser API)
 
 ### Currently Running
-- **Web server**: PID 16092 on `http://127.0.0.1:8100`
-- **PID file**: `C:\Users\user\sweave\web.pid`
-- **Logs**: `C:\Users\user\sweave\web.log` and `web_err.log`
-- **Stop with**: `python stop_server.py`
+- **Web server**: not running (stale `web.pid` cleaned up 2026-08-29 during M1.prep prep)
 - **Start with**: `python start_server.py 8100 127.0.0.1`
+- **Logs** (when running): `C:\Users\user\sweave\web.log` and `web_err.log`
+- **Stop with**: `python stop_server.py`
+
+### M1.prep plan
+- See `docs/M1_PREP_PLAN.md` for the execution contract (file layout, event vocabulary, atomic-JSON contract, ordering, risks).
 
 ---
 
