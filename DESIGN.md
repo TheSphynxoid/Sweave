@@ -175,30 +175,44 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
   launch window; M1 runtime must feature-detect resume at runtime.
 
 ### R1 — Specialist runtime + agent lifecycle (make delegation trustworthy)
-- **Record split**: rename v1 `ChildSession` into `Delegation` (persistent: worktree,
-  PR, status, cost — the deferral/fanout tree) and `SubAgentRun` (ephemeral sub-agent).
-  API/DB/UI updated in the same change.
-- **Specialist store**: per §2.2 — global `~/.sweave/agents.yaml` + per-project
-  `{project}/.sweave/agents.json` (name, role-ref, harness, current_model, durable
-  `session_id`, status idle/running); CRUD API/UI for dynamic creation in both scopes;
-  orchestrator singleton enforced per project (context per-Session per §2.1); loader
-  seeds resolution order project → global → seed templates (`agents/*/config.yaml`).
-- **Durable context**: delegation resumes the specialist's stored session on a shared
-  `opencode serve` per project; `fresh: true` per task = clean slate; worktree path
-  re-injected per delegation (context is conversational — §2.1). Retire
-  one-process-per-run in favor of shared serve + per-specialist sessions.
-- **DelegationManager**: deferral protocol (`defer{target, task}` results; orchestrator
-  performs spawns), depth cap, loop detection on the deferral chain, per-chain budget;
-  every deferral recorded as a Delegation (tree visible in Children tab).
-- **Model at request time**: extend `AgentProcess.send(message)` with model in the
-  harness contract (base.py + all adapters); specialist.current_model switchable while
-  idle (queued if running); settings/API endpoint to switch; precedence per §2.1.
-- AgentProcess lifecycle: completion detection (opencode session status / idle timeout),
-  terminate on done, cleanup `_active_agents`, real `attach`.
-- ChildSession records worktree/branch/PR URL + status transitions (queued→running→
-  review→done/failed) — mirrors Polly's `.polly/registry.json` as per-project registry.
-- Orchestrator chat loop: messages endpoint routes through the supervisor model instead
-  of persist-only.
+Planned as 8 gated steps (~9.5 sessions total); critical chain M1.0→M1.3→M1.4/5→M1.6→M1.7.
+- **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
+  session resume across serve restarts, per-message model params, completion signal.
+  Requires safe-window serve launch (file-logging spawn path). Branch point: resume
+  semantics decide M1.3 shape (restart-safe vs alive-serve + memory replay, ~+1 session).
+- **M1.1 Record split** (~1): `Delegation` (persistent: task_id, specialist, worktree/
+  branch/PR URL, status queued→running→review→done/failed, parent chain) vs
+  `SubAgentRun` (ephemeral). Per-project storage; API returns both; Children tab badges;
+  UI v1 compat. Gate: test_projects.py + test_full.py green.
+- **M1.2 Specialist store + CRUD** (~1): global `~/.sweave/agents.yaml` + project
+  `.sweave/agents.json` (name, role-ref, harness, current_model, durable session_id,
+  status); resolution project → global → seed templates; orchestrator singleton
+  auto-seeded per project (context per-Session per §2.1); specialists CRUD API +
+  `PUT /specialists/{name}/model`. Gate: endpoint tests, singleton enforcement.
+- **M1.3 Shared serve + durable context** (~2, risk sink): `SpecialistRuntime` per
+  project — one lazy `opencode serve`, specialist→session map, resume stored sessions
+  (feature-detected per M1.0), `fresh:` flag, worktree re-injected per delegation,
+  serve health monitor + auto-restart, Windows orphan sweep. Gate: live test — second
+  delegation to same specialist resumes context.
+- **M1.4 Lifecycle completion** (~1): completion detection (per M1.0), Delegation status
+  transitions wired to runtime, terminate-on-done, `_active_agents` cleanup, real
+  `attach`. Gate: 3 consecutive delegations reach done/failed, no process leaks.
+- **M1.5 Model at request time** (~1): harness contract `send(message, model)` in
+  base.py; OpenCode per-message providerID/modelID; idle-switch immediate, running-switch
+  queued; M1.2 endpoint wired to runtime. Gate: idle model switch demonstrably applied
+  to next delegation.
+- **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
+  protocol (prompt convention + output parser), orchestrator-mediated spawn, depth cap
+  (default 2), loop detection on the deferral chain, per-chain budget; deferrals recorded
+  as Delegations with parent_task_id. Gate: mocked-harness unit tests (defer/loop/depth/
+  budget).
+- **M1.7 Orchestrator chat loop** (~1.5): messages endpoint routes through the
+  orchestrator specialist (per-session context), delegation via M1.6, replies persisted;
+  polling status (ws broadcast bonus). Gate: E2E — chat → orchestrator reply → delegation
+  in Children tab.
+- M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
+  follow-up chat shows durable specialist context; model switched while idle between
+  tasks.
 
 ### R2 — Orchestrator skills (Polly's core loop)
 - `/fanout`: parallel-safe subtasks → routed across the specialist pool (one Delegation,
