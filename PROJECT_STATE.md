@@ -19,8 +19,9 @@
 
 ## Current State (Latest Build - All Working)
 
-> **Design**: `DESIGN.md` (architecture, component status, roadmap R0–R5).
+> **Design**: `DESIGN.md` (architecture, component status, roadmap R0–R7).
 > **Agent guide**: `AGENTS.md`. UI v2 plan is folded into DESIGN.md §6 R4.
+> **pytest is the source of truth for logic tests**; root scripts are smoke gates.
 
 ### What Works (Verified - 40/40 Tests Pass)
 - ✅ **App is VISIBLE** after loading (critical fix: `app.classList.remove('hidden')`)
@@ -37,16 +38,31 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing)
+### Test Results (All Passing - verified 2026-08-29 late)
+- **80/80** in `pytest tests/` (source of truth for logic tests)
+- **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
-- **13/13** in `run.py --check` (core endpoints)
-- **8/8** in `test_browser.py` (file browser API)
+- **ALL GREEN** in `test_agents_loader.py` (24 checks)
 
 ### Currently Running
-- **Web server**: not running
-- **Start with**: `python start_server.py 8100 127.0.0.1`
-- **Logs** (when running): `C:\Users\user\sweave\web.log` and `web_err.log`
-- **Stop with**: `python stop_server.py`
+- **Web server**: PID 7028 on `http://127.0.0.1:8100` (restarted 2026-08-29 late,
+  running the M1.prep router-split code)
+- **Start with**: `python start_server.py 8100 127.0.0.1` (from repo root!)
+- **Stop with**: `python stop_server.py` (from repo root — web.pid is CWD-relative)
+- **Logs**: `web.log` / `web_err.log`
+- **Active project**: `sweave` (this repo itself) with session `sweave-20260829-021043-ce4123`
+
+### M1 progress (after M1.prep + M1.0 partial)
+- ✅ **M1.prep** — all 8 steps (see below)
+- ◐ **M1.0 Live serve probe** — done: real API shape discovered and implemented
+  (v2 paths `/session` + `/session/{id}/message` — the legacy `/api/session` now
+  serves web UI HTML; body = `parts[].text`; **per-message model**
+  `{providerID, modelID}` supported; responses are chunked JSON streams, text parts
+  concatenated). Verified against a live serve; real provider errors
+  (`AI_APICallError`) surface verbatim into traces.
+  Still open (M1.3 branch point): session resume across serve **restarts**,
+  completion signal semantics.
+- ▶ **Next**: M1.1 record split (Delegation vs SubAgentRun, schema_version)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`
@@ -57,7 +73,7 @@
 - **Sync `/api/tasks` kept** for backward compat; deprecated in OpenAPI, slated for removal in M1.4+
 - **WS event bus**: `WSEventBus` (sweave/web/events.py) is the single pub/sub; legacy event names (`agent_created`, `model_changed`, `task_completed`, `worktrees_cleaned`, `worktree_removed`, `rule_added`) preserved on the wire
 - **Trace log**: `~/.sweave/traces/{delegation_id}.jsonl` (one JSON object per line)
-- **Git history**: 8 commits on `master` since the rebuild started
+- **Git history**: 26 commits on `master` (M0 rebuild → design docs → M1.prep → M1.0 fix)
 
 ---
 
@@ -412,15 +428,18 @@ The user wants:
 - 5 themes (dark, light, dracula, nord, catppuccin) with data-theme attribute
 - 42/42 verification tests pass
 
-### Session 9 (latest): M1.prep — Backend foundations
+### Session 9 (latest): M1.prep — Backend foundations + M1.0 API discovery
 - 8-step refactor: docs/M1_PREP_PLAN.md → AppState+lifespan → routers split →
   atomic JSON+per-project locks → WSEventBus → trace log → JobRunner+Delegation
-  store+v2 endpoints → pytest skeleton (62 tests) → cleanup+docs
+  store+v2 endpoints → pytest skeleton (now 80 tests) → cleanup+docs
 - `POST /api/v2/tasks` is the new async path; `POST /api/tasks` kept for
   backward compat (deprecated, slated for M1.4+ removal)
 - `sweave/web/api.py` deleted (was a dead duplicate from an earlier iteration)
-- 8 commits on `master`; test counts: 62 pytest + 13 endpoint smoke + 40 UI + 8
-  file-browser + 8 projects endpoints, all green
+- **M1.0 fix**: OpenCode serve exposes a v2 HTTP API (no `/api/` prefix) — the legacy
+  `/api/session` path returns web UI HTML. Switched to `/session` +
+  `/session/{id}/message` with `parts[].text` body, per-message model
+  (`{providerID, modelID}`), chunked JSON stream response handling
+- 26 commits on `master`; all gates green (80 pytest, 13 smoke, 40 UI)
 
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.

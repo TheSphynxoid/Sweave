@@ -164,7 +164,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
 | `/ws` realtime | ✅ | `websockets` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
-| OpenCode spawn path | ⚠️ | repaired (exe resolution + log-file port discovery, no pipes); live serve verify pending |
+| OpenCode spawn path | ⚠️ | exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read) — verified against a live serve; resume-across-restart + completion signal still open (M1.3 branch point) |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
@@ -218,10 +218,11 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   tests, 13 run.py --check, 40 test_full.py, 8 test_browser.py, 8 test_projects
   endpoints all green. **Sync `POST /api/tasks` kept for backward compat; new
   async path is `POST /api/v2/tasks` (returns `{delegation_id, status: queued}`)**.
-- **M1.0 Live serve probe** (~0.5): real API shape (message body `parts` vs content/role),
-  session resume across serve restarts, per-message model params, completion signal.
-  Requires safe-window serve launch (file-logging spawn path). Branch point: resume
-  semantics decide M1.3 shape (restart-safe vs alive-serve + memory replay, ~+1 session).
+- **M1.0 Live serve probe** — ◐ mostly done 2026-08-29: real API shape discovered and
+  implemented (v2 `/session` + `/session/{id}/message`; legacy `/api/session` now serves
+  web UI HTML; body `parts[].text`; per-message `{providerID, modelID}`; chunked JSON
+  stream responses; provider errors surface verbatim in traces). **Still open** (decides
+  M1.3 shape): session resume across serve **restarts**, completion signal semantics.
 - **M1.1 Record split** (~1): `Delegation` (persistent: task_id, specialist, worktree/
   branch/PR URL, status queued→running→review→done/failed, parent chain, optional
   `manifest` self-report: files touched, intent, confidence, breaking_change) vs
@@ -246,9 +247,10 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   `attach`, **stuck detection** (heartbeat / output-staleness / timeout — decide per
   M1.0 findings). Gate: 3 consecutive delegations reach done/failed, no process leaks.
 - **M1.5 Model at request time** (~1): harness contract `send(message, model)` in
-  base.py; OpenCode per-message providerID/modelID; idle-switch immediate, running-switch
-  queued; M1.2 endpoint wired to runtime. Gate: idle model switch demonstrably applied
-  to next delegation. Cost-budget enforcement: local tiktoken estimates by default;
+  base.py; OpenCode per-message `providerID/modelID` **already landed via the M1.0 fix**
+  (remaining: base.py contract, switch API wiring, idle/running semantics); M1.2 endpoint
+  wired to runtime. Gate: idle model switch demonstrably applied to next delegation.
+  Cost-budget enforcement: local tiktoken estimates by default;
   **Cloudflare AI Gateway** as opt-in native enforcement for cloud providers (§8 map).
 - **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
   protocol (prompt convention + output parser), orchestrator-mediated spawn, depth cap
