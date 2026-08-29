@@ -62,6 +62,7 @@ class AppState:
     # ``event_bus``; routers always read it from the state object.
     event_bus: Any = None  # type: ignore[assignment]
     job_runner: "JobRunner | None" = None  # set in lifespan
+    delegation_store: Any = None  # set in lifespan (DelegationStore)
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":

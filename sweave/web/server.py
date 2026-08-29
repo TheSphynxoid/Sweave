@@ -60,6 +60,8 @@ def render_template(template_name: str, context: dict) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise services on startup, clean up on shutdown."""
+    from sweave.runtime.delegation_store import DelegationStore
+    from sweave.runtime.job_runner import JobRunner
     from sweave.web.events import WSEventBus
 
     config_manager = ConfigManager()
@@ -68,10 +70,17 @@ async def lifespan(app: FastAPI):
 
     state = AppState.build(config_manager)
     state.event_bus = WSEventBus()
+    state.delegation_store = DelegationStore()
+    state.job_runner = JobRunner(
+        delegate_tool=state.delegate_tool,
+        delegation_store=state.delegation_store,
+        event_bus=state.event_bus,
+    )
     await state.load_dynamic_agents()
     app.state.app_state = state
     logger.info(
-        "AppState built; %d dynamic agents loaded", len(state.dynamic_agents)
+        "AppState built; %d dynamic agents loaded; JobRunner ready",
+        len(state.dynamic_agents),
     )
 
     try:

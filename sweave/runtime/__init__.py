@@ -6,6 +6,12 @@ graph. Step 1 introduces only :mod:`sweave.runtime.locking`; the other modules
 arrive in steps 4-6.
 """
 
+from sweave.runtime.delegation_store import (
+    SCHEMA_VERSION,
+    Delegation,
+    DelegationStore,
+)
+from sweave.runtime.job_runner import JobRunner
 from sweave.runtime.locking import (
     ProjectLockRegistry,
     atomic_write_json,
@@ -19,4 +25,8 @@ __all__ = [
     "atomic_write_json_sync",
     "TraceLog",
     "read_trace",
+    "Delegation",
+    "DelegationStore",
+    "JobRunner",
+    "SCHEMA_VERSION",
 ]
