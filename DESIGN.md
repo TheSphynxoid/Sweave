@@ -105,6 +105,21 @@ Router    pattern → (specialist, model) decision; roles are MODEL TIERS (model
   *implementation* work goes to specialists in worktrees; delegation of *read* work
   goes to sub-agent runs.
 
+### 2.3 Memory openness (user-locked 2026-08-29)
+
+The memory layer decomposes into three independently configurable parts; users pick
+per part in config.yaml + Settings:
+1. **Embedder** — where vectors come from: Workers AI (`@cf/baai/*`), Ollama (local,
+   free, private), OpenAI, or a custom endpoint.
+2. **Vector store** — where they live: hindsight embedded (default: local-first,
+   private), **Cloudflare Vectorize** (free tier is sufficient: 30M queried + 5M stored
+   dims/mo; REST via httpx, zero new deps; `namespace` == our bank hierarchy), Qdrant /
+   sqlite-vec later. Hindsight docker/cloud remain as whole-stack alternatives.
+3. **Logic layer** — extraction/reflect/compaction: hindsight-style, rule-based v1,
+   mem0-inspired single-pass ADD-only extraction + Zep-style temporal validity later (R6).
+Trade-off recorded: cloud stores are not local-first (privacy + latency) and are
+eventually consistent — local embedded stays the default; Vectorize is opt-in.
+
 ## 3. Architecture
 
 ```
@@ -271,8 +286,7 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
 
-### R6 — Local orchestrator thesis (📐 future bet — the differentiator)
-Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
+### R6 — Local orchestrator thesis (📐 future bet — the differentiator)Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
 discussion; cheap model as PM, strong models as engineers.
 - **Shared-backbone encoder heads** (~150MB, 20–50ms CPU): intent (task↔specialist
   matching), dispatch, resolution (merge_auto / defer / split / escalate), mediation
@@ -289,8 +303,20 @@ discussion; cheap model as PM, strong models as engineers.
   per-task event); weekly project-lore extraction. Rule: compact the why, keep paths
   and signatures verbatim (over-compaction trap).
 - **Orchestrator scope decision** (open): does the orchestrator get its own RAG over
-  project docs/manifests (markdown-only knowledge), vs re-reading session state?
+  project   docs/manifests (markdown-only knowledge), vs re-reading session state?
   Latency question (local orchestrator + cloud specialists) also lands here.
+
+### R7 — Memory openness (pluggable embedder + store)
+Decomposition per §2.3. First increment (after M1, before/parallel with R4):
+- Refactor `MemoryBackend` into composable parts: `Embedder` + `VectorStore` + logic
+  layer; `MemoryFactory` maps config → composition; hindsight stays default.
+- **CloudflareVectorizeMemory** (user-requested): httpx-only REST backend
+  (`/vectorize/v2/indexes/{index}/insert|query`), one index per project,
+  `namespace` = bank scope (global / project-{name} / session-{id}), metadata
+  filtering needs pre-declared metadata indexes (bank, agent, timestamp);
+  embeddings via Workers AI REST or Ollama (local, free).
+- Settings UI (R4 memory pane) exposes the three choices with a health check per part.
+- Later stores: Qdrant, sqlite-vec (fully local alternative).
 
 ## 7. Risks / open questions
 - OpenCode serve port discovery (probe 4096-4199) is fragile — revisit with `--port 0`
@@ -332,6 +358,12 @@ runtimes). Every adoption gets recorded here.
   task if one-shot suffices
 - Model cost map: models.dev metadata (already planned via catalog API); litellm's
   registry as inspiration only
+
+### Adopt later (user-requested, R7)
+- **Cloudflare Vectorize** as pluggable vector store (REST via existing httpx — zero new
+  deps; free tier sufficient for our scale; `namespace` == bank hierarchy; eventually
+  consistent inserts; not local-first → opt-in only). Embeddings: Workers AI REST or
+  Ollama. See §2.3 + R7.
 - **Native candidates (C++, only if pain shows up — user speciality)**: (1) process
   supervisor via Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` per serve)
   replaces the Python orphan sweep properly; (2) high-frequency serve-log watcher
