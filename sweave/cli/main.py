@@ -65,7 +65,7 @@ async def _run_task(task: str, agent_override: str | None, model_override: str |
     
     # Route task
     if agent_override:
-        decision = router.router._llm_fallback(task)  # type: ignore
+        decision = router._llm_fallback(task)
         decision.agent = agent_override
         decision.model = model_override or config_manager.resolve_model(agent_override)
         console.print(f"[yellow]Forced agent:[/yellow] {agent_override}")
