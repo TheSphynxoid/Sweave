@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -26,7 +29,7 @@ class OpenCodeProcess:
     def __init__(
         self,
         spec: AgentSpec,
-        process: subprocess.Popen,
+        process: asyncio.subprocess.Process,
         base_url: str,
         session_id: str,
     ):
@@ -93,25 +96,34 @@ class OpenCodeProcess:
             await self._client.aclose()
         except Exception:
             pass
-        
-        if self.process.poll() is None:
-            self.process.terminate()
+
+        process = self.process
+        try:
+            if process.returncode is None:
+                process.terminate()
+                await asyncio.wait_for(process.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            process.kill()
             try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self.process.wait),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                self.process.kill()
-                await asyncio.to_thread(self.process.wait)
-    
+                await process.wait()
+            except Exception:
+                pass
+        finally:
+            log_file = getattr(self, "_log_file", None)
+            if log_file:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
+                self._log_file = None
+
     async def wait(self) -> AgentResult:
         """Wait for process to complete."""
-        await asyncio.to_thread(self.process.wait)
+        returncode = await self.process.wait()
         return AgentResult(
-            success=self.process.returncode == 0,
+            success=returncode == 0,
             output="",
-            metadata={"returncode": self.process.returncode},
+            metadata={"returncode": returncode},
         )
 
 
@@ -136,7 +148,7 @@ class OpenCodeHarness(Harness):
         """Check if OpenCode is available."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.command, "--version",
+                self._resolve_command(), "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -151,77 +163,118 @@ class OpenCodeHarness(Harness):
         env = os.environ.copy()
         env.update(spec.env)
         env["OPENCODE_MODEL"] = spec.model
-        
+
         # Create worktree directory
         spec.worktree_path.mkdir(parents=True, exist_ok=True)
-        
-        # Start OpenCode server
-        cmd = [self.command, "serve", *self.serve_args]
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=spec.worktree_path,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        
-        # Wait for server to be ready and get port
-        port = await self._wait_for_server_ready(process)
+
+        # Resolve command: 'opencode' is often a .cmd shim that CreateProcess
+        # cannot execute directly - use the shim's .exe target when present.
+        cmd = [self._resolve_command(), "serve", *self.serve_args]
+
+        # Launch with stdout/stderr redirected to a log file. Holding serve
+        # output in pipes can deadlock/crash the runtime (Bun illegal
+        # instruction observed 2026-08-29) - never pipe serve output.
+        log_path = Path(tempfile.gettempdir()) / f"sweave-opencode-{uuid.uuid4().hex[:8]}.log"
+        log_file = open(log_path, "ab")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=spec.worktree_path,
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            log_file.close()
+            raise
+
+        # Wait for server to be ready and get port (parsed from the log file)
+        try:
+            port = await self._wait_for_server_ready(process, log_path)
+        except Exception:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            log_file.close()
+            raise
         base_url = f"http://127.0.0.1:{port}"
-        
+
         # Create session
         session_id = str(uuid.uuid4())
         agent_process = OpenCodeProcess(spec, process, base_url, session_id)
+        agent_process._log_file = log_file  # closed on terminate
+        agent_process._log_path = log_path
         self._processes[session_id] = agent_process
-        
+
         # Initialize with system prompt
         await agent_process.send(Message(
             type="system",
             content=spec.system_prompt,
         ))
-        
+
         return agent_process
-    
+
     async def attach(self, session_id: str, spec: AgentSpec) -> AgentProcess:
-        """Attach to an existing OpenCode session."""
-        # For now, spawn new - in future, connect to existing server
+        """Attach to an existing OpenCode session.
+
+        Stub: currently respawns. R1 connects to the shared per-project serve
+        and resumes the stored session id.
+        """
         return await self.spawn(spec)
-    
-    async def _wait_for_server_ready(self, process: subprocess.Popen) -> int:
-        """Wait for OpenCode server to be ready and return port."""
-        # OpenCode outputs port to stdout when using --port 0
-        # Read stdout until we see the port
-        for _ in range(50):  # 5 second timeout
-            if process.stdout is None:
-                await asyncio.sleep(0.1)
-                continue
-            
-            line = await asyncio.to_thread(process.stdout.readline)
-            if not line:
-                await asyncio.sleep(0.1)
-                continue
-            
-            line = line.decode().strip()
-            # OpenCode outputs something like "Server running on http://127.0.0.1:XXXXX"
-            if "http://" in line and ":" in line:
-                try:
-                    port = int(line.split(":")[-1].split("/")[0])
-                    return port
-                except (ValueError, IndexError):
-                    pass
-            
-            await asyncio.sleep(0.1)
-        
-        # Fallback: try common ports
-        for port in range(4096, 4200):
+
+    def _resolve_command(self) -> str:
+        """Resolve the harness command to a directly executable path."""
+        resolved = shutil.which(self.command)
+        if resolved and resolved.lower().endswith((".cmd", ".bat")):
+            exe = self._exe_from_shim(resolved)
+            if exe:
+                return exe
+            # Fallback: run the shim through cmd.exe
+            return resolved
+        return resolved or self.command
+
+    @staticmethod
+    def _exe_from_shim(shim: str) -> str | None:
+        """Extract the real executable targeted by an npm .cmd shim."""
+        try:
+            text = Path(shim).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        match = re.search(r'"([^"]+\.exe)"', text, re.IGNORECASE)
+        if not match:
+            return None
+        target = match.group(1)
+        # Expand npm shim variables (%dp0% / %~dp0% = the shim's directory)
+        shim_dir = str(Path(shim).resolve().parent)
+        target = re.sub(r"%~?dp0%", lambda _m: shim_dir, target, flags=re.IGNORECASE)
+        target = Path(os.path.expandvars(target))
+        if target.is_file():
+            return str(target)
+        return None
+
+    async def _wait_for_server_ready(
+        self, process: asyncio.subprocess.Process, log_path: Path
+    ) -> int:
+        """Poll the serve log file until the listening URL appears."""
+        url_re = re.compile(r"http://[\d.]+:(\d+)")
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            if process.returncode is not None:
+                raise RuntimeError(
+                    f"OpenCode serve exited early (code {process.returncode}); "
+                    f"log: {log_path}"
+                )
             try:
-                async with httpx.AsyncClient(timeout=1.0) as client:
-                    await client.get(f"http://127.0.0.1:{port}/health")
-                    return port
-            except Exception:
-                continue
-        
-        raise RuntimeError("OpenCode server failed to start")
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            match = url_re.search(text)
+            if match:
+                return int(match.group(1))
+            await asyncio.sleep(0.25)
+        raise RuntimeError(f"OpenCode server failed to start; log: {log_path}")
 
 
 # Register the harness
