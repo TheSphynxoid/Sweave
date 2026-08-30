@@ -270,11 +270,15 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   is persistent, named, user-creatable; SubAgent is the M1.1 ephemeral
   `SubAgentRun` (out of scope here). 207 pytest across 20 files; 13/13
   run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN test_agents_loader.
-- **M1.3 Shared serve + durable context** (~2, risk sink): `SpecialistRuntime` per
-  project — one lazy `opencode serve`, specialist→session map, resume stored sessions
-  (feature-detected per M1.0), `fresh:` flag, worktree re-injected per delegation,
-  serve health monitor + auto-restart, Windows orphan sweep. Gate: live test — second
-  delegation to same specialist resumes context.
+- **M1.3 Shared serve + durable context** (~2.5–3, planned in detail:
+  `docs/M1_3_PLAN.md`): **probe-first** — step 0 resolves the two M1.0 leftovers
+  (resume-across-restart, completion signal) plus a discovered third (tool-execution
+  cwd binding, which decides shared-serve-vs-per-specialist-serve). Branch A
+  (expected): `ServeRunner` per busy specialist, sessions persisted on Specialist,
+  worktree re-injected per delegation, `fresh:` flag, psutil orphan sweep, idle-TTL
+  shutdown (Bun stability), stuck detection v1 (stream timeout), review-status
+  promotion. Gate: live three-delegation test proves durable context (B remembers A,
+  `fresh` doesn't).
 - **M1.4 Lifecycle completion** (~1): completion detection (per M1.0), Delegation status
   transitions wired to runtime, terminate-on-done, `_active_agents` cleanup, real
   `attach`, **stuck detection** (heartbeat / output-staleness / timeout — decide per
