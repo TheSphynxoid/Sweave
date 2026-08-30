@@ -101,7 +101,11 @@ async def test_submit_writes_trace_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_successful_run_ends_in_done(tmp_path: Path):
+async def test_successful_run_ends_in_review(tmp_path: Path):
+    """M1.3 step 4: on stream success the delegation enters 'review'
+    (not 'done') -- human / cross-review promotes to 'done' in M1.4.
+    The test was renamed to reflect the new contract.
+    """
     bus = WSEventBus()
     tool = StubDelegateTool(DelegationResult(
         success=True, agent="backend", task_id="t", output="OK",
@@ -111,7 +115,7 @@ async def test_successful_run_ends_in_done(tmp_path: Path):
     d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
-    assert final.status == "done"
+    assert final.status == "review"
     assert final.output == "OK"
     assert tool.calls and tool.calls[0]["task"] == "x"
 
@@ -152,7 +156,7 @@ async def test_submit_without_bus_works(tmp_path: Path):
     d = await runner.submit("backend", "x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=5)
     assert final is not None
-    assert final.status == "done"
+    assert final.status == "review"
 
 
 @pytest.mark.asyncio
@@ -175,7 +179,7 @@ async def test_delegation_persists_per_project_to_disk(tmp_path: Path):
     assert "delegations" in payload
     assert len(payload["delegations"]) == 1
     assert payload["delegations"][0]["delegation_id"] == d.delegation_id
-    assert payload["delegations"][0]["status"] == "done"
+    assert payload["delegations"][0]["status"] == "review"
 
     # A fresh runner reading the same project_dir sees the same record
     # once it has materialised the per-project store from disk (which

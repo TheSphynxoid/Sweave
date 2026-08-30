@@ -61,6 +61,8 @@ class JobRunner:
     so the runner just calls them in background tasks.
     """
 
+    DEFAULT_TURN_TIMEOUT = 15 * 60  # 15 min per the M1.3 plan
+
     def __init__(
         self,
         delegate_tool: "DelegateTaskTool",
@@ -71,6 +73,7 @@ class JobRunner:
         child_session_adder: Callable[[Any], None] | None = None,
         specialist_runtime: "SpecialistRuntime | None" = None,
         specialist_factory: Callable[[str], "Specialist | None"] | None = None,
+        turn_timeout: float | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -101,6 +104,12 @@ class JobRunner:
         # When None, the runtime path is bypassed and the legacy
         # delegate_tool path runs.
         self.specialist_factory = specialist_factory
+        # M1.3 step 4: per-turn timeout. The agent's streaming response
+        # is wrapped in ``asyncio.wait_for(self.turn_timeout, ...)``; on
+        # expiry the delegation is marked failed with an explicit
+        # error and the serve is recycled on next use. Heartbeat /
+        # output-staleness detection is deferred to R6.
+        self.turn_timeout = turn_timeout if turn_timeout is not None else self.DEFAULT_TURN_TIMEOUT
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -252,95 +261,113 @@ class JobRunner:
     # ------------------------------------------------------------------
 
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
-        """Background worker: drive the delegation through the state machine."""
+        """Background worker: drive the delegation through the state machine.
+
+        M1.3 step 4: the agent call is wrapped in ``asyncio.wait_for`` with
+        ``self.turn_timeout`` (default 15 min, M1.3 plan). On expiry the
+        delegation is marked failed with an explicit error; the
+        ServeRunner is recycled on next use (the runner's
+        ``runners.get_or_create`` checks ``is_alive`` before reusing).
+        Heartbeat / output-staleness detection is deferred to R6.
+        """
         store = await self._store_for(delegation)
         try:
             await self._transition(delegation, store, trace, "running", started_at=datetime.now())
             trace.append("prompt_sent", {"prompt": delegation.task, "agent": delegation.agent})
 
-            # M1.3 step 3: when a SpecialistRuntime is wired in, use it.
-            # The runtime owns a per-specialist ServeRunner; the
-            # delegation goes through a session-managed serve in the
-            # worktree. Otherwise fall back to the legacy delegate_tool
-            # path (used by tests + non-runtime callers).
-            if (
-                self.specialist_runtime is not None
-                and self.specialist_factory is not None
-                and self.project_dir_resolver is not None
-            ):
-                worktree_path = self.project_dir_resolver(delegation.project_name)
-                if worktree_path is None:
-                    # No project context; pin the worktree to ~/.sweave so
-                    # the runner can still create a (global) serve. The
-                    # cwd binding of Branch A still holds.
-                    worktree_path = Path.home() / ".sweave"
-                # Resolve the Specialist record. If the agent isn't a
-                # known specialist (no project/global/seed record), the
-                # factory returns None and we fall back to the legacy
-                # path. The runtime's _ensure_session is the only
-                # place that needs a Specialist (for system_prompt
-                # persistence + session_id reuse).
-                specialist = self.specialist_factory(delegation.agent)
-                if specialist is None:
-                    # Unknown specialist name -- fall back rather
-                    # than fail; the legacy path also handles unknown
-                    # names via the harness.
-                    from sweave.runtime.specialist_store import Specialist as _Spec
+            # The actual agent call. Either path is wrapped in the
+            # turn timeout; on TimeoutError we mark the delegation
+            # failed and the runner (next use) will recycle the serve.
+            try:
+                if (
+                    self.specialist_runtime is not None
+                    and self.specialist_factory is not None
+                    and self.project_dir_resolver is not None
+                ):
+                    worktree_path = self.project_dir_resolver(delegation.project_name)
+                    if worktree_path is None:
+                        worktree_path = Path.home() / ".sweave"
+                    specialist = self.specialist_factory(delegation.agent)
+                    if specialist is None:
+                        from sweave.runtime.specialist_store import Specialist as _Spec
 
-                    specialist = _Spec(
-                        name=delegation.agent,
-                        scope="project" if delegation.project_name else "global",
-                        is_orchestrator=False,
-                        system_prompt="",
-                        harness="opencode",
-                        current_model=delegation.model or None,
+                        specialist = _Spec(
+                            name=delegation.agent,
+                            scope="project" if delegation.project_name else "global",
+                            is_orchestrator=False,
+                            system_prompt="",
+                            harness="opencode",
+                            current_model=delegation.model or None,
+                        )
+                    from sweave.runtime.specialist_store import ModelRef, parse_model_ref
+
+                    model_ref: ModelRef | None = None
+                    if delegation.model:
+                        model_ref = parse_model_ref(delegation.model)
+                    output = await asyncio.wait_for(
+                        self.specialist_runtime.run(
+                            specialist=specialist,
+                            delegation=delegation,
+                            worktree_path=worktree_path,
+                            message=delegation.task,
+                            trace=trace,
+                            model_ref=model_ref,
+                        ),
+                        timeout=self.turn_timeout,
                     )
-                # Resolve the Delegation's stored model string into a
-                # ModelRef for the v2 wire (M1.3 K-revised).
-                from sweave.runtime.specialist_store import ModelRef, parse_model_ref
+                    from sweave.tools import DelegationResult
 
-                model_ref: ModelRef | None = None
-                if delegation.model:
-                    model_ref = parse_model_ref(delegation.model)
-                output = await self.specialist_runtime.run(
-                    specialist=specialist,
-                    delegation=delegation,
-                    worktree_path=worktree_path,
-                    message=delegation.task,
-                    trace=trace,
-                    model_ref=model_ref,
-                )
-                from sweave.tools import DelegationResult
+                    result = DelegationResult(
+                        success=True,
+                        agent=delegation.agent,
+                        task_id=delegation.task_id,
+                        output=output,
+                        error=None,
+                    )
+                else:
+                    # Legacy path: wrap the call in wait_for directly.
+                    # delegate_tool.execute is async (returns a
+                    # coroutine), so wait_for times the call. The
+                    # returned DelegationResult becomes the value of
+                    # the await expression.
+                    from sweave.tools import DelegationResult
 
-                result = DelegationResult(
-                    success=True,
-                    agent=delegation.agent,
-                    task_id=delegation.task_id,
-                    output=output,
-                    error=None,
-                )
-            else:
-                # Legacy path: Call DelegateTaskTool.
-                from sweave.tools import DelegationResult  # local import to avoid cycle
+                    result: DelegationResult = await asyncio.wait_for(
+                        self.delegate_tool.execute(
+                            agent=delegation.agent,
+                            task=delegation.task,
+                            model=delegation.model or None,
+                            task_id=delegation.task_id,
+                        ),
+                        timeout=self.turn_timeout,
+                    )
+            except asyncio.TimeoutError:
+                trace.append("turn_timeout", {"timeout": self.turn_timeout})
+                result = type("R", (), {"success": False, "output": "",
+                                          "error": f"turn_timeout_exceeded_{self.turn_timeout}s",
+                                          "agent": delegation.agent})()
 
-                result: DelegationResult = await self.delegate_tool.execute(
-                    agent=delegation.agent,
-                    task=delegation.task,
-                    model=delegation.model or None,
-                    task_id=delegation.task_id,
-                )
-
-            # Persist result + transition
+            # Persist result + transition.
             await store.update(
                 delegation.delegation_id,
                 output=result.output or "",
                 error=result.error,
             )
-            final_status = "done" if result.success else "failed"
-            trace.append("output_chunk" if result.success else "error", {
-                "output_len": len(result.output or ""),
-                "agent": result.agent,
-            })
+            # M1.3 step 4: on stream success the delegation enters
+            # 'review' (not 'done') -- human / cross-review promotes to
+            # 'done' in M1.4. Failure modes (turn timeout, error from
+            # the agent) still go straight to 'failed'.
+            if result.success:
+                final_status = "review"
+            else:
+                final_status = "failed"
+            trace.append(
+                "output_chunk" if result.success else "error",
+                {
+                    "output_len": len(result.output or ""),
+                    "agent": result.agent,
+                },
+            )
             await self._transition(
                 delegation,
                 store,
