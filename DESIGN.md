@@ -171,6 +171,8 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
 | **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
+| **Specialist store + /api/specialists CRUD** | ✅ | M1.2 — `runtime/specialist_store.py` (global `~/.sweave/agents.yaml` + per-project `{project}/.sweave/agents.json`); resolution project→global→seed; `is_orchestrator` flag for the per-project singleton; model precedence chain at submit; `PUT /api/specialists/{name}/model` emits `model.changed {name, model, scope}`; `specialist.created/updated/deleted` events; override log at `{project}/.sweave/override_log.jsonl` (global fallback `~/.sweave/override_log.jsonl`) |
+| **/api/agents bridge + render fix** | ✅ | M1.2 — returns `{builtin, global, dynamic}` arrays (the M1.prep dicts were the root cause of the empty Agents tab); description-overwrite bug fixed; routes writes through the specialist store; orchestrator name 409 on create/delete |
 | **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
 | **SubAgentRun (ephemeral, capped)** | ✅ | M1.1 — `runtime/subagent_store.py`; per-process, in-memory, FIFO-capped at 500; serves R2's `/investigate` |
 | **UI v1 compat bridge (ChildSession)** | ✅ | M1.1 — `ChildSession.delegation_id` field + JobRunner bridge write on submit; R4 removes the bridge |
@@ -238,14 +240,29 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   submit (R4 removes the bridge); `SubAgentRun` endpoints
   (`POST/GET/finish`); 122 pytest across 14 files, 13/13 run.py --check,
   40/40 test_full, 8/8 test_browser, ALL GREEN test_agents_loader.
-- **M1.2 Specialist store + CRUD** (~1, planned in detail: `docs/M1_2_PLAN.md`):
-  `Specialist` persisted per scope (global `~/.sweave/agents.yaml` migrated from legacy
-  agents.yaml + per-project `.sweave/agents.json`), resolution project → global → seed
-  views, orchestrator protected singleton, **derived** idle/running status (from open
-  delegations — never stored), model precedence chain at submit, `/api/specialists`
-  CRUD + `PUT /{name}/model`, override logging (gold labels, R6), `/api/agents` bridge
-  — **fixes the discovered Agents-tab render bug + prompt-overwrite bug** (step 4,
-  test-first). Gate: pytest + render smoke + test_full.py green.
+- **M1.2 Specialist store + CRUD** — ✅ done 2026-08-29. `Specialist` persisted
+  per scope (global `~/.sweave/agents.yaml` — home-anchored, replacing the
+  M1.prep CWD-relative `agents.yaml`; per-project `{project}/.sweave/agents.json`);
+  resolution project → global → seed views (orchestrator name excluded from the
+  general resolve path; the singleton is resolved via `resolve_orchestrator()`).
+  `is_orchestrator: bool` flag on Specialist gates create/delete (409) and the
+  model-picker exclusion. Model precedence chain: `task_override >
+  specialist.current_model > config.resolve_model(role_ref) > legacy
+  config.resolve_model(agent)`; `role_ref` is an optional hint (unknown falls
+  through to the orchestrator default). `/api/specialists` CRUD + `PUT /{name}/model`
+  (emits `model.changed` with the new `{name, model, scope}` shape) +
+  `specialist.created|updated|deleted` events. Override log at
+  `{project}/.sweave/override_log.jsonl` (global fallback at
+  `~/.sweave/override_log.jsonl`) appended when a v2 task carries an explicit
+  `agent` that differs from the router decision (R6 dispatch gold labels).
+  `/api/agents` bridge returns `{builtin, global, dynamic}` (arrays now — fixes
+  the M1.prep render bug where dicts + `dict.map` rendered the Agents tab empty)
+  + the description-overwrite bug (PUT now patches `description` and
+  `system_prompt` independently). **Tier framing baked in**: Orchestrator is
+  the per-project singleton (flag on Specialist, not a separate type); Specialist
+  is persistent, named, user-creatable; SubAgent is the M1.1 ephemeral
+  `SubAgentRun` (out of scope here). 207 pytest across 20 files; 13/13
+  run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN test_agents_loader.
 - **M1.3 Shared serve + durable context** (~2, risk sink): `SpecialistRuntime` per
   project — one lazy `opencode serve`, specialist→session map, resume stored sessions
   (feature-detected per M1.0), `fresh:` flag, worktree re-injected per delegation,

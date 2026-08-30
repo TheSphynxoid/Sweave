@@ -33,10 +33,19 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
 ## Known gotchas (burned us once — don't relearn)
 1. `start_server.py`/`stop_server.py` resolve `web.pid` **relative to CWD** — run them
    from the repo root only, or they silently no-op while an old server keeps serving.
+   (M1.2 lesson: a stale `python` process left running on port 8100 silently blocks
+   `start_server.py` from binding; the new server is killed before its lifespan runs.
+   Always verify `python` processes are gone after `stop_server.py` succeeds, or kill
+   by PID.)
 2. `ProjectManager` is **AppState-owned and loaded once at server startup**
    (M1.prep lifespan, not an import-time singleton anymore) — editing
    `~/.sweave/config.json` while the server runs still does nothing until restart.
-3. UI: `#app` starts `hidden`; the loader timeout in `start()` MUST remove it
+3. The M1.prep-era `agents.yaml` was **CWD-relative** (`Path("agents.yaml")`) —
+   M1.2 anchored it to **`Path.home() / ".sweave" / "agents.yaml"`** (via
+   `AppState._anchored_agents_path`). Code that wants the file should
+   read `state.dynamic_agents_path` (which carries the anchored path) rather
+   than constructing a new `Path("agents.yaml")` from CWD.
+4. UI: `#app` starts `hidden`; the loader timeout in `start()` MUST remove it
    (app.js:930ish). Welcome mode adds `.hidden` (display:none !important) to all `.tab`
    panels — `switchTab()` gating lives at the top of app.js. Don't "simplify" it away.
 4. The server must be **restarted** to pick up static file changes? No — static is served

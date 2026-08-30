@@ -38,8 +38,8 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-08-29 late)
-- **122/122** in `pytest tests/` (source of truth for logic tests; +14 M1.1 step 4)
+### Test Results (All Passing - verified 2026-08-30)
+- **207/207** in `pytest tests/` (source of truth for logic tests; +85 across M1.2)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
 - **8/8** in `test_browser.py` (file browser API)
@@ -47,29 +47,30 @@
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 
 ### Currently Running
-- **Web server**: not running (stopped after final M1.1 sweep 2026-08-29)
+- **Web server**: not running (clean stop after final M1.2 sweep 2026-08-30)
 - **Start with**: `python start_server.py 8100 127.0.0.1` (from repo root!)
 - **Stop with**: `python stop_server.py` (from repo root — web.pid is CWD-relative)
 - **Logs**: `web.log` / `web_err.log`
 
-### M1 progress (after M1.prep + M1.0 + M1.1)
-- ✅ **M1.prep** — all 8 steps (9 commits; see below)
-- ✅ **M1.0 Live serve probe** — done: real API shape discovered and implemented
-  (v2 paths `/session` + `/session/{id}/message`; body `parts[].text`; per-message
-  model `{providerID, modelID}`; chunked JSON stream responses; provider errors
-  surface verbatim). Still open (M1.3 branch point): session resume across
-  serve **restarts**, completion signal semantics.
-- ✅ **M1.1 Record split** — done: Delegation v2 schema (worktree_path, branch,
-  pr_url, parent_task_id, manifest; schema_version=2; v1→v2 migration in
-  `from_dict`); per-project disk persistence via
-  `PerProjectDelegationStores` (`{project}/.sweave/delegations.json`, atomic
-  write-through); `SubAgentRun` ephemeral type (`runtime/subagent_store.py`,
-  in-memory, FIFO-capped at 500); API filters on `/api/delegations`
-  (`?project_name=&status=&parent_task_id=`); v2 task accepts
-  `parent_task_id` + `manifest` passthrough; `SubAgentRun` endpoints
-  (`POST/GET/finish`); UI v1 compat bridge writes a `ChildSession` carrying
-  `delegation_id` on submit (R4 removes the bridge).
-- ▶ **Next**: M1.2 specialist store + CRUD (per DESIGN.md §6 R1)
+### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2)
+- ✅ **M1.prep** — all 8 steps (9 commits)
+- ✅ **M1.0 Live serve probe** — done: v2 HTTP API + per-message model +
+  chunked JSON stream consumption. Still open: session resume across
+  serve restarts (M1.3).
+- ✅ **M1.1 Record split** — done: Delegation v2 schema + per-project
+  persistence + SubAgentRun + API filters + UI v1 bridge.
+- ✅ **M1.2 Specialist store + CRUD** — done: `Specialist` dataclass +
+  per-scope stores (global `~/.sweave/agents.yaml`, per-project
+  `{project}/.sweave/agents.json`) + `SpecialistResolver` (project→global→seed
+  resolution, orchestrator auto-seed singleton) + `is_orchestrator` flag
+  + model precedence chain at submit + `/api/specialists` CRUD +
+  `PUT /api/specialists/{name}/model` (emits `model.changed` with new
+  `{name, model, scope}` shape) + override log (gold labels for R6
+  dispatch) + `/api/agents` bridge (array shape + description bug fix;
+  agents tab now renders correctly). Tier framing baked in: Orchestrator /
+  Specialist / SubAgent three-tier model with Orchestrator as a singleton
+  (flag on Specialist; not a separate type).
+- ▶ **Next**: M1.3 shared serve + durable context (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`
@@ -80,7 +81,7 @@
 - **Sync `/api/tasks` kept** for backward compat; deprecated in OpenAPI, slated for removal in M1.4+
 - **WS event bus**: `WSEventBus` (sweave/web/events.py) is the single pub/sub; legacy event names (`agent_created`, `model_changed`, `task_completed`, `worktrees_cleaned`, `worktree_removed`, `rule_added`) preserved on the wire
 - **Trace log**: `~/.sweave/traces/{delegation_id}.jsonl` (one JSON object per line)
-- **Git history**: 32 commits on `master` (M0 rebuild → design docs → M1.prep → M1.0 → M1.1)
+- **Git history**: 40 commits on `master` (M0 rebuild → design docs → M1.prep → M1.0 → M1.1 → M1.2)
 
 ---
 
@@ -462,6 +463,48 @@ The user wants:
 - 13/13 run.py --check, 40/40 test_full, 8/8 test_browser, ALL GREEN
   test_agents_loader
 - 14 new commits on `master` across M1.0 + M1.1 (4 + 5 + 5)
+
+### Session 11 (latest): M1.2 — Specialist store + CRUD + UI v1 agents bridge
+- 5-step refactor per `docs/M1_2_PLAN.md` (plan itself amended in
+  chat — Orchestrator / Specialist / SubAgent tier framing baked in
+  + 7 audit amendments: A seed→role_ref boundary, B model.changed
+  shape, C new event names, D .sweave subdir creation, E anchored
+  path, F override log no-active-project case, G role_ref as
+  optional hint not hard binding):
+  1. `Specialist` + `GlobalSpecialistStore` (`~/.sweave/agents.yaml`,
+     home-anchored — kills the CWD-relative gotcha) + `ProjectSpecialistStore`
+     (`{project}/.sweave/agents.json`, creates `.sweave` subdir) +
+     `SpecialistResolver` (project→global→seed, orchestrator
+     auto-seed, name validation, seed read-only view).
+  2. Legacy import: anchored `agents.yaml` becomes the source of
+     truth; `AppState.dynamic_agents` is now a derived view for the
+     legacy router until R4. Model precedence chain in
+     `DelegateTaskTool._resolve_model` (4 levels: task_override >
+     specialist.current_model > role_ref hint > legacy).
+  3. `/api/specialists` CRUD + `PUT /{name}/model` (emits the new
+     `model.changed {name, model, scope}` shape) + `specialist.*`
+     events. Override log at `{project}/.sweave/override_log.jsonl`
+     (global fallback `~/.sweave/override_log.jsonl`) — appended
+     when a v2 task carries an explicit `agent` that differs from
+     the router decision (R6 dispatch gold labels).
+  4. `/api/agents` bridge (test-first: tests fail with the dict shape
+     first, then the fix). Array shape `{builtin, global, dynamic}`
+     + description-overwrite bug fixed (PUT now patches `description`
+     and `system_prompt` independently). Orchestrator name 409 on
+     create/delete. New + legacy event names both emitted.
+  5. Docs + this session.
+- 207/207 pytest (was 122 after M1.1; +85: 33 specialist store + 13
+  model precedence + 23 specialists router + 16 agents bridge).
+- 13/13 run.py --check, 40/40 test_full, 8/8 test_browser, ALL GREEN
+  test_agents_loader.
+- 5 new commits on `master` for M1.2 + 1 plan-amendment commit +
+  the two CONTEXT / plan commits = 8 across this session.
+- **Stale server caught + killed**: a leftover PID 7028 from the
+  M1.1 audit was still bound to port 8100; killed before the
+  final sweep so the post-M1.2 server loads cleanly. Server
+  boots the new code; the v1.18 OpenCode harness fix (M1.0) and
+  the per-message model field are still active; nothing was
+  rolled back.
 
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.
