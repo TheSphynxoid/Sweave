@@ -52,9 +52,12 @@ Resolution queue  async queue consumed by the Resolution Skill (conflict mediato
             resolve / re-queue / escalate-human); keeps the orchestrator a router,
             not a chokepoint
 Memory    hindsight-backed banks: global / project-{name} / session-{id}
-Router    pattern → (specialist, model) decision; roles are MODEL TIERS (models.yaml:
-          orchestrator/backend/frontend/reviewer as default model buckets), not a closed
-          agent set; rules target specialist names.
+Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, model).
+          Primary routing authority is the orchestrator LLM via `defer` tool calls
+          (M1.6/M1.7); the rule-router guarantees a result when the orchestrator is
+          unavailable or unsure. Roles are MODEL TIERS (models.yaml:
+          orchestrator/backend/frontend/reviewer as default-model buckets), not a closed
+          agent set; the rule-router resolves against specialist names.
 ```
 
 ### 2.1 Specialist model semantics (user-locked 2026-08-29; consistency audit same day)
@@ -97,9 +100,13 @@ Router    pattern → (specialist, model) decision; roles are MODEL TIERS (model
   store); project specialists in `{project}/.sweave/agents.json`. Resolution order for
   a specialist name: project → global → seed templates.
 - **Roles are model tiers.** `models.yaml` roles stay as default-model buckets
-  (orchestrator/backend/frontend/reviewer); a specialist references a role for its
-  default model and may override with any catalog model. Routing rules resolve against
-  specialist names (roles used only as model-tier aliases).
+  (orchestrator/backend/frontend/reviewer); a specialist's `role_ref` is an optional
+  hint in the resolve chain (`task_override > current_model > role_ref >
+  orchestrator.default`) and may be overridden with any catalog model. Seeds are
+  starter specialists the user can edit or delete.
+- **Routing authority (amended 2026-08-29)**: the orchestrator decides which specialist
+  receives a task via its own LLM `defer` tool call. The rule-router is a temporary
+  hard-edge fallback returning a *recommended primary*, not a hard decision.
 - **Child runs = traditional sub-agents**: ephemeral, used for exploration/investigation
   (Polly's `/investigate` pattern); no worktree or PR by default. Delegation of
   *implementation* work goes to specialists in worktrees; delegation of *read* work
