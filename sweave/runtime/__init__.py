@@ -21,6 +21,10 @@ from sweave.runtime.locking import (
     atomic_write_json,
     atomic_write_json_sync,
 )
+from sweave.runtime.override_log import (
+    OverrideLog,
+    make_override_entry,
+)
 from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     ORCHESTRATOR_ROLE_REF,
@@ -65,4 +69,6 @@ __all__ = [
     "ORCHESTRATOR_NAME",
     "ORCHESTRATOR_ROLE_REF",
     "SPECIALIST_SCHEMA_VERSION",
+    "OverrideLog",
+    "make_override_entry",
 ]

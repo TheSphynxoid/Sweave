@@ -128,13 +128,27 @@ async def submit_task_v2(
         raise HTTPException(503, "JobRunner not initialised")
 
     # Resolve agent + model via the same path as the legacy /api/tasks.
+    # When the user supplies an explicit ``agent``, capture the router's
+    # *fallback* decision so the override log can record the discrepancy
+    # (M1.2 step 3; see SpecialistResolver routing later when M1.7 ships).
+    routed_agent: str | None = None
+    routed_model: str | None = None
     if request.agent:
         agent = request.agent
         model = request.model or state.config_manager.resolve_model(agent)
+        # Compute what the router would have picked (for the override log)
+        try:
+            decision = state.router.route(request.task)
+            routed_agent = decision.agent
+            routed_model = state.config_manager.resolve_model(decision.agent)
+        except Exception:
+            pass
     else:
         decision = state.router.route(request.task)
         agent = decision.agent
         model = request.model or decision.model
+        routed_agent = decision.agent
+        routed_model = model
 
     # Project pin: explicit request wins, else fall back to the active
     # project so the runner can file the record correctly.
@@ -151,6 +165,33 @@ async def submit_task_v2(
         parent_task_id=request.parent_task_id,
         manifest=request.manifest,
     )
+
+    # M1.2 step 3: append an override log entry if the user supplied an
+    # explicit ``agent`` that differs from the router's decision. The
+    # log is observability for R6 dispatch training; never block the
+    # submit on it.
+    if request.agent and routed_agent and request.agent != routed_agent:
+        from pathlib import Path
+
+        from sweave.web.routers.specialists import record_override_if_differing
+
+        proj_dir: Path | None = None
+        if project_name is not None:
+            from sweave.projects import project_manager
+
+            proj = project_manager.get_project(project_name)
+            if proj is not None:
+                proj_dir = Path(proj.path)
+        await record_override_if_differing(
+            state=state,
+            project_dir=proj_dir,
+            session_id=request.parent_session_id,
+            task=request.task,
+            routed_agent=routed_agent or "",
+            routed_model=routed_model,
+            user_agent=agent,
+        )
+
     return TaskSubmitV2Response(
         delegation_id=delegation.delegation_id,
         task_id=delegation.task_id,

@@ -210,6 +210,7 @@ from sweave.web.routers import (
     fs as _fs_router,
     memory as _memory_router,
     projects as _projects_router,
+    specialists as _specialists_router,
     tasks as _tasks_router,
     worktrees as _worktrees_router,
 )
@@ -221,6 +222,7 @@ for _r in (
     _fs_router.router,
     _memory_router.router,
     _projects_router.router,
+    _specialists_router.router,
     _tasks_router.router,
     _worktrees_router.router,
 ):
