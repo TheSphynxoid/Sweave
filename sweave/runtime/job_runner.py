@@ -46,6 +46,8 @@ from sweave.runtime.trace_log import TraceLog
 
 if TYPE_CHECKING:
     from sweave.tools import DelegateTaskTool
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+    from sweave.runtime.specialist_store import Specialist
     from sweave.web.events import WSEventBus
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,8 @@ class JobRunner:
         traces_dir: Any = None,
         project_dir_resolver: Callable[[str | None], Path | None] | None = None,
         child_session_adder: Callable[[Any], None] | None = None,
+        specialist_runtime: "SpecialistRuntime | None" = None,
+        specialist_factory: Callable[[str], "Specialist | None"] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -84,6 +88,19 @@ class JobRunner:
         # that knows about Session + project_manager; the runner
         # itself stays domain-agnostic.
         self.child_session_adder = child_session_adder
+        # M1.3 step 3: when a SpecialistRuntime is wired in, the runner
+        # delegates to it for the actual work (per-specialist
+        # ServeRunner, session resume, ModelRef routing, worktree
+        # re-injection). When absent, the runner falls back to the
+        # legacy ``delegate_tool.execute`` path so existing tests +
+        # non-runtime callers keep working.
+        self.specialist_runtime = specialist_runtime
+        # Resolves an agent name to a Specialist record (M1.2 store,
+        # project→global→seed). The AppState supplies a closure that
+        # calls ``ensure_specialist_resolver().resolve(name, project_dir)``.
+        # When None, the runtime path is bypassed and the legacy
+        # delegate_tool path runs.
+        self.specialist_factory = specialist_factory
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -241,16 +258,77 @@ class JobRunner:
             await self._transition(delegation, store, trace, "running", started_at=datetime.now())
             trace.append("prompt_sent", {"prompt": delegation.task, "agent": delegation.agent})
 
-            # Call DelegateTaskTool. It is async, returns a DelegationResult
-            # (a different ``DelegationResult`` from the runtime ``Delegation``).
-            from sweave.tools import DelegationResult  # local import to avoid cycle
+            # M1.3 step 3: when a SpecialistRuntime is wired in, use it.
+            # The runtime owns a per-specialist ServeRunner; the
+            # delegation goes through a session-managed serve in the
+            # worktree. Otherwise fall back to the legacy delegate_tool
+            # path (used by tests + non-runtime callers).
+            if (
+                self.specialist_runtime is not None
+                and self.specialist_factory is not None
+                and self.project_dir_resolver is not None
+            ):
+                worktree_path = self.project_dir_resolver(delegation.project_name)
+                if worktree_path is None:
+                    # No project context; pin the worktree to ~/.sweave so
+                    # the runner can still create a (global) serve. The
+                    # cwd binding of Branch A still holds.
+                    worktree_path = Path.home() / ".sweave"
+                # Resolve the Specialist record. If the agent isn't a
+                # known specialist (no project/global/seed record), the
+                # factory returns None and we fall back to the legacy
+                # path. The runtime's _ensure_session is the only
+                # place that needs a Specialist (for system_prompt
+                # persistence + session_id reuse).
+                specialist = self.specialist_factory(delegation.agent)
+                if specialist is None:
+                    # Unknown specialist name -- fall back rather
+                    # than fail; the legacy path also handles unknown
+                    # names via the harness.
+                    from sweave.runtime.specialist_store import Specialist as _Spec
 
-            result: DelegationResult = await self.delegate_tool.execute(
-                agent=delegation.agent,
-                task=delegation.task,
-                model=delegation.model or None,
-                task_id=delegation.task_id,
-            )
+                    specialist = _Spec(
+                        name=delegation.agent,
+                        scope="project" if delegation.project_name else "global",
+                        is_orchestrator=False,
+                        system_prompt="",
+                        harness="opencode",
+                        current_model=delegation.model or None,
+                    )
+                # Resolve the Delegation's stored model string into a
+                # ModelRef for the v2 wire (M1.3 K-revised).
+                from sweave.runtime.specialist_store import ModelRef, parse_model_ref
+
+                model_ref: ModelRef | None = None
+                if delegation.model:
+                    model_ref = parse_model_ref(delegation.model)
+                output = await self.specialist_runtime.run(
+                    specialist=specialist,
+                    delegation=delegation,
+                    worktree_path=worktree_path,
+                    message=delegation.task,
+                    trace=trace,
+                    model_ref=model_ref,
+                )
+                from sweave.tools import DelegationResult
+
+                result = DelegationResult(
+                    success=True,
+                    agent=delegation.agent,
+                    task_id=delegation.task_id,
+                    output=output,
+                    error=None,
+                )
+            else:
+                # Legacy path: Call DelegateTaskTool.
+                from sweave.tools import DelegationResult  # local import to avoid cycle
+
+                result: DelegationResult = await self.delegate_tool.execute(
+                    agent=delegation.agent,
+                    task=delegation.task,
+                    model=delegation.model or None,
+                    task_id=delegation.task_id,
+                )
 
             # Persist result + transition
             await store.update(
