@@ -25,6 +25,14 @@ from sweave.runtime.override_log import (
     OverrideLog,
     make_override_entry,
 )
+from sweave.runtime.serve_runner import (
+    DEFAULT_IDLE_TTL_SECONDS,
+    DEFAULT_START_TIMEOUT,
+    ServeRunner,
+    ServeRunnerRegistry,
+    find_orphan_serves,
+    sweep_orphan_serves,
+)
 from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     ORCHESTRATOR_ROLE_REF,
@@ -71,4 +79,11 @@ __all__ = [
     "SPECIALIST_SCHEMA_VERSION",
     "OverrideLog",
     "make_override_entry",
+    # M1.3
+    "ServeRunner",
+    "ServeRunnerRegistry",
+    "DEFAULT_IDLE_TTL_SECONDS",
+    "DEFAULT_START_TIMEOUT",
+    "find_orphan_serves",
+    "sweep_orphan_serves",
 ]
