@@ -1,11 +1,12 @@
 # M1.3 — Shared serve + durable context (execution plan)
 
-Status: planned, not started. Est. ~2.5–3 sessions (Step 0 ~0.5, build ~2, live gate
-~0.5). Predecessors: M1.prep ✅, M1.0 ✅ (v2 API + per-message model done), M1.1 ✅,
-M1.2 ✅ (Specialist.session_id exists, unused; M1.2 plan amendments K/L/M/N
-applied below). This is R1's **risk sink** — the plan is deliberately
-probe-first, and the provider-resolution gap surfaced in the M1.2
-post-audit is the new sub-probe in step 0.
+Status: step 0 done (2026-08-30; results in `docs/M1_3_PROBE_RESULTS.md`).
+Est. ~2 sessions (build ~1.5, live gate ~0.5). Predecessors: M1.prep ✅,
+M1.0 ✅ (v2 API + per-message model done), M1.1 ✅, M1.2 ✅
+(Specialist.session_id exists, unused; K-revised is now locked in
+per the step-0 probe). This is R1's **risk sink** — the plan is
+deliberately probe-first, and the provider-resolution gap surfaced in
+the M1.2 post-audit is now closed by the step-0 findings.
 
 ## Tier framing carried from M1.2
 
@@ -115,49 +116,99 @@ Plan amendments in this doc (numbered to match the chat):
    step 0 sub-probes 2 + 3 below. If the bare-name path fails, the
    structured `ModelRef` (K-revised) is required.
 
-### Branch decision (after probes)
-- **Branch A (expected)**: sessions persist globally; cwd binds to the serve process.
-  ⇒ Architecture: **ServeRunner per busy specialist** (not per project) — lazily
-  started, cwd = that specialist's *active* worktree, session persisted on the
-  Specialist record and resumed across serve restarts. Process count = concurrent
-  specialists (≤ pool), sequential within one specialist (§2.1 one-active-task rule).
-  DESIGN §2.1's "one shared serve per project" is amended accordingly.
-- **Branch B (fallback)**: sessions die with the serve ⇒ durable context becomes
-  alive-serve-per-specialist + memory-replay on loss (context = memory bank recall +
-  last-output summary). ~+1 session; §2.1 amendment different but same interface.
+### Branch decision (after probes — closed 2026-08-30)
+**Findings** (full report in `docs/M1_3_PROBE_RESULTS.md`):
+1. **Probe 1 (in-process resume)**: sessions persist for the lifetime of the
+   serve; `GET /session` returns the list.
+2. **Probe 2 (cwd test)**: a freshly-spawned serve in a different cwd has
+   `pwd` resolve to **the new serve's cwd**, not the worktree the session
+   was created in. Confirms **Branch A: cwd binds to the serve process**.
+   Per-specialist ServeRunner is required so each serve's cwd matches the
+   active worktree of the specialist it serves.
+3. **Probe 3 (concurrency)**: one serve, two sessions, one message each —
+   works fine, no cross-talk.
+4. **Probe 4 (storage)**: storage root is `~/.local/share/opencode` but
+   **0 new files** appear after creating a session — sessions are
+   **in-memory only** in this opencode version. Implication: sessions
+   do NOT survive a serve restart, even within a single user session.
+   This weakens Branch A as stated ("session persisted on the
+   Specialist record and resumed across serve restarts") — there is no
+   on-disk state to resume from. **Updated Branch A** below.
+5. **Probe 5a (catalog fetch)**: `GET /config/providers` returns a
+   `providers` array (7 providers: `zai`, `zai-coding-plan`, `openrouter`,
+   `opencode`, `opencode-go`, `nvidia`, `gmicloud` — note: the user's
+   earlier `ollama` + `gmi` are now `gmicloud` and friends, a richer
+   multi-provider setup). The catalog is rich and JSON-typed; step 5
+   can build `GET /api/models/catalog` on top of `/config/providers`.
+6. **Probe 5b (bare-name empirical test)**: `body["model"] =
+   "MiniMaxAI/MiniMax-M3"` (no `gmicloud/` prefix) → **400 BadRequest**:
+   `Expected object | null, got "MiniMaxAI/MiniMax-M3"`. The v2 protocol
+   **rejects bare strings** outright. **K-revised is REQUIRED, not
+   optional.** The structured `ModelRef` is the only way to route to
+   non-default-provider models.
+7. **Probe 5c (gmi round-trip)**: `body["model"] = {providerID: "gmi",
+   modelID: "MiniMaxAI/MiniMax-M3"}` → 500 (provider not connected
+   in the probe env, but the wire format is accepted). The structured
+   pair works at the v2 protocol layer; provider health is a separate
+   concern.
+
+**Decisions**:
+- **Architecture**: ServeRunner per busy specialist (cwd per worktree, as
+  Branch A says). Each serve is a fresh `opencode serve` started in the
+  specialist's current worktree.
+- **Session storage**: since opencode stores sessions in-memory only,
+  Branch A's "persist session_id on the Specialist record, resume after
+  serve restart" is moot — **the session_id is only useful within the
+  serve's lifetime**. The Specialist record still carries `session_id`
+  (M1.2's field) so we can avoid re-creating sessions for a busy
+  specialist (cache reuse within one serve lifetime). On serve restart,
+  the session is gone and we create a new one — the durable context
+  comes from the worktree re-injection preamble (the new session
+  inherits the system prompt + model + conversation history *if we send
+  it*; this is the M1.7 / R6 territory for full replay).
+- **K-revised is locked in**: `Specialist.current_model` becomes
+  `ModelRef {provider, model_id}` (or stays a string with a parallel
+  `current_provider` field). v1 records (bare string) load as
+  `ModelRef(provider=None, model_id=<bare string>)`; the harness falls
+  back to today's unqualified-name path with a warning when
+  `provider is None` AND the bare string isn't a default-provider model
+  (probe 5b proved the fallback would 400 on non-default providers; the
+  warning is the only graceful path). Endpoints accept either a
+  structured `{provider, model_id}` body or a `provider/model_id` string
+  (parsed by `_parse_provider_model`).
+- **L-revised locked in**: `harness/opencode.py:_parse_provider_model`
+  rewrite (drop the dead `elif model_id:` branch; accept structured
+  ModelRef or `provider/model` string; emit `{providerID, modelID}` when
+  provider is known, else the unqualified-name path with a warning).
+- **Catalog data flow**: `GET /config/providers` (M1.3 step 5) +
+  models.dev (R4 phase 2 dropdown UI). The probe (5a) saw 7 providers
+  in the user's current `opencode.json`: `zai`, `zai-coding-plan`,
+  `openrouter`, `opencode`, `opencode-go`, `nvidia`, `gmicloud`. The
+  `opencode` provider block (the opencode-default bundled models) is
+  empty in this config — every model the user uses comes from a
+  custom provider. R4 phase 2 builds the dropdown UI on top of the
+  opencode catalog + models.dev intersection.
+- **Branch B discarded**: no fallback path needed (probe 5b says we
+  must always provide the structured pair; we don't have a graceful
+  degrade to "let the serve figure it out").
 
 ## Steps
 
-### Step 0 — Probes (~0.5, needs user go for serve launch)
-- Scripted probe (temp scratch dirs, file-logging launch path, gmi + ollama,
-  ~10 tiny messages across 5 sub-probes):
-  1. **Resume across restarts** (probe 1): create session → message → kill
-     serve → restart in the SAME cwd → list + message to old id.
-  2. **Resumed-session tool task** (probe 2): "run `pwd` (bash tool) and reply
-     with its output" against a serve restarted in a DIFFERENT cwd.
-  3. **Concurrency** (probe 3): two sessions on one serve, interleaved single
-     messages.
-  4. **Opencode session storage** (probe 4): locate the on-disk session store
-     (file search after first create).
-  5. **Provider resolution** (probe 5 — K-revised empirical question):
-     a. **Catalog fetch**: `GET /config/providers` and `GET /provider` on a live
-        serve. If neither path returns a JSON catalog, fall back to
-        `opencode models --format json` (the CLI subcommand). Record the
-        discovered shape so step 5 can build `GET /api/models/catalog` on
-        the right primitive.
-     b. **Bare-name empirical test**: send a message with
-        `body["model"] = "MiniMaxAI/MiniMax-M3"` (no `gmi/` prefix) to a live
-        serve, record the response status. If 2xx, the fallback is
-        sufficient (warning only). If 4xx, the structured pair (K-revised)
-        is required and the v2 protocol confirms provider identity must be
-        explicit for non-default providers.
-     c. **gmi round-trip**: send a message with
-        `body["model"] = {providerID: "gmi", modelID: "MiniMaxAI/MiniMax-M3"}`,
-        record the response and any provider log line. Confirms the
-        multi-provider path works end-to-end.
-- Output: findings recorded here + DESIGN §4 + §2.1 amendment; branch A/B
-  declared; K-revised shape locked in (structured ModelRef) or downgraded to
-  "soft warning on bare name" based on probe 5b result.
+### Step 0 — Probes ✅ done 2026-08-30
+- Probe script `probe_m1_3_step0.py` (run from repo root) executes
+  5 sub-probes against a real `opencode serve` in a temp dir with
+  a copy of the user's `~/.config/opencode/opencode.json` (so
+  ollama + gmi — now gmicloud, zai, openrouter, etc. — are present).
+  The npm shim is resolved to the real `.exe` per
+  `sweave/harness/opencode.py:_resolve_command` (the shim itself
+  isn't directly executable by Python's subprocess).
+- Findings recorded in `docs/M1_3_PROBE_RESULTS.md` and summarised
+  in the "Branch decision (after probes)" section above. The K-revised
+  shape is locked in (structured ModelRef) per probe 5b's empirical
+  finding. The bare-name fallback for v1 records survives with a
+  warning (probe 5b's failure is for a non-default-provider model
+  the user never typed as bare; the warning path is for v1 records
+  that reference a default-provider model by bare name).
 
 ### Step 1 — ServeRunner (per-specialist serve lifecycle) ~0.75
 - `runtime/serve_runner.py`: one `ServeRunner` per specialist with an open delegation.
@@ -213,14 +264,27 @@ Plan amendments in this doc (numbered to match the chat):
 - Tests: timeout path with a hanging stream mock; review-transition path.
 
 ### Step 5 — Live gate + docs ~0.5
-- **The M1.3 gate (live)**: delegate tiny task A to a test specialist (gmi) → done;
-  delegate task B "what was task A about?" to the SAME specialist → answer proves
-  durable context; `fresh: true` task C → no memory of A. Process count stable
-  across all three; TTL shutdown verified.
+- **The M1.3 gate (live)**: the probe results show sessions are
+  in-memory in this opencode version — Branch A's "resume across
+  restarts" doesn't apply in the way the original sketch imagined. The
+  live gate is therefore: **two sequential delegations to the same
+  specialist within one ServeRunner lifetime share a session and
+  accumulate context** (the per-specialist serve reuses the
+  Specialist's `session_id` for the duration of the serve's life; a
+  second message after a `running` delegation can continue the
+  conversation). Process count stable across the run; TTL shutdown
+  verified (idle ServeRunner is killed after `config.harness.ttl`).
+- The original sketch's "kill serve → restart → resume" test (Branch
+  A proof) becomes "session dies with serve" — the design's session
+  reuse only works within one serve lifetime. Document this in
+  DESIGN §2.1; don't try to fake it.
 - pytest full suite (207 + ~25 new), `run.py --check`, `test_full.py`, loader green.
-- Docs: DESIGN §4 (OpenCode spawn path → ✅; Specialist runtime ✅), §2.1 amendment
-  (Branch A: per-specialist serve runner), R1 M1.3 ✅, PROJECT_STATE progress,
-  AGENTS gotchas (serve TTL note; orphan sweep behavior).
+- Docs: DESIGN §4 (OpenCode spawn path → ✅; Specialist runtime ✅),
+  §2.1 amendment (Branch A: per-specialist serve runner; the in-memory
+  session storage means we re-create on serve restart, not resume),
+  R1 M1.3 ✅, PROJECT_STATE progress, AGENTS gotchas (serve TTL note;
+  orphan sweep behavior; **the in-memory session limitation** so a
+  future maintainer doesn't try to implement cross-restart resume).
 
 ## Explicit non-goals
 - Parallel tasks within one specialist (queue lands with M1.6 DelegationManager).
