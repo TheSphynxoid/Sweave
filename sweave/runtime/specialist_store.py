@@ -47,7 +47,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -78,6 +78,102 @@ def _validate_name(name: str) -> None:
         )
 
 
+class ModelRef(TypedDict, total=False):
+    """Model reference for the v2 opencode body (M1.3 K-revised).
+
+    The user's ``opencode.json`` may declare multiple providers (ollama,
+    gmi/gmicloud, zai, openrouter, opencode, etc.). The v2 protocol
+    requires the ``body["model"]`` field to be either ``null`` or a
+    structured ``{providerID, modelID}`` object — bare model names are
+    rejected with 400 (per M1.3 step 0 probe 5b).
+
+    The :class:`Specialist` record stores the model as ``ModelRef``;
+    the harness reads it and builds the v2 body shape. A v1 record
+    (bare string) is migrated to ``ModelRef(provider=None,
+    model_id=<bare string>)`` and the harness emits a warning when
+    routing to a non-default provider (probe 5b proved the bare fallback
+    would 400 on multi-provider configs).
+
+    * ``provider`` — the opencode provider id (e.g. ``ollama``, ``gmi``,
+      ``zai``, ``opencode``). When None, the harness falls back to the
+      unqualified-name path AND the opencode serve's own default
+      provider resolution; this is the legacy M1.0 path and may 400 on
+      multi-provider configs (warning fires once per session).
+    * ``model_id`` — the model id within the provider (e.g.
+      ``qwen3:8b``, ``MiniMaxAI/MiniMax-M3``, ``glm-5.3``).
+    """
+    provider: str
+    model_id: str
+
+
+def parse_model_ref(raw: "str | dict | None") -> ModelRef | None:
+    """Coerce a string-or-dict to a :class:`ModelRef`.
+
+    * ``None`` or ``""`` -> ``None``
+    * ``{"provider": "...", "model_id": "..."}`` -> returned (fields
+      optional via TypedDict(total=False); unknown keys stripped)
+    * ``"provider/model_id"`` -> split on first ``/``
+    * ``"model_id"`` (no slash) -> ``{"provider": None, "model_id": raw}``
+      (legacy v1 path; warning fires at routing time)
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, dict):
+        return ModelRef(provider=raw.get("provider"), model_id=raw.get("model_id"))
+    if "/" in raw:
+        provider, _, model_id = raw.partition("/")
+        return ModelRef(
+            provider=provider.strip() or None, model_id=model_id.strip() or None
+        )
+    return ModelRef(provider=None, model_id=raw)
+
+
+def _parse_stored_model(raw: "str | None") -> ModelRef | None:
+    """Decode the on-disk ``current_model`` field to a :class:`ModelRef`.
+
+    Three shapes are valid on disk:
+    * ``None`` / ``""`` -> ``None``
+    * a JSON-encoded ``{"provider": "...", "model_id": "..."}``
+      (the v2 / K-revised way; written by
+      :meth:`Specialist.set_model_ref`)
+    * a bare string (the v1 way) -> ``ModelRef(provider=None,
+      model_id=<bare string>)`` -- the legacy path; the harness
+      emits a warning when this lands on a non-default provider.
+    """
+    if raw is None or raw == "":
+        return None
+    if raw.startswith("{"):
+        # JSON-encoded ModelRef
+        import json as _json
+        try:
+            obj = _json.loads(raw)
+        except _json.JSONDecodeError:
+            return ModelRef(provider=None, model_id=raw)
+        if not isinstance(obj, dict):
+            return ModelRef(provider=None, model_id=raw)
+        return ModelRef(
+            provider=obj.get("provider"), model_id=obj.get("model_id")
+        )
+    return parse_model_ref(raw)
+
+
+def model_ref_to_wire(ref: ModelRef | None) -> "dict[str, str] | None":
+    """Convert a :class:`ModelRef` to the v2 ``body["model"]`` shape.
+
+    Returns the structured ``{providerID, modelID}`` dict when both
+    fields are set (the v2 protocol's expected shape), or ``None``
+    when the ref is empty / incomplete (caller falls back to the
+    unqualified-name path or null).
+    """
+    if ref is None:
+        return None
+    provider = ref.get("provider")
+    model_id = ref.get("model_id")
+    if not provider or not model_id:
+        return None
+    return {"providerID": provider, "modelID": model_id}
+
+
 @dataclass
 class Specialist:
     """One persisted specialist (or orchestrator singleton).
@@ -86,6 +182,14 @@ class Specialist:
     derived views over the on-disk ``sweave/agents/*/config.yaml``
     files; they're never persisted through the store, so
     ``scope="seed"`` records are read-only via the public API.
+
+    Schema history:
+    * v1 (M1.2): ``current_model: str | None`` (a bare model name).
+    * v2 (M1.3): callers may store a JSON-encoded :class:`ModelRef` in
+      ``current_model`` (so the wire survives round-trip without a
+      schema migration on the dataclass). The :meth:`model_ref`
+      property decodes either shape lazily. A v1 record (bare
+      string) is treated as a ModelRef with ``provider=None``.
     """
 
     schema_version: int = SCHEMA_VERSION
@@ -111,6 +215,34 @@ class Specialist:
         # the Specialist).
         if self.name:
             _validate_name(self.name)
+
+    @property
+    def model_ref(self) -> ModelRef | None:
+        """Lazily decode :attr:`current_model` to a :class:`ModelRef`.
+
+        Handles three storage shapes:
+        * ``None`` / ``""`` -> ``None``
+        * a JSON-encoded ``{"provider": "...", "model_id": "..."}``
+          (the v2 / K-revised way)
+        * a bare string (the v1 way) -> ``ModelRef(provider=None,
+          model_id=<bare string>)`` -- the harness emits a warning
+          when this lands on a non-default provider.
+        """
+        return _parse_stored_model(self.current_model)
+
+    def set_model_ref(self, ref: ModelRef | None) -> None:
+        """Set the model via a :class:`ModelRef` (v2 / K-revised way).
+
+        Stores a JSON-encoded :class:`ModelRef` in :attr:`current_model`
+        so the structured pair survives round-trip. ``None`` clears
+        the field.
+        """
+        if ref is None or (ref.get("provider") is None and ref.get("model_id") is None):
+            self.current_model = None
+            return
+        import json as _json
+
+        self.current_model = _json.dumps(dict(ref), separators=(",", ":"))
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

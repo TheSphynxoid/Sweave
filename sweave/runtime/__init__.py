@@ -33,6 +33,7 @@ from sweave.runtime.serve_runner import (
     find_orphan_serves,
     sweep_orphan_serves,
 )
+from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     ORCHESTRATOR_ROLE_REF,
@@ -86,4 +87,6 @@ __all__ = [
     "DEFAULT_START_TIMEOUT",
     "find_orphan_serves",
     "sweep_orphan_serves",
+    # M1.3 step 2
+    "SpecialistRuntime",
 ]
