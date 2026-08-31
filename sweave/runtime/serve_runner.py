@@ -117,8 +117,39 @@ class ServeRunner:
 
         No-op if already running. Stores ``process``, ``port``, ``base_url``,
         ``log_path`` and emits ``serve.started`` if an event bus is attached.
+
+        Test hook: when ``SWEAVE_MOCK_OPENCODE=1``, skip the subprocess
+        spawn entirely -- set a fake process/port/base_url. The runtime's
+        ``_build_process`` also checks the hook and returns a stubbed
+        OpenCodeProcess, so no real HTTP call is made. This keeps
+        end-to-end tests deterministic without opencode or an LLM.
         """
         if self.is_alive():
+            return
+        import os
+
+        if os.environ.get("SWEAVE_MOCK_OPENCODE") == "1":
+            self.worktree_path.mkdir(parents=True, exist_ok=True)
+            self.process = None  # type: ignore[assignment]
+            self.port = 0  # sentinel: mock mode
+            self.base_url = "http://mock-opencode"
+            self.log_path = None
+            self.touch()
+            logger.info(
+                "ServeRunner mock-start for %s in %s (SWEAVE_MOCK_OPENCODE=1)",
+                self.specialist_name, self.worktree_path,
+            )
+            if self.event_bus is not None:
+                await self.event_bus.publish(
+                    "serve.started",
+                    {
+                        "specialist": self.specialist_name,
+                        "worktree": str(self.worktree_path),
+                        "port": self.port,
+                        "pid": None,
+                        "mock": True,
+                    },
+                )
             return
         # Ensure worktree exists
         self.worktree_path.mkdir(parents=True, exist_ok=True)

@@ -74,6 +74,7 @@ class JobRunner:
         specialist_runtime: "SpecialistRuntime | None" = None,
         specialist_factory: Callable[[str], "Specialist | None"] | None = None,
         turn_timeout: float | None = None,
+        specialist_saver: "Callable[[Specialist, str | None], None] | None" = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -110,6 +111,15 @@ class JobRunner:
         # error and the serve is recycled on next use. Heartbeat /
         # output-staleness detection is deferred to R6.
         self.turn_timeout = turn_timeout if turn_timeout is not None else self.DEFAULT_TURN_TIMEOUT
+        # M1.3 step 5 (live-gate fix): persists the Specialist record
+        # (including the session_id the runtime set during run()) back
+        # to its store. Signature: (specialist, project_name) -> None.
+        # The AppState supplies a closure over the SpecialistResolver;
+        # best-effort (failures logged, never raised). Without this,
+        # the session_id only lives in the in-memory Specialist object
+        # and is lost on restart -- contradicting the opencode.db
+        # session-persistence contract (M1.3 post-step-0 amendment).
+        self.specialist_saver = specialist_saver
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -315,6 +325,25 @@ class JobRunner:
                         ),
                         timeout=self.turn_timeout,
                     )
+                    # Persist the Specialist (the runtime set
+                    # specialist.session_id during run()). Best-effort:
+                    # a saver failure is logged, never raised -- the
+                    # delegation result stands on its own.
+                    if self.specialist_saver is not None:
+                        try:
+                            self.specialist_saver(specialist, delegation.project_name)
+                            trace.append(
+                                "session_id_persisted",
+                                {
+                                    "specialist": specialist.name,
+                                    "session_id": specialist.session_id,
+                                },
+                            )
+                        except Exception as saver_err:  # noqa: BLE001
+                            logger.warning(
+                                "JobRunner: specialist_saver failed for %s: %s",
+                                specialist.name, saver_err,
+                            )
                     from sweave.tools import DelegationResult
 
                     result = DelegationResult(

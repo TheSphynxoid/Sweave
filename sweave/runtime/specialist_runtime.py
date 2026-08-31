@@ -300,11 +300,40 @@ class SpecialistRuntime:
         runner's base_url. A new OpenCodeProcess is created per
         delegation (the v0.2 send() call is per-instance); this is
         cheap and isolates per-delegation state.
+
+        Test hook: when ``SWEAVE_MOCK_OPENCODE=1``, return the stubbed
+        process from ``OpenCodeHarness._spawn_mock`` instead. The stub
+        serves the same wire format (POST /session, streaming message
+        POST) with canned responses, so end-to-end tests are
+        deterministic without a live opencode subprocess or LLM
+        provider. This is the single gate point for the runtime path:
+        the runner still start()s (a no-op spawn under the hook is
+        avoided by the runner's own check), but the process the
+        runtime talks to is the stub.
         """
+        import os
+
+        from sweave.config.schemas import AgentSpec
+
+        if os.environ.get("SWEAVE_MOCK_OPENCODE") == "1":
+            from sweave.harness.opencode import OpenCodeHarness
+
+            spec_mock = AgentSpec(
+                name=delegation.agent,
+                role=delegation.agent,
+                model=delegation.model or "",
+                system_prompt="",  # already sent on session create
+                worktree_path=Path(runner.worktree_path),
+                memory_bank="",
+                tools=[],
+                env={},
+                harness="opencode",
+            )
+            return OpenCodeHarness()._spawn_mock(spec_mock)
+
         # Construct a fresh AgentSpec-shaped helper for OpenCodeProcess
         # The OpenCodeProcess only uses spec.system_prompt, spec.model,
         # and spec.worktree_path for its context; we pass minimal values.
-        from sweave.config.schemas import AgentSpec
         from sweave.harness.opencode import OpenCodeProcess
 
         spec = AgentSpec(

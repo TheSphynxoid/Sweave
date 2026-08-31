@@ -313,8 +313,166 @@ captures the real failure.
         except Exception:
             return False
     
+    def _spawn_mock(self, spec: AgentSpec) -> AgentProcess:
+        """Build a stub :class:`OpenCodeProcess` for tests.
+
+        The stub uses a canned JSON session id and a canned message
+        body that echoes ``spec.name`` (so each specialist's mock
+        response is distinct). The v2 wire format is the same as the
+        real endpoint. The session id is the specialist name with a
+        fixed prefix so the M1.3 session-reuse path is exercised:
+        a second delegation to the same specialist hits GET
+        /session/{id} -> 200 (reuse), not POST /session (create).
+        """
+        import asyncio
+        import json as _json
+        import uuid as _uuid
+
+        # Lazy import of httpx to keep the production import graph
+        # minimal (the mock path is test-only).
+        try:
+            import httpx as _httpx
+        except ImportError:  # pragma: no cover
+            raise RuntimeError(
+                "SWEAVE_MOCK_OPENCODE=1 requires httpx (it's a runtime dep anyway)"
+            )
+
+        # Stable per-specialist session id so the GET-reuse path
+        # actually fires on a 2nd delegation.
+        session_id = f"ses-mock-{spec.name}"
+        captured_session_id: list[str] = [session_id]
+
+        class _StubResponse:
+            def __init__(self, status_code: int, body: str) -> None:
+                self.status_code = status_code
+                self._body = body.encode("utf-8")
+                self.headers = {"content-type": "application/json"}
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise _httpx.HTTPStatusError(
+                        "mock error", request=_httpx.Request("POST", "http://mock"),
+                        response=self,
+                    )
+
+            def json(self) -> Any:
+                import json as _json
+                return _json.loads(self._body)
+
+            @property
+            def text(self) -> str:
+                return self._body.decode("utf-8")
+
+        class _StubStreamResponse:
+            def __init__(self, chunks: list[str]) -> None:
+                self.status_code = 200
+                self.headers = {"content-type": "application/json"}
+                self._chunks = [c.encode("utf-8") for c in chunks]
+
+            def raise_for_status(self) -> None:
+                pass
+
+            async def __aenter__(self) -> "_StubStreamResponse":
+                return self
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+            async def aiter_text(self) -> Any:
+                for c in self._chunks:
+                    yield c.decode("utf-8")
+
+            async def aiter_bytes(self) -> Any:
+                for c in self._chunks:
+                    yield c
+
+        class _StubClient:
+            def __init__(self) -> None:
+                self.session_id = session_id
+                self.sent_session_ids: list[str] = []
+
+            async def post(self, url: str, json: Any = None, headers: Any = None, **kw: Any) -> _StubResponse:
+                if url == "/session":
+                    return _StubResponse(200, _json.dumps({"id": self.session_id}))
+                raise AssertionError(f"unexpected POST {url}")
+
+            async def get(self, url: str, headers: Any = None, **kw: Any) -> _StubResponse:
+                if url.startswith("/session/"):
+                    return _StubResponse(200, _json.dumps({"id": self.session_id}))
+                raise AssertionError(f"unexpected GET {url}")
+
+            def stream(
+                self, method: str, url: str, json: Any = None, headers: Any = None, **kw: Any
+            ) -> "_StubStreamResponse":
+                """Regular (non-async) method returning an async context
+                manager -- the same shape as the real httpx
+                ``AsyncClient.stream``. An ``async def`` here would
+                return a coroutine, and ``async with`` on a coroutine
+                fails ('coroutine' object does not support the
+                asynchronous context manager protocol).
+                """
+                if method == "POST" and url.startswith("/session/"):
+                    # Echo the task's last word back so tests can assert
+                    # the request body round-tripped through the mock.
+                    prompt = ""
+                    try:
+                        parts = (json or {}).get("parts") or []
+                        if parts and isinstance(parts[0], dict):
+                            prompt = str(parts[0].get("text", ""))
+                    except Exception:
+                        prompt = ""
+                    last_word = prompt.split()[-1] if prompt.split() else "ACK"
+                    body = {
+                        "info": {"role": "assistant"},
+                        "parts": [{
+                            "type": "text",
+                            "text": f"ACK from mock opencode for {spec.name}: {last_word}",
+                        }],
+                    }
+                    return _StubStreamResponse([_json.dumps(body)])
+                raise AssertionError(f"unexpected STREAM {method} {url}")
+
+            async def aclose(self) -> None:
+                pass
+
+        class _FakeProcess:
+            pid = 99001
+            returncode = None
+
+        # Build the OpenCodeProcess using the existing class so the
+        # runtime's type expectations match.
+        proc = OpenCodeProcess(
+            spec=spec,
+            process=_FakeProcess(),  # type: ignore[arg-type]
+            base_url="http://mock-opencode",
+            session_id=self.session_id if False else "",  # placeholder; real one below
+        )
+        # The OpenCodeProcess.__init__ would normally have set
+        # _client via httpx.AsyncClient(base_url=...). We replace it
+        # with our stub AFTER construction so the runtime's
+        # ``process._client.stream(...)`` calls hit the mock.
+        proc._client = _StubClient()  # type: ignore[assignment]
+        # Pre-populate the session_created flag so _ensure_session
+        # takes the reuse path on subsequent calls.
+        proc._session_created = True  # type: ignore[attr-defined]
+        # And pretend the system prompt has been sent so the second
+        # delegation just reuses the session.
+        return proc
+
     async def spawn(self, spec: AgentSpec) -> AgentProcess:
-        """Spawn a new OpenCode server for the agent."""
+        """Spawn a new OpenCode server for the agent.
+
+        Test hook: if the environment variable ``SWEAVE_MOCK_OPENCODE=1``
+        is set, return a stub :class:`OpenCodeProcess` whose ``_client``
+        is a canned httpx mock. The stub serves the same wire format
+        the real v2 endpoint emits (POST /session, POST /session/{id}/message
+        streaming). This makes end-to-end tests deterministic without a
+        live opencode subprocess or an LLM provider. Default behaviour
+        (env var unset) is unchanged: real subprocess + real LLM.
+        """
+        if os.environ.get("SWEAVE_MOCK_OPENCODE") == "1":
+            return self._spawn_mock(spec)
+        # Prepare environment
         # Prepare environment
         env = os.environ.copy()
         env.update(spec.env)

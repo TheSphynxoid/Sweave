@@ -119,14 +119,19 @@ def test_specialist_from_dict_ignores_unknown_fields():
 
 
 def test_specialist_public_dict_omits_internal_fields():
+    """M1.3 amendment: session_id IS exposed (it's the cross-restart
+    session-reuse key, useful API surface). schema_version + timestamps
+    remain internal."""
     s = Specialist(name="x", description="d", current_model="m")
     pub = s.public_dict()
     assert pub["name"] == "x"
     assert pub["description"] == "d"
     assert pub["current_model"] == "m"
+    # session_id exposed (None until the runtime sets it)
+    assert "session_id" in pub
+    assert pub["session_id"] is None
     # Internal fields stripped
     assert "schema_version" not in pub
-    assert "session_id" not in pub
     assert "created_at" not in pub
     assert "updated_at" not in pub
 

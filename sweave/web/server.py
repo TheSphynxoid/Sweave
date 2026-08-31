@@ -97,6 +97,13 @@ async def lifespan(app: FastAPI):
     state.event_bus = WSEventBus()
     state.delegation_stores = PerProjectDelegationStores()
     state.subagent_runs = SubAgentRunStore()
+    # M1.2 step 2: build the specialist resolver first so the JobRunner
+    # can be wired with the specialist factory + saver closures below.
+    from sweave.runtime.specialist_store import SpecialistResolver
+
+    state.specialist_resolver = SpecialistResolver()
+    state.delegate_tool.specialist_resolver = state.specialist_resolver
+
     state.job_runner = JobRunner(
         delegate_tool=state.delegate_tool,
         # JobRunner uses the per-project store registry; it picks a store
@@ -118,25 +125,58 @@ async def lifespan(app: FastAPI):
         child_session_adder=lambda child: _add_child_to_session(
             child, project_manager
         ),
+        # M1.2: resolve an agent name to a Specialist record
+        # (project -> global -> seed). None = unknown name (the runner
+        # falls back to a transient Specialist).
+        specialist_factory=lambda agent_name: (
+            state.specialist_resolver.resolve(
+                agent_name,
+                project_dir=(
+                    project_manager.get_project(
+                        project_manager.get_active_project().name
+                    ).path
+                    if project_manager.get_active_project() is not None
+                    else None
+                ),
+            )
+        ),
+        # M1.3 step 5: persist the Specialist record (including the
+        # session_id the runtime set) back to its store after each
+        # delegation. Best-effort; the store's own atomic write
+        # contract applies.
+        specialist_saver=lambda specialist, project_name: (
+            state.specialist_resolver.update(specialist, project_dir=(
+                project_manager.get_project(project_name).path
+                if project_name and project_manager.get_project(project_name) is not None
+                else None
+            ))
+        ),
     )
-    # M1.2 step 2: build the specialist resolver and hand it to the
-    # delegate tool so the model-precedence chain (task_override >
-    # specialist.current_model > resolve_model(role_ref) > legacy
-    # config.resolve_model(agent)) kicks in. The resolver uses the
-    # same anchored path (~/.sweave/agents.yaml) that
-    # ``load_dynamic_agents`` reads, so they share state.
-    from sweave.runtime.specialist_store import SpecialistResolver
-
-    state.specialist_resolver = SpecialistResolver()
-    state.delegate_tool.specialist_resolver = state.specialist_resolver
     # One-time legacy import: if the anchored file is absent but the
     # in-memory dynamic_agents dict has entries (from the legacy CWD-
     # relative file), bring them into the new global store.
     await state.bootstrap_specialists()
     await state.load_dynamic_agents()
+
+    # M1.3 step 3: build the SpecialistRuntime and wire it into the
+    # JobRunner. From here on, delegations submitted through
+    # POST /api/v2/tasks go through the runtime path (per-specialist
+    # ServeRunner + session lifecycle + ModelRef routing + worktree
+    # preamble). The legacy delegate_tool path remains available when
+    # specialist_runtime is None (e.g. tests that stub it out).
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+
+    serve_registry = ServeRunnerRegistry(event_bus=state.event_bus)
+    state.job_runner.specialist_runtime = SpecialistRuntime(
+        runners=serve_registry,
+        event_bus=state.event_bus,
+    )
+
     app.state.app_state = state
     logger.info(
-        "AppState built; %d dynamic agents loaded; JobRunner ready",
+        "AppState built; %d dynamic agents loaded; JobRunner ready "
+        "(SpecialistRuntime wired)",
         len(state.dynamic_agents),
     )
 

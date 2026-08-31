@@ -264,10 +264,13 @@ class Specialist:
         return cls(**kwargs)
 
     def public_dict(self) -> dict[str, Any]:
-        """API-facing view: scope, name, role_ref, description, model, harness.
+        """API-facing view: identity + config + the durable session link.
 
-        Omits internal fields (schema_version, timestamps, session_id) so
-        the wire format doesn't carry noise the UI doesn't need.
+        ``session_id`` is included since M1.3: it's the key to
+        cross-restart session reuse (opencode persists sessions in
+        opencode.db; our stored session_id is how a fresh serve finds
+        the conversation). Omits schema_version + timestamps as
+        internal noise.
         """
         return {
             "name": self.name,
@@ -278,6 +281,7 @@ class Specialist:
             "system_prompt": self.system_prompt,
             "harness": self.harness,
             "current_model": self.current_model,
+            "session_id": self.session_id,
         }
 
 
