@@ -303,14 +303,16 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   `tests/test_m1_3_step5_live_gate.py` (run by hand when a working
   opencode + provider is available — the probe results doc is the
   manual proof for now).
-- **M1.4 Lifecycle completion** (~1): completion detection (per M1.0), Delegation status
-  transitions wired to runtime, terminate-on-done, `_active_agents` cleanup, real
-  `attach`, **stuck detection** (heartbeat / output-staleness / timeout — decide per
-  M1.0 findings). Gate: 3 consecutive delegations reach done/failed, no process leaks.
-- **M1.5 Model at request time** (~1): harness contract `send(message, model)` in
-  base.py; OpenCode per-message `providerID/modelID` **already landed via the M1.0 fix**
-  (remaining: base.py contract, switch API wiring, idle/running semantics); M1.2 endpoint
-  wired to runtime. Gate: idle model switch demonstrably applied to next delegation.
+- **M1.4 Lifecycle completion** - **folded into M1.5** (`docs/M1_4_5_PLAN.md`,
+  ruling 2026-08-30): M1.3 pre-delivered completion detection, stuck detection v1
+  (turn timeout), real attach, serve lifecycle. Remainder: hermetic flake fix,
+  `_active_agents` audit, **human promotes review-done** (API + Children-tab button;
+  R2 cross-review automates via the same endpoint). Gate: 3 consecutive delegations
+  reach review/failed cleanly, promotion works, no process leaks.
+- **M1.5 Model at request time** (~1, planned: `docs/M1_4_5_PLAN.md`): ModelRef
+  promoted into the harness contract (base.py; R3 adapters implement per-invocation),
+  switch semantics enforced (idle immediate / running queued - submit-time resolution
+  makes this structural), 4-level chain proven end-to-end incl. `orchestrator.default`.
   Cost-budget enforcement: local tiktoken estimates by default;
   **Cloudflare AI Gateway** as opt-in native enforcement for cloud providers (§8 map).
 - **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
