@@ -55,8 +55,9 @@
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2)
 - ✅ **M1.prep** — all 8 steps (9 commits)
 - ✅ **M1.0 Live serve probe** — done: v2 HTTP API + per-message model +
-  chunked JSON stream consumption. Still open: session resume across
-  serve restarts (M1.3).
+  chunked JSON stream consumption. Its leftovers (session resume across
+  serve restarts, completion semantics) were closed by the M1.3 step-0
+  probes.
 - ✅ **M1.1 Record split** — done: Delegation v2 schema + per-project
   persistence + SubAgentRun + API filters + UI v1 bridge.
 - ✅ **M1.2 Specialist store + CRUD** — done: `Specialist` dataclass +
