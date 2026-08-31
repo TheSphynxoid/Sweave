@@ -580,6 +580,21 @@ The user wants:
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.
 
+### Known issues (transient - watch before trusting the gates)
+- **Flaky test**: `tests/test_m1_3_step3_job_runner_integration.py::
+  test_job_runner_runtime_path_legacy_model_string` fails ~1-in-N full-suite
+  runs, passes in isolation (order-dependent, shared-state leakage suspected).
+  Scheduled fix: **M1.4+M1.5 step 0** (`docs/M1_4_5_PLAN.md` - hermetic fixture,
+  gate = suite green 3x consecutively). If you see exactly this test red in a
+  full run: rerun isolated before diagnosing product code.
+
+### Where M1 stands next (post-M1.3, rulings locked 2026-08-30)
+- **Next plan of record**: `docs/M1_4_5_PLAN.md` (M1.4 folded into M1.5; ~1
+  session). Rulings: flake fix = step 0; **human promotes** `review -> done`
+  (`POST /api/delegations/{id}/promote` + Children-tab button; R2 cross-review
+  automates via the same endpoint); ModelRef promoted into `harness/base.py`
+  as the contract type.
+
 ---
 
 ## Critical Lessons Learned
