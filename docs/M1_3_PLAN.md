@@ -127,13 +127,25 @@ Plan amendments in this doc (numbered to match the chat):
    active worktree of the specialist it serves.
 3. **Probe 3 (concurrency)**: one serve, two sessions, one message each —
    works fine, no cross-talk.
-4. **Probe 4 (storage)**: storage root is `~/.local/share/opencode` but
-   **0 new files** appear after creating a session — sessions are
-   **in-memory only** in this opencode version. Implication: sessions
-   do NOT survive a serve restart, even within a single user session.
-   This weakens Branch A as stated ("session persisted on the
-   Specialist record and resumed across serve restarts") — there is no
-   on-disk state to resume from. **Updated Branch A** below.
+4. **Probe 4 (storage)**: storage root is `~/.local/share/opencode`.
+   The probe's "0 new files" finding was **misleading** — opencode
+   persists sessions in the pre-existing SQLite file
+   `opencode.db` (the probe's `_snapshot_storage` saw the file
+   before and after, correctly, but missed that a *new row* was
+   inserted into the existing table). Confirmed by direct query
+   (May 2026 amendment): the `session` table holds the created
+   record, the `message` table has rows linked by FK, and the
+   `path.cwd` field records the worktree at message time. **Sessions
+   DO survive opencode process restarts** (the SQLite DB is
+   persistent; the `opencode serve` process is just the in-memory
+   request handler). **Implication for M1.3**: the Branch A "1
+   serve per (specialist, worktree) + session reused on subsequent
+   delegations" decision still holds for cwd isolation, but the
+   reuse is more powerful than originally sketched — the persisted
+   session_id in `opencode.db` means a *fresh* `opencode serve` can
+   resume the conversation by GET-ing the same `session_id`. The
+   404-recreate path in `_ensure_session` covers the rare case
+   where a session has been deleted (or the worktree path changed).
 5. **Probe 5a (catalog fetch)**: `GET /config/providers` returns a
    `providers` array (7 providers: `zai`, `zai-coding-plan`, `openrouter`,
    `opencode`, `opencode-go`, `nvidia`, `gmicloud` — note: the user's
@@ -156,12 +168,20 @@ Plan amendments in this doc (numbered to match the chat):
 - **Architecture**: ServeRunner per busy specialist (cwd per worktree, as
   Branch A says). Each serve is a fresh `opencode serve` started in the
   specialist's current worktree.
-- **Session storage**: since opencode stores sessions in-memory only,
-  Branch A's "persist session_id on the Specialist record, resume after
-  serve restart" is moot — **the session_id is only useful within the
-  serve's lifetime**. The Specialist record still carries `session_id`
-  (M1.2's field) so we can avoid re-creating sessions for a busy
-  specialist (cache reuse within one serve lifetime). On serve restart,
+- **Session storage**: opencode persists sessions in
+  `~/.local/share/opencode/opencode.db` (a SQLite database). Sessions
+  DO survive opencode process restarts (the SQLite DB is
+  persistent; the `opencode serve` process is the in-memory request
+  handler). The `session_id` we persist on the Specialist record is
+  therefore more useful than originally sketched in the plan: a
+  *fresh* `opencode serve` started by the runtime can GET the
+  stored `session_id` and resume the conversation. The
+  404-recreate path in `_ensure_session` still covers the rare
+  case where a session has been deleted (or the worktree path
+  changed). Note: cwd still binds to the serve process
+  (Branch A's architectural decision), so we still want a
+  per-specialist ServeRunner — the cross-restart reuse is a
+  *bonus* on top of the cwd-isolation rationale.
   the session is gone and we create a new one — the durable context
   comes from the worktree re-injection preamble (the new session
   inherits the system prompt + model + conversation history *if we send
@@ -294,10 +314,12 @@ Plan amendments in this doc (numbered to match the chat):
   `test_full.py`, loader green.
 - Docs: DESIGN §4 (OpenCode spawn path → ✅; Specialist runtime ✅,
   per-specialist ServeRunner), §2.1 amendment (Branch A: per-specialist
-  serve runner; in-memory session storage caveat), R1 M1.3 ✅,
-  PROJECT_STATE progress, AGENTS gotchas (serve TTL note; orphan
-  sweep behavior; the in-memory session limitation so a future
-  maintainer doesn't try to implement cross-restart resume).
+  serve runner; **sessions are persisted in opencode.db, so the
+  stored `session_id` survives opencode restarts** — the 404-recreate
+  path covers deletion / worktree-change), R1 M1.3 ✅, PROJECT_STATE
+  progress, AGENTS gotchas (serve TTL note; orphan sweep behavior;
+  the opencode.db session table is the source of truth for the
+  session_id we persist on the Specialist).
 
 ## Explicit non-goals
 - Parallel tasks within one specialist (queue lands with M1.6 DelegationManager).

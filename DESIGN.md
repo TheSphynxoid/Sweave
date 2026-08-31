@@ -284,12 +284,22 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   runtime + legacy paths; on expiry the delegation is marked failed
   with an explicit error and the ServeRunner is recycled on next use.
   M1.3 step 4 routes success to `review` (M1.4 promotes to `done`).
-  M1.3 step 0 (probe) confirmed: in this opencode version sessions are
-  in-memory only — cross-restart resume is not possible; session_id
-  is useful only within one ServeRunner's lifetime. 269/269 pytest
-  across 25 files; 13/13 run.py --check; 40/40 test_full; 8/8
-  test_browser; ALL GREEN test_agents_loader. Live gate against a
-  real opencode + provider is documented in
+  **Note** (M1.3 post-step-0 amendment): the original probe-4 finding
+  ("sessions are in-memory only") was misleading — the probe's
+  `_snapshot_storage` saw the pre-existing `opencode.db` file
+  before and after, correctly, but missed that a *new row* was
+  inserted into the existing SQLite table. Confirmed by direct
+  query: opencode persists sessions in
+  `~/.local/share/opencode/opencode.db`; sessions DO survive
+  opencode process restarts (the SQLite DB is persistent; the
+  `opencode serve` is just the in-memory request handler). The
+  stored `session_id` is therefore useful across restarts, not
+  just within one ServeRunner's lifetime — Branch A's cwd
+  isolation is still the architectural rationale for per-specialist
+  runners, but the cross-restart session reuse is a bonus on top.
+  269/269 pytest across 25 files; 13/13 run.py --check; 40/40
+  test_full; 8/8 test_browser; ALL GREEN test_agents_loader. Live
+  gate against a real opencode + provider is documented in
   `tests/test_m1_3_step5_live_gate.py` (run by hand when a working
   opencode + provider is available — the probe results doc is the
   manual proof for now).

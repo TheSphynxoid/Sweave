@@ -45,16 +45,18 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
    `AppState._anchored_agents_path`). Code that wants the file should
    read `state.dynamic_agents_path` (which carries the anchored path) rather
    than constructing a new `Path("agents.yaml")` from CWD.
-4. **Opencode sessions are in-memory only** (M1.3 step 0 probe). The
-   `session_id` we persist on the `Specialist` record is only useful
-   within one `ServeRunner` lifetime. When the `opencode serve` process
-   restarts, all sessions are gone — the next delegation gets a fresh
-   `POST /session` (the 404-recreate path triggers automatically). Don't
-   try to implement cross-restart resume; it would require a different
-   opencode plugin / persistence config than the one we have. The
-   "durable context" in M1.3 comes from the worktree re-injection
-   preamble + the system prompt sent once per session + (eventually) the
-   R6 memory-replay path, not from session persistence.
+4. **Opencode sessions persist in `~/.local/share/opencode/opencode.db`
+   (SQLite)** (corrects the M1.3 step 0 probe — that probe's
+   "0 new files" finding was misleading: it saw the pre-existing file
+   before and after but missed that a new row was inserted into the
+   `session` and `message` tables). The `session_id` we persist on
+   the `Specialist` record survives opencode process restarts (the
+   SQLite DB is persistent; the `opencode serve` is just the
+   in-memory request handler). The 404-recreate path in
+   `_ensure_session` covers the rare case where a session has been
+   deleted (or the worktree path changed). The worktree re-injection
+   preamble is still required (cwd binds to the serve process; sessions
+   are tied to the cwd at create time via `message.path.cwd`).
 5. **Opencode multi-provider config** (M1.3 K-revised). The user's
    `opencode.json` declares custom providers (ollama, gmicloud, zai,
    opencode default). The v2 `POST /session/{id}/message` body requires

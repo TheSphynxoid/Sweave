@@ -80,9 +80,13 @@
   default). `JobRunner` integrates the runtime (legacy
   `delegate_tool.execute` path preserved). M1.3 step 4: per-turn
   timeout (default 15 min) on both paths; success routes to
-  `review` (M1.4 promotes to `done`). M1.3 step 0 (probe) confirmed
-  opencode stores sessions in-memory only — cross-restart resume is
-  not possible; `session_id` is useful only within one
+  `review` (M1.4 promotes to `done`). M1.3 step 0 (probe) amended:
+  opencode persists sessions in `~/.local/share/opencode/opencode.db`
+  (SQLite), so the stored `session_id` survives opencode process
+  restarts — the 404-recreate path covers the rare case where a
+  session has been deleted (or the worktree path changed). Branch A's
+  cwd isolation is still the architectural rationale for
+  per-specialist runners; cross-restart session reuse is a bonus.
   ServeRunner's lifetime. 269/269 pytest across 25 files; 13/13
   run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN
   test_agents_loader.
@@ -533,12 +537,16 @@ The user wants:
      orphan sweep on boot, idle TTL (default 30 min, config knob).
      `find_orphan_serves` / `sweep_orphan_serves` helpers in
      `runtime/serve_runner.py`; no-op when psutil isn't installed.
-  2. `SpecialistRuntime` + `ModelRef` + session lifecycle:
-     `_model_body` always emits `{providerID, modelID}` when known
-     (K-revised); `_ensure_session` covers create / 404-recreate /
-     reuse paths; worktree preamble injected on every message.
-     Probe showed: sessions are in-memory only on this opencode
-     version (no cross-restart resume); `session_id` is per-serve.
+   2. `SpecialistRuntime` + `ModelRef` + session lifecycle:
+      `_model_body` always emits `{providerID, modelID}` when known
+      (K-revised); `_ensure_session` covers create / 404-recreate /
+      reuse paths; worktree preamble injected on every message.
+      Probe-amended: opencode persists sessions in
+      `~/.local/share/opencode/opencode.db` (SQLite), so the stored
+      `session_id` DOES survive opencode process restarts (the
+      `opencode serve` is just the in-memory request handler). The
+      404-recreate path covers the rare case where a session has
+      been deleted (or the worktree path changed).
   3. `JobRunner` integration: new optional ctor args
      `specialist_runtime` + `specialist_factory`; when wired, the
      runtime path runs; otherwise legacy `delegate_tool.execute`.
@@ -553,9 +561,10 @@ The user wants:
      skipped in this env because the opencode startup races the
      sweave boot (separate Popen). The probe docs are the manual
      proof for now.
-  6. Docs: DESIGN §4 (Agent lifecycle ✅, OpenCode spawn path ✅,
-     SpecialistRuntime row), §2.1 amendment (per-specialist serve
-     runner; in-memory session storage caveat), R1 M1.3 ✅.
+   6. Docs: DESIGN §4 (Agent lifecycle ✅, OpenCode spawn path ✅,
+      SpecialistRuntime row), §2.1 amendment (per-specialist serve
+      runner; **opencode.db session persistence** so the stored
+      `session_id` survives opencode process restarts), R1 M1.3 ✅.
 - 269/269 pytest (was 207 after M1.2; +62: 17 serve_runner + 21
   model_ref + 12 specialist_runtime + 6 step3 integration + 6
   step4 timeout/review + tests fixed along the way).
