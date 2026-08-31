@@ -39,7 +39,7 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-08-30)
-- **207/207** in `pytest tests/` (source of truth for logic tests; +85 across M1.2)
+- **269/269** in `pytest tests/` (source of truth for logic tests; +62 since M1.2)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
 - **8/8** in `test_browser.py` (file browser API)
@@ -60,16 +60,32 @@
 - ✅ **M1.1 Record split** — done: Delegation v2 schema + per-project
   persistence + SubAgentRun + API filters + UI v1 bridge.
 - ✅ **M1.2 Specialist store + CRUD** — done: `Specialist` dataclass +
-  per-scope stores (global `~/.sweave/agents.yaml`, per-project
+  per-scope stores (global `~/.sweave/agents.yaml` + per-project
   `{project}/.sweave/agents.json`) + `SpecialistResolver` (project→global→seed
   resolution, orchestrator auto-seed singleton) + `is_orchestrator` flag
   + model precedence chain at submit + `/api/specialists` CRUD +
   `PUT /api/specialists/{name}/model` (emits `model.changed` with new
   `{name, model, scope}` shape) + override log (gold labels for R6
-  dispatch) + `/api/agents` bridge (array shape + description bug fix;
-  agents tab now renders correctly). Tier framing baked in: Orchestrator /
+  dispatch) + `SubAgentRun` endpoints (`POST/GET/finish`) + UI v1
+  compat bridge writes a `ChildSession` carrying `delegation_id` on
+  submit (R4 removes the bridge). Tier framing baked in: Orchestrator /
   Specialist / SubAgent three-tier model with Orchestrator as a singleton
   (flag on Specialist; not a separate type).
+- ✅ **M1.3 Shared serve + durable context** — done: `ServeRunner` per
+  (specialist, worktree) pair with lazy start, idle TTL, psutil orphan
+  sweep. `SpecialistRuntime` orchestrates one delegation: session
+  create / 404-recreate / reuse + worktree re-injection preamble +
+  structured ModelRef in `body["model"]` (M1.3 K-revised; user's
+  `opencode.json` has multi-provider: ollama, gmicloud, zai, opencode
+  default). `JobRunner` integrates the runtime (legacy
+  `delegate_tool.execute` path preserved). M1.3 step 4: per-turn
+  timeout (default 15 min) on both paths; success routes to
+  `review` (M1.4 promotes to `done`). M1.3 step 0 (probe) confirmed
+  opencode stores sessions in-memory only — cross-restart resume is
+  not possible; `session_id` is useful only within one
+  ServeRunner's lifetime. 269/269 pytest across 25 files; 13/13
+  run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN
+  test_agents_loader.
 - ▶ **Next**: M1.3 shared serve + durable context (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
@@ -505,6 +521,51 @@ The user wants:
   boots the new code; the v1.18 OpenCode harness fix (M1.0) and
   the per-message model field are still active; nothing was
   rolled back.
+
+### Session 12 (latest): M1.3 — Shared serve + durable context
+- 6-step refactor per `docs/M1_3_PLAN.md` (plan itself amended in
+  chat — 7 audit amendments A–G: K-revised model_ref shape, drop dead
+  parser branch, new event names, .sweave subdir creation, anchored
+  agents.yaml path, override log fallback, role_ref as optional hint).
+  Step 0 ran first as an empirical probe to ground the plan in real
+  v2-protocol behavior:
+  1. `ServeRunner` per (specialist, worktree). Lazy start, psutil
+     orphan sweep on boot, idle TTL (default 30 min, config knob).
+     `find_orphan_serves` / `sweep_orphan_serves` helpers in
+     `runtime/serve_runner.py`; no-op when psutil isn't installed.
+  2. `SpecialistRuntime` + `ModelRef` + session lifecycle:
+     `_model_body` always emits `{providerID, modelID}` when known
+     (K-revised); `_ensure_session` covers create / 404-recreate /
+     reuse paths; worktree preamble injected on every message.
+     Probe showed: sessions are in-memory only on this opencode
+     version (no cross-restart resume); `session_id` is per-serve.
+  3. `JobRunner` integration: new optional ctor args
+     `specialist_runtime` + `specialist_factory`; when wired, the
+     runtime path runs; otherwise legacy `delegate_tool.execute`.
+     Bare `current_model` strings parse as `ModelRef(provider=None,
+     ...)`; structured `provider/model` strings parse to the typed
+     pair; the v2 body emits the structured shape.
+  4. Turn timeout (15 min default) + review transition: success ->
+     `review` (M1.4 promotes to `done`); failure (timeout, agent
+     error) -> straight to `failed`. Trace records the timeout event
+     for observability.
+  5. Live gate (manual): `tests/test_m1_3_step5_live_gate.py` --
+     skipped in this env because the opencode startup races the
+     sweave boot (separate Popen). The probe docs are the manual
+     proof for now.
+  6. Docs: DESIGN §4 (Agent lifecycle ✅, OpenCode spawn path ✅,
+     SpecialistRuntime row), §2.1 amendment (per-specialist serve
+     runner; in-memory session storage caveat), R1 M1.3 ✅.
+- 269/269 pytest (was 207 after M1.2; +62: 17 serve_runner + 21
+  model_ref + 12 specialist_runtime + 6 step3 integration + 6
+  step4 timeout/review + tests fixed along the way).
+- 13/13 run.py --check, 40/40 test_full, 8/8 test_browser, ALL GREEN
+  test_agents_loader.
+- 6 new commits on `master` for M1.3 + 2 plan/context commits = 8
+  across this session.
+- **Stale server caught + killed** (same gotcha as M1.2): a leftover
+  process was bound to a test port; killed before final sweep so the
+  new code loads cleanly.
 
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.

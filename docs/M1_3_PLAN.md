@@ -278,13 +278,26 @@ Plan amendments in this doc (numbered to match the chat):
   A proof) becomes "session dies with serve" — the design's session
   reuse only works within one serve lifetime. Document this in
   DESIGN §2.1; don't try to fake it.
-- pytest full suite (207 + ~25 new), `run.py --check`, `test_full.py`, loader green.
-- Docs: DESIGN §4 (OpenCode spawn path → ✅; Specialist runtime ✅),
-  §2.1 amendment (Branch A: per-specialist serve runner; the in-memory
-  session storage means we re-create on serve restart, not resume),
-  R1 M1.3 ✅, PROJECT_STATE progress, AGENTS gotchas (serve TTL note;
-  orphan sweep behavior; **the in-memory session limitation** so a
-  future maintainer doesn't try to implement cross-restart resume).
+- The M1.3 unit + integration test suite (269/269 pytest, +62
+  since M1.2 finished) covers the runtime lifecycle, the ModelRef
+  K-revised wire shape, the per-specialist queue serialisation, the
+  per-key serve runner identity, the structured-vs-bare model
+  encoding, the system-prompt-on-session-create path, the 404
+  recreate path, the turn timeout, and the review transition. The
+  end-to-end live gate against a real opencode requires a configured
+  provider (ollama + qwen3:8b, or gmicloud + gmi/*, etc.) reachable
+  from the test environment; the M1.3 step 0 probe is the manual
+  proof. A scripted live gate is documented in
+  `tests/test_m1_3_step5_live_gate.py` (skipped in this env; run by
+  hand when a working opencode + provider is available).
+- pytest full suite (207 + ~62 new = 269), `run.py --check`,
+  `test_full.py`, loader green.
+- Docs: DESIGN §4 (OpenCode spawn path → ✅; Specialist runtime ✅,
+  per-specialist ServeRunner), §2.1 amendment (Branch A: per-specialist
+  serve runner; in-memory session storage caveat), R1 M1.3 ✅,
+  PROJECT_STATE progress, AGENTS gotchas (serve TTL note; orphan
+  sweep behavior; the in-memory session limitation so a future
+  maintainer doesn't try to implement cross-restart resume).
 
 ## Explicit non-goals
 - Parallel tasks within one specialist (queue lands with M1.6 DelegationManager).

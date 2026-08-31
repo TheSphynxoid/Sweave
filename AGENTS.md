@@ -45,12 +45,32 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
    `AppState._anchored_agents_path`). Code that wants the file should
    read `state.dynamic_agents_path` (which carries the anchored path) rather
    than constructing a new `Path("agents.yaml")` from CWD.
-4. UI: `#app` starts `hidden`; the loader timeout in `start()` MUST remove it
+4. **Opencode sessions are in-memory only** (M1.3 step 0 probe). The
+   `session_id` we persist on the `Specialist` record is only useful
+   within one `ServeRunner` lifetime. When the `opencode serve` process
+   restarts, all sessions are gone — the next delegation gets a fresh
+   `POST /session` (the 404-recreate path triggers automatically). Don't
+   try to implement cross-restart resume; it would require a different
+   opencode plugin / persistence config than the one we have. The
+   "durable context" in M1.3 comes from the worktree re-injection
+   preamble + the system prompt sent once per session + (eventually) the
+   R6 memory-replay path, not from session persistence.
+5. **Opencode multi-provider config** (M1.3 K-revised). The user's
+   `opencode.json` declares custom providers (ollama, gmicloud, zai,
+   opencode default). The v2 `POST /session/{id}/message` body requires
+   `body["model"]` to be either `null` or a structured
+   `{providerID, modelID}` object — **bare model names are rejected
+   with 400** (probe 5b). The harness always emits the structured pair
+   when the `ModelRef` is complete; the v1 record's bare-string path
+   falls back to the unqualified name (with a warning). If you add a
+   new provider or rotate the catalog, run `opencode models` to see
+   the canonical names.
+6. UI: `#app` starts `hidden`; the loader timeout in `start()` MUST remove it
    (app.js:930ish). Welcome mode adds `.hidden` (display:none !important) to all `.tab`
    panels — `switchTab()` gating lives at the top of app.js. Don't "simplify" it away.
-4. The server must be **restarted** to pick up static file changes? No — static is served
+7. The server must be **restarted** to pick up static file changes? No — static is served
    from disk, but Python changes need restart; users must hard-reload (Ctrl+Shift+R).
-5. First-match routing: rules.yaml order matters; templates resolve against the config
+8. First-match routing: rules.yaml order matters; templates resolve against the config
    object via dotted path (router.py `_resolve_template`).
 
 ## Running & testing

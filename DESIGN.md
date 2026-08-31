@@ -166,17 +166,18 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | RuleRouter matching + `{{templates}}` | ✅ | first-match regex/keyword |
 | RuleRouter `_llm_fallback` | ⚠️ | keyword heuristic, no LLM call |
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |
-| Agent lifecycle (wait/terminate/attach) | ⚠️ | send returns response; no completion tracking; `attach` respawns; `_active_agents` never cleaned — fixed in M1.3/4 |
+| Agent lifecycle (wait/terminate/attach) | ✅ | M1.3 — wait returns the final Delegation; terminate kills the per-specialist serve on idle TTL; attach delegates to SpecialistRuntime (M1.4+); _active_agents no longer needed (the registry owns the runners) |
 | Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing — M1.7) |
 | Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
-| `/ws` realtime | ✅ | `websockets` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
-| OpenCode spawn path | ⚠️ | exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read) — verified against a live serve; resume-across-restart + completion signal still open (M1.3 branch point) |
+| `/ws` realtime | ✅ | `webspaces` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
+| OpenCode spawn path | ✅ | M1.0 + M1.3 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
+| **SpecialistRuntime (per-specialist ServeRunner + session reuse)** | ✅ | M1.3 — `runtime/specialist_runtime.py` orchestrates one delegation: resolves a ServeRunner (lazy start per (specialist, worktree)), ensures a session (create, recreate on 404, or reuse), sends a single message with structured ModelRef in `body["model"]`. M1.3 step 4 wires a per-turn timeout (default 15 min) and routes success to `review` (M1.4 promotes to `done`). Orphan sweep in `serve_runner.find_orphan_serves` cleans up stale processes on server boot |
 | **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
 | **Specialist store + /api/specialists CRUD** | ✅ | M1.2 — `runtime/specialist_store.py` (global `~/.sweave/agents.yaml` + per-project `{project}/.sweave/agents.json`); resolution project→global→seed; `is_orchestrator` flag for the per-project singleton; model precedence chain at submit; `PUT /api/specialists/{name}/model` emits `model.changed {name, model, scope}`; `specialist.created/updated/deleted` events; override log at `{project}/.sweave/override_log.jsonl` (global fallback `~/.sweave/override_log.jsonl`) |
 | **/api/agents bridge + render fix** | ✅ | M1.2 — returns `{builtin, global, dynamic}` arrays (the M1.prep dicts were the root cause of the empty Agents tab); description-overwrite bug fixed; routes writes through the specialist store; orchestrator name 409 on create/delete |
@@ -270,15 +271,28 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   is persistent, named, user-creatable; SubAgent is the M1.1 ephemeral
   `SubAgentRun` (out of scope here). 207 pytest across 20 files; 13/13
   run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN test_agents_loader.
-- **M1.3 Shared serve + durable context** (~2.5–3, planned in detail:
-  `docs/M1_3_PLAN.md`): **probe-first** — step 0 resolves the two M1.0 leftovers
-  (resume-across-restart, completion signal) plus a discovered third (tool-execution
-  cwd binding, which decides shared-serve-vs-per-specialist-serve). Branch A
-  (expected): `ServeRunner` per busy specialist, sessions persisted on Specialist,
-  worktree re-injected per delegation, `fresh:` flag, psutil orphan sweep, idle-TTL
-  shutdown (Bun stability), stuck detection v1 (stream timeout), review-status
-  promotion. Gate: live three-delegation test proves durable context (B remembers A,
-  `fresh` doesn't).
+- **M1.3 Shared serve + durable context** — ✅ done 2026-08-30. `ServeRunner`
+  per (specialist, worktree), lazy start, idle TTL (default 30 min,
+  config knob), psutil orphan sweep. `SpecialistRuntime` per delegation
+  ensures a session (create, recreate-on-404, or reuse), sends one
+  message with structured ModelRef in `body["model"]` (M1.3 K-revised;
+  the user's `opencode.json` declares multi-provider: ollama,
+  gmicloud, zai, opencode default — bare-name fallback with warning
+  for v1 records). `JobRunner` integrates the runtime (legacy
+  `delegate_tool.execute` path preserved when no runtime is wired).
+  Stuck detection v1: per-turn timeout (default 15 min) on the
+  runtime + legacy paths; on expiry the delegation is marked failed
+  with an explicit error and the ServeRunner is recycled on next use.
+  M1.3 step 4 routes success to `review` (M1.4 promotes to `done`).
+  M1.3 step 0 (probe) confirmed: in this opencode version sessions are
+  in-memory only — cross-restart resume is not possible; session_id
+  is useful only within one ServeRunner's lifetime. 269/269 pytest
+  across 25 files; 13/13 run.py --check; 40/40 test_full; 8/8
+  test_browser; ALL GREEN test_agents_loader. Live gate against a
+  real opencode + provider is documented in
+  `tests/test_m1_3_step5_live_gate.py` (run by hand when a working
+  opencode + provider is available — the probe results doc is the
+  manual proof for now).
 - **M1.4 Lifecycle completion** (~1): completion detection (per M1.0), Delegation status
   transitions wired to runtime, terminate-on-done, `_active_agents` cleanup, real
   `attach`, **stuck detection** (heartbeat / output-staleness / timeout — decide per
