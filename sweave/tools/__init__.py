@@ -97,7 +97,6 @@ class DelegateTaskTool:
         # of role_ref > orchestrator.default) kicks in. When absent, the
         # legacy ``config.resolve_model(agent)`` path is used.
         self.specialist_resolver: SpecialistResolver | None = specialist_resolver
-        self._active_agents: dict[str, Any] = {}  # session_id -> agent process
 
     def _resolve_model(
         self,
@@ -161,8 +160,7 @@ class DelegateTaskTool:
         # Spawn agent
         try:
             agent_process = await harness.spawn(spec)
-            self._active_agents[task_id] = agent_process
-            
+
             # Send task to agent
             from sweave.harness.base import Message
             result = await agent_process.send(Message(
@@ -218,12 +216,6 @@ class DelegateTaskTool:
             tools=tools,
             harness=self.config.get().harness.default,
         )
-    
-    async def attach_agent(self, agent: str, task_id: str) -> Any:
-        """Attach to an existing agent session."""
-        if task_id in self._active_agents:
-            return self._active_agents[task_id]
-        return None
 
 
 class WorktreeTool:

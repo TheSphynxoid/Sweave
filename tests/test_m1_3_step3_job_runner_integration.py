@@ -33,6 +33,44 @@ from sweave.runtime.specialist_store import (
 
 
 # ---------------------------------------------------------------------------
+# Hermeticity: M1.4+M1.5 step 0
+# ---------------------------------------------------------------------------
+#
+# The runtime path in ``SpecialistRuntime.run`` calls
+# ``self.runners.get_or_create(...)`` which triggers ``ServeRunner.start()``.
+# In production that spawns a real ``opencode serve`` subprocess and waits
+# for the listening port. The tests in this file only assert on the wire
+# shape the runtime builds (captured via the per-instance ``_send_message``
+# mock) — they never call into the serve. Letting ``start()`` run a real
+# subprocess is dead work AND a flake source (``opencode serve exited
+# early`` when port-bind races earlier in the suite). Setting
+# ``SWEAVE_MOCK_OPENCODE=1`` is the codebase's existing seam: the runner
+# no-ops into a sentinel state (``port=0``, ``base_url="http://mock-opencode"``,
+# no real subprocess) and ``SpecialistRuntime._build_process`` returns a
+# stub ``OpenCodeProcess`` whose ``_client`` answers ``POST /session`` and
+# ``GET /session/{id}`` with canned responses. The mocked
+# ``_send_message`` is still needed because it captures the ``body["model"]``
+# the runtime built; the stub's ``stream`` is never reached.
+#
+# Module scope is safe: the env var is read at every ``start()`` /
+# ``_build_process()`` call, not at import time, so changes mid-suite
+# would be observable. We pin it for the whole file.
+@pytest.fixture(autouse=True, scope="module")
+def _mock_opencode_env():
+    import os
+
+    old = os.environ.get("SWEAVE_MOCK_OPENCODE")
+    os.environ["SWEAVE_MOCK_OPENCODE"] = "1"
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("SWEAVE_MOCK_OPENCODE", None)
+        else:
+            os.environ["SWEAVE_MOCK_OPENCODE"] = old
+
+
+# ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
 
@@ -63,27 +101,26 @@ def _project_resolver(p: Path):
 
 def _make_runtime_with_mock_send(tmp_path: Path):
     """Build a SpecialistRuntime + a ServeRunnerRegistry where
-    ``runtime._send_message`` is mocked. This lets the real
+    ``runtime._send_message`` is mocked. Combined with the module-level
+    ``_mock_opencode_env`` autouse fixture, this lets the real
     ``runtime.run`` execute (so the registry's ``get_or_create`` runs
-    and the runner is created) without needing a real opencode serve.
+    and the runner is created) WITHOUT spawning a real opencode serve.
 
-    We do NOT mock ``_ensure_session`` here because doing so as a
-    class attribute leaks into other tests in the same pytest process
-    (we hit that in M1.3 step 3; each test creates a real
-    ``_ensure_session`` call path via the MockOpenCodeProcess). The
-    send mock is per-instance and safe.
+    The send mock records (model, parts_count) from the body the
+    runtime built, so tests can assert the wire shape directly.
 
-    The send mock records (model_ref, worktree, specialist.name) so
-    tests can assert what the runtime actually built.
+    We do NOT mock ``_ensure_session`` here: doing so as a class
+    attribute leaks into other tests in the same pytest process
+    (recorded in M1.3 step 3). Per-instance mocks are safe; the
+    stub client returned by ``_build_process`` under
+    ``SWEAVE_MOCK_OPENCODE=1`` answers POST/GET ``/session`` calls
+    deterministically.
     """
     runners = ServeRunnerRegistry()
     runtime = SpecialistRuntime(runners=runners)
     sent_calls: list[dict[str, Any]] = []
 
     async def fake_send(self, body, trace):
-        # Record the model_ref and other fields from the body so tests
-        # can assert the wire shape. The body["model"] is what the
-        # runtime set (or absent for legacy bare-name path).
         sent_calls.append({
             "model": body.get("model"),
             "parts_count": len(body.get("parts", [])),
@@ -225,6 +262,65 @@ async def test_job_runner_runtime_path_legacy_model_string(tmp_path: Path):
     # 400 on non-default providers (warning fires at routing time
     # in production; not exercised in this mock).
     assert sent_calls[0]["model"] is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_runner_is_mocked_no_real_subprocess(tmp_path: Path):
+    """M1.4+M1.5 step 0 regression: assert the leak source is gone.
+
+    The flake: ``test_job_runner_runtime_path_legacy_model_string`` (and
+    its siblings) used to let ``ServeRunner.start()`` spawn a real
+    ``opencode serve`` subprocess even though the test only asserts on
+    the wire shape the runtime built. The subprocess occasionally
+    exited early under full-suite load, surfacing as
+    ``RuntimeError: opencode serve exited early`` and making the
+    whole test order-dependent.
+
+    The fix is structural: ``SWEAVE_MOCK_OPENCODE=1`` (set by the
+    module-level autouse fixture) makes ``ServeRunner.start()`` a
+    no-op sentinel and makes ``_build_process`` return a stub
+    ``OpenCodeProcess``. This test pins the invariant: after a
+    runtime delegation, the runner is in mock mode (port=0, no
+    subprocess, sentinel base_url). If anyone removes the env-var
+    fixture, this test fails immediately — the leak source cannot
+    silently return.
+    """
+    import os
+
+    from sweave.runtime.delegation_store import PerProjectDelegationStores as _P
+
+    assert os.environ.get("SWEAVE_MOCK_OPENCODE") == "1", (
+        "Test invariant: SWEAVE_MOCK_OPENCODE must be set by the "
+        "module fixture. Removing it reintroduces the real-subprocess "
+        "leak (see M1.4+M1.5 step 0)."
+    )
+
+    stores = _P()
+    runtime, runners, _calls = _make_runtime_with_mock_send(tmp_path)
+
+    def factory(name: str) -> Specialist:
+        return Specialist(name=name, system_prompt="", harness="opencode")
+
+    runner = JobRunner(
+        delegate_tool=_FakeDelegateTool(),
+        delegation_stores=stores,
+        project_dir_resolver=_project_resolver(tmp_path),
+        specialist_runtime=runtime,
+        specialist_factory=factory,
+    )
+    d = await runner.submit(agent="alpha", task="x", model=None)
+    await runner.wait(d.delegation_id, timeout=5)
+
+    assert len(runners.known()) == 1
+    serve = runners.known()[0]
+    assert serve.port == 0, (
+        f"runner should be in mock mode (port=0); got port={serve.port}. "
+        "This means a real opencode serve subprocess was spawned and "
+        "leaked the flake source."
+    )
+    assert serve.base_url == "http://mock-opencode"
+    assert serve.process is None
+    assert serve.log_path is None
 
 
 @pytest.mark.asyncio
