@@ -1,7 +1,12 @@
 # M1.6 — DelegationManager + deferral via MCP tool (execution plan)
 
-Status: planned, not started. Est. ~2 sessions (MCP integration premium included).
+Status: in progress. Est. ~2 sessions (MCP integration premium included).
 Predecessors: M1.prep → M1.5 all ✅. Rulings locked 2026-08-30:
+- **Step 0 done 2026-09-03** (probe passed; full results in `docs/M1_6_STEP0_PROBE.md`):
+  per-project `opencode.json` with `mcp.<name> = {type: "local", command: [...],
+  environment: {...}, enabled: true, timeout: 30000}` is honored. `opencode
+  mcp list` reports "✓ connected" once the opencode process boots in that cwd.
+  No global-config injection fallback needed.
 - **defer = real MCP tool** (not JSON parsing). Orchestrator calls `defer(target, task)`
   natively; the JSON-convention stays only as an upgrade-path note in this doc.
 - **Depth cap 2**: orchestrator → specialist → defer → orchestrator → peer.
