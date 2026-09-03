@@ -336,14 +336,50 @@ function renderChildren() {
   state.children.forEach(child => {
     const div = document.createElement('div');
     div.className = 'list-item ' + child.status;
+    // Promote button (M1.4+M1.5 step 3): visible only for bridged
+    // children in 'review'. The button calls POST
+    // /api/delegations/{id}/promote, which transitions the
+    // delegation to 'done' and mirrors the status back to the child.
+    // R2's /cross-review will call the same endpoint programmatically.
+    const showPromote = child.status === 'review' && child.delegation_id;
+    const promoteBtn = showPromote
+      ? '<button class="child-promote-btn" data-delegation-id="'
+          + escapeHtml(child.delegation_id)
+          + '">Mark done</button>'
+      : '';
     div.innerHTML =
       '<div class="top"><span class="name">' + escapeHtml(child.agent_name) + '</span><span class="status ' + child.status + '">' + child.status + '</span></div>' +
       '<div class="body">' + escapeHtml(child.task) + '</div>' +
       (child.output ? '<div class="body">' + escapeHtml(child.output.substring(0, 200)) + (child.output.length > 200 ? '...' : '') + '</div>' : '') +
-      '<div class="meta">' + new Date(child.created_at).toLocaleString() + '</div>';
+      '<div class="meta">' + new Date(child.created_at).toLocaleString() + '</div>' +
+      promoteBtn;
     list.appendChild(div);
   });
+  // Wire the promote buttons. Delegate from the list (single listener)
+  // so re-renders don't pile up handlers.
+  const buttons = list.querySelectorAll('.child-promote-btn');
+  buttons.forEach(btn => {
+    btn.addEventListener('click', () => promoteDelegation(btn.dataset.delegationId));
+  });
   updateChildrenBadge();
+}
+
+async function promoteDelegation(delegationId) {
+  if (!delegationId) return;
+  try {
+    const result = await api('/delegations/' + encodeURIComponent(delegationId) + '/promote', { method: 'POST' });
+    if (result && result.status) {
+      // Mirror the new status on the local child so the UI updates
+      // without waiting for the next WS event.
+      const child = state.children.find(c => c.delegation_id === delegationId);
+      if (child) {
+        child.status = result.status;
+        renderChildren();
+      }
+    }
+  } catch (err) {
+    showError('Promote failed: ' + (err && err.message ? err.message : err));
+  }
 }
 
 function updateChildrenBadge() {

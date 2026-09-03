@@ -262,6 +262,112 @@ async def wait_for_delegation(
 
 
 # ---------------------------------------------------------------------------
+# M1.4+M1.5 step 3: Human promotion (review -> done)
+# ---------------------------------------------------------------------------
+#
+# A delegation that reaches ``review`` stays there until a human
+# promotes it. R2's cross-review will call this same endpoint
+# programmatically (the API is the automation seam). The plan
+# (``docs/M1_4_5_PLAN.md`` step 3) extends the "human merges" rule
+# to lifecycle promotion: the only path to ``done`` is this endpoint.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/delegations/{delegation_id}/promote")
+async def promote_delegation(
+    delegation_id: str, state: AppState = Depends(get_state)
+):
+    """Promote a delegation from ``review`` to ``done`` (M1.4+M1.5 step 3).
+
+    Only valid from ``review``; any other status returns 409. The
+    delegation store is updated, the trace records ``status_changed``,
+    ``delegation.status_changed`` is published on the WS event bus,
+    and the bridged ``ChildSession.status`` (if any) is updated to
+    ``done`` so the UI's Children tab reflects the new state.
+    """
+    # Find the delegation across all known per-project stores.
+    for store in _all_stores(state):
+        rec = store.get(delegation_id)
+        if rec is None:
+            continue
+        if rec.status != "review":
+            raise HTTPException(
+                409,
+                f"delegation '{delegation_id}' is in status '{rec.status}'; "
+                "only 'review' can be promoted to 'done'",
+            )
+        # Update the store. Use the same field set the runner uses
+        # for its own _transition: status, completed_at, updated_at.
+        from datetime import datetime as _dt
+        await store.update(
+            delegation_id,
+            status="done",
+            completed_at=_dt.now(),
+        )
+        # Trace + WS: mirror the runner's _transition vocabulary so
+        # observers (UI, R6) get the same shape they already consume.
+        if state.event_bus is not None:
+            await state.event_bus.publish(
+                "delegation.status_changed",
+                {
+                    "delegation_id": delegation_id,
+                    "status": "done",
+                    "agent": rec.agent,
+                    "task_id": rec.task_id,
+                },
+            )
+        # Trace log: same shape as JobRunner._transition.
+        from sweave.runtime.trace_log import TraceLog
+
+        trace = TraceLog(delegation_id, base_dir=state.traces_dir)
+        trace.append(
+            "status_changed",
+            {"status": "done", "agent": rec.agent, "source": "human_promote"},
+        )
+        trace.close()
+        # UI v1 compat bridge: update the ChildSession.status in the
+        # parent session so the Children tab re-renders. The bridge
+        # write-through is best-effort: a missing parent (orphan
+        # delegation) leaves the child stale; R4 removes the bridge.
+        _sync_bridged_child_status(state, delegation_id, "done")
+        return store.get(delegation_id).to_dict()  # type: ignore[union-attr]
+    raise HTTPException(404, f"Delegation '{delegation_id}' not found")
+
+
+def _sync_bridged_child_status(
+    state: AppState, delegation_id: str, new_status: str
+) -> None:
+    """Update the bridged ChildSession.status for a promotion.
+
+    The runner wrote a ``ChildSession`` carrying ``delegation_id`` on
+    submit (M1.1 step 4 bridge). The Children tab reads from the
+    session, not the delegation directly, so a status change on the
+    delegation needs to be mirrored back to the child entry for the
+    UI to update.
+
+    Walk every session known to the project manager; for the one whose
+    ``children`` includes a child with our ``delegation_id``, set its
+    status and persist. The walk is cheap (sessions are in-memory; the
+    typical project has one or two active sessions at a time) and
+    avoids needing to thread the parent_session_id through the
+    delegation record.
+    """
+    from sweave.projects import project_manager
+
+    if project_manager is None:
+        return
+    for proj in project_manager.list_projects():
+        for session in project_manager.list_sessions(proj.name):
+            mutated = False
+            for child in session.children:
+                if child.delegation_id == delegation_id:
+                    child.status = new_status
+                    mutated = True
+            if mutated:
+                project_manager.save_session(session)
+
+
+# ---------------------------------------------------------------------------
 # SubAgentRun (M1.1 step 4): ephemeral, capped. R2's /investigate is the
 # primary consumer; M1.1 ships the API surface but no orchestrator-side
 # caller yet. ``project_name`` is the same default-as-v2-task contract

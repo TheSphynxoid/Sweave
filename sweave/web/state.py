@@ -92,6 +92,12 @@ class AppState:
     # routers in step 3 use it for /api/specialists CRUD. May be ``None``
     # before lifespan (e.g. in tests that build the AppState directly).
     specialist_resolver: Any = None  # type: ignore[assignment]
+    # Trace log directory (M1.4+M1.5 step 3). Set in lifespan so the
+    # ``POST /api/delegations/{id}/promote`` endpoint can write the
+    # ``status_changed`` event without rebuilding the path. Default is
+    # the same ``~/.sweave/traces`` the runner uses; tests may point
+    # this at a temp dir.
+    traces_dir: Path = field(default_factory=lambda: Path.home() / ".sweave" / "traces")
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":
