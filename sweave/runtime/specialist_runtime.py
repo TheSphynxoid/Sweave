@@ -289,6 +289,23 @@ class SpecialistRuntime:
 
             # Send (the harness handles stream + terminal detection)
             result = await self._send_message(process, body, trace)
+            # Record which model was actually used for this delegation
+            # (M1.4+M1.5 step 1: surface the resolved ModelRef on the
+            # trace so observers can audit what ran; useful for
+            # debugging switch semantics and for R6 dispatch eval).
+            used = model_ref or specialist.model_ref
+            trace.append(
+                "model_used",
+                {
+                    "model_ref": dict(used) if used is not None else None,
+                    "model_wire": model_body,
+                    "source": (
+                        "task_override" if model_ref
+                        else "specialist.current_model" if (specialist.model_ref)
+                        else "none"
+                    ),
+                },
+            )
             return result
 
     async def _build_process(

@@ -19,6 +19,8 @@ from .base import (
     AgentProcess,
     Message,
     AgentResult,
+    ModelRef,
+    model_ref_to_wire,
     harness_registry,
 )
 
@@ -144,6 +146,14 @@ class OpenCodeProcess:
         output. Streaming errors (e.g. ``AI_APICallError: Cannot connect
         to API``) are surfaced verbatim so the M1.prep trace captures
         the real failure.
+
+        **Model-per-request (M1.4+M1.5 step 1).** When ``message.model``
+        is set, it wins over ``self.spec.model`` for this one
+        invocation -- the runtime resolves the model at submit time and
+        the per-message override is the contract for any caller that
+        needs a different model on a single turn (e.g. mid-session
+        model switch). The override is a :class:`ModelRef` so
+        structured ``{providerID, modelID}`` survives.
         """
         try:
             session_id = await self._ensure_session()
@@ -152,7 +162,19 @@ class OpenCodeProcess:
             body: dict[str, Any] = {
                 "parts": [{"type": "text", "text": message.content}],
             }
-            if self.spec.model:
+            # Per-message model override beats spec.model (M1.4+M1.5
+            # step 1). Both paths funnel through the same wire builder
+            # so the structured-vs-bare fallback stays in one place.
+            if message.model is not None:
+                wire_model = model_ref_to_wire(message.model)
+                if wire_model is not None:
+                    body["model"] = wire_model
+                elif message.model.get("model_id"):
+                    # Structured-but-incomplete ref (provider missing)
+                    # falls back to the bare-name path with a warning
+                    # emitted at the runtime, not here.
+                    body["model"] = message.model["model_id"]
+            elif self.spec.model:
                 provider_id, model_id = _parse_provider_model(self.spec.model)
                 if provider_id and model_id:
                     body["model"] = {"providerID": provider_id, "modelID": model_id}

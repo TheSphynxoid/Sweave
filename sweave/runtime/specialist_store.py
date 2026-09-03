@@ -47,12 +47,33 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 import yaml
 
 from sweave.agents.loader import AGENTS_DIR, AgentDefinition, load_seed_agents
+from sweave.harness.base import ModelRef, model_ref_to_wire
 from sweave.runtime.locking import atomic_write_json_sync
+
+# Re-exported from sweave.harness.base for backward compatibility
+# (M1.4+M1.5 step 1: ModelRef + model_ref_to_wire became the harness
+# contract type so all harnesses and the runtime can speak the same
+# shape; specialist_store is no longer the canonical home).
+__all__ = [
+    "ModelRef",
+    "model_ref_to_wire",
+    "parse_model_ref",
+    "_parse_stored_model",
+    "Specialist",
+    "GlobalSpecialistStore",
+    "ProjectSpecialistStore",
+    "SpecialistResolver",
+    "resolve_orchestrator",
+    "ORCHESTRATOR_NAME",
+    "ORCHESTRATOR_ROLE_REF",
+    "VALID_NAME",
+    "SCHEMA_VERSION",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -76,34 +97,6 @@ def _validate_name(name: str) -> None:
         raise ValueError(
             f"invalid specialist name: {name!r} (lowercase alphanumeric + _-; 1-63 chars)"
         )
-
-
-class ModelRef(TypedDict, total=False):
-    """Model reference for the v2 opencode body (M1.3 K-revised).
-
-    The user's ``opencode.json`` may declare multiple providers (ollama,
-    gmi/gmicloud, zai, openrouter, opencode, etc.). The v2 protocol
-    requires the ``body["model"]`` field to be either ``null`` or a
-    structured ``{providerID, modelID}`` object — bare model names are
-    rejected with 400 (per M1.3 step 0 probe 5b).
-
-    The :class:`Specialist` record stores the model as ``ModelRef``;
-    the harness reads it and builds the v2 body shape. A v1 record
-    (bare string) is migrated to ``ModelRef(provider=None,
-    model_id=<bare string>)`` and the harness emits a warning when
-    routing to a non-default provider (probe 5b proved the bare fallback
-    would 400 on multi-provider configs).
-
-    * ``provider`` — the opencode provider id (e.g. ``ollama``, ``gmi``,
-      ``zai``, ``opencode``). When None, the harness falls back to the
-      unqualified-name path AND the opencode serve's own default
-      provider resolution; this is the legacy M1.0 path and may 400 on
-      multi-provider configs (warning fires once per session).
-    * ``model_id`` — the model id within the provider (e.g.
-      ``qwen3:8b``, ``MiniMaxAI/MiniMax-M3``, ``glm-5.3``).
-    """
-    provider: str
-    model_id: str
 
 
 def parse_model_ref(raw: "str | dict | None") -> ModelRef | None:
@@ -155,23 +148,6 @@ def _parse_stored_model(raw: "str | None") -> ModelRef | None:
             provider=obj.get("provider"), model_id=obj.get("model_id")
         )
     return parse_model_ref(raw)
-
-
-def model_ref_to_wire(ref: ModelRef | None) -> "dict[str, str] | None":
-    """Convert a :class:`ModelRef` to the v2 ``body["model"]`` shape.
-
-    Returns the structured ``{providerID, modelID}`` dict when both
-    fields are set (the v2 protocol's expected shape), or ``None``
-    when the ref is empty / incomplete (caller falls back to the
-    unqualified-name path or null).
-    """
-    if ref is None:
-        return None
-    provider = ref.get("provider")
-    model_id = ref.get("model_id")
-    if not provider or not model_id:
-        return None
-    return {"providerID": provider, "modelID": model_id}
 
 
 @dataclass
