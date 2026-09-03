@@ -74,6 +74,19 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
    from disk, but Python changes need restart; users must hard-reload (Ctrl+Shift+R).
 8. First-match routing: rules.yaml order matters; templates resolve against the config
    object via dotted path (router.py `_resolve_template`).
+9. **Runtime test files that drive `SpecialistRuntime.run` end-to-end MUST
+   set `SWEAVE_MOCK_OPENCODE=1`** (the existing seam) via a module-scoped
+   autouse fixture. Without it, `ServeRunner.start()` spawns a real
+   `opencode serve` subprocess, which occasionally fails to bind
+   (`RuntimeError: opencode serve exited early`) under full-suite load
+   and turns the test order-dependent. The fixture is already wired
+   in `tests/test_m1_3_step3_job_runner_integration.py`,
+   `tests/test_m1_4_5_step1_model_ref_contract.py`, and
+   `tests/test_m1_4_5_step2_switch_semantics.py`. A regression test
+   (`test_runtime_runner_is_mocked_no_real_subprocess`) pins the
+   invariant: removing the fixture makes the test fail immediately.
+   If you add a new runtime-path test file, copy the fixture from
+   one of those three.
 
 ## Running & testing
 ```bash

@@ -38,8 +38,8 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-08-30)
-- **269/269** in `pytest tests/` (source of truth for logic tests; +62 since M1.2)
+### Test Results (All Passing - verified 2026-09-03)
+- **295/295** in `pytest tests/` (source of truth for logic tests; +26 since M1.3)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
 - **8/8** in `test_browser.py` (file browser API)
@@ -52,7 +52,7 @@
 - **Stop with**: `python stop_server.py` (from repo root — web.pid is CWD-relative)
 - **Logs**: `web.log` / `web_err.log`
 
-### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2)
+### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
 - ✅ **M1.prep** — all 8 steps (9 commits)
 - ✅ **M1.0 Live serve probe** — done: v2 HTTP API + per-message model +
   chunked JSON stream consumption. Its leftovers (session resume across
@@ -92,6 +92,82 @@
   run.py --check; 40/40 test_full; 8/8 test_browser; ALL GREEN
   test_agents_loader.
 - ▶ **Next**: M1.3 shared serve + durable context (per DESIGN.md §6 R1)
+- ✅ **M1.4+M1.5 Lifecycle promotion + model-at-request-time** — done
+  2026-09-03 per `docs/M1_4_5_PLAN.md` (merged; M1.4 is folded into
+  M1.5). Rulings locked 2026-08-30:
+  - **Human promotes**: a delegation reaching `review` stays there
+    until the user promotes it (`review → done`) via
+    `POST /api/delegations/{id}/promote` (or the Children-tab "Mark
+    done" button — same endpoint). R2's cross-review later automates
+    the verdict; the API is the automation seam. Extends the
+    human-merges rule to lifecycle promotion.
+  - 5 steps:
+    1. Flake fix + `_active_agents` audit. The M1.3 step 3 runtime
+       tests let `ServeRunner.start()` spawn a real opencode serve
+       subprocess even though the tests only assert on the wire shape
+       — that was the leak source for the order-dependent
+       `test_job_runner_runtime_path_legacy_model_string` flake.
+       Fix: a module-scoped autouse fixture pins
+       `SWEAVE_MOCK_OPENCODE=1` for the whole file. The runner no-ops
+       into a sentinel (`port=0`, no subprocess, `base_url="http://mock-opencode"`)
+       and `_build_process` returns a stub `OpenCodeProcess`. New
+       regression test `test_runtime_runner_is_mocked_no_real_subprocess`
+       pins the invariant: removing the fixture makes the test fail
+       immediately at the env-var assertion. `_active_agents` audit:
+       grep confirmed no external consumers; dead dict + `attach_agent`
+       method removed from `sweave/tools/__init__.py`. M1.3's
+       `ServeRunnerRegistry` owns process lifecycle.
+    2. `ModelRef` + `model_ref_to_wire` moved to
+       `sweave/harness/base.py` (the contract type, R3-ready). The
+       `specialist_store` module re-exports for backward compatibility
+       (no API break). `Message` gains `model: ModelRef | None = None`;
+       `OpenCodeProcess.send` prefers `message.model` over `spec.model`
+       (per-message beats spawn-time). `AgentProcess` protocol
+       docstring: model-per-request is contract; R3 adapters implement
+       per-invocation flags (claude `--model`, codex `-m`). Trace
+       records `model_used` on every delegation completion
+       (source: task_override / specialist.current_model / none).
+    3. Switch semantics: `PUT /api/specialists/{name}/model` while a
+       specialist is running is accepted + stored; because every
+       delegation resolves its model at submit, the switch applies to
+       the NEXT delegation, never mid-task. Test pins the queued
+       application: submit A (model=m1) → mutate
+       specialist.current_model (equivalent to PUT) → submit B
+       (model=None) → B uses the NEW model. 4-level chain verified
+       end-to-end incl. `orchestrator.default` final fallback (same
+       pattern as `test_m1_2_step2`; the chain itself is already
+       covered there — this test pins the post-M1.3 invariant). WS
+       `model.changed` payload shape (`{name, model, scope}`) pinned
+       by source inspection.
+    4. **Human promotion (review → done)**:
+       - `POST /api/delegations/{id}/promote` — valid only from
+         `review` (409 from queued/running/done/failed; 404 unknown);
+         sets status=done + completed_at; trace
+         `status_changed` (source=human_promote); WS
+         `delegation.status_changed`; bridged `ChildSession.status`
+         synced to `done` so the UI Children tab re-renders.
+       - UI v1: "Mark done" button on Children-tab delegation
+         entries; visible only for `child.status === 'review' && child.delegation_id`;
+         click handler posts to the promote endpoint and mirrors the
+         new status locally. OffsetParent-verified by
+         `test_promote_ui.js` (Playwright headless Edge).
+       - **R2 note**: cross-review will call this same endpoint
+         programmatically. The API is the automation seam; no
+         R2-specific code lives here.
+    5. Gates: 295/295 pytest (was 269; +26 across 2 new test files);
+       13/13 `run.py --check`; 40/40 `test_full`; suite 3× consecutive
+       green. **Live spot-check** (gmi, tiny): 3 delegations to
+       `backend` all reached `review`; one promoted via API → status
+       `done`; process count stable (1 python proc before, 1 after);
+       no leaks; server still responsive. New files:
+       `tests/test_m1_4_5_step1_model_ref_contract.py` (8),
+       `tests/test_m1_4_5_step2_switch_semantics.py` (5),
+       `tests/test_m1_4_5_step3_promote.py` (12; 10 promotion-matrix
+       + 2 UI source pins; the 4-parametrize blocked-status cases
+       count as one test function), `test_promote_ui.js` (Playwright
+       smoke). 6 new commits on `master` (steps 0, 1, 2, 3, plan/CONTEXT
+       scaffolding). M1.4+M1.5 done.
+- ▶ **Next**: M1.6 DelegationManager + deferral (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`

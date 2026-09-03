@@ -84,7 +84,15 @@ Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, mod
   OpenCode implements it per-message (providerID/modelID); claude/codex adapters via
   per-invocation flag/config. Switching while idle → next request; while running →
   queued for next request (never mid-request). Precedence: per-task override >
-  specialist.current_model > role default (models.yaml).
+  specialist.current_model > role_ref (models.yaml) > orchestrator.default.
+- **Human promotes review-done** (M1.4+M1.5, ruling 2026-08-30). A delegation
+  reaching `review` stays there until a human promotes it via
+  `POST /api/delegations/{id}/promote` (or clicks the Children-tab "Mark done"
+  button — same endpoint). R2's cross-review automates the verdict by calling
+  the same endpoint programmatically; the API is the automation seam. Extends
+  the "human merges" rule to lifecycle promotion: the only path to `done` is
+  this endpoint. The runtime's `success → review` transition (M1.3 step 4) is
+  the half-way mark; promotion completes the cycle.
 - **Runtime shape**: one shared `opencode serve` per project hosting all specialist
   sessions (HTTP), instead of one process per child run; idle specialists keep their
   session, only processes are shared.
@@ -166,12 +174,12 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | RuleRouter matching + `{{templates}}` | ✅ | first-match regex/keyword |
 | RuleRouter `_llm_fallback` | ⚠️ | keyword heuristic, no LLM call |
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |
-| Agent lifecycle (wait/terminate/attach) | ✅ | M1.3 — wait returns the final Delegation; terminate kills the per-specialist serve on idle TTL; attach delegates to SpecialistRuntime (M1.4+); _active_agents no longer needed (the registry owns the runners) |
+| Agent lifecycle (wait/terminate/attach) | ✅ | M1.3 + M1.4+M1.5 — wait returns the final Delegation; terminate kills the per-specialist serve on idle TTL; attach delegates to SpecialistRuntime; `_active_agents` removed (M1.4+M1.5 step 0 — the registry owns the runners; dead dict audited + deleted) |
 | Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing — M1.7) |
 | Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
 | `/ws` realtime | ✅ | `webspaces` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
-| OpenCode spawn path | ✅ | M1.0 + M1.3 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly |
+| OpenCode spawn path | ✅ | M1.0 + M1.3 + M1.4+M1.5 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly; **M1.4+M1.5 step 1** promotes `ModelRef` + `model_ref_to_wire` into `harness/base.py` (the contract type) and `Message` gains `model: ModelRef \| None` (per-message beats spawn-time) |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
@@ -184,8 +192,9 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
 | **SubAgentRun (ephemeral, capped)** | ✅ | M1.1 — `runtime/subagent_store.py`; per-process, in-memory, FIFO-capped at 500; serves R2's `/investigate` |
 | **UI v1 compat bridge (ChildSession)** | ✅ | M1.1 — `ChildSession.delegation_id` field + JobRunner bridge write on submit; R4 removes the bridge |
-| **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 — 122 tests across 14 files; `pytest` is the new source of truth |
-| Git history | ✅ | M1.prep + M1.0 + M1.1 — 13 commits; `docs/M1_PREP_PLAN.md` + `docs/M1_1_PLAN.md` are the plans of record |
+| **Human promotion (review → done) endpoint** | ✅ | M1.4+M1.5 — `POST /api/delegations/{id}/promote`; 409 from non-review; 404 unknown; trace `status_changed` (source=human_promote); WS `delegation.status_changed`; bridged `ChildSession.status` synced to `done`; Children-tab "Mark done" button (review only, offsetParent-verifiable). **R2's cross-review calls this same endpoint programmatically** — the API is the automation seam |
+| **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 295 tests across 27 files; `pytest` is the source of truth |
+| Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
 
@@ -303,18 +312,41 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   `tests/test_m1_3_step5_live_gate.py` (run by hand when a working
   opencode + provider is available — the probe results doc is the
   manual proof for now).
-- **M1.4 Lifecycle completion** - **folded into M1.5** (`docs/M1_4_5_PLAN.md`,
-  ruling 2026-08-30): M1.3 pre-delivered completion detection, stuck detection v1
-  (turn timeout), real attach, serve lifecycle. Remainder: hermetic flake fix,
-  `_active_agents` audit, **human promotes review-done** (API + Children-tab button;
-  R2 cross-review automates via the same endpoint). Gate: 3 consecutive delegations
-  reach review/failed cleanly, promotion works, no process leaks.
-- **M1.5 Model at request time** (~1, planned: `docs/M1_4_5_PLAN.md`): ModelRef
-  promoted into the harness contract (base.py; R3 adapters implement per-invocation),
-  switch semantics enforced (idle immediate / running queued - submit-time resolution
-  makes this structural), 4-level chain proven end-to-end incl. `orchestrator.default`.
+- **M1.4 Lifecycle completion** — ✅ done 2026-09-03 (folded into M1.5 —
+  `docs/M1_4_5_PLAN.md`, ruling 2026-08-30). M1.3 pre-delivered completion
+  detection, stuck detection v1 (turn timeout), real attach, serve
+  lifecycle. This plan delivered: **hermetic flake fix** (M1.3 step 3
+  runtime tests now set `SWEAVE_MOCK_OPENCODE=1` via a module-scoped
+  autouse fixture — the real-subprocess leak source is gone, pinned by
+  `test_runtime_runner_is_mocked_no_real_subprocess`), **`_active_agents`
+  audit** (removed; M1.3's `ServeRunnerRegistry` owns process
+  lifecycle — grep confirmed no external consumers), and **human
+  promotes review-done** (new `POST /api/delegations/{id}/promote`
+  endpoint — only valid from `review`; Children-tab "Mark done"
+  button visible only for `review` records; bridged `ChildSession`
+  status synced to `done` so the UI re-renders; **R2 cross-review
+  automates via the same endpoint**). Live spot-check: 3 delegations
+  to one specialist all reached `review`, one promoted via API, no
+  process leaks. 295 pytest across 27 files (was 269; +26); 13/13
+  `run.py --check`; 40/40 `test_full`; suite 3× consecutive green.
+- **M1.5 Model at request time** — ✅ done 2026-09-03 (merged with
+  M1.4, `docs/M1_4_5_PLAN.md`). `ModelRef` + `model_ref_to_wire`
+  promoted to the harness contract (`harness/base.py`); `Message`
+  gains optional `model: ModelRef | None`; `OpenCodeProcess.send`
+  prefers `message.model` over `spec.model` (per-message beats
+  spawn-time). `specialist_store` re-exports for backward
+  compatibility (no API break). Switch semantics enforced and tested:
+  `PUT /api/specialists/{name}/model` accepts + stores mid-task; the
+  switch applies to the NEXT delegation (submit-time resolution
+  makes this structural), never mid-task. 4-level chain verified end-
+  to-end incl. `orchestrator.default` final fallback. Trace records
+  `model_used` on every delegation completion (source:
+  task_override / specialist.current_model / none) — useful for
+  debugging switch semantics and R6 dispatch eval. 295 pytest, 13/13
+  `run.py --check`, 40/40 `test_full` green.
   Cost-budget enforcement: local tiktoken estimates by default;
-  **Cloudflare AI Gateway** as opt-in native enforcement for cloud providers (§8 map).
+  **Cloudflare AI Gateway** as opt-in native enforcement for cloud
+  providers (§8 map).
 - **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
   protocol (prompt convention + output parser), orchestrator-mediated spawn, depth cap
   (default 2), loop detection on the deferral chain, per-chain budget; deferrals recorded
