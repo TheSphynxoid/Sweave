@@ -347,11 +347,14 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   Cost-budget enforcement: local tiktoken estimates by default;
   **Cloudflare AI Gateway** as opt-in native enforcement for cloud
   providers (§8 map).
-- **M1.6 DelegationManager + deferral** (~1.5): structured `defer{target, task}`
-  protocol (prompt convention + output parser), orchestrator-mediated spawn, depth cap
-  (default 2), loop detection on the deferral chain, per-chain budget; deferrals recorded
-  as Delegations with parent_task_id. Gate: mocked-harness unit tests (defer/loop/depth/
-  budget).
+- **M1.6 DelegationManager + deferral** (~2, planned in detail:
+  `docs/M1_6_PLAN.md`): **defer = real MCP tool** (ruling 2026-08-30 — no JSON
+  parsing): `sweave/mcp` stdio server exposes `defer(target, task)` + 
+  `list_specialists()` to the orchestrator's opencode session; DelegationManager
+  enforces depth 2, loop detection on the chain, 200K-token coordination budget
+  (specialist internal work excluded — cap targets runaway coordination, not work).
+  Delegation v3 (depth, chain_root_id, coordination_tokens) + parent gates on
+  children before review. Gate: mocked unit tests + one live end-to-end defer.
 - **M1.7 Orchestrator chat loop** (~1.5): messages endpoint routes through the
   orchestrator specialist (per-session context), delegation via M1.6, replies persisted;
   polling status (ws broadcast bonus). Gate: E2E — chat → orchestrator reply → delegation
@@ -459,6 +462,7 @@ runtimes). Every adoption gets recorded here.
 | Chain cost budgets | `tiktoken` | token counting for per-chain budget enforcement (approximate for non-OpenAI BPE — fine for budgets) | M1.6 |
 | 3-way merge simulation | `merge3` | diff3 merge without touching git — resolution-queue payload + Stage-0 overlap checks | R2 |
 | Harness tests w/o live opencode | `respx` | httpx mocking; test spawn/send logic deterministically | M1 tests |
+| MCP server SDK | `mcp` (modelcontextprotocol python SDK) | official SDK for the sweave defer/list_specialists stdio server the orchestrator's opencode session calls (M1.6) — MIT, small, no loop ownership | M1.6 |
 
 ### Deliberately NOT adopted (and why)
 | Category | Candidates | Why not |
