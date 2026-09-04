@@ -394,6 +394,12 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - **M1.8 Streaming** (~1): orchestrator chat + specialist output streamed over `/ws`
   (SSE fallback); delegation progress events from M1.prep's event vocabulary. Gate:
   chat replies render incrementally.
+- **M1.9 Dogfood pass** (~0.5-1, added 2026-09-04): minimal daily-driver polish before
+  any feature work resumes - Children tab live tree status (WS events), per-delegation
+  detail view reading its JSONL trace, promote buttons on every review record, chat
+  streaming polish. Purpose: warm-up + **the user daily-drives Sweave on real work**;
+  the friction list becomes the requirements input for R4 (UI v2). Gate: the user
+  completes one real task end-to-end through the UI and files the friction list.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.
@@ -407,7 +413,13 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   issues loop back as fixes. (Same-vendor rule becomes: reviewer model ≠ implementer
   model, later different harness.) Cross-review is also the semantic-conflict layer Git
   cannot see (e.g. frontend calls an API backend didn't add).
-- `/investigate`: read-only SubAgentRuns (no worktree, no PR), synthesized findings.
+- `/investigate` - **DEMOTED 2026-09-04 (user challenge accepted)**: opencode's
+  native `task` tool already spawns subagents for generic exploration inside a
+  specialist's own session, so a separate Sweave skill adds little today. Revisit
+  **when the custom agent runtime exists (R6+)** - there `/investigate` becomes a
+  first-class runtime capability with Sweave-side visibility (SubAgentRun tracking),
+  cross-session memory retention of findings, and parallel codebase-wide synthesis.
+  The M1.1 `SubAgentRun` machinery stays as infrastructure until then.
 - Skills = skills/{name}/SKILL.md conventions + delegation presets; human merges main,
   always.
 - **Resolution queue** (from the 2026-08-29 architecture discussion): async queue with
