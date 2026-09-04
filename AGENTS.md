@@ -33,15 +33,22 @@ The planning session's method is outside what this document covers.
    gotchas + the prior plan's commit log + the relevant code). The plan's
    "Starting point" section tells you what to read.
 2. **Check the plan for coherence and consistency against current state.**
-   Verify the "starting point" still holds; the rulings still hold; the file
-   paths and module names still match; the test counts in the gate still match;
-   the explicit non-goals still hold. If anything is inconsistent, surface the
-   discrepancy to the user before executing. Don't silently execute against a
-   stale plan.
+   Run a consistency audit before executing: verify the "starting point"
+   still holds; the rulings still hold; the file paths and module names
+   still match; the test counts in the gate still match; the explicit
+   non-goals still hold. Classify every finding as *accurate* /
+   *amend-plan* / *ask-user* and report with file:line evidence. If
+   anything is inconsistent, surface the discrepancy to the user before
+   executing. Don't silently execute against a stale plan.
 3. **Confirm the plan's design with the user; ask for clarification on details.**
    The plan is a living document — refine it through discussion when details
    are ambiguous or the planning session didn't cover something. The execution
    session refines; it doesn't redesign the milestone's architecture.
+   If execution justifies a deviation from the plan, **amend the plan**
+   (user-locked: "if you deviated from the plan, and you can justify it,
+   then amend the plan") — document the deviation in the plan's own
+   amendment/deviation section, and keep it to one per milestone where
+   possible.
 4. **Execute the steps in order, with the agreed refinements.** Each step has
    its own commit, named for the step (e.g. "M1.7 step 1: ..."). Tests first
    when the plan calls for it. Run the step's gate (tests + run.py + test_full
