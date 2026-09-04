@@ -143,10 +143,10 @@ class Session:
     memory_bank: str = ""
 
     # M1.7 step 1: per-Session orchestrator binding.
-    # schema_version is bumped to 2 once Step 4 adds
-    # last_memory_recall_ts / last_git_snapshot. For now legacy
-    # session files (no schema_version) load as v1 with the field
-    # defaults below.
+    # schema_version is bumped to 2 in step 4 once the
+    # last_memory_recall_ts / last_git_snapshot fields land. For now
+    # legacy session files (no schema_version) load as v1 with the
+    # field defaults below.
     schema_version: int = 1
     # The orchestrator's durable opencode session id (M1.7 step 1;
     # replaces the per-Project Specialist.session_id binding that
@@ -154,6 +154,16 @@ class Session:
     # -- three Sweave sessions get three independent orchestrator
     # contexts.
     orchestrator_session_id: str | None = None
+    # M1.7 step 4: the multi-source "what's new" delta. The runtime
+    # uses these to compute the per-turn "what's new" section of the
+    # composed prompt: memory entries with ts > last_memory_recall_ts,
+    # plus git diff since last_git_snapshot. Set on first recall /
+    # first snapshot; updated on each subsequent turn. None means
+    # "no prior turn" (the runtime initialises last_memory_recall_ts
+    # to "now" on the first turn of a new session -- the user
+    # doesn't want a flood of historical entries as their first view).
+    last_memory_recall_ts: datetime | None = None
+    last_git_snapshot: str | None = None
 
     def __post_init__(self):
         if not self.memory_bank:
@@ -197,14 +207,25 @@ class Session:
             "memory_bank": self.memory_bank,
             "schema_version": self.schema_version,
             "orchestrator_session_id": self.orchestrator_session_id,
+            "last_memory_recall_ts": (
+                self.last_memory_recall_ts.isoformat()
+                if self.last_memory_recall_ts is not None
+                else None
+            ),
+            "last_git_snapshot": self.last_git_snapshot,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Session":
-        # M1.7 step 1: legacy session files (pre-M1.7) lack
-        # schema_version / orchestrator_session_id; the dataclass
-        # defaults apply. schema_version is bumped to 2 once Step 4
-        # adds last_memory_recall_ts / last_git_snapshot.
+        # M1.7: legacy session files (pre-M1.7) lack schema_version /
+        # orchestrator_session_id / last_memory_recall_ts /
+        # last_git_snapshot; the dataclass defaults apply.
+        last_recall_raw = data.get("last_memory_recall_ts")
+        last_recall = (
+            datetime.fromisoformat(last_recall_raw)
+            if isinstance(last_recall_raw, str)
+            else last_recall_raw
+        )
         session = cls(
             id=data["id"],
             project_name=data["project_name"],
@@ -217,6 +238,8 @@ class Session:
             memory_bank=data.get("memory_bank", ""),
             schema_version=data.get("schema_version", 1),
             orchestrator_session_id=data.get("orchestrator_session_id"),
+            last_memory_recall_ts=last_recall,
+            last_git_snapshot=data.get("last_git_snapshot"),
         )
         session.messages = [Message.from_dict(m) for m in data.get("messages", [])]
         session.children = [ChildSession.from_dict(c) for c in data.get("children", [])]

@@ -67,6 +67,13 @@ class ChatLoop:
         turn_timeout: float = 900.0,
         model_resolver: Callable[[str], str | None] | None = None,
         synthesis_token_cap: int = 8_000,
+        # M1.7 step 4: transcript system hooks. The ChatLoop is the
+        # composer driver; the backend hooks are passed in so the
+        # loop stays decoupled from MemoryTool / GitSnapshotter.
+        memory_recall: Any = None,
+        memory_bank_id_resolver: Callable[[str], str | None] | None = None,
+        memory_whats_new_recall: Any = None,
+        git_snapshotter: Any = None,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -83,10 +90,18 @@ class ChatLoop:
         # M1.7 step 3: synthesis prompt token cap. The synthesis
         # prompt is the per-section budget for the orchestrator's
         # second turn (per-child truncation is oldest-first when
-        # the total overflows). Step 4 will introduce per-section
-        # budgets for memory, what's new, and synthesis; for now
-        # the whole prompt is bounded by this single cap.
+        # the total overflows). Step 4 added per-section budgets;
+        # this cap remains the synthesis-specific dial.
         self.synthesis_token_cap = synthesis_token_cap
+        # M1.7 step 4 transcript hooks
+        self.memory_recall = memory_recall
+        self.memory_bank_id_resolver = memory_bank_id_resolver
+        # memory_whats_new_recall(query, bank_id, since_ts, limit) ->
+        # list of entries with ts > since_ts. Distinct from
+        # memory_recall because "what's new" is a temporal query
+        # (filtered by ts), not a relevance query.
+        self.memory_whats_new_recall = memory_whats_new_recall
+        self.git_snapshotter = git_snapshotter
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -104,6 +119,45 @@ class ChatLoop:
             lock = asyncio.Lock()
             self._locks[session_id] = lock
             return lock
+
+    async def _compose_prompt(
+        self,
+        *,
+        session: Any,
+        user_content: str,
+        project_dir: Path | None,
+        children: list | None,
+    ) -> Any:
+        """Build the runtime's composed prompt for one orchestrator turn.
+
+        M1.7 step 4: the composer is the runtime's view. The LLM
+        sees what the runtime built -- curated memory, multi-source
+        "what's new", synthesis (when children), a one-paragraph
+        transcript reference, and the user message. Per-section
+        token budgets keep the prompt bounded regardless of
+        conversation length.
+        """
+        from sweave.chat.transcript import compose_turn_prompt
+
+        bank_id: str | None = None
+        if self.memory_bank_id_resolver is not None:
+            try:
+                bank_id = self.memory_bank_id_resolver(
+                    session.project_name or ""
+                )
+            except Exception:  # noqa: BLE001
+                bank_id = None
+        return await compose_turn_prompt(
+            session=session,
+            user_message=user_content,
+            project_dir=project_dir,
+            memory_bank_id=bank_id,
+            memory_backend=self.memory_recall,
+            git_snapshotter=self.git_snapshotter,
+            children=children,
+            transcript_messages=list(session.messages),
+            synthesis_budget=self.synthesis_token_cap,
+        )
 
     async def _emit(self, event: str, data: dict[str, Any]) -> None:
         if self.event_bus is not None:
@@ -292,14 +346,13 @@ class ChatLoop:
                 },
             )
 
-            # 3) Compose the first-turn orchestrator prompt. The
-            # ``caller_delegation_id`` is injected so the LLM can
-            # pass it back to the MCP ``defer`` tool.
-            first_turn_prompt = (
-                f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
-                f"{user_content}"
-            )
-
+            # 3) Build the runtime's composed prompt for the first
+            # turn (M1.7 step 4). The composer is the runtime's view;
+            # the LLM sees what the runtime built, not the bare user
+            # message. On the first turn of a new session,
+            # last_memory_recall_ts is None -> "what's new" is empty
+            # (per the plan's inter-session rules). The Session's
+            # last_memory_recall_ts is set after the turn.
             from sweave.runtime.trace_log import TraceLog
 
             trace = TraceLog(delegation_id=delegation.delegation_id)
@@ -311,18 +364,57 @@ class ChatLoop:
                 session.orchestrator_session_id = new_id
                 self.project_manager.save_session(session)
 
-            # 4) First orchestrator turn. Any child Delegations
-            # created via the defer tool land in the per-project
-            # store with parent_task_id == chat_d.delegation_id.
+            composed = await self._compose_prompt(
+                session=session,
+                user_content=user_content,
+                project_dir=project_dir,
+                children=None,
+            )
+            # The caller_delegation_id wrapper is prepended so the
+            # LLM can pass it back to MCP defer. The composed body
+            # is the runtime's view; the LLM never sees the bare
+            # user content alone.
+            first_turn_body = (
+                f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
+                + composed.to_body()
+            )
+
             first_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
                 worktree_path=project_dir or Path.home() / ".sweave",
-                message=first_turn_prompt,
+                message=first_turn_body,
                 trace=trace,
                 model_str=model_str,
                 session_id_getter=_get_orch_id,
                 session_id_setter=_set_orch_id,
+            )
+
+            # Update the Session's "what's new" anchors for the
+            # next turn. ``now`` is the post-turn timestamp; this
+            # becomes the lower bound for memory entries on the
+            # NEXT turn (the user explicitly chose this behaviour:
+            # "what's new" excludes entries seen on THIS turn).
+            session.last_memory_recall_ts = datetime.now()
+            if self.git_snapshotter is not None and project_dir is not None:
+                session.last_git_snapshot = self.git_snapshotter.snapshot(
+                    project_dir
+                )
+            self.project_manager.save_session(session)
+            # Trace what was injected and what was dropped (M1.7
+            # step 4 audit trail).
+            trace.append(
+                "composed_prompt",
+                {
+                    "memory_chars": len(composed.memory_section),
+                    "whats_new_chars": len(composed.whats_new_section),
+                    "synthesis_chars": len(composed.synthesis_section),
+                    "transcript_ref_chars": len(composed.transcript_ref),
+                    "user_chars": len(composed.user_message),
+                    "dropped_memory": len(composed.dropped_memory),
+                    "dropped_whats_new": len(composed.dropped_whats_new),
+                    "dropped_synthesis": len(composed.dropped_synthesis),
+                },
             )
             if first_turn_text.startswith("[chat error:"):
                 # First turn hard-failed (timeout, exception, etc.).
@@ -357,18 +449,24 @@ class ChatLoop:
             children = await self._wait_for_children(
                 store, delegation.delegation_id
             )
-            from sweave.chat.synthesis import build_synthesis_prompt
-
-            synthesis_prompt = build_synthesis_prompt(
+            # Re-compose the prompt for the synthesis turn; the
+            # synthesis section is now populated from the children's
+            # results, the "what's new" anchors haven't moved yet
+            # (we set them after the synthesis turn).
+            composed_synth = await self._compose_prompt(
+                session=session,
+                user_content=user_content,
+                project_dir=project_dir,
                 children=children,
-                original_user_message=user_content,
-                token_cap=self.synthesis_token_cap,
             )
             synthesis_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
                 worktree_path=project_dir or Path.home() / ".sweave",
-                message=synthesis_prompt,
+                message=(
+                    f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
+                    + composed_synth.to_body()
+                ),
                 trace=trace,
                 model_str=model_str,
                 session_id_getter=_get_orch_id,

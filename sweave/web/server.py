@@ -185,9 +185,11 @@ async def lifespan(app: FastAPI):
     # ``run_turn`` for every user message; the loop drives the
     # orchestrator specialist through the same SpecialistRuntime the
     # JobRunner uses, with Session-bound session-id callbacks (the
-    # step-1 fix). Built here so it can be wired into the routers
-    # below.
+    # step-1 fix). Step 4 wires the transcript system hooks so the
+    # runtime owns the per-turn composed prompt. Built here so it
+    # can be wired into the routers below.
     from sweave.chat.loop import ChatLoop
+    from sweave.chat.transcript import GitSnapshotter
 
     state.chat_loop = ChatLoop(
         project_manager=project_manager,
@@ -213,6 +215,13 @@ async def lifespan(app: FastAPI):
         event_bus=state.event_bus,
         turn_timeout=state.job_runner.turn_timeout,
         model_resolver=lambda agent: config_manager.resolve_model(agent),
+        # M1.7 step 4: transcript system hooks
+        memory_recall=state.memory_tool.memory,
+        memory_bank_id_resolver=lambda name: (
+            f"project-{name}" if name else "global"
+        ),
+        memory_whats_new_recall=state.memory_tool.memory,
+        git_snapshotter=GitSnapshotter(),
     )
 
     # M1.6 step 2: build the DelegationManager from the loaded config.

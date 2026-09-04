@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, Any
 import asyncio
@@ -11,16 +12,29 @@ import subprocess
 
 @dataclass
 class MemoryEntry:
-    """A single memory entry."""
+    """A single memory entry.
+
+    M1.7 step 4: ``ts`` (timestamp) is the runtime's signal for the
+    multi-source "what's new" delta. Entries written before M1.7
+    carry ``ts=None``; the runtime treats them as legacy and
+    includes them in recall output but not in the "what's new"
+    section (which is filtered by ``ts > session.last_memory_recall_ts``).
+    """
     content: str
     tags: list[str] = None
     metadata: dict[str, Any] = None
-    
+    ts: datetime | None = None
+
     def __post_init__(self):
         if self.tags is None:
             self.tags = []
         if self.metadata is None:
             self.metadata = {}
+        if self.ts is None:
+            # Default to "now" for new entries; legacy entries that
+            # were reloaded without a ts get a sentinel that
+            # includes them in any "what's new" filter.
+            self.ts = datetime.now()
 
 
 class MemoryBackend(Protocol):
