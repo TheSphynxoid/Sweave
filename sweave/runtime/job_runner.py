@@ -159,6 +159,7 @@ class JobRunner:
         depth: int = 0,
         chain_root_id: str | None = None,
         coordination_tokens: int = 0,
+        kind: str = "task",
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
@@ -184,6 +185,12 @@ class JobRunner:
           delegation's coordination traffic (orchestrator turn + defer
           payload + result summaries; specialist internal work is
           *not* counted by design).
+
+        M1.7 step 2:
+        * ``kind`` is "task" (implementation delegation, the M1.1-M1.6
+          default) or "chat" (orchestrator conversation turn; created
+          by the chat loop). Additive; pre-M1.7 records carry no
+          ``kind`` and load with "task".
         """
         delegation = Delegation(
             agent=agent,
@@ -196,6 +203,7 @@ class JobRunner:
             depth=depth,
             chain_root_id=chain_root_id,
             coordination_tokens=coordination_tokens,
+            kind=kind,
             status="queued",
         )
         store = await self._store_for(delegation)

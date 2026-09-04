@@ -231,11 +231,12 @@ def test_to_dict_serialises_datetimes():
 
 
 def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
-    """Lock the public field surface — adding a field requires bumping SCHEMA_VERSION.
+    """Lock the public field surface -- adding a field requires bumping SCHEMA_VERSION.
 
     M1.1 step 1 added the v2 fields (worktree/branch/pr_url/parent_task_id/manifest).
     M1.6 step 2 added the v3 fields (depth/chain_root_id/coordination_tokens) for
     the deferral chain (orchestrator -> specialist -> defer -> ...).
+    M1.7 step 2 added the v4 field (kind) for the chat vs task distinction.
     """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -245,6 +246,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         "worktree_path", "branch", "pr_url", "parent_task_id", "manifest",
         # M1.6 step 2 additions
         "depth", "chain_root_id", "coordination_tokens",
+        # M1.7 step 2 addition
+        "kind",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -253,12 +256,11 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v3():
-    """M1.6 step 2: the current schema is v3 (depth/chain_root_id/
-    coordination_tokens were added on top of v2)."""
+def test_schema_version_is_v4():
+    """M1.7 step 2: the current schema is v4 (kind was added on top of v3)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
 
 
 def test_v2_to_v3_migration_fills_defaults():

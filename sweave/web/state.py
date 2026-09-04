@@ -103,6 +103,13 @@ class AppState:
     # Built once in lifespan from the loaded config; the v2 task
     # endpoint runs ``validate`` before delegating to the runner.
     delegation_manager: Any = None  # type: ignore[assignment]
+    # M1.7: ChatLoop (orchestrator conversation driver). Built in
+    # lifespan after the SpecialistRuntime + specialist_resolver are
+    # wired. The chat endpoint calls ``run_turn`` for every user
+    # message; the loop is responsible for the per-session serial
+    # queue, the Session-bound orchestrator binding (M1.7 step 1),
+    # and persisting the assistant reply.
+    chat_loop: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":

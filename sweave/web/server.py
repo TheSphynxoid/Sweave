@@ -175,9 +175,44 @@ async def lifespan(app: FastAPI):
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
     serve_registry = ServeRunnerRegistry(event_bus=state.event_bus)
-    state.job_runner.specialist_runtime = SpecialistRuntime(
+    specialist_runtime = SpecialistRuntime(
         runners=serve_registry,
         event_bus=state.event_bus,
+    )
+    state.job_runner.specialist_runtime = specialist_runtime
+
+    # M1.7 step 2: build the ChatLoop. The chat endpoint calls
+    # ``run_turn`` for every user message; the loop drives the
+    # orchestrator specialist through the same SpecialistRuntime the
+    # JobRunner uses, with Session-bound session-id callbacks (the
+    # step-1 fix). Built here so it can be wired into the routers
+    # below.
+    from sweave.chat.loop import ChatLoop
+
+    state.chat_loop = ChatLoop(
+        project_manager=project_manager,
+        specialist_runtime=specialist_runtime,
+        specialist_factory=lambda agent_name: (
+            state.specialist_resolver.resolve(
+                agent_name,
+                project_dir=(
+                    project_manager.get_project(
+                        project_manager.get_active_project().name
+                    ).path
+                    if project_manager.get_active_project() is not None
+                    else None
+                ),
+            )
+        ),
+        project_dir_resolver=lambda name: (
+            project_manager.get_project(name).path
+            if project_manager.get_project(name) is not None
+            else None
+        ),
+        delegation_stores=state.delegation_stores,
+        event_bus=state.event_bus,
+        turn_timeout=state.job_runner.turn_timeout,
+        model_resolver=lambda agent: config_manager.resolve_model(agent),
     )
 
     # M1.6 step 2: build the DelegationManager from the loaded config.

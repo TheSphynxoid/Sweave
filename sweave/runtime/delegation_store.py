@@ -41,9 +41,10 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
+SCHEMA_VERSION_V3 = 3  # M1.6 records
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -118,6 +119,11 @@ class Delegation:
     depth: int = 0  # 0 = orchestrator; +1 per defer
     chain_root_id: str | None = None  # the root of the deferral chain
     coordination_tokens: int = 0  # tiktoken estimate of coordination traffic
+    # M1.7 step 2: chat-turn kind. "task" is the implementation
+    # delegation (M1.1-M1.6); "chat" is an orchestrator conversation
+    # turn. Additive; from_dict falls back to "task" when the field
+    # is absent (pre-M1.7 v3 records).
+    kind: str = "task"  # "task" | "chat"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -129,8 +135,9 @@ class Delegation:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Delegation":
         d = dict(data)
-        # v1 -> v2 -> v3 migration chain. v1 (M1.prep) is missing
-        # every v2 field; v2 (M1.1) is missing every v3 field. The
+        # v1 -> v2 -> v3 -> v4 migration chain. v1 (M1.prep) is
+        # missing every v2 field; v2 (M1.1) is missing every v3
+        # field; v3 (M1.6) is missing the v4 ``kind`` field. The
         # trace log + status fields are enough to reconstruct what
         # happened; the missing worktree/branch/PR are only meaningful
         # for "review" or later delegations, and any such v1 record is
@@ -138,12 +145,14 @@ class Delegation:
         schema_version = int(d.get("schema_version") or SCHEMA_VERSION_PREP)
         if schema_version < SCHEMA_VERSION_V2:
             d = _migrate_v1_to_v2(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V3:
             d = _migrate_v2_to_v3(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v3_to_v4(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
-        # version so the in-memory object matches what a fresh v3 record
-        # looks like. (Roundtripping a v1 record should produce a v3.)
+        # version so the in-memory object matches what a fresh v4 record
+        # looks like. (Roundtripping a v1 record should produce a v4.)
         d["schema_version"] = SCHEMA_VERSION
         # Datetime parsing
         for k in ("created_at", "updated_at", "started_at", "completed_at"):
@@ -187,6 +196,18 @@ def _migrate_v2_to_v3(d: dict[str, Any]) -> dict[str, Any]:
     d.setdefault("depth", 0)
     d.setdefault("chain_root_id", None)
     d.setdefault("coordination_tokens", 0)
+    return d
+
+
+def _migrate_v3_to_v4(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v3 record forward to the v4 field set (M1.7 step 2).
+
+    v3 records predate the chat vs task distinction (M1.7 step 2):
+    they have no ``kind`` field. Every pre-M1.7 delegation was by
+    definition a task delegation -- chat delegations only exist from
+    the chat loop (kind="chat"). So we default to "task".
+    """
+    d.setdefault("kind", "task")
     return d
 
 
