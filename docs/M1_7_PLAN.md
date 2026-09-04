@@ -1,11 +1,55 @@
 # M1.7 — Orchestrator chat loop (execution plan)
 
-Status: planned, not started. Est. ~2.2 sessions (was ~1.5; grew by ~0.7 to absorb the
+Status: **done 2026-09-04**. Est. ~2.2 sessions (was ~1.5; grew by ~0.7 to absorb the
 transcript system + memory curation + multi-session "what's new" as a step — interpretation
 #1 of the earlier thread, refined through the opencode-docs discussion and the
 timestamped-memory + multi-source "what's new" convergence). Predecessors: M1.prep →
 M1.6 all ✅. Inherits M1.6's deferred synthesis scope and fixes the §2.1 context-scope
 wrinkle as a dedicated step. Supersedes the DESIGN.md §6 R1 M1.7 bullet.
+
+## Execution summary
+
+5 steps landed as 5 commits (after the AGENTS audit-boundary amendment and the
+DESIGN estimate refresh):
+
+1. **Step 1** — per-Session orchestrator binding: Session gains `schema_version=1` +
+   `orchestrator_session_id`. `SpecialistRuntime` gains `session_id_getter` /
+   `session_id_setter` callbacks. Default = today's Specialist-record behaviour
+   (backwards compatible). 6 tests.
+2. **Step 2** — chat turn pipeline: `Delegation` gains `kind: str = "task"` (with
+   `"chat"` for orchestrator conversation turns). `Delegation` schema bumps 3 → 4
+   with `_migrate_v3_to_v4` helper. New `sweave/chat/loop.py` ChatLoop class
+   (per-session asyncio.Lock for serial semantics). `POST /api/sessions/{id}/messages`
+   (user role) drives the chat loop end-to-end. Non-user roles keep the persist-only
+   contract. 11 tests.
+3. **Step 3** — synthesis loop: `sweave/chat/synthesis.py` builds a server-composed
+   prompt from child delegations (per-child {specialist, task, status, output, error},
+   oldest-first truncation, tiktoken-capped at ~8K). ChatLoop waits for children
+   (bounded by `turn_timeout`) and runs a second orchestrator turn for the synthesis.
+   Chat turns auto-`done` (the M1.7 ruling; implementation children still stop at
+   `review`). 10 tests.
+4. **Step 4** — runtime transcript system: `sweave/chat/transcript.py` composer
+   (per-turn composed prompt — memory, multi-source "what's new", synthesis,
+   transcript reference, user message). Session gains `last_memory_recall_ts` +
+   `last_git_snapshot` (the per-turn "what's new" anchors). `MemoryEntry` gains
+   `ts: datetime | None`. Per-section token budgets enforced (memory 2K, what's
+   new 1K, transcript ref 100, synthesis 8K). `GitSnapshotter` for the git
+   section. Trace records the audit trail (`composed_prompt` event with per-section
+   sizes + dropped counts). 18 tests.
+5. **Step 5** — gates + live mini-scene + docs. Live scene at
+   `scripts/m1_7_live_scene.py` (under `SWEAVE_MOCK_OPENCODE=1`) exercises the
+   chat path end-to-end: per-Session binding proven on disk, auto-`done` verified,
+   trace audit event recorded. Docs updated (DESIGN §4, R1 M1.7 ✅, §2.1 noted).
+
+**Gates:** 381/381 pytest (was 336; +45 across 4 new test files), 13/13 `run.py
+--check`, 40/40 `test_full`, suite 3× consecutive green, live mini-scene
+ALL GREEN.
+
+**Plan deviations worth recording:**
+- The plan said "no schema bump" for the `Delegation.kind` field; the codebase's
+  test gate (`test_v3_field_set_includes_all_m1_1_plus_m1_6_fields`) requires
+  a SCHEMA_VERSION bump for any new field. Bumped 3 → 4 with a v3 → v4
+  migration helper. Pre-M1.7 records default to `kind="task"`.
 
 ## Starting point (do NOT rebuild)
 - `POST /api/sessions/{id}/messages` (routers/projects.py:146) is **persist-only** —

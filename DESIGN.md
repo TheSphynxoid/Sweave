@@ -183,7 +183,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | RuleRouter `_llm_fallback` | ⚠️ | keyword heuristic, no LLM call |
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |
 | Agent lifecycle (wait/terminate/attach) | ✅ | M1.3 + M1.4+M1.5 — wait returns the final Delegation; terminate kills the per-specialist serve on idle TTL; attach delegates to SpecialistRuntime; `_active_agents` removed (M1.4+M1.5 step 0 — the registry owns the runners; dead dict audited + deleted) |
-| Chat message endpoint | ⚠️ | persist-only, no agent reply (orchestrator loop missing — M1.7) |
+| Chat message endpoint | ✅ | M1.7 — `POST /api/sessions/{id}/messages` (user role) drives the orchestrator chat loop: persist user message, run the orchestrator specialist via SpecialistRuntime with the Session-bound session-id callbacks (M1.7 step 1), persist the assistant reply. Per-session asyncio.Lock for serial conversation semantics. Non-user roles (system/tool/assistant) keep the persist-only contract. Orchestrator-unreachable or timeout: explicit error message persisted, never a silent fallback. |
 | Agent definitions `sweave/agents/*/config.yaml` | ✅ | loader wired (R0): prompts/tools/harness from YAML, FALLBACK_PROMPTS for gaps; model_template stored for R1 |
 | Claude Code / Codex harnesses | 📐 | detect-only (which/--version), no spawn |
 | `/ws` realtime | ✅ | `webspaces` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
@@ -204,7 +204,11 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Sweave MCP server (stdio, defer + list_specialists)** | ✅ | M1.6 — `sweave/mcp/` package; `python -m sweave.mcp`; official `mcp` SDK (MIT, §8); two tools: `defer(target, task, reason, caller_delegation_id)` posts to `/api/v2/tasks` with `parent_task_id` and surfaces the DelegationManager's "rejected: ..." lines as plain text the orchestrator can act on; `list_specialists()` returns the resolved pool (excludes the orchestrator singleton). Shared token at `~/.sweave/mcp_token` auto-generated; localhost-only auth via `X-Sweave-MCP-Token` |
 | **Per-project opencode.json plumbing** | ✅ | M1.6 — `runtime/mcp_config.py`; `ensure_mcp_config(project_dir)` is idempotent (the `_sweave_managed` marker; user-edited blocks are preserved); triggered on `POST /api/projects/{name}/active` so the orchestrator's serve cwd sees the sweave MCP server automatically |
 | **Orchestrator defer tool contract** | ✅ | M1.6 — `sweave/agents/orchestrator/config.yaml` prompt contains the defer tool spec (args, return shapes, "rejected:" / "error:" / "queued:"); "Never implement code yourself" is the headline rule |
-| **Parent gating (tree lifecycle)** | ✅ | M1.6 — `JobRunner._wait_for_children` blocks the parent's `review` transition until every child delegation reaches `done` or `failed`; bounded by `turn_timeout` so a wedged child can't stall the parent. Trace records `children_settled` (count, done, failed) or `children_settle_timeout`. **Synthesis generation (re-prompting the orchestrator with child results) is M1.7 scope** — M1.6 delivers tree lifecycle + gating only |
+| **Parent gating (tree lifecycle)** | ✅ | M1.6 — `JobRunner._wait_for_children` blocks the parent's `review` transition until every child delegation reaches `done` or `failed`; bounded by `turn_timeout` so a wedged child can't stall the parent. Trace records `children_settled` (count, done, failed) or `children_settle_timeout`. **Synthesis generation (re-prompting the orchestrator with child results) is M1.7 scope** — M1.6 delivers tree lifecycle + gating only; M1.7 step 3 delivers the synthesis loop for the chat path (server-composed prompt, server-built children summary, second orchestrator turn) |
+| **Chat loop (orchestrator conversation)** | ✅ | M1.7 — `sweave/chat/loop.py` ChatLoop drives `/api/sessions/{id}/messages` for user messages: per-session asyncio.Lock for serial semantics, builds a chat Delegation (kind=chat, depth=0, no worktree), runs the orchestrator specialist via SpecialistRuntime with Session-bound session-id callbacks (M1.7 step 1), persists the assistant reply. **Auto-`done` on success** (M1.7 step 3; implementation children still stop at `review`). Orchestrator-unreachable or timeout: explicit error message persisted, never a silent fallback. Concurrent calls on different sessions run in parallel. |
+| **Synthesis loop (chat + children → second turn)** | ✅ | M1.7 — after the orchestrator's first turn, ChatLoop scans for child delegations (parent_task_id == chat_d.delegation_id). With children: bounded wait, server-composed synthesis prompt (per-child {specialist, task, status, output, error}, oldest-first truncation, ~8K token cap, tiktoken heuristic), second orchestrator turn, final assistant message. Without children: fast path, first turn's reply is the final answer. Children failing: synthesis still runs with the failure noted. |
+| **Runtime transcript system (per-turn composed prompt)** | ✅ | M1.7 — `sweave/chat/transcript.py`; the runtime owns the per-turn composed prompt (the LLM is a consumer of what the runtime built). Sections: curated memory (top-k=5, ~2K), multi-source "what's new" (memory entries with ts > last_recall_ts + git diff since last_snapshot, ~1K), synthesis (when children), one-paragraph transcript reference (~100), user message. The composed prompt size is O(memory + synthesis + user), NOT O(transcript_length) — long conversations don't bloat the per-turn prompt. Trace records per-section sizes + dropped counts. |
+| **Per-Session orchestrator binding** | ✅ | M1.7 — Session gains `orchestrator_session_id: str | None` (M1.7 step 1); the durable opencode session id lives on the Session record, NOT on the Specialist record. Three Sweave sessions of the same project get three independent orchestrator contexts. Legacy session files (no `orchestrator_session_id`) load with `None`; the next turn's runtime call creates the binding. `SpecialistRuntime.run` + `_ensure_session` accept `session_id_getter` / `session_id_setter` callbacks; default is the M1.3 Specialist-record behaviour. |
 | **Delegation v3 schema (chain metadata)** | ✅ | M1.6 — schema_version=3; new fields `depth` (0 for orchestrator, +1 per defer), `chain_root_id` (None for top-level; the root of the deferral chain otherwise), `coordination_tokens` (tiktoken estimate; coordination traffic only — specialist internal work is opaque by design). `from_dict` migrates v2 → v3 and v1 → v3 |
 | **Human promotion (review → done) endpoint** | ✅ | M1.4+M1.5 — `POST /api/delegations/{id}/promote`; 409 from non-review; 404 unknown; trace `status_changed` (source=human_promote); WS `delegation.status_changed`; bridged `ChildSession.status` synced to `done`; Children-tab "Mark done" button (review only, offsetParent-verifiable). **R2's cross-review calls this same endpoint programmatically** — the API is the automation seam |
 | **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 295 tests across 27 files; `pytest` is the source of truth |
@@ -383,14 +387,19 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   loop probe (third defer to the same target is rejected with 409
   "rejected: loop detected"). 336/336 pytest (was 295; +41); 13/13
   run.py --check; 40/40 test_full; suite 3x consecutive green.
-- **M1.7 Orchestrator chat loop** (~2.2, planned in detail: `docs/M1_7_PLAN.md`):
+- **M1.7 Orchestrator chat loop** (~2.2, **done 2026-09-04** per `docs/M1_7_PLAN.md`):
   fixes the per-Session context wrinkle (orchestrator's durable opencode session
   binding moves to the **Session record**, one per project.session; sessions gain
   schema_version + migration); `POST /messages` spawns chat-turn Delegations
-  (kind=chat, auto-done — review stays for implementation diffs); serial per-session
+  (kind=chat, auto-`done` — review stays for implementation diffs); serial per-session
   queue; **synthesis loop** (children terminal → capped summaries → orchestrator
-  re-prompt → persisted assistant reply); orchestrator-unreachable = explicit chat
-  error, never silent fallback. Gate: live — defer tree + synthesized answer in Chat.
+  re-prompt → persisted assistant reply); **runtime transcript system** (the runtime
+  owns the per-turn composed prompt — curated memory, multi-source "what's new"
+  with timestamps, one-paragraph transcript reference; the LLM is a consumer of
+  what the runtime built); orchestrator-unreachable = explicit chat error, never
+  silent fallback. Gate: live (`scripts/m1_7_live_scene.py`) — defer tree +
+  synthesized answer in Chat + per-Session binding proven on disk + composed_prompt
+  event on the trace.
 - **M1.8 Streaming** (~1): orchestrator chat + specialist output streamed over `/ws`
   (SSE fallback); delegation progress events from M1.prep's event vocabulary. Gate:
   chat replies render incrementally.

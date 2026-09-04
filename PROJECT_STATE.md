@@ -235,7 +235,70 @@
          mechanism; no global injection fallback needed), §2.1
          (defer-tool wording + DelegationManager M1.6 update),
          §8 already had the `mcp` entry pre-M1.6.
-- ▶ **Next**: M1.7 Orchestrator chat loop (per DESIGN.md §6 R1)
+- ✅ **M1.7 Orchestrator chat loop** — done 2026-09-04 per `docs/M1_7_PLAN.md`.
+  5 steps:
+  1. **Per-Session orchestrator binding** (the §2.1 wrinkle).
+     `Session` gains `schema_version: int = 1` +
+     `orchestrator_session_id: str | None`. `SpecialistRuntime.run` +
+     `_ensure_session` gain `session_id_getter` / `session_id_setter`
+     callbacks; default = the M1.3 Specialist-record behaviour (backwards
+     compatible). Three Sweave sessions of the same project get three
+     independent orchestrator contexts.
+  2. **Chat turn pipeline**. `Delegation` gains `kind: str = "task"` (with
+     `"chat"` for orchestrator conversation turns); `Delegation` schema
+     bumps 3 → 4 with a `_migrate_v3_to_v4` helper (pre-M1.7 records
+     default to `kind="task"`). New `sweave/chat/loop.py` ChatLoop class
+     (per-session asyncio.Lock for serial semantics, orchestrator turn
+     via SpecialistRuntime, Session-bound session-id callbacks, persisted
+     assistant reply, error messages on timeout / unreachable). New route
+     behaviour: `POST /api/sessions/{id}/messages` (role=user) drives the
+     chat loop; non-user roles keep the persist-only contract. Rulings
+     locked 2026-08-30: chat turns **auto-`done`** (the M1.7 ruling;
+     implementation children still stop at `review`); concurrent user
+     messages **queue** (serial per-session); orchestrator unavailable
+     ⇒ explicit error message persisted (never a silent fallback to the
+     rule-router for chat).
+  3. **Synthesis loop** (M1.6's deferred scope for chat). `sweave/chat/
+     synthesis.py` builds a server-composed prompt from child
+     delegations (per-child {specialist, task, status, output, error},
+     oldest-first truncation, tiktoken-capped at ~8K, default
+     configurable). ChatLoop waits for children (bounded by
+     `turn_timeout`) and runs a second orchestrator turn for the
+     synthesis. Fast path: no children → first turn's reply is the final
+     answer. Failed children: synthesis still runs with failure noted.
+  4. **Runtime transcript system + memory curation + multi-source
+     "what's new"** (the new piece that grew M1.7 by ~0.7 sessions).
+     `sweave/chat/transcript.py` composer builds the per-turn composed
+     prompt — curated memory (top-k=5, ~2K), multi-source "what's new"
+     (memory entries with `ts > last_recall_ts` + git diff since
+     `last_snapshot`, ~1K), synthesis (when children, ~8K), one-
+     paragraph transcript reference (~100, **NOT** the full transcript),
+     user message. The runtime owns the format, the caps, the audit
+     story. The composed prompt size is O(memory + synthesis + user),
+     NOT O(transcript_length). Session gains
+     `last_memory_recall_ts: datetime | None` + `last_git_snapshot: str
+     | None`; `MemoryEntry` gains `ts: datetime | None`. `GitSnapshotter`
+     for the git section (graceful fallback: non-git projects → empty
+     section). Trace records per-section sizes + dropped counts (the
+     audit trail). Rulings locked 2026-08-30: external engines
+     (opencode) see runtime's composed prompt + engine's own session
+     memory on top (engine-specific, outside the runtime's control);
+     server-internal engine (side-project, future) sees runtime's view
+     only.
+  5. **Gates + live mini-scene + docs**. 381/381 pytest (was 336; +45
+     across 4 new test files: `test_m1_7_step1_per_session_orchestrator_binding.py`
+     (6), `test_m1_7_step2_chat_turn_pipeline.py` (11),
+     `test_m1_7_step3_synthesis_loop.py` (10),
+     `test_m1_7_step4_transcript.py` (18)). 13/13 `run.py --check`;
+     40/40 `test_full`; suite 3× consecutive green. **Live mini-scene**
+     (`scripts/m1_7_live_scene.py`, `SWEAVE_MOCK_OPENCODE=1`):
+     two sessions get independent orchestrator bindings (proven on
+     disk), chat delegation auto-`done`, trace audit event recorded.
+     1 python proc before, 1 after; no leaks. Docs: DESIGN §4 (chat
+     endpoint ✅, transcript system ✅, runtime context builder ✅,
+     synthesis loop ✅, per-Session binding ✅, parent-gating row
+     updated), R1 M1.7 bullet flipped to ✅, §2.1 noted.
+- ▶ **Next**: M1.8 Streaming (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`

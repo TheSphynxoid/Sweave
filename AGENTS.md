@@ -220,6 +220,40 @@ amendments.
     `_sweave_mcp_entry` in `runtime/mcp_config.py`; the function
     is the single source of truth. The `M1.6_DISABLE_MCP_PLUMBING=1`
     env var is the test/CI kill switch.
+12. **Delegation schema-version field gate** (M1.7). The
+    `test_v3_field_set_includes_all_m1_1_plus_m1_6_fields` test in
+    `tests/test_delegation_store.py` pins the public Delegation
+    field set -- any new field requires bumping `SCHEMA_VERSION` in
+    `runtime/delegation_store.py` AND adding a migration helper
+    (`_migrate_vN_to_vN+1`) that defaults the new field for older
+    records. The plan for M1.7 step 2 said "no schema bump" for the
+    `kind` field; that reasoning was wrong -- the gate is real.
+    Bumping 3 → 4 + `_migrate_v3_to_v4` was the correct fix. The
+    same rule applies for the Session schema: new fields
+    (`orchestrator_session_id` in step 1; `last_memory_recall_ts` +
+    `last_git_snapshot` in step 4) get `data.get("...", default)` in
+    `Session.from_dict`, so legacy session files load without a
+    migration helper. The Delegation dataclass has stricter
+    shape-pinning; check both before adding a field.
+13. **Chat loop auto-done is the chat path's job, not JobRunner's**
+    (M1.7 step 3). `JobRunner._run` sets `final_status = "review"`
+    on success for implementation delegations (M1.4+M1.5 ruling).
+    ChatLoop overrides the chat delegation to `"done"` after the
+    final reply -- the chat path is the only place that knows it
+    should be `done`. Implementation children of a chat turn still
+    stop at `review` independently. If you wire a new orchestrator
+    surface (e.g. a `/investigate` API), keep the same split: the
+    surface that owns the lifecycle owns the auto-done.
+14. **Runtime transcript composer is the runtime's view, not the
+    engine's** (M1.7 step 4). The composed prompt is what the
+    LLM sees from the runtime; the engine (opencode today) also
+    carries its own session memory on top. The "LLM is a consumer
+    of what the runtime builds" framing is about the runtime's
+    contribution only. The sweave-internal engine (side-project,
+    future) is where the runtime fully owns the transcript. If you
+    add a new engine, decide: external (composed + engine view) or
+    internal (composed only) -- the engine's transcript
+    compatibility is your call.
 
 ## Running & testing
 ```bash

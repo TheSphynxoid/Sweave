@@ -108,7 +108,7 @@ class AppState:
     # wired. The chat endpoint calls ``run_turn`` for every user
     # message; the loop is responsible for the per-session serial
     # queue, the Session-bound orchestrator binding (M1.7 step 1),
-    # and persisting the assistant reply.
+    # the synthesis loop (step 3), and the transcript system (step 4).
     chat_loop: Any = None  # type: ignore[assignment]
 
     @classmethod
