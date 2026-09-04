@@ -463,7 +463,9 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   diff3 + manifests, choose resolve / re-queue / escalate, resolution recorded as a
   gold label (feeds R6 dispatch training).
 
-### R6 — Local orchestrator thesis (📐 future bet — the differentiator)Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
+### R6 — Local orchestrator thesis (📐 future bet — the differentiator)
+
+Gated on M1–R2 stability and real task volume. From the 2026-08-29 architecture
 discussion; cheap model as PM, strong models as engineers.
 - **Shared-backbone encoder heads** (~150MB, 20–50ms CPU): intent (task↔specialist
   matching), dispatch, resolution (merge_auto / defer / split / escalate), mediation
@@ -536,6 +538,14 @@ runtimes). Every adoption gets recorded here.
   task if one-shot suffices
 - Model cost map: models.dev metadata (already planned via catalog API); litellm's
   registry as inspiration only
+
+### Opencode platform notes (docs read 2026-09-04)
+| Capability | Relevance | Action |
+|---|---|---|
+| Hidden `compaction`/`title`/`summary` agents | opencode auto-compacts its own session context — the engine-specific view is self-managing; coexists cleanly with our M1.7 curated prompt layers | None — validates engine-class scoping |
+| Per-project `.opencode/agents/*.md` (frontmatter: model, temperature, **permission**, **steps**) | Specialist config could render as permission profiles (reviewer = `edit: deny`); `steps` = per-turn agentic cost cap complementing our chain budget; our `tools` list maps to opencode's deprecated field — permissions are the migration path | Future Specialist store enhancement (post-M1.9) |
+| `permission.task` globs | Specialists' sessions should not spawn native opencode subagents (all deferral must flow through MCP `defer` for depth/loop/budget enforcement) — `permission.task: deny` on specialist agents closes the bypass | **Hardening item — fold into M1.9 dogfood pass** (cheap, closes an untracked-work loophole) |
+| ACP (`opencode acp`, JSON-RPC/stdio) | Standard editor↔agent protocol; the custom-engine side-project could implement ACP so ACP-compatible editors drive Sweave specialists directly | Noted in the side-project scope (M1.7 plan) |
 
 ### Adopt later (user-requested, R7)
 - **Cloudflare Vectorize** as pluggable vector store (REST via existing httpx — zero new
