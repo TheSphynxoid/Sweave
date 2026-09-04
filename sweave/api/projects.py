@@ -78,12 +78,38 @@ async def get_project(name: str) -> dict | None:
 
 
 async def set_active_project(name: str) -> dict:
-    """Set active project."""
+    """Set active project.
+
+    Side effect (M1.6 step 3): the per-project ``opencode.json`` is
+    updated to register the sweave MCP server (idempotently; user-
+    written blocks are left alone). The orchestrator's opencode
+    serve launched in this project's cwd then sees the MCP server
+    and exposes ``defer`` + ``list_specialists`` to the model.
+    """
     try:
         project_manager.set_active_project(name)
-        return {"success": True, "active_project": name}
     except ValueError as e:
         raise e
+
+    # M1.6: write (or refresh) the per-project opencode.json with
+    # the sweave MCP block. Best-effort; a write failure doesn't
+    # block the activate (the project is still active, the MCP
+    # just won't be available until the next activation round).
+    try:
+        from pathlib import Path
+
+        from sweave.runtime.mcp_config import ensure_mcp_config
+
+        project = project_manager.get_project(name)
+        if project is not None:
+            ensure_mcp_config(Path(project.path))
+    except Exception:  # noqa: BLE001
+        # Don't fail the activation on plumbing errors; the project
+        # is still active and the orchestrator can still run (just
+        # without the defer tool until the next re-activation).
+        pass
+
+    return {"success": True, "active_project": name}
 
 
 async def delete_project(name: str) -> dict:

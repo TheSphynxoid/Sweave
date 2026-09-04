@@ -410,10 +410,32 @@ class JobRunner:
             # 'review' (not 'done') -- human / cross-review promotes to
             # 'done' in M1.4. Failure modes (turn timeout, error from
             # the agent) still go straight to 'failed'.
+            #
+            # M1.6 step 3: parent gating. A delegation with children
+            # (any other delegation whose parent_task_id points at
+            # it) cannot leave the running-equivalent state until
+            # ALL its children reach a terminal state. The gate
+            # blocks the transition; once the children settle, the
+            # parent advances to the same outcome it would have hit
+            # without children (review on success, failed on
+            # failure). This is a non-blocking poll: we sleep a
+            # short interval and re-check; the per-turn timeout
+            # bounds the wait so a misbehaving child can't wedge
+            # the parent forever.
             if result.success:
                 final_status = "review"
             else:
                 final_status = "failed"
+
+            # Parent gating: if this delegation is a parent (i.e. some
+            # other delegation's parent_task_id == this delegation's id),
+            # wait for all children to reach a terminal state. The
+            # wait is bounded by self.turn_timeout so a wedged child
+            # can't stall the parent forever.
+            if final_status != "failed":
+                await self._wait_for_children(
+                    delegation, store, trace
+                )
             trace.append(
                 "output_chunk" if result.success else "error",
                 {
@@ -453,6 +475,68 @@ class JobRunner:
     # ------------------------------------------------------------------
     # State transitions
     # ------------------------------------------------------------------
+
+    async def _wait_for_children(
+        self, delegation: Delegation, store: Any, trace: TraceLog
+    ) -> None:
+        """M1.6 step 3: parent gating.
+
+        Wait until every delegation whose ``parent_task_id`` equals
+        this delegation's id has reached a terminal state (done or
+        failed). The wait is bounded by ``self.turn_timeout`` (the
+        same cap as the agent turn) so a stuck child can't wedge the
+        parent forever -- if the timeout hits we proceed and the
+        parent transitions normally; the late-arriving child is
+        silently absorbed (the parent's record is the audit
+        source-of-truth for the chain).
+
+        ``store`` is the per-project store that owns the parent's
+        record. We use the same store's ``list()`` to enumerate
+        children, then re-read the latest status. The polling
+        interval is 250ms (responsive enough for the UI without
+        hammering the disk).
+        """
+        deadline = asyncio.get_running_loop().time() + self.turn_timeout
+        poll_interval = 0.25
+        children_found = False
+        while True:
+            all_records = store.list()
+            children = [r for r in all_records if r.parent_task_id == delegation.delegation_id]
+            if children:
+                children_found = True
+            if not children_found:
+                # No children ever existed (e.g. a leaf delegation).
+                # No gate needed.
+                return
+            if all(r.status in {"done", "failed"} for r in children):
+                # All children terminal -- parent can advance.
+                trace.append(
+                    "children_settled",
+                    {
+                        "parent": delegation.delegation_id,
+                        "count": len(children),
+                        "done": sum(1 for r in children if r.status == "done"),
+                        "failed": sum(1 for r in children if r.status == "failed"),
+                    },
+                )
+                return
+            now = asyncio.get_running_loop().time()
+            if now >= deadline:
+                trace.append(
+                    "children_settle_timeout",
+                    {
+                        "parent": delegation.delegation_id,
+                        "count": len(children),
+                        "timeout": self.turn_timeout,
+                    },
+                )
+                logger.warning(
+                    "JobRunner: parent %s children-settle timeout after %ss",
+                    delegation.delegation_id,
+                    self.turn_timeout,
+                )
+                return
+            await asyncio.sleep(poll_interval)
 
     async def _transition(
         self,
