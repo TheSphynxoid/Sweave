@@ -124,19 +124,43 @@ class SpecialistRuntime:
         trace: TraceLog,
         *,
         fresh: bool,
+        session_id_getter: "Callable[[], str | None] | None" = None,
+        session_id_setter: "Callable[[str], None] | None" = None,
     ) -> OpenCodeProcess:
         """Return a process ready to receive a message.
 
         If ``fresh`` is True OR the stored session id is None/empty,
-        we create a new session, persist the id on the Specialist
-        record (best-effort — silently skip if the record is read-only
-        or the resolver isn't available), and return the process.
+        we create a new session, persist the id via the provided
+        setter (or ``specialist.session_id`` by default), and return
+        the process.
 
         If a stored session id exists, we ``GET /session/{id}`` to
         verify; 404 means the serve was restarted (probe 4: sessions
         are in-memory) and the id is stale -> recreate and warn-trace.
+
+        M1.7 step 1: ``session_id_getter`` / ``session_id_setter`` are
+        the seam that lets the orchestrator persist the opencode
+        session id on the **Session** record (per project × session)
+        instead of on the **Specialist** record (per project). When
+        both are None, the runtime falls back to reading/writing
+        ``specialist.session_id`` (the M1.3 behaviour, still used for
+        non-orchestrator specialists).
         """
-        stored = specialist.session_id or ""
+        # M1.7 step 1: support an external binding. When the caller
+        # passes the getters/setters, the binding lives outside the
+        # Specialist record (today: Session.orchestrator_session_id).
+        def _get() -> str:
+            if session_id_getter is not None:
+                return session_id_getter() or ""
+            return specialist.session_id or ""
+
+        def _set(new_id: str) -> None:
+            if session_id_setter is not None:
+                session_id_setter(new_id)
+                return
+            specialist.session_id = new_id
+
+        stored = _get()
         if fresh or not stored:
             # Create
             response = await process._client.post("/session", json={})
@@ -149,7 +173,7 @@ class SpecialistRuntime:
             if specialist.system_prompt:
                 await process.send(_system_message(specialist.system_prompt))
             # Persist the session id (best-effort)
-            await self._persist_session_id(specialist, new_id)
+            _set(new_id)
             trace.append("session_created", {"session_id": new_id})
             await self._emit(
                 "session_created",
@@ -181,7 +205,7 @@ class SpecialistRuntime:
                 raise RuntimeError("opencode serve returned no session id")
             if specialist.system_prompt:
                 await process.send(_system_message(specialist.system_prompt))
-            await self._persist_session_id(specialist, new_id)
+            _set(new_id)
             trace.append("session_recreated", {"session_id": new_id})
             await self._emit(
                 "session_resumed",  # the user-facing event name; this is a re-resume
@@ -227,12 +251,20 @@ class SpecialistRuntime:
         trace: TraceLog,
         model_ref: ModelRef | None = None,
         fresh: bool = False,
+        session_id_getter: "Callable[[], str | None] | None" = None,
+        session_id_setter: "Callable[[str], None] | None" = None,
     ) -> str:
         """Run one delegation. Returns the agent's text output.
 
         The single-active-task queue per (specialist, worktree) is
         enforced by a per-key asyncio.Lock: concurrent calls for the
         same key serialise; different keys run in parallel.
+
+        M1.7 step 1: ``session_id_getter`` / ``session_id_setter``
+        let the orchestrator bind the durable opencode session id to
+        the **Session** record (one per project × session) instead of
+        the **Specialist** record. When None, the runtime reads/writes
+        ``specialist.session_id`` (the M1.3 default).
         """
         # Trace + log + worktree_set event
         trace.append("worktree_set", {"worktree": str(worktree_path)})
@@ -268,7 +300,13 @@ class SpecialistRuntime:
 
             # Ensure a session exists (create, recreate on 404, or reuse)
             process = await self._ensure_session(
-                runner, process, specialist, trace, fresh=fresh
+                runner,
+                process,
+                specialist,
+                trace,
+                fresh=fresh,
+                session_id_getter=session_id_getter,
+                session_id_setter=session_id_setter,
             )
 
             # Per-delegation body: structured ModelRef when known.
