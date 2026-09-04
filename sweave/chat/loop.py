@@ -74,6 +74,14 @@ class ChatLoop:
         memory_bank_id_resolver: Callable[[str], str | None] | None = None,
         memory_whats_new_recall: Any = None,
         git_snapshotter: Any = None,
+        # M1.8: streaming knobs. The runtime builds a
+        # ``ChatDeltaCoalescer`` per turn and emits ``chat.delta``
+        # events on the WSEventBus while the orchestrator replies.
+        # The persisted ``message.added`` event (Step 2 final) is
+        # authoritative; the chat.delta events are partial
+        # snapshots the UI uses for incremental rendering.
+        stream_coalesce_ms: int = 100,
+        stream_char_threshold: int = 64,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -102,6 +110,9 @@ class ChatLoop:
         # (filtered by ts), not a relevance query.
         self.memory_whats_new_recall = memory_whats_new_recall
         self.git_snapshotter = git_snapshotter
+        # M1.8 streaming knobs
+        self.stream_coalesce_ms = stream_coalesce_ms
+        self.stream_char_threshold = stream_char_threshold
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -296,11 +307,35 @@ class ChatLoop:
         """
         lock = await self._lock_for(session_id)
         async with lock:
+            # M1.8: streaming coalescer is created once per turn
+            # and closed on every exit path via try/finally. The
+            # coalescer's close_and_flush is idempotent; it can be
+            # called multiple times safely. We use a sentinel
+            # because the coalescer is created later (after the
+            # chat Delegation record), but the lock acquisition
+            # + body are a single try/finally block.
+            coalescer_box: list = [None]
+            try:
+                return await self._run_turn_body(
+                    session_id=session_id,
+                    user_content=user_content,
+                    coalescer_box=coalescer_box,
+                )
+            finally:
+                if coalescer_box[0] is not None:
+                    await coalescer_box[0].close_and_flush()
+
+    async def _run_turn_body(
+        self,
+        *,
+        session_id: str,
+        user_content: str,
+        coalescer_box: list,
+    ) -> dict[str, Any]:
+            # 1) Persist the user message
             session = self.project_manager.get_session(session_id)
             if session is None:
                 raise ValueError(f"Session '{session_id}' not found")
-
-            # 1) Persist the user message
             user_msg = session.add_message(role="user", content=user_content)
             self.project_manager.save_session(session)
             await self._emit(
@@ -379,6 +414,43 @@ class ChatLoop:
                 + composed.to_body()
             )
 
+            # M1.8: streaming coalescer. The chat loop wraps the
+            # harness's on_chunk callback in a coalescer that
+            # emits chat.delta events on the bus at most every
+            # ``stream_coalesce_ms`` (or sooner if the buffer
+            # crosses ``stream_char_threshold``). The chat.delta
+            # payload carries the live turn's delegation_id so
+            # the UI can scope updates to the right bubble.
+            from sweave.chat.streaming import ChatDeltaCoalescer
+
+            def _make_coalescer() -> ChatDeltaCoalescer:
+                async def _emit(text: str) -> None:
+                    await self._emit(
+                        "chat.delta",
+                        {
+                            "session_id": session_id,
+                            "delegation_id": delegation.delegation_id,
+                            "text": text,
+                        },
+                    )
+                return ChatDeltaCoalescer(
+                    emit=_emit,
+                    flush_interval_ms=self.stream_coalesce_ms,
+                    char_threshold=self.stream_char_threshold,
+                )
+
+            coalescer = _make_coalescer()
+            coalescer.start()
+            # M1.8: stash the coalescer in the box so the
+            # run_turn try/finally can close it on every exit
+            # path. The box avoids the early-binding problem of
+            # the coalescer not existing when run_turn sets up
+            # the try/finally.
+            coalescer_box[0] = coalescer
+
+            def _on_chunk(text: str) -> None:
+                coalescer.push(text)
+
             first_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
@@ -388,6 +460,7 @@ class ChatLoop:
                 model_str=model_str,
                 session_id_getter=_get_orch_id,
                 session_id_setter=_set_orch_id,
+                on_chunk=_on_chunk,
             )
 
             # Update the Session's "what's new" anchors for the
@@ -471,6 +544,7 @@ class ChatLoop:
                 model_str=model_str,
                 session_id_getter=_get_orch_id,
                 session_id_setter=_set_orch_id,
+                on_chunk=_on_chunk,
             )
             if synthesis_turn_text.startswith("[chat error:"):
                 # Synthesis turn hard-failed. Return the explicit
@@ -504,6 +578,11 @@ class ChatLoop:
         model_str: str | None,
         session_id_getter: Any,
         session_id_setter: Any,
+        # M1.8: optional streaming callback. The chat loop wraps
+        # this in a ChatDeltaCoalescer so the WS publishes
+        # coalesced chat.delta events. None = no streaming (the
+        # pre-M1.8 path: full text arrives on message.added).
+        on_chunk: "Callable[[str], Any] | None" = None,
     ) -> str:
         """Run one orchestrator turn via SpecialistRuntime.
 
@@ -528,6 +607,7 @@ class ChatLoop:
                     model_ref=model_ref,
                     session_id_getter=session_id_getter,
                     session_id_setter=session_id_setter,
+                    on_chunk=on_chunk,
                 ),
                 timeout=self.turn_timeout,
             )

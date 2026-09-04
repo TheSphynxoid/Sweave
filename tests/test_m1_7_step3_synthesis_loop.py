@@ -189,9 +189,11 @@ def _build_chat_loop(
 
     responses = list(send_responses or ["first-reply"])
 
-    async def fake_send(self, body, trace):
+    async def fake_send(self, body, trace, on_chunk=None):
         if send_delay:
             await asyncio.sleep(send_delay)
+        if on_chunk is not None and responses:
+            on_chunk(responses[0])
         if not responses:
             return "ok"
         return responses.pop(0)
@@ -300,7 +302,7 @@ async def test_chat_turn_with_children_runs_synthesis(tmp_path: Path):
     chat_d_id_holder: list[str] = []
     stores_real = stores
 
-    async def fake_send(self, body, trace):
+    async def fake_send(self, body, trace, on_chunk=None):
         # The runtime body[parts][0][text] includes the prompt
         # the chat loop built; we don't need to inspect it -- we
         # just inject a child after the first turn.
@@ -383,7 +385,7 @@ async def test_chat_turn_with_failing_child_synthesis_still_runs(tmp_path: Path)
     responses = ["trying...", "backend failed; sorry."]
     first_turn = [True]
 
-    async def fake_send(self, body, trace):
+    async def fake_send(self, body, trace, on_chunk=None):
         if first_turn[0]:
             first_turn[0] = False
             store = await stores.for_project(tmp_path)

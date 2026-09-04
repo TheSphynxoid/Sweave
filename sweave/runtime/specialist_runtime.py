@@ -253,9 +253,15 @@ class SpecialistRuntime:
         fresh: bool = False,
         session_id_getter: "Callable[[], str | None] | None" = None,
         session_id_setter: "Callable[[str], None] | None" = None,
+        # M1.8: optional streaming callback. Default None
+        # preserves the M1.7 behaviour (full text on return). The
+        # chat loop's coalescer wraps this so the WS publishes
+        # coalesced chat.delta events while the orchestrator
+        # replies.
+        on_chunk: "Callable[[str], Any] | None" = None,
     ) -> str:
         """Run one delegation. Returns the agent's text output.
-
+        
         The single-active-task queue per (specialist, worktree) is
         enforced by a per-key asyncio.Lock: concurrent calls for the
         same key serialise; different keys run in parallel.
@@ -326,7 +332,7 @@ class SpecialistRuntime:
                 body["model"] = model_body
 
             # Send (the harness handles stream + terminal detection)
-            result = await self._send_message(process, body, trace)
+            result = await self._send_message(process, body, trace, on_chunk=on_chunk)
             # Record which model was actually used for this delegation
             # (M1.4+M1.5 step 1: surface the resolved ModelRef on the
             # trace so observers can audit what ran; useful for

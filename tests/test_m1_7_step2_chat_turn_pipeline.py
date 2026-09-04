@@ -98,15 +98,21 @@ def _build_chat_loop(
     runtime = SpecialistRuntime(runners=runners)
 
     if send_error is not None:
-        async def fake_send_error(self, body, trace):
+        async def fake_send_error(self, body, trace, on_chunk=None):
             raise send_error
         runtime._send_message = fake_send_error  # type: ignore[assignment]
     else:
         responses = list(send_responses or ["ok"])
 
-        async def fake_send(self, body, trace):
+        async def fake_send(self, body, trace, on_chunk=None):
             if send_delay:
                 await asyncio.sleep(send_delay)
+            # M1.8: if a streaming callback is provided, push the
+            # canned response as a single text part so the chat
+            # loop exercises the on_chunk path. Otherwise the
+            # pre-M1.8 behaviour is preserved.
+            if on_chunk is not None:
+                on_chunk(responses[0] if responses else "ok")
             if not responses:
                 return "ok"
             return responses.pop(0)

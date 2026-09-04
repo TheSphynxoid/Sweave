@@ -170,7 +170,7 @@ def _make_runtime_with_mock_send() -> tuple[SpecialistRuntime, list[dict[str, An
     runtime = SpecialistRuntime(runners=runners)
     sent_calls: list[dict[str, Any]] = []
 
-    async def fake_send(self, body, trace):
+    async def fake_send(self, body, trace, on_chunk=None):
         sent_calls.append({"body_keys": list(body.keys())})
         return "ok"
 
