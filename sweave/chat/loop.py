@@ -66,6 +66,7 @@ class ChatLoop:
         event_bus: Any = None,
         turn_timeout: float = 900.0,
         model_resolver: Callable[[str], str | None] | None = None,
+        synthesis_token_cap: int = 8_000,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -79,6 +80,13 @@ class ChatLoop:
         # "orchestrator" by default; an explicit model on the chat
         # delegation would override (none today).
         self.model_resolver = model_resolver
+        # M1.7 step 3: synthesis prompt token cap. The synthesis
+        # prompt is the per-section budget for the orchestrator's
+        # second turn (per-child truncation is oldest-first when
+        # the total overflows). Step 4 will introduce per-section
+        # budgets for memory, what's new, and synthesis; for now
+        # the whole prompt is bounded by this single cap.
+        self.synthesis_token_cap = synthesis_token_cap
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -103,6 +111,53 @@ class ChatLoop:
                 await self.event_bus.publish(event, data)
             except Exception as e:  # noqa: BLE001
                 logger.warning("ChatLoop: event_bus publish failed for %s: %s", event, e)
+
+    async def _wait_for_children(
+        self, store: Any, parent_delegation_id: str
+    ) -> list:
+        """Wait until every delegation with parent_task_id ==
+        *parent_delegation_id* reaches a terminal state, or the
+        turn timeout elapses.
+
+        Bounded by ``self.turn_timeout`` (the same cap the runtime
+        uses) so a wedged child can't stall the chat forever. Late-
+        arriving children are silently absorbed -- whatever is
+        terminal when the deadline hits is what we synthesise on.
+
+        Returns the list of child records (in completion order).
+        """
+        deadline = asyncio.get_running_loop().time() + self.turn_timeout
+        poll_interval = 0.25
+        children_found = False
+        while True:
+            all_records = store.list()
+            children = [
+                r for r in all_records
+                if r.parent_task_id == parent_delegation_id
+            ]
+            if children:
+                children_found = True
+            if children_found and all(
+                r.status in {"done", "failed", "review"} for r in children
+            ):
+                return sorted(
+                    children,
+                    key=lambda c: c.completed_at or c.updated_at,
+                )
+            now = asyncio.get_running_loop().time()
+            if now >= deadline:
+                logger.warning(
+                    "ChatLoop: child wait timed out for %s after %.0fs; "
+                    "proceeding with %d children (some may not be terminal)",
+                    parent_delegation_id,
+                    self.turn_timeout,
+                    len(children),
+                )
+                return sorted(
+                    children,
+                    key=lambda c: c.completed_at or c.updated_at,
+                )
+            await asyncio.sleep(poll_interval)
 
     async def _resolve_model(self) -> str | None:
         """Resolve the orchestrator's model via the precedence chain.
@@ -154,16 +209,36 @@ class ChatLoop:
     ) -> dict[str, Any]:
         """Run one user turn end-to-end. Returns the assistant message dict.
 
-        Steps:
+        Steps (M1.7 step 2 + step 3):
         1. Acquire the per-session lock (serial queue).
         2. Persist the user message.
         3. Build a chat Delegation (kind=chat, agent=orchestrator,
            depth=0, no worktree) and store it.
-        4. Run the orchestrator via SpecialistRuntime with the
-           Session-bound session-id callbacks.
-        5. Persist the assistant message.
-        6. Fire ``message.added`` for the assistant message.
-        7. Return the assistant message dict.
+        4. Run the orchestrator's first turn. The prompt includes
+           the chat delegation's id so the orchestrator can pass it
+           to the MCP ``defer`` tool as ``caller_delegation_id``.
+        5. Scan for child delegations (``parent_task_id ==
+           chat_d.delegation_id``). If none: fast path, the first
+           turn's reply is the final answer.
+        6. If children exist: wait for them to terminate (bounded by
+           turn_timeout), build a server-composed synthesis prompt,
+           and run a second orchestrator turn. The second turn's
+           reply is the final answer.
+        7. Persist the final assistant message. Mark the chat
+           delegation as ``done`` (auto-done; implementation
+           delegations still stop at ``review`` per the M1.4+M1.5
+           ruling). The intermediate first-turn reply (when there
+           are children) is NOT persisted as the final assistant
+           message -- only the synthesis result is.
+        8. Fire ``message.added`` for the user + final assistant
+           messages.
+
+        Error handling: if either orchestrator call errors, the
+        explicit error string is the assistant message. Children
+        failing during the wait are included in the synthesis prompt
+        with their status=``failed`` and error text -- the
+        orchestrator's synthesis acknowledges them. The chat is
+        never hung waiting forever; the child wait is bounded.
         """
         lock = await self._lock_for(session_id)
         async with lock:
@@ -185,6 +260,9 @@ class ChatLoop:
             project_dir = self.project_dir_resolver(session.project_name)
             specialist = await self._resolve_orchestrator_specialist(project_dir)
             model_str = await self._resolve_model()
+            store = await self.delegation_stores.for_project(
+                project_dir or Path.home() / ".sweave"
+            )
 
             # 2) Build + persist the chat Delegation record
             delegation = Delegation(
@@ -203,12 +281,6 @@ class ChatLoop:
                 status="running",
                 started_at=datetime.now(),
             )
-            # Store the record so the audit trail exists. We bypass
-            # JobRunner.submit (which is fire-and-forget); chat is
-            # request/response and we await the result.
-            store = await self.delegation_stores.for_project(
-                project_dir or Path.home() / ".sweave"
-            )
             await store.add(delegation)
             await self._emit(
                 "delegation.status_changed",
@@ -220,13 +292,18 @@ class ChatLoop:
                 },
             )
 
-            # 3) Run the orchestrator with the Session-bound binding.
+            # 3) Compose the first-turn orchestrator prompt. The
+            # ``caller_delegation_id`` is injected so the LLM can
+            # pass it back to the MCP ``defer`` tool.
+            first_turn_prompt = (
+                f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
+                f"{user_content}"
+            )
+
             from sweave.runtime.trace_log import TraceLog
 
             trace = TraceLog(delegation_id=delegation.delegation_id)
-            # The Session's on-disk file is the durable binding. The
-            # callbacks close over the in-memory session record and
-            # persist it after every change.
+
             def _get_orch_id() -> str | None:
                 return session.orchestrator_session_id
 
@@ -234,74 +311,186 @@ class ChatLoop:
                 session.orchestrator_session_id = new_id
                 self.project_manager.save_session(session)
 
-            assistant_text = ""
-            error_text: str | None = None
-            try:
-                from sweave.runtime.specialist_store import ModelRef, parse_model_ref
-
-                model_ref: ModelRef | None = None
-                if model_str:
-                    model_ref = parse_model_ref(model_str)
-                assistant_text = await asyncio.wait_for(
-                    self.runtime.run(
-                        specialist=specialist,
-                        delegation=delegation,
-                        worktree_path=project_dir or Path.home() / ".sweave",
-                        message=user_content,
-                        trace=trace,
-                        model_ref=model_ref,
-                        # Session-bound binding (M1.7 step 1). The
-                        # default (specialist.session_id) would put the
-                        # binding back on the Specialist record -- the
-                        # per-project scope the wrinkle fixes.
-                        session_id_getter=_get_orch_id,
-                        session_id_setter=_set_orch_id,
-                    ),
-                    timeout=self.turn_timeout,
+            # 4) First orchestrator turn. Any child Delegations
+            # created via the defer tool land in the per-project
+            # store with parent_task_id == chat_d.delegation_id.
+            first_turn_text = await self._run_orchestrator_turn(
+                specialist=specialist,
+                delegation=delegation,
+                worktree_path=project_dir or Path.home() / ".sweave",
+                message=first_turn_prompt,
+                trace=trace,
+                model_str=model_str,
+                session_id_getter=_get_orch_id,
+                session_id_setter=_set_orch_id,
+            )
+            if first_turn_text.startswith("[chat error:"):
+                # First turn hard-failed (timeout, exception, etc.).
+                # No synthesis; the error is the assistant reply.
+                return await self._finalise_turn(
+                    session=session,
+                    session_id=session_id,
+                    user_msg=user_msg,
+                    delegation_id=delegation.delegation_id,
+                    error_text=first_turn_text,
                 )
-            except asyncio.TimeoutError:
-                error_text = (
-                    f"[chat error: orchestrator turn exceeded "
-                    f"{self.turn_timeout:.0f}s timeout]"
+
+            # 5) Scan for children the orchestrator spawned via defer
+            children = [
+                r for r in store.list()
+                if r.parent_task_id == delegation.delegation_id
+            ]
+            if not children:
+                # Fast path: no deferrals -- the first turn's reply
+                # is the final answer.
+                return await self._finalise_turn(
+                    session=session,
+                    session_id=session_id,
+                    user_msg=user_msg,
+                    delegation_id=delegation.delegation_id,
+                    assistant_text=first_turn_text,
                 )
-            except Exception as e:  # noqa: BLE001
-                error_text = f"[chat error: {type(e).__name__}: {e}]"
 
-            # 4) Mark the delegation terminal. For now: success ->
-            # "review" (auto-done lands in step 3). Failure -> "failed".
-            final_status = "failed" if error_text else "review"
-            await store.update(
-                delegation.delegation_id,
-                status=final_status,
-                completed_at=datetime.now(),
-                output=assistant_text,
-                error=error_text,
+            # 6) Children exist: wait for them, then run a synthesis
+            # turn. ``_wait_for_children`` is bounded by turn_timeout
+            # so a stuck child can't wedge the chat.
+            children = await self._wait_for_children(
+                store, delegation.delegation_id
             )
-            await self._emit(
-                "delegation.status_changed",
-                {
-                    "delegation_id": delegation.delegation_id,
-                    "status": final_status,
-                    "kind": "chat",
-                    "session_id": session_id,
-                },
+            from sweave.chat.synthesis import build_synthesis_prompt
+
+            synthesis_prompt = build_synthesis_prompt(
+                children=children,
+                original_user_message=user_content,
+                token_cap=self.synthesis_token_cap,
+            )
+            synthesis_turn_text = await self._run_orchestrator_turn(
+                specialist=specialist,
+                delegation=delegation,
+                worktree_path=project_dir or Path.home() / ".sweave",
+                message=synthesis_prompt,
+                trace=trace,
+                model_str=model_str,
+                session_id_getter=_get_orch_id,
+                session_id_setter=_set_orch_id,
+            )
+            if synthesis_turn_text.startswith("[chat error:"):
+                # Synthesis turn hard-failed. Return the explicit
+                # error; the children are still visible via the
+                # Children tab, so the user can pick up the
+                # conversation.
+                return await self._finalise_turn(
+                    session=session,
+                    session_id=session_id,
+                    user_msg=user_msg,
+                    delegation_id=delegation.delegation_id,
+                    error_text=synthesis_turn_text,
+                )
+
+            return await self._finalise_turn(
+                session=session,
+                session_id=session_id,
+                user_msg=user_msg,
+                delegation_id=delegation.delegation_id,
+                assistant_text=synthesis_turn_text,
             )
 
-            # 5) Persist the assistant message. Even on error, the
-            # assistant message is the explicit error string -- never
-            # silent, never swallowed.
-            assistant_content = error_text or assistant_text
-            assistant_msg = session.add_message(
-                role="assistant",
-                content=assistant_content,
-                agent="orchestrator",
+    async def _run_orchestrator_turn(
+        self,
+        *,
+        specialist: Specialist,
+        delegation: Delegation,
+        worktree_path: Path,
+        message: str,
+        trace: Any,
+        model_str: str | None,
+        session_id_getter: Any,
+        session_id_setter: Any,
+    ) -> str:
+        """Run one orchestrator turn via SpecialistRuntime.
+
+        Returns the agent's text output, or an error string of the
+        form ``[chat error: ...]`` on timeout/exception. The caller
+        decides whether the result is a real reply or a failure
+        based on this prefix.
+        """
+        from sweave.runtime.specialist_store import ModelRef, parse_model_ref
+
+        model_ref: ModelRef | None = None
+        if model_str:
+            model_ref = parse_model_ref(model_str)
+        try:
+            return await asyncio.wait_for(
+                self.runtime.run(
+                    specialist=specialist,
+                    delegation=delegation,
+                    worktree_path=worktree_path,
+                    message=message,
+                    trace=trace,
+                    model_ref=model_ref,
+                    session_id_getter=session_id_getter,
+                    session_id_setter=session_id_setter,
+                ),
+                timeout=self.turn_timeout,
             )
-            self.project_manager.save_session(session)
-            await self._emit(
-                "message.added",
-                {
-                    "session_id": session_id,
-                    "message": assistant_msg.to_dict(),
-                },
+        except asyncio.TimeoutError:
+            return (
+                f"[chat error: orchestrator turn exceeded "
+                f"{self.turn_timeout:.0f}s timeout]"
             )
-            return assistant_msg.to_dict()
+        except Exception as e:  # noqa: BLE001
+            return f"[chat error: {type(e).__name__}: {e}]"
+
+    async def _finalise_turn(
+        self,
+        *,
+        session: Any,
+        session_id: str,
+        user_msg: Any,
+        delegation_id: str,
+        assistant_text: str | None = None,
+        error_text: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist the final assistant message and mark the chat
+        delegation ``done`` (auto-done per the M1.7 ruling)."""
+        store = await self.delegation_stores.for_project(
+            session.project_name
+            and self.project_dir_resolver(session.project_name)
+            or Path.home() / ".sweave"
+        )
+        final_status = "failed" if error_text else "done"
+        # M1.7 step 3: chat turns auto-``done`` on success. The
+        # ``review`` state is reserved for implementation
+        # delegations (M1.4+M1.5 ruling). Implementation children
+        # of a chat turn still stop at ``review`` independently.
+        await store.update(
+            delegation_id,
+            status=final_status,
+            completed_at=datetime.now(),
+            output=assistant_text or "",
+            error=error_text,
+        )
+        await self._emit(
+            "delegation.status_changed",
+            {
+                "delegation_id": delegation_id,
+                "status": final_status,
+                "kind": "chat",
+                "session_id": session_id,
+            },
+        )
+        assistant_content = error_text or (assistant_text or "")
+        assistant_msg = session.add_message(
+            role="assistant",
+            content=assistant_content,
+            agent="orchestrator",
+        )
+        self.project_manager.save_session(session)
+        await self._emit(
+            "message.added",
+            {
+                "session_id": session_id,
+                "message": assistant_msg.to_dict(),
+            },
+        )
+        return assistant_msg.to_dict()
