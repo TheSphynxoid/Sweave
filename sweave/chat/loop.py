@@ -662,6 +662,12 @@ class ChatLoop:
             role="assistant",
             content=assistant_content,
             agent="orchestrator",
+            # M1.8: tag the assistant message with the chat
+            # delegation's id so the UI can match it against
+            # the streaming bubble (keyed by the same id). The
+            # message.added event replaces the partial; the
+            # delegation_id is the join key.
+            metadata={"delegation_id": delegation_id},
         )
         self.project_manager.save_session(session)
         await self._emit(

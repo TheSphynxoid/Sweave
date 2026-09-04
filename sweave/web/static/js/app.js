@@ -20,6 +20,13 @@ const state = {
   currentMemoryBank: null,
   children: [],
   ws: null,
+  // M1.8: streaming bubbles. Keyed by ``delegation_id`` (the
+  // chat delegation that produced the partial text). The bubble
+  // is created on the first ``chat.delta`` event for the
+  // delegation and removed on the authoritative
+  // ``message.added`` event for the same delegation (the persisted
+  // assistant message replaces the partial).
+  streamingBubbles: {},
 };
 
 // ============================================
@@ -325,6 +332,91 @@ function renderMessage(msg) {
   return div;
 }
 
+// ---------------------------------------------------------------------------
+// M1.8: streaming bubble handlers
+// ---------------------------------------------------------------------------
+
+function _createStreamingBubble(delegationId, initialText) {
+  const div = document.createElement('div');
+  div.className = 'message assistant streaming';
+  div.dataset.delegationId = delegationId;
+  div.innerHTML =
+    '<div class="avatar">A</div>' +
+    '<div class="content">' +
+      '<div class="role">assistant</div>' +
+      '<div class="text streaming-text"></div>' +
+    '</div>';
+  // The .text node is what we mutate; using a stable selector
+  // avoids the innerHTML re-parse cost per delta (the plan: "no
+  // full re-render per delta").
+  const textNode = div.querySelector('.streaming-text');
+  textNode.textContent = initialText || '';
+  return div;
+}
+
+function handleChatDelta(payload) {
+  // Only act when the user is looking at the session that owns
+  // the partial. Other tabs ignore streaming; the bubble
+  // creation can wait until the user navigates back. (When
+  // they do, the authoritative message.added will follow, and
+  // the next renderSessionMessages will paint the full text.)
+  if (!state.session || state.session.id !== payload.session_id) return;
+  if (state.currentTab !== 'chat') return;
+
+  const container = $('chat-messages');
+  const delegationId = payload.delegation_id;
+  if (!delegationId) return;
+  const text = payload.text || '';
+
+  const existing = state.streamingBubbles[delegationId];
+  if (existing) {
+    // Patch the existing bubble: append the new text. Using
+    // textContent += is cheap (no re-parse); the DOM is
+    // already in place.
+    const textNode = existing.querySelector('.streaming-text');
+    if (textNode) {
+      textNode.textContent = (textNode.textContent || '') + text;
+    }
+  } else {
+    // Create the bubble once. Future deltas patch in place.
+    const div = _createStreamingBubble(delegationId, text);
+    container.appendChild(div);
+    state.streamingBubbles[delegationId] = div;
+  }
+  // Auto-scroll to keep the latest delta in view.
+  container.scrollTop = container.scrollHeight;
+}
+
+function handleMessageAdded(payload) {
+  // Authoritative full message from the server. If this is the
+  // assistant message for a streaming delegation, replace the
+  // partial with the persisted message (the persisted message is
+  // the system of record; the partial is gone).
+  if (!state.session || state.session.id !== payload.session_id) return;
+  if (state.currentTab !== 'chat') return;
+
+  const msg = payload.message;
+  if (!msg) return;
+  // Only assistant messages can have a streaming partial.
+  if (msg.role !== 'assistant') return;
+
+  // The chat loop's persisted message carries a delegation_id
+  // in the message metadata; the streaming bubble is keyed by
+  // the same id. If we have a matching bubble, replace it. If
+  // not (e.g. the user navigated away during streaming), this
+  // event is a no-op; the next renderSessionMessages call paints
+  // the full message.
+  const delegationId = msg.delegation_id;
+  if (!delegationId) return;
+  const bubble = state.streamingBubbles[delegationId];
+  if (!bubble) return;
+
+  // Replace the bubble with the authoritative renderMessage.
+  const newBubble = renderMessage(msg);
+  bubble.replaceWith(newBubble);
+  delete state.streamingBubbles[delegationId];
+}
+
 function renderChildren() {
   const list = $('children-list');
   list.innerHTML = '';
@@ -522,28 +614,50 @@ async function sendChat() {
   container.appendChild(createMessage('user', text));
   container.scrollTop = container.scrollHeight;
 
-  // Working indicator
-  const working = createMessage('assistant', 'Working...');
-  container.appendChild(working);
-
+  // M1.7 + M1.8: the chat endpoint drives the orchestrator loop
+  // AND returns the assistant message inline. The user message is
+  // also persisted server-side (the response acknowledges the
+  // user_msg, but we already rendered the optimistic user bubble
+  // above). The chat endpoint is the one the ChatLoop exposes;
+  // the previous /tasks path was the legacy delegation
+  // contract. M1.7 made this the canonical chat surface; M1.8
+  // makes it the streaming surface.
+  //
+  // We don't await the persisted message.added WS event here;
+  // the chat endpoint returns the assistant message in the
+  // response body. The WS path is for streaming deltas (M1.8).
   try {
-    await api('/sessions/' + state.session.id + '/messages', {
+    const response = await api('/sessions/' + state.session.id + '/messages', {
       method: 'POST', body: { role: 'user', content: text }
     });
-    const result = await api('/tasks', { method: 'POST', body: { task: text } });
-    working.remove();
-    await api('/sessions/' + state.session.id + '/messages', {
-      method: 'POST',
-      body: { role: 'assistant', content: result.output || ('Error: ' + (result.error || 'no output')), agent: result.agent }
-    });
+    // The chat endpoint returns {success, message, assistant?}.
+    // The user message is acknowledged; the assistant message is
+    // either in `response.assistant` (the no-children fast
+    // path or the synthesis reply) or will arrive via the WS
+    // message.added event. Either way, the authoritative render
+    // happens on the WS event; the inline response is a
+    // fallback for the case where the WS is slow.
+    if (response && response.assistant) {
+      // Replace any "Working..." placeholder with the final
+      // message immediately. (The chat loop has already
+      // persisted the assistant message; the WS message.added
+      // will follow and handleMessageAdded will be a no-op for
+      // this delegation because the bubble was already
+      // replaced.)
+      const working = container.querySelector('.message.assistant.working');
+      if (working) working.remove();
+      container.appendChild(createMessage('assistant', response.assistant.content || ''));
+      container.scrollTop = container.scrollHeight;
+    }
+    // Refresh the session (children list may have grown, status
+    // may have changed). This is the catch-up: the WS path
+    // already handled the streaming; this is for everything
+    // else.
     const session = await api('/sessions/' + state.session.id);
     state.session = session;
     state.children = session.children || [];
-    renderSessionMessages(session);
     renderChildren();
-    toast(result.success ? 'Task done' : 'Task failed', result.success ? 'success' : 'error');
   } catch (e) {
-    working.remove();
     toast('Failed: ' + e.message, 'error');
   } finally {
     $('send-btn').disabled = false;
@@ -795,12 +909,27 @@ function connectWebSocket() {
     state.ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.type === 'child_session_update' && state.session) {
+        // The wire format from WSEventBus is
+        // ``{event, data, timestamp}``; the legacy UI code
+        // checked ``data.type`` (always undefined) which meant
+        // the WS handler was dead code. M1.8 dispatches on
+        // ``data.event``.
+        const event = data.event;
+        const payload = data.data || {};
+        if (event === 'chat.delta') {
+          handleChatDelta(payload);
+        } else if (event === 'message.added') {
+          handleMessageAdded(payload);
+        } else if (event === 'delegation.status_changed' && state.session) {
+          // Status transitions for child delegations re-fetch
+          // the session so the Children tab reflects the new
+          // status. The chat bubble for the same delegation
+          // (if any) is unaffected -- its authoritative
+          // replacement arrives via ``message.added``.
           api('/sessions/' + state.session.id).then(s => {
             if (s) {
               state.session = s;
               state.children = s.children || [];
-              renderSessionMessages(s);
               renderChildren();
             }
           });

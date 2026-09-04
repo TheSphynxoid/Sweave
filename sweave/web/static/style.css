@@ -293,6 +293,23 @@ body {
 .message.tool .role { color: #f0ad4e; }
 .message .text { white-space: pre-wrap; line-height: 1.5; }
 
+/* M1.8: streaming bubble. While the orchestrator is replying,
+   the chat UI shows a partial bubble that gets patched in place
+   as chat.delta events arrive. The cursor hint signals "still
+   streaming" so the user knows more text is coming. */
+.message.assistant.streaming .content {
+  border-color: var(--accent, #4dabf7);
+}
+.message.assistant.streaming .text::after {
+  content: '▍';
+  margin-left: 1px;
+  color: var(--accent, #4dabf7);
+  animation: streaming-blink 1s steps(2, end) infinite;
+}
+@keyframes streaming-blink {
+  to { opacity: 0; }
+}
+
 .chat-input-area {
   border-top: 1px solid var(--border);
   background: var(--panel);
