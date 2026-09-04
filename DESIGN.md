@@ -383,7 +383,7 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   loop probe (third defer to the same target is rejected with 409
   "rejected: loop detected"). 336/336 pytest (was 295; +41); 13/13
   run.py --check; 40/40 test_full; suite 3x consecutive green.
-- **M1.7 Orchestrator chat loop** (~1.5, planned in detail: `docs/M1_7_PLAN.md`):
+- **M1.7 Orchestrator chat loop** (~2.2, planned in detail: `docs/M1_7_PLAN.md`):
   fixes the per-Session context wrinkle (orchestrator's durable opencode session
   binding moves to the **Session record**, one per project.session; sessions gain
   schema_version + migration); `POST /messages` spawns chat-turn Delegations
