@@ -16,6 +16,13 @@ Schema history
   and ``manifest`` (a structured self-report from the specialist). Per-
   project disk persistence lives one level up (M1.1 step 2) — this module
   is just the record + the store API.
+* **v3** (M1.6): adds ``depth`` (chain depth; 0 for orchestrator's
+  own delegation, +1 per defer), ``chain_root_id`` (the root of the
+  deferral chain; used for budget accumulation + parent gating), and
+  ``coordination_tokens`` (tiktoken estimate of the orchestrator turns
+  + defer payloads + result summaries in this delegation; specialist
+  internal work is NOT counted). ``from_dict`` migrates v2 records
+  forward (defaults fill in).
 """
 
 from __future__ import annotations
@@ -34,8 +41,9 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCHEMA_VERSION_PREP = 1  # M1.prep records
+SCHEMA_VERSION_V2 = 2  # M1.1 records
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -105,6 +113,11 @@ class Delegation:
     pr_url: str | None = None
     parent_task_id: str | None = None  # deferral chain; None = orchestrator-initiated
     manifest: Manifest | None = None
+    # v3 fields (M1.6). All default to sensible values; v2 records
+    # load with depth=0 / chain_root_id=None / coordination_tokens=0.
+    depth: int = 0  # 0 = orchestrator; +1 per defer
+    chain_root_id: str | None = None  # the root of the deferral chain
+    coordination_tokens: int = 0  # tiktoken estimate of coordination traffic
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -116,20 +129,21 @@ class Delegation:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Delegation":
         d = dict(data)
-        # v1 -> v2 migration: M1.prep records are missing every v2 field.
-        # Their values are unknown (we never persisted them), so all
-        # default to None. The trace log + status fields are enough to
-        # reconstruct what happened; the missing worktree/branch/PR are
-        # only meaningful for "review" or later delegations, and any such
-        # v1 record is by definition not in that state (the v1 -> v2 bump
-        # ships before any specialist ever wrote those fields).
+        # v1 -> v2 -> v3 migration chain. v1 (M1.prep) is missing
+        # every v2 field; v2 (M1.1) is missing every v3 field. The
+        # trace log + status fields are enough to reconstruct what
+        # happened; the missing worktree/branch/PR are only meaningful
+        # for "review" or later delegations, and any such v1 record is
+        # by definition not in that state.
         schema_version = int(d.get("schema_version") or SCHEMA_VERSION_PREP)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V2:
             d = _migrate_v1_to_v2(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v2_to_v3(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
-        # version so the in-memory object matches what a fresh v2 record
-        # looks like. (Roundtripping a v1 record should produce a v2.)
+        # version so the in-memory object matches what a fresh v3 record
+        # looks like. (Roundtripping a v1 record should produce a v3.)
         d["schema_version"] = SCHEMA_VERSION
         # Datetime parsing
         for k in ("created_at", "updated_at", "started_at", "completed_at"):
@@ -156,6 +170,23 @@ def _migrate_v1_to_v2(d: dict[str, Any]) -> dict[str, Any]:
     d.setdefault("pr_url", None)
     d.setdefault("parent_task_id", None)
     d.setdefault("manifest", None)
+    return d
+
+
+def _migrate_v2_to_v3(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v2 record forward to the v3 field set.
+
+    v2 records predate the deferral chain's structural enforcement
+    (M1.6): they have no depth / chain_root_id / coordination_tokens.
+    v2 records are by definition *not* part of a deferral chain
+    (parent_task_id was unused before the MCP defer tool existed), so
+    we set depth=0 (the orchestrator's own delegation) and no chain
+    link. coordination_tokens=0 because v2 records never accumulated
+    anything (the chain budget is new in v3).
+    """
+    d.setdefault("depth", 0)
+    d.setdefault("chain_root_id", None)
+    d.setdefault("coordination_tokens", 0)
     return d
 
 

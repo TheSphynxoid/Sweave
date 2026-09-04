@@ -91,10 +91,14 @@ async def test_store_update_missing_returns_none(tmp_path):
 # --- M1.1 step 1: Delegation v2 fields + v1->v2 migration ----------------
 
 
-def test_schema_version_is_v2():
-    """Plan: SCHEMA_VERSION bumps to 2 in M1.1 step 1."""
-    assert SCHEMA_VERSION == 2
+def test_schema_version_is_v2_or_higher():
+    """M1.1 step 1 bumped to v2; M1.6 step 2 bumped to v3. The
+    migration chain in ``Delegation.from_dict`` covers both; this
+    test pins the constants and the version ordering so a future
+    bump doesn't accidentally break the migration chain."""
+    assert SCHEMA_VERSION >= 3
     assert SCHEMA_VERSION_PREP == 1
+    assert SCHEMA_VERSION > SCHEMA_VERSION_PREP
 
 
 def test_v2_fields_have_none_defaults():
@@ -226,17 +230,96 @@ def test_to_dict_serialises_datetimes():
     assert data["completed_at"] is None
 
 
-def test_v2_field_set_includes_all_m1_1_fields():
-    """Lock the public field surface — adding a field requires bumping SCHEMA_VERSION."""
+def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
+    """Lock the public field surface — adding a field requires bumping SCHEMA_VERSION.
+
+    M1.1 step 1 added the v2 fields (worktree/branch/pr_url/parent_task_id/manifest).
+    M1.6 step 2 added the v3 fields (depth/chain_root_id/coordination_tokens) for
+    the deferral chain (orchestrator -> specialist -> defer -> ...).
+    """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
         "status", "created_at", "updated_at", "started_at", "completed_at",
         "parent_session_id", "project_name", "output", "error",
         # M1.1 step 1 additions
         "worktree_path", "branch", "pr_url", "parent_task_id", "manifest",
+        # M1.6 step 2 additions
+        "depth", "chain_root_id", "coordination_tokens",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
         f"unexpected field diff: added={actual-expected}, "
         f"removed={expected-actual}"
     )
+
+
+def test_schema_version_is_v3():
+    """M1.6 step 2: the current schema is v3 (depth/chain_root_id/
+    coordination_tokens were added on top of v2)."""
+    from sweave.runtime.delegation_store import SCHEMA_VERSION
+
+    assert SCHEMA_VERSION == 3
+
+
+def test_v2_to_v3_migration_fills_defaults():
+    """A v2 record (pre-M1.6) loads with depth=0, chain_root_id=None,
+    coordination_tokens=0. M1.6 never persisted depth>0 chains before
+    the field existed, so defaults are correct."""
+    from sweave.runtime.delegation_store import SCHEMA_VERSION
+
+    v2_record = {
+        "schema_version": 2,
+        "delegation_id": "del-abc",
+        "task_id": "t1",
+        "agent": "backend",
+        "model": "",
+        "task": "x",
+        "status": "done",
+        "created_at": "2026-09-01T00:00:00",
+        "updated_at": "2026-09-01T00:00:00",
+        "started_at": "2026-09-01T00:00:00",
+        "completed_at": "2026-09-01T00:00:01",
+        "parent_session_id": None,
+        "project_name": None,
+        "output": "",
+        "error": None,
+        "worktree_path": None,
+        "branch": None,
+        "pr_url": None,
+        "parent_task_id": None,
+        "manifest": None,
+    }
+    d = Delegation.from_dict(v2_record)
+    assert d.schema_version == SCHEMA_VERSION
+    assert d.depth == 0
+    assert d.chain_root_id is None
+    assert d.coordination_tokens == 0
+
+
+def test_v1_to_v3_migration_also_works():
+    """M1.prep records (v1) load through both migration helpers and
+    round-trip as v3."""
+    from sweave.runtime.delegation_store import SCHEMA_VERSION
+
+    v1_record = {
+        "schema_version": 1,
+        "delegation_id": "del-prep",
+        "task_id": "t0",
+        "agent": "backend",
+        "model": "",
+        "task": "x",
+        "status": "done",
+        "created_at": "2026-08-01T00:00:00",
+        "updated_at": "2026-08-01T00:00:00",
+        "started_at": None,
+        "completed_at": None,
+        "parent_session_id": None,
+        "project_name": None,
+        "output": "",
+        "error": None,
+    }
+    d = Delegation.from_dict(v1_record)
+    assert d.schema_version == SCHEMA_VERSION
+    assert d.depth == 0
+    assert d.parent_task_id is None  # v1 didn't have this; defaults
+    assert d.coordination_tokens == 0

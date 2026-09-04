@@ -151,6 +151,13 @@ async def lifespan(app: FastAPI):
                 else None
             ))
         ),
+        # M1.6 step 2: the DelegationManager is wired in so the
+        # runner can notify it on terminal transitions. The v2 task
+        # endpoint already calls ``validate`` directly; this hook is
+        # the *release* side (frees the per-chain cache so a new defer
+        # in the same chain can pick a target that was previously
+        # busy).
+        delegation_manager=state.delegation_manager,
     )
     # One-time legacy import: if the anchored file is absent but the
     # in-memory dynamic_agents dict has entries (from the legacy CWD-
@@ -172,6 +179,14 @@ async def lifespan(app: FastAPI):
         runners=serve_registry,
         event_bus=state.event_bus,
     )
+
+    # M1.6 step 2: build the DelegationManager from the loaded config.
+    # The v2 task endpoint runs ``validate`` before delegating to the
+    # runner when ``parent_task_id`` is set; the MCP ``defer`` tool
+    # also goes through this gate (via /api/v2/tasks).
+    from sweave.runtime.delegation_manager import DelegationManager
+
+    state.delegation_manager = DelegationManager.from_config(config_manager.get())
 
     app.state.app_state = state
     logger.info(

@@ -147,7 +147,7 @@ async def submit_task_v2(
         decision = state.router.route(request.task)
         agent = decision.agent
         model = request.model or decision.model
-        routed_agent = decision.agent
+        routed_agent = agent
         routed_model = model
 
     # Project pin: explicit request wins, else fall back to the active
@@ -155,6 +155,57 @@ async def submit_task_v2(
     project_name = request.project_name
     if project_name is None:
         project_name = state.active_project_name()
+
+    # M1.6 step 2: deferral chain validation. When ``parent_task_id`` is
+    # set, the new delegation is a child; the DelegationManager enforces
+    # depth / loop / budget before we hand off to the JobRunner. The
+    # chain rules raise specific ChainError subclasses; we map each to
+    # the right HTTP code + a "rejected: <reason>" string so the MCP
+    # ``defer`` tool can surface the actionable error verbatim.
+    if request.parent_task_id:
+        if state.delegation_manager is None:
+            raise HTTPException(503, "delegation manager not initialised")
+        # Look up the parent in the per-project stores. The parent's
+        # agent name is what we check for loops; its chain_root_id
+        # establishes which cache the new delegation lives under.
+        from sweave.runtime.delegation_manager import (
+            BudgetExceededError,
+            DepthExceededError,
+            LoopDetectedError,
+        )
+
+        parent = None
+        for store in _all_stores(state):
+            parent = store.get(request.parent_task_id)
+            if parent is not None:
+                break
+        if parent is None:
+            # Plan ruling: parent is required for defer; a defer with
+            # an unknown parent_task_id is a 404 (caller is using a stale
+            # id, or the orchestrator's own delegation was deleted).
+            raise HTTPException(
+                404,
+                f"parent delegation '{request.parent_task_id}' not found",
+            )
+        try:
+            new_delegation = state.delegation_manager.validate(
+                parent=parent,
+                target=agent,
+                task=request.task,
+                reason=(
+                    request.manifest.get("intent", "")
+                    if isinstance(request.manifest, dict)
+                    else ""
+                ),
+            )
+        except DepthExceededError as e:
+            raise HTTPException(409, f"rejected: {e}") from e
+        except LoopDetectedError as e:
+            raise HTTPException(409, f"rejected: {e}") from e
+        except BudgetExceededError as e:
+            raise HTTPException(409, f"rejected: {e}") from e
+    else:
+        new_delegation = None
 
     delegation = await state.job_runner.submit(
         agent=agent,
@@ -164,6 +215,9 @@ async def submit_task_v2(
         project_name=project_name,
         parent_task_id=request.parent_task_id,
         manifest=request.manifest,
+        depth=new_delegation.depth if new_delegation else 0,
+        chain_root_id=new_delegation.chain_root_id if new_delegation else None,
+        coordination_tokens=new_delegation.coordination_tokens if new_delegation else 0,
     )
 
     # M1.2 step 3: append an override log entry if the user supplied an

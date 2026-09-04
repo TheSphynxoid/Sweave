@@ -41,3 +41,8 @@ models:
 routing:
   routes: []  # Populated from rules.yaml
   fallback: "llm"
+  # M1.6: deferral chain constraints (the orchestrator->specialist->defer
+  # path). chain_budget is coordination-token-only (orchestrator turns +
+  # defer payloads + result summaries; specialist internal work is opaque).
+  chain_budget: 200000
+  max_depth: 2

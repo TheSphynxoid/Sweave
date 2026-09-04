@@ -82,6 +82,17 @@ class RoutingConfig(BaseModel):
     """Routing rules configuration."""
     routes: list[RoutingRule] = Field(default_factory=list)
     fallback: Literal["llm", "first"] = "llm"
+    # M1.6: chain budget (coordination tokens per deferral chain).
+    # Counts only orchestrator turns + defer payloads + inter-specialist
+    # result summaries -- specialist internal work is opaque by
+    # design (the opencode v2 stream exposes no per-turn token count).
+    # Plan ruling 2026-08-30: default 200K.
+    chain_budget: int = 200_000
+    # Depth cap on the deferral chain. Plan ruling: orchestrator depth
+    # is 0; a child has depth 1; depth 2 = grandchild (orchestrator ->
+    # specialist -> defer -> orchestrator -> peer). Plan ruling
+    # 2026-08-30: default 2.
+    max_depth: int = 2
 
 
 class ServerConfig(BaseModel):

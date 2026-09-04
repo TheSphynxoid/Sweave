@@ -75,6 +75,7 @@ class JobRunner:
         specialist_factory: Callable[[str], "Specialist | None"] | None = None,
         turn_timeout: float | None = None,
         specialist_saver: "Callable[[Specialist, str | None], None] | None" = None,
+        delegation_manager: "DelegationManager | None" = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -88,9 +89,9 @@ class JobRunner:
         self.project_dir_resolver = project_dir_resolver
         # M1.1 step 4: UI v1 compat bridge. On every delegation submit
         # we add a ChildSession entry to the parent session so the
-        # Children tab keeps rendering. The AppState supplies a closure
-        # that knows about Session + project_manager; the runner
-        # itself stays domain-agnostic.
+        # Children tab keeps rendering. The AppState itself supplies a
+        # closure that knows about Session + project_manager; the
+        # runner stays domain-agnostic.
         self.child_session_adder = child_session_adder
         # M1.3 step 3: when a SpecialistRuntime is wired in, the runner
         # delegates to it for the actual work (per-specialist
@@ -108,8 +109,7 @@ class JobRunner:
         # M1.3 step 4: per-turn timeout. The agent's streaming response
         # is wrapped in ``asyncio.wait_for(self.turn_timeout, ...)``; on
         # expiry the delegation is marked failed with an explicit
-        # error and the serve is recycled on next use. Heartbeat /
-        # output-staleness detection is deferred to R6.
+        # error and the serve is recycled on next use. M1.3 step 4.
         self.turn_timeout = turn_timeout if turn_timeout is not None else self.DEFAULT_TURN_TIMEOUT
         # M1.3 step 5 (live-gate fix): persists the Specialist record
         # (including the session_id the runtime set during run()) back
@@ -120,6 +120,13 @@ class JobRunner:
         # and is lost on restart -- contradicting the opencode.db
         # session-persistence contract (M1.3 post-step-0 amendment).
         self.specialist_saver = specialist_saver
+        # M1.6 step 2: per-process DelegationManager. On terminal
+        # status, we call ``record_terminal`` to free the per-chain
+        # cache (so a new defer on the same chain can pick a new
+        # target) and (for the root) drop the cache entirely (chain
+        # is over). Best-effort: failures are logged, never raised --
+        # the delegation result stands on its own.
+        self.delegation_manager = delegation_manager
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -149,6 +156,9 @@ class JobRunner:
         project_name: str | None = None,
         manifest: Any = None,
         parent_task_id: str | None = None,
+        depth: int = 0,
+        chain_root_id: str | None = None,
+        coordination_tokens: int = 0,
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
@@ -163,6 +173,17 @@ class JobRunner:
           prompt convention. Stored as-is; M1.1 does not generate.
         * A ``ChildSession`` entry is written to the parent session
           (bridge) so the UI v1 Children tab keeps rendering.
+
+        M1.6 step 2:
+        * ``depth`` is the chain depth (0 for the orchestrator's own
+          delegation, +1 per defer; max ``routing.max_depth``).
+        * ``chain_root_id`` is the root of the deferral chain (or None
+          for top-level user tasks; these don't participate in
+          chain caches).
+        * ``coordination_tokens`` is the tiktoken estimate of this
+          delegation's coordination traffic (orchestrator turn + defer
+          payload + result summaries; specialist internal work is
+          *not* counted by design).
         """
         delegation = Delegation(
             agent=agent,
@@ -172,6 +193,9 @@ class JobRunner:
             project_name=project_name,
             parent_task_id=parent_task_id,
             manifest=manifest,
+            depth=depth,
+            chain_root_id=chain_root_id,
+            coordination_tokens=coordination_tokens,
             status="queued",
         )
         store = await self._store_for(delegation)
@@ -459,6 +483,24 @@ class JobRunner:
                 "task_id": delegation.task_id,
             },
         )
+        # M1.6 step 2: notify the DelegationManager of a terminal
+        # transition so the per-chain caches free up. Best-effort;
+        # the cache is per-process, so a missed call only affects the
+        # current process's view of the chain (the persisted record
+        # is the source of truth and ``rebuild_chain_state`` recovers
+        # on next defer in the same process).
+        if new_status in {"done", "failed"} and self.delegation_manager is not None:
+            try:
+                # Use the post-update status so the manager's view
+                # matches the persisted record.
+                delegation.status = new_status
+                self.delegation_manager.record_terminal(delegation)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "JobRunner: delegation_manager.record_terminal failed for %s",
+                    delegation.delegation_id,
+                    exc_info=True,
+                )
 
     async def _publish(self, event: str, data: dict[str, Any]) -> None:
         if self.event_bus is not None:

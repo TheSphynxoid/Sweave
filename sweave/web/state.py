@@ -22,6 +22,7 @@ from sweave.config.schemas import AgentSpec
 if TYPE_CHECKING:
     from sweave.memory.backends import MemoryFactory  # noqa: F401
     from sweave.router.router import RuleRouter
+    from sweave.runtime.delegation_manager import DelegationManager
     from sweave.runtime.job_runner import JobRunner
     from sweave.runtime.locking import ProjectLockRegistry
     from sweave.runtime.specialist_store import SpecialistResolver
@@ -98,6 +99,10 @@ class AppState:
     # the same ``~/.sweave/traces`` the runner uses; tests may point
     # this at a temp dir.
     traces_dir: Path = field(default_factory=lambda: Path.home() / ".sweave" / "traces")
+    # M1.6: per-process DelegationManager (depth / loop / budget).
+    # Built once in lifespan from the loaded config; the v2 task
+    # endpoint runs ``validate`` before delegating to the runner.
+    delegation_manager: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":

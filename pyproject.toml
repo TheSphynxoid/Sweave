@@ -28,6 +28,11 @@ dependencies = [
     # spawns via per-project opencode.json) to expose `defer` +
     # `list_specialists` to the orchestrator's opencode serve session.
     "mcp>=2.1,<3",
+    # M1.6: tiktoken (MIT, OpenAI) for chain-budget token estimation.
+    # Coordination-only (orchestrator turns + defer payloads + result
+    # summaries) -- specialist internal work is opaque by design
+    # (see plan §Rulings).
+    "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]

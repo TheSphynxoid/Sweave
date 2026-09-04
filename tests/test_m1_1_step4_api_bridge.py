@@ -65,15 +65,45 @@ def client(monkeypatch, tmp_path: Path) -> TestClient:
 
 
 def test_v2_task_accepts_parent_task_id(client: TestClient):
+    """Submit a child delegation whose parent_task_id points at a
+    real, existing delegation. M1.6 step 2 enforces "parent must
+    exist" as part of the deferral chain rules (a stale id is a 404).
+    """
+    # Create a real parent first (no parent_task_id of its own, so
+    # this is a top-level delegation).
+    r_parent = client.post(
+        "/api/v2/tasks", json={"task": "parent", "agent": "backend"}
+    )
+    assert r_parent.status_code == 200
+    parent_id = r_parent.json()["delegation_id"]
+
     r = client.post(
         "/api/v2/tasks",
-        json={"task": "x", "agent": "backend", "parent_task_id": "parent_xyz"},
+        json={"task": "x", "agent": "backend", "parent_task_id": parent_id},
     )
     assert r.status_code == 200
     did = r.json()["delegation_id"]
     g = client.get(f"/api/delegations/{did}")
     assert g.status_code == 200
-    assert g.json()["parent_task_id"] == "parent_xyz"
+    assert g.json()["parent_task_id"] == parent_id
+    # M1.6 step 2: depth is set to parent.depth + 1; chain_root_id
+    # equals the parent's delegation_id.
+    assert g.json()["depth"] == 1
+    assert g.json()["chain_root_id"] == parent_id
+
+
+def test_v2_task_with_unknown_parent_returns_404(client: TestClient):
+    """M1.6 step 2: deferring with a parent_task_id that doesn't
+    exist returns 404. The orchestrator should never see this in
+    practice (its own delegation always exists), but the API
+    contract is clear: a stale id is a 404, not a silent
+    parent_task_id write."""
+    r = client.post(
+        "/api/v2/tasks",
+        json={"task": "x", "agent": "backend", "parent_task_id": "del-stale"},
+    )
+    assert r.status_code == 404
+    assert "del-stale" in r.json()["detail"]
 
 
 def test_v2_task_accepts_manifest(client: TestClient):
@@ -186,13 +216,23 @@ def test_list_filter_by_status(client: TestClient):
 
 
 def test_list_filter_by_parent_task_id(client: TestClient):
+    """The list filter returns delegations whose parent_task_id matches
+    the query. M1.6 step 2 enforces "parent must exist" so the
+    helper creates a real parent first; the test still exercises the
+    filter contract on the child delegation.
+    """
+    r_parent = client.post(
+        "/api/v2/tasks", json={"task": "parent", "agent": "backend"}
+    )
+    assert r_parent.status_code == 200
+    parent_id = r_parent.json()["delegation_id"]
     r = client.post(
         "/api/v2/tasks",
-        json={"task": "child", "agent": "backend", "parent_task_id": "p1"},
+        json={"task": "child", "agent": "backend", "parent_task_id": parent_id},
     )
     assert r.status_code == 200
-    filtered = client.get("/api/delegations?parent_task_id=p1").json()["delegations"]
-    assert all(d["parent_task_id"] == "p1" for d in filtered)
+    filtered = client.get(f"/api/delegations?parent_task_id={parent_id}").json()["delegations"]
+    assert all(d["parent_task_id"] == parent_id for d in filtered)
 
 
 # ---------------------------------------------------------------------------
