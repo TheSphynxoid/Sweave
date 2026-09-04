@@ -15,7 +15,49 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
 - No build step for the web UI: no npm/bundler in `sweave/web/static/`. Vanilla ES6 only.
 - Python style: ruff line-length 100, pydantic v2, `from __future__ import annotations`.
 - New dependency? Check DESIGN.md §8 policy first: small, maintained, permissive license;
-  no framework that owns the agent loop. Record every adoption in §8.
+   no framework that owns the agent loop. Record every adoption in §8.
+
+## How we work — execution session method
+
+The execution session's job is to **execute** a milestone plan that was agreed
+in a separate planning session. The plan lives at `docs/M1_N_PLAN.md` (or
+equivalent); the execution session reads it, refines it through discussion when
+details are ambiguous, and ships the step commits.
+
+**The execution session does NOT write the plan.** If the plan is missing,
+incomplete, or wrong, surface that to the user; don't try to be the planner.
+The planning session's method is outside what this document covers.
+
+**Steps**:
+1. **Read the prior state** (plan + `DESIGN.md` + `PROJECT_STATE.md` + this file's
+   gotchas + the prior plan's commit log + the relevant code). The plan's
+   "Starting point" section tells you what to read.
+2. **Check the plan for coherence and consistency against current state.**
+   Verify the "starting point" still holds; the rulings still hold; the file
+   paths and module names still match; the test counts in the gate still match;
+   the explicit non-goals still hold. If anything is inconsistent, surface the
+   discrepancy to the user before executing. Don't silently execute against a
+   stale plan.
+3. **Confirm the plan's design with the user; ask for clarification on details.**
+   The plan is a living document — refine it through discussion when details
+   are ambiguous or the planning session didn't cover something. The execution
+   session refines; it doesn't redesign the milestone's architecture.
+4. **Execute the steps in order, with the agreed refinements.** Each step has
+   its own commit, named for the step (e.g. "M1.7 step 1: ..."). Tests first
+   when the plan calls for it. Run the step's gate (tests + run.py + test_full
+   + live check when applicable) before moving to the next step. If a step's
+   gate fails, fix it before moving on. If a step requires a user decision,
+   ask; don't assume.
+5. **Update the docs at the end.** `DESIGN.md` (§4 component status, R1 bullet,
+   §2.1 notes if the plan changed the architecture). `PROJECT_STATE.md`
+   (M-number progress + rulings + post-execution summary). This file (gotchas
+   for things that bit during execution). The plan file itself: bump the
+   "Status" header from "planned" to "done" with the date and a one-line
+   summary; add a final "Execution summary" section if the plan grew
+   significantly during execution.
+6. **Stop and report.** Final state: which steps landed, which (if any) were
+   deferred, what the test count is, what the live gate showed, what gotchas
+   landed. Wait for the user's next instruction.
 
 ## Key files
 | Path | What |
