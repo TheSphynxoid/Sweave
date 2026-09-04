@@ -17,6 +17,45 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
 - New dependency? Check DESIGN.md §8 policy first: small, maintained, permissive license;
    no framework that owns the agent loop. Record every adoption in §8.
 
+## How we plan — planning session method
+
+The planning session's job is to **produce and keep current the plan of record**
+(`docs/M{X}_PLAN.md`) for the *next* execution session — while execution happens
+in parallel elsewhere. Planning sessions do not implement.
+
+**Steps** (the loop; one round per user check-in):
+1. **Re-read reality first.** `git log`/`git status` (execution may have advanced
+   under you), run the gates (`pytest`, smoke, UI), and spot-check what the
+   executor's docs claim. Trust is earned per claim: test counts, probe results,
+   and "done" markers are verified, not assumed.
+2. **Consistency audit.** Reconcile plans, `DESIGN.md`, `PROJECT_STATE.md`, and
+   `AGENTS.md` against the code. Classify findings: *accurate* / *stale-fix-now* /
+   *amend-plan* / *ask-user*. Fix stale cross-refs immediately (small commit);
+   never let the context docs contradict the code for a full round.
+3. **Report the state** to the user compactly: what landed, what drifted, what
+   you verified, what contradicts what.
+4. **Discuss forks with the user, get rulings.** Present options as tables with
+   trade-offs and a recommendation. Rulings are user-locked, dated, and written
+   into the plan + `DESIGN.md` (not just chat). Questions of principle (merge
+   policy, promotion policy, LLM-context ownership) always go to the user.
+5. **Detail the next step** into `docs/M{X}_PLAN.md`: *Starting point* (what
+   exists now — re-verify against code, not against older plan bullets), *goal
+   state*, numbered steps with estimates and done-gates, *explicit non-goals*,
+   *risks*. A plan re-scopes against what previous milestones actually built;
+   stale assumptions are the planner's failure, not the executor's.
+6. **Absorb executor amendments.** Execution sessions may amend plans with
+   justification (their right, per the execution method). The planning session
+   audits each amendment for consistency, reconciles the context docs if the
+   amendment changed architecture, and treats a well-argued deviation as design
+   progress — the converged plan is better than the original plan.
+7. **Update shared context before stopping**: rulings, known issues (e.g. flaky
+   tests), and the next plan's location surfaced in `PROJECT_STATE.md`; new
+   adoptions in `DESIGN.md` §8; gotchas in this file. Everything committed —
+   the next session must be able to pick up losslessly from the repo alone.
+
+**The loop per round**: state → consistency → discuss → confirm → detail →
+commit. If a round finds nothing to plan, say so — don't invent work.
+
 ## How we work — execution session method
 
 The execution session's job is to **execute** a milestone plan that was agreed
@@ -26,7 +65,7 @@ details are ambiguous, and ships the step commits.
 
 **The execution session does NOT write the plan.** If the plan is missing,
 incomplete, or wrong, surface that to the user; don't try to be the planner.
-The planning session's method is outside what this document covers.
+The planning session's method is the section above.
 
 **Steps**:
 1. **Read the prior state** (plan + `DESIGN.md` + `PROJECT_STATE.md` + this file's
