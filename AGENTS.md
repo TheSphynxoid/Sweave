@@ -87,6 +87,33 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
    invariant: removing the fixture makes the test fail immediately.
    If you add a new runtime-path test file, copy the fixture from
    one of those three.
+10. **MCP auth token is the only seam between the sweave MCP server
+    and the API** (M1.6). Both the stdio server (`sweave/mcp/`)
+    and the API router (`/api/mcp/specialists`) read the shared
+    token at `~/.sweave/mcp_token` (auto-generated on first call,
+    mode 0o600 best-effort). The token is **localhost-only** -- it
+    is the only thing standing between the MCP surface and the
+    `/api/mcp/specialists` endpoint. If you're writing an
+    end-to-end test that drives the MCP path, **always** set
+    `Path.home` to a temp dir (the `mcp` token path derives from
+    `Path.home()` and you don't want tests to overwrite the
+    real user's token). The TestClient fixtures in
+    `tests/test_m1_6_step1_mcp_server.py` and
+    `tests/test_m1_6_step3_orchestrator_wiring.py` already do this.
+    The token is also passed through `SWEAVE_MCP_TOKEN` env var
+    (set by the per-project opencode.json `environment` block at
+    M1.6 step 3) so the opencode-spawned subprocess can read it
+    without reading the home file directly.
+11. **Per-project opencode.json plumbing is idempotent** (M1.6). The
+    `ensure_mcp_config(project_dir)` call writes (or refreshes) the
+    project's `opencode.json` so the orchestrator's serve session
+    in that cwd sees the sweave MCP server. The `_sweave_managed`
+    marker inside the `mcp.sweave` entry is the contract: presence
+    = sweave wrote it, absence = user wrote it (we leave it alone).
+    If you need to add fields to the sweave MCP entry, update
+    `_sweave_mcp_entry` in `runtime/mcp_config.py`; the function
+    is the single source of truth. The `M1.6_DISABLE_MCP_PLUMBING=1`
+    env var is the test/CI kill switch.
 
 ## Running & testing
 ```bash

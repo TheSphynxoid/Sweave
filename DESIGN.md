@@ -76,10 +76,18 @@ Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, mod
   per-Session (a project may run several independent orchestrated conversations).
 - **Deferral, not spawning.** Specialists never spawn specialists. A specialist returns a
   structured `defer{target, task}` result; only the orchestrator/runtime performs the
-  spawn. One authority; mirrors Polly's supervisor-only delegation.
-- **DelegationManager** (R1) enforces: depth cap (default 2), loop detection (A→B→A,
-  tracked on the deferral chain it holds), per-chain cost budget, and records every
-  deferral as a Delegation (Children tab shows the full tree).
+  spawn. One authority; mirrors Polly's supervisor-only delegation. **M1.6 ships**:
+  the orchestrator calls the MCP `defer` tool (stdio subprocess), which posts to
+  `/api/v2/tasks` with `parent_task_id`; the DelegationManager enforces depth 2,
+  loop detect, and the 200K coordination-token budget. The MCP tool returns
+  `rejected: <reason>` lines for chain-rule violations so the orchestrator's
+  text-mode path can adjust.
+- **DelegationManager** (R1, M1.6 shipped) enforces: depth cap (default 2), loop
+  detection (A→B→A, tracked on the deferral chain it holds), per-chain
+  coordination-token budget (default 200K, tiktoken cl100k_base), and records
+  every deferral as a Delegation (Children tab shows the full tree). The first
+  defer under a top-level delegation establishes the chain root; top-level
+  delegations themselves bypass chain rules.
 - **Model at request time.** Model is part of the harness contract: `send(task, model)`.
   OpenCode implements it per-message (providerID/modelID); claude/codex adapters via
   per-invocation flag/config. Switching while idle → next request; while running →
@@ -192,6 +200,12 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
 | **SubAgentRun (ephemeral, capped)** | ✅ | M1.1 — `runtime/subagent_store.py`; per-process, in-memory, FIFO-capped at 500; serves R2's `/investigate` |
 | **UI v1 compat bridge (ChildSession)** | ✅ | M1.1 — `ChildSession.delegation_id` field + JobRunner bridge write on submit; R4 removes the bridge |
+| **DelegationManager (depth / loop / budget)** | ✅ | M1.6 — `runtime/delegation_manager.py`; per-process gate; depth cap (default 2), loop detect (per-chain active set), coordination-token budget (default 200K, tiktoken cl100k_base estimate). `ChainError` subclasses (`DepthExceededError` / `LoopDetectedError` / `BudgetExceededError`) all raise 409 with a "rejected: <reason>" surface for the MCP `defer` tool. Top-level delegations bypass chain rules (no parent = no chain); first defer establishes the chain root |
+| **Sweave MCP server (stdio, defer + list_specialists)** | ✅ | M1.6 — `sweave/mcp/` package; `python -m sweave.mcp`; official `mcp` SDK (MIT, §8); two tools: `defer(target, task, reason, caller_delegation_id)` posts to `/api/v2/tasks` with `parent_task_id` and surfaces the DelegationManager's "rejected: ..." lines as plain text the orchestrator can act on; `list_specialists()` returns the resolved pool (excludes the orchestrator singleton). Shared token at `~/.sweave/mcp_token` auto-generated; localhost-only auth via `X-Sweave-MCP-Token` |
+| **Per-project opencode.json plumbing** | ✅ | M1.6 — `runtime/mcp_config.py`; `ensure_mcp_config(project_dir)` is idempotent (the `_sweave_managed` marker; user-edited blocks are preserved); triggered on `POST /api/projects/{name}/active` so the orchestrator's serve cwd sees the sweave MCP server automatically |
+| **Orchestrator defer tool contract** | ✅ | M1.6 — `sweave/agents/orchestrator/config.yaml` prompt contains the defer tool spec (args, return shapes, "rejected:" / "error:" / "queued:"); "Never implement code yourself" is the headline rule |
+| **Parent gating (tree lifecycle)** | ✅ | M1.6 — `JobRunner._wait_for_children` blocks the parent's `review` transition until every child delegation reaches `done` or `failed`; bounded by `turn_timeout` so a wedged child can't stall the parent. Trace records `children_settled` (count, done, failed) or `children_settle_timeout`. **Synthesis generation (re-prompting the orchestrator with child results) is M1.7 scope** — M1.6 delivers tree lifecycle + gating only |
+| **Delegation v3 schema (chain metadata)** | ✅ | M1.6 — schema_version=3; new fields `depth` (0 for orchestrator, +1 per defer), `chain_root_id` (None for top-level; the root of the deferral chain otherwise), `coordination_tokens` (tiktoken estimate; coordination traffic only — specialist internal work is opaque by design). `from_dict` migrates v2 → v3 and v1 → v3 |
 | **Human promotion (review → done) endpoint** | ✅ | M1.4+M1.5 — `POST /api/delegations/{id}/promote`; 409 from non-review; 404 unknown; trace `status_changed` (source=human_promote); WS `delegation.status_changed`; bridged `ChildSession.status` synced to `done`; Children-tab "Mark done" button (review only, offsetParent-verifiable). **R2's cross-review calls this same endpoint programmatically** — the API is the automation seam |
 | **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 295 tests across 27 files; `pytest` is the source of truth |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
@@ -349,12 +363,26 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   providers (§8 map).
 - **M1.6 DelegationManager + deferral** (~2, planned in detail:
   `docs/M1_6_PLAN.md`): **defer = real MCP tool** (ruling 2026-08-30 — no JSON
-  parsing): `sweave/mcp` stdio server exposes `defer(target, task)` + 
+  parsing): `sweave/mcp` stdio server exposes `defer(target, task)` +
   `list_specialists()` to the orchestrator's opencode session; DelegationManager
   enforces depth 2, loop detection on the chain, 200K-token coordination budget
   (specialist internal work excluded — cap targets runaway coordination, not work).
   Delegation v3 (depth, chain_root_id, coordination_tokens) + parent gates on
-  children before review. Gate: mocked unit tests + one live end-to-end defer.
+  children before review. **Branch notes** (vs. plan): opencode MCP
+  discovery was verified at step 0 to use per-project `opencode.json`
+  with `type: "local"` + `command: [array]` + `environment: {KEY: VALUE}`
+  + `timeout: 30000` (no global-config injection fallback needed).
+  The MCP `defer` tool posts to `/api/v2/tasks` (no MCP-specific URL);
+  the DelegationManager runs inside that handler. The MCP server is
+  the **only** consumer of the per-project opencode.json plumbing --
+  specialists stay tool-clean. The first defer establishes the chain
+  root; top-level delegations (no parent) bypass chain rules. The
+  per-project opencode.json write is idempotent (the
+  `_sweave_managed` marker protects user-edited blocks). Live
+  mini-scene (gmi, tiny): a parent + a defer child end-to-end with
+  loop probe (third defer to the same target is rejected with 409
+  "rejected: loop detected"). 336/336 pytest (was 295; +41); 13/13
+  run.py --check; 40/40 test_full; suite 3x consecutive green.
 - **M1.7 Orchestrator chat loop** (~1.5): messages endpoint routes through the
   orchestrator specialist (per-session context), delegation via M1.6, replies persisted;
   polling status (ws broadcast bonus). Gate: E2E — chat → orchestrator reply → delegation

@@ -38,8 +38,8 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-09-03)
-- **295/295** in `pytest tests/` (source of truth for logic tests; +26 since M1.3)
+### Test Results (All Passing - verified 2026-09-04)
+- **336/336** in `pytest tests/` (source of truth for logic tests; +41 since M1.5)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
 - **8/8** in `test_browser.py` (file browser API)
@@ -168,6 +168,74 @@
        smoke). 6 new commits on `master` (steps 0, 1, 2, 3, plan/CONTEXT
        scaffolding). M1.4+M1.5 done.
 - ▶ **Next**: M1.6 DelegationManager + deferral (per DESIGN.md §6 R1)
+- ✅ **M1.6 DelegationManager + deferral via MCP tool** — done
+  2026-09-04 per `docs/M1_6_PLAN.md`. Rulings locked 2026-08-30:
+  - **defer = real MCP tool** (not JSON parsing). Orchestrator calls
+    `defer(target, task, reason?, caller_delegation_id)` natively; the
+    JSON-convention stays only as an upgrade-path note.
+  - **Depth cap 2**: orchestrator → specialist → defer → orchestrator
+    → peer.
+  - **Chain budget 200K coordination tokens** (tiktoken cl100k_base);
+    coordination traffic only (orchestrator turns, defer payloads,
+    result summaries). Specialist internal work is opaque by design.
+  - 5 steps:
+    0. **opencode MCP-in-serve probe** — passed. Per-project
+       `opencode.json` with `type: "local"`, `command: [array]`,
+       `environment: {KEY: VALUE}`, `timeout: 30000` is honored
+       (`opencode mcp list` reports "✓ connected"). No global-
+       config injection fallback needed. Full results in
+       `docs/M1_6_STEP0_PROBE.md`.
+    1. **Sweave MCP server** (`sweave/mcp/`, `python -m sweave.mcp`,
+       stdio, official `mcp` SDK MIT, §8 adoption). Two tools:
+       `defer` + `list_specialists`. Auth: shared token at
+       `~/.sweave/mcp_token` (auto-generated, 32 URL-safe bytes,
+       mode 0o600); localhost-only `X-Sweave-MCP-Token` header.
+       Tool results are plain text so the orchestrator's text-mode
+       path can act on `rejected: <reason>` lines.
+    2. **DelegationManager + Delegation v3** (`runtime/delegation_manager.py`).
+       Per-process gate. Three rules in order: depth, loop, budget.
+       `ChainError` subclasses for clean 409 mapping. Delegation
+       schema v2 → v3 (depth, chain_root_id, coordination_tokens).
+       v3 records on disk; `from_dict` migrates v1 + v2 forward.
+       Top-level delegations bypass chain rules.
+    3. **Orchestrator wiring + parent gating**.
+       - Orchestrator prompt updated with the `defer` tool contract
+         (target, task, reason, caller_delegation_id; "queued" /
+         "rejected:" / "error:" return shapes; "Never implement
+         code yourself" headline).
+       - Per-project `opencode.json` plumbing
+         (`runtime/mcp_config.py`, `ensure_mcp_config`): idempotent,
+         preserves user-edited blocks (the `_sweave_managed`
+         marker), merges with existing top-level keys. Triggered on
+         `POST /api/projects/{name}/active` so the orchestrator's
+         serve cwd sees the sweave MCP server automatically.
+       - Parent gating: `JobRunner._wait_for_children` blocks the
+         parent's `review` transition until every child reaches
+         `done` or `failed`; bounded by `turn_timeout`. Trace records
+         `children_settled` or `children_settle_timeout`. **Synthesis
+         generation (re-prompting with child results) is M1.7
+         scope** — M1.6 delivers tree lifecycle + gating only.
+    4. **Gates + live mini-scene + docs**.
+       - 336/336 pytest (was 295; +41 across 3 new test files:
+         `test_m1_6_step1_mcp_server.py` (11), `test_m1_6_step2_delegation_manager.py`
+         (15), `test_m1_6_step3_orchestrator_wiring.py` (11), plus
+         4 in `test_delegation_store.py`).
+       - 13/13 `run.py --check`; 40/40 `test_full`; suite 3×
+         consecutive green.
+       - **Live mini-scene** (`scripts/m1_6_live_scene.py`,
+         `SWEAVE_MOCK_OPENCODE=1`): parent + child end-to-end via
+         the same HTTP path the MCP tool uses; loop probe (third
+         defer to the same target → 409 "rejected: loop detected").
+         1 python proc before, 1 after; no leaks.
+       - Docs: DESIGN §4 (6 new rows: DelegationManager, MCP
+         server, per-project opencode.json plumbing, orchestrator
+         defer tool contract, parent gating, Delegation v3),
+         R1 M1.6 bullet replaced with the post-execution summary
+         + branch notes (vs plan: per-project config is the
+         mechanism; no global injection fallback needed), §2.1
+         (defer-tool wording + DelegationManager M1.6 update),
+         §8 already had the `mcp` entry pre-M1.6.
+- ▶ **Next**: M1.7 Orchestrator chat loop (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`
