@@ -1,9 +1,11 @@
 # M1.7 — Orchestrator chat loop (execution plan)
 
-Status: planned, not started. Est. ~2.0 sessions (was ~1.5; grew by ~0.5 to absorb the
-transcript system as a step — interpretation #1 of the earlier thread). Predecessors:
-M1.prep → M1.6 all ✅. Inherits M1.6's deferred synthesis scope and fixes the §2.1
-context-scope wrinkle as a dedicated step. Supersedes the DESIGN.md §6 R1 M1.7 bullet.
+Status: planned, not started. Est. ~2.2 sessions (was ~1.5; grew by ~0.7 to absorb the
+transcript system + memory curation + multi-session "what's new" as a step — interpretation
+#1 of the earlier thread, refined through the opencode-docs discussion and the
+timestamped-memory + multi-source "what's new" convergence). Predecessors: M1.prep →
+M1.6 all ✅. Inherits M1.6's deferred synthesis scope and fixes the §2.1 context-scope
+wrinkle as a dedicated step. Supersedes the DESIGN.md §6 R1 M1.7 bullet.
 
 ## Starting point (do NOT rebuild)
 - `POST /api/sessions/{id}/messages` (routers/projects.py:146) is **persist-only** —
@@ -53,6 +55,21 @@ the **Session record**, one per (project, session).
   (format, cap, anti-pollution). The LLM never sees free-form retrieval; it
   consumes a bounded list. This holds for both engine classes — the runtime
   curates regardless of which engine executes the turn.
+- **Memory is the cross-session knowledge bridge.** The LLM doesn't read the
+  transcript directly; the runtime injects a curated memory view (top-k by
+  relevance) + a multi-source "what's new" delta (memory entries + git diff
+  since the session's last recall). The transcript is for humans + the audit
+  trail; memory is for the LLM.
+- **The composed prompt is the runtime's view; the engine's view is engine-specific.**
+  For M1.7's v1 with opencode, the LLM sees the runtime's composed prompt +
+  opencode's session memory. The two layers serve different scopes (runtime =
+  per-turn additions; engine = within-turn tool-call context). The "LLM is a
+  consumer" framing is about the runtime's contribution; the engine's view is
+  outside the runtime's control.
+- **Per-section token budgets.** The runtime enforces per-section caps
+  (memory ~2K, what's new ~1K, synthesis ~8K, transcript reference ~100 tokens).
+  The composed prompt size is O(memory + synthesis + user_message), not
+  O(transcript_length). Long conversations don't bloat the per-turn prompt.
 
 ## The transcript system (interpretation #1)
 
@@ -159,60 +176,122 @@ about the runtime's contribution, not the engine's.)
 - Tests: synthesis prompt assembly + cap; no-children fast path; auto-done; children
   failing ⇒ synthesis still runs with failure noted (never hangs the conversation).
 
-### Step 4 — Transcript system (the new piece, was interpretation #1) ~0.5
+### Step 4 — Transcript system + memory curation + multi-session "what's new" (the new piece, was interpretation #1) ~0.7
 - `Session.messages` is the system of record for the conversation transcript. The
   opencode session's own session storage is no longer authoritative; the runtime's
   view of `Session.messages` is.
-- **Transcript context builder**: the runtime's per-turn system prompt composer.
-  Inputs: seed, server-curated `memory_recall`, transcript (drawn from
-  `Session.messages`, formatted by the runtime), synthesis prompt (when
-  children are present), current user message. The runtime owns the format
-  and the caps; the LLM consumes the result.
-- **Transcript format** (runtime's choice; v1 = sliding window with a token cap):
-  - Recent N turns verbatim (default N=10, config override).
-  - Older turns compressed to a structured summary (the runtime's
-    responsibility, not the LLM's).
-  - Per-turn token cap on the transcript portion of the system prompt
-    (default ~16K tokens, config override). Oldest-truncated when over the cap.
-  - The transcript is the runtime's view; opencode's session is no longer
-    consulted for prior-turn context.
-- **Server-curated `memory_recall`**:
-  - Trigger rule (simple, auditable): the runtime inspects the prior turn's
-    transcript + the current user message + recent tool calls, and decides
-    whether to recall project-scoped memories.
-  - Top-k cap (default 5 entries; config override).
-  - Format chosen by the runtime (e.g. "decision: {summary} | {timestamp}").
-  - Anti-pollution: the runtime drops entries that don't change the answer
-    *before* the LLM sees the list.
-  - Audit story: every recall's query, top-k entries, and what was actually
-    included in the system prompt is logged to the trace. R6 compaction has
-    a structural signal to compact against.
-- **Memory contract in the orchestrator prompt** (the runtime's view; the
-  framing is about what the runtime contributes, not about the engine's view):
+- **Per-turn composition is the runtime's unit of work.** The runtime builds the
+  composed prompt *once per turn* (a single user message to the orchestrator's
+  opencode session). The defer tool call is the LLM's *response* to the prompt,
+  not a separate push. The runtime handles the within-turn tool-call loop
+  boundary: the opencode session accumulates tool results within the turn; the
+  runtime captures the final reply at the turn boundary.
+- **The composed prompt is a single user message to the opencode session.**
+  The seed is in the opencode session's system prompt (set at session creation;
+  the runtime points opencode at `sweave/agents/orchestrator/config.yaml`). The
+  per-turn additions are: curated memory (top-k by relevance), what's new
+  (multi-source, see below), synthesis (when children are present), transcript
+  reference (one paragraph, not inlined), and the user message. The composed
+  prompt size is O(memory + synthesis + user_message), not O(transcript_length).
+
+- **Per-section token budgets** (each section is bounded, the runtime enforces):
+  - **Memory (curated)**: top-k=5, ~2K tokens total. Configurable.
+  - **What's new**: top-k=5, ~1K tokens total. Configurable. Drops oldest beyond
+    the cap.
+  - **Synthesis**: ~8K tokens total, per-child truncation. Configurable.
+  - **User message**: unbounded but typically <1K.
+  - **Transcript reference**: one paragraph, ~100 tokens. Not inlined.
+  - If a section is over the cap, the runtime drops the lowest-priority entries
+    (relevance > timestamp > kind). The trace records what was dropped and why.
+
+- **Memory is the cross-session knowledge bridge.** The memory bank (Hindsight,
+  project-scoped) is the system of record for *decisions and facts* the user
+  wants to carry forward. The runtime's `memory_recall` is the answer to "what
+  does the LLM need to know that it doesn't have from prior sessions?" The
+  transcript is for humans + the audit trail, not the LLM. The LLM reads
+  *memory* (curated decisions); the user can browse the transcript via the UI.
+
+- **Memory entries are timestamped.** Each entry has `content`, `ts`, and
+  `metadata` (source_session, kind, tags). The runtime uses timestamps for the
+  "since last recall" view. The Session record gains `last_memory_recall_ts:
+  datetime | None` (set on first recall; updated on each recall).
+
+- **What's new is multi-source.** Each entry tagged by source:
+  - **[memory]** entries with `ts > session.last_memory_recall_ts` (the runtime's
+    incremental recall: top-k by relevance within that window).
+  - **[git]** the working tree's diff: the runtime snapshots git state per
+    session (`Session.last_git_snapshot: str | None` = commit SHA + dirty-tree
+    hash). The "what's new" section includes the diff between the last snapshot
+    and the current state. Bounded at ~500 tokens for the diff summary
+    (file count, line counts, top changed files); full diff in the trace.
+  - **Graceful fallback**: project isn't a git repo → git section is empty, no
+    error. Memory entries can include git context at recording time
+    (commit SHA + dirty-state hash) for cross-checking consistency.
+
+- **Memory writes are implicit (runtime) and explicit (LLM)**:
+  - **Implicit**: synthesis results are written as memory entries automatically
+    (kind=synthesis-result, content=structured summary). The runtime's job.
+  - **Explicit**: the LLM has a `memory_retain` tool for explicit decisions.
+    The runtime validates and persists. The LLM doesn't poll; the per-turn
+    injection covers the common case.
+  - The memory bank hierarchy is unchanged: `global → project-{name} →
+    session-{id}`. The runtime picks the active project's bank.
+
+- **Inter-session mechanics**:
+  - Session A runs; the runtime records `last_memory_recall_ts` and
+    `last_git_snapshot` per turn. Synthesis results write memory entries.
+  - User starts session B; the runtime initializes `last_memory_recall_ts` to
+    "now" (no "what's new" for the first turn). The curated memory section
+    (top-k by relevance) includes session A's decisions. The LLM has
+    cross-session context without reading the transcript.
+  - User returns to session A; the runtime computes the "what's new" delta
+    (memory entries + git diff) since session A's last recall. The LLM gets
+    the focused view of changes from session B without noise from prior-session
+    entries it already saw.
+  - The LLM does NOT poll: the per-turn injection covers the common case.
+    `memory_recall` and `memory_retain` are explicit tools for queries and
+    explicit decisions.
+
+- **The composed prompt is the runtime's view, not the engine's view.** The LLM
+  sees: the runtime's composed prompt + opencode's session memory. The two
+  layers are different scopes (runtime = per-turn additions; engine = within-turn
+  tool-call context). The LLM doesn't read the transcript directly; the runtime
+  injects a one-paragraph reference. Opencode's session has the full transcript
+  in its own session memory for the LLM's within-turn continuity.
+
+- **Memory contract in the orchestrator prompt** (the runtime's view):
   - "This conversation's history is `Session.messages` (server-curated). The
-    runtime composes a per-turn view of it; you see what the runtime
-    includes."
+    runtime composes a per-turn view of it; you see what the runtime includes."
   - "Memory retrieval is server-curated. You may request `memory_recall(query)`
     for additional context; the runtime returns a bounded, formatted list."
-  - "For the runtime's contribution, you don't choose what enters your
-    context window — the runtime does. (The external engine you're running
-    inside may have its own session memory on top; that's engine-specific
-    and outside the runtime's control.)"
+  - "What's new (memory + git diff since your session's last recall) is also
+    server-curated. The runtime computes the diff; you don't run `git diff`."
+  - "For the runtime's contribution, you don't choose what enters your context
+    window — the runtime does. (The external engine you're running inside may
+    have its own session memory on top; that's engine-specific and outside
+    the runtime's control.)"
+
 - Tests:
-  - Transcript format: sliding window, structured summary, oldest-truncated.
-  - Per-turn system prompt composition: seed + memory + transcript + synthesis
-    + user message, with token caps enforced.
-  - Server-curated memory: top-k, format, anti-pollution filter, audit log.
-  - Two Sessions, same project: each gets its own `Session.messages`; the
-    runtime's transcript is per-Session, not per-orchestrator-specialist.
-  - Opencode session restart: `orchestrator_session_id` persists; the
-    runtime rebuilds the transcript from `Session.messages` on restart;
-    the LLM sees the same runtime view after a restart as before. (The
-    opencode session's own working memory may differ across the restart;
-    that's engine-specific and outside the runtime's control.)
+  - Per-turn composed prompt composition: seed (in system prompt) + memory
+    (curated, top-k) + what's new (multi-source, top-k) + synthesis
+    (server-built) + transcript reference (one paragraph) + user message,
+    with per-section token caps enforced. Trace records what was injected
+    and what was dropped.
+  - Multi-source "what's new": memory entries since `last_memory_recall_ts` +
+    git diff since `last_git_snapshot`, tagged by source.
+  - Inter-session: session B gets session A's decisions via curated memory;
+    user returns to session A, gets session B's decisions via "what's new."
+  - Memory writes: implicit (synthesis results) and explicit (LLM
+    `memory_retain`); both go through the same bank.
+  - Git fallback: project isn't a git repo → git section is empty, no error.
+  - Two Sessions, same project: each gets its own `Session.messages`,
+    `last_memory_recall_ts`, `last_git_snapshot`.
+  - Opencode session restart: `orchestrator_session_id` persists; the runtime
+    rebuilds the per-turn additions from `Session.messages` and the memory/git
+    banks on restart.
 
 ### Step 5 — Gates + live gate + docs ~0.3
-- pytest (336 + ~22 new), `run.py --check` 13/13, `test_full.py` 40/40, loader green.
+- pytest (336 + ~30 new), `run.py --check` 13/13, `test_full.py` 40/40, loader green.
 - **Live gate** (gmi, tiny): in a fresh session, chat "Ask the backend specialist to
   create hello.py printing OK, then summarize" → orchestrator defers (MCP) → child
   reaches review → synthesis reply lands in Chat as assistant message; second session
