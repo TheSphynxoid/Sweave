@@ -36,21 +36,52 @@ the **Session record**, one per (project, session).
 - Orchestrator unavailable ⇒ explicit error message persisted to the chat (never a
   silent rule-router fallback for conversation; rule-router stays fallback for direct
   task submissions only).
-- **The LLM is a consumer, not a context manager.** The runtime composes the per-turn
-  system prompt; the LLM consumes what the runtime builds. The LLM never decides
-  what enters its context window. The transcript system is what makes this
-  enforceable.
+- **Engine classes have different transcript strategies** (the asymmetry we agreed):
+  - **External engines** (opencode today; claude code, codex, etc. in the future):
+    the engine owns its own session model and transcript storage. We integrate with
+    whatever it provides via its public API. The LLM inside the external engine
+    manages its own context within that engine's session. **M1.7's v1 design
+    works with external engines as they are** — the runtime's transcript system
+    *augments* the engine's view (structured input the runtime composes), it does
+    not *replace* it (we have no structural access to the engine's session storage).
+  - **Sweave-internal engine** (side-project, future): the runtime owns the
+    transcript end-to-end. The LLM is a pure consumer of what the runtime composes.
+    This is where the "LLM-as-consumer" framing is fully realized — but only
+    for the internal engine, when it lands.
 - **Memory retrieval is server-curated, not LLM-driven.** When the runtime includes
   `memory_recall` in the per-turn prompt, the runtime curates the top-k entries
   (format, cap, anti-pollution). The LLM never sees free-form retrieval; it
-  consumes a bounded list.
+  consumes a bounded list. This holds for both engine classes — the runtime
+  curates regardless of which engine executes the turn.
 
 ## The transcript system (interpretation #1)
 
 The transcript system is the runtime-side context builder. The runtime becomes the
-**determinism floor**: every chat turn sees a context the runtime built, not
-whatever opencode happened to keep around. The LLM's view of the conversation
-is bounded, auditable, and truncatable.
+**determinism floor** for *its* composition of the per-turn prompt: seed, memory,
+transcript, synthesis, user message. The runtime owns the format, the caps, the
+audit story.
+
+**The transcript system augments the engine's view; it does not replace it
+(for external engines).** M1.7's v1 design works with opencode as the
+external engine. The opencode session still carries the LLM's working memory
+for one turn; the runtime's transcript is *additional* structured input the
+runtime injects, not a replacement for the engine's own session state. The
+LLM in the external engine sees: the runtime's composed prompt + the
+engine's accumulated working memory. Both. The runtime's view is
+deterministic; the engine's view is whatever the engine accumulated.
+
+**The internal engine (side-project, future) is where the runtime fully owns
+the transcript.** When the sweave-internal engine lands, the engine driver
+feeds the runtime's composed prompt to a stateless LLM call (no engine-side
+session memory to compete with the runtime's view). The "LLM is a consumer"
+framing is fully realized for the internal engine. For external engines in
+M1.7, the framing is "the LLM is a consumer of *what the runtime builds*; the
+engine's own session model still applies on top."
+
+**The transcript system is engine-agnostic in its interface** — it produces
+a per-turn composed prompt regardless of which engine will execute it. **It's
+engine-specific in its effect on the LLM** — external engines see runtime
++ engine view, internal engine sees runtime view only.
 
 **Per-turn system prompt composition** (assembled by the runtime, not the LLM):
 1. **Seed prompt** (orchestrator role + tool contracts; from `sweave/agents/orchestrator/config.yaml`).
@@ -68,12 +99,17 @@ is bounded, auditable, and truncatable.
 **The opencode session's role** doesn't change — it remains the LLM execution
 context. The runtime posts the composed prompt to it; opencode executes the
 LLM call; the LLM generates a reply; the runtime captures it. The opencode
-session's own session storage is no longer the system of record for the
-conversation transcript; `Session.messages` is.
+session still carries the LLM's working memory for one turn (engine view);
+`Session.messages` is the runtime's view of the conversation and the system
+of record for the audit trail.
 
-**The LLM is a tool user.** It picks the defer target. It requests `memory_recall`
-if it thinks it needs more (the runtime curates the response). It generates the
-user-facing reply. It never decides what enters its context window.
+**The LLM is a tool user (scoped to the runtime's view).** It picks the defer
+target. It requests `memory_recall` if it thinks it needs more (the runtime
+curates the response). It generates the user-facing reply. It doesn't decide
+what enters the runtime's composed prompt — the runtime does. (For the
+external engine, the LLM *also* sees the engine's accumulated working memory
+on top of the runtime's composed prompt; the LLM-as-consumer framing is
+about the runtime's contribution, not the engine's.)
 
 ## Steps
 
@@ -151,11 +187,17 @@ user-facing reply. It never decides what enters its context window.
   - Audit story: every recall's query, top-k entries, and what was actually
     included in the system prompt is logged to the trace. R6 compaction has
     a structural signal to compact against.
-- **Memory contract in the orchestrator prompt** (the LLM-as-consumer framing):
-  - "This conversation's history is `Session.messages` (server-curated)."
-  - "Memory retrieval is server-curated. You may request `memory_recall(query)` for
-    additional context; the runtime returns a bounded, formatted list."
-  - "You don't choose what enters your context window. The runtime does."
+- **Memory contract in the orchestrator prompt** (the runtime's view; the
+  framing is about what the runtime contributes, not about the engine's view):
+  - "This conversation's history is `Session.messages` (server-curated). The
+    runtime composes a per-turn view of it; you see what the runtime
+    includes."
+  - "Memory retrieval is server-curated. You may request `memory_recall(query)`
+    for additional context; the runtime returns a bounded, formatted list."
+  - "For the runtime's contribution, you don't choose what enters your
+    context window — the runtime does. (The external engine you're running
+    inside may have its own session memory on top; that's engine-specific
+    and outside the runtime's control.)"
 - Tests:
   - Transcript format: sliding window, structured summary, oldest-truncated.
   - Per-turn system prompt composition: seed + memory + transcript + synthesis
@@ -165,7 +207,9 @@ user-facing reply. It never decides what enters its context window.
     runtime's transcript is per-Session, not per-orchestrator-specialist.
   - Opencode session restart: `orchestrator_session_id` persists; the
     runtime rebuilds the transcript from `Session.messages` on restart;
-    the LLM sees the same context after a restart as before.
+    the LLM sees the same runtime view after a restart as before. (The
+    opencode session's own working memory may differ across the restart;
+    that's engine-specific and outside the runtime's control.)
 
 ### Step 5 — Gates + live gate + docs ~0.3
 - pytest (336 + ~22 new), `run.py --check` 13/13, `test_full.py` 40/40, loader green.
@@ -229,7 +273,14 @@ user-facing reply. It never decides what enters its context window.
   side-project-scoped, not R-numbered.** The side-project starts after
   M1.7; its scope is bounded by the engine interface requirements that
   M1.7 surfaces.
-- **The LLM's role is reduced.** The original M1.7 plan said the LLM
-  "judges per turn whether to recall." The new framing: the runtime
-  decides what enters the context window; the LLM consumes the result.
-  The prompt contract reflects this (memory contract block).
+- **The LLM's role is reduced (for the runtime's view of context).** The
+  original M1.7 plan said the LLM "judges per turn whether to recall." The
+  new framing: for the runtime's contribution to the per-turn prompt
+  (seed + memory + transcript + synthesis), the runtime decides what
+  enters; the LLM consumes the result. (For external engines, the LLM
+  *also* sees the engine's accumulated working memory on top — that's
+  engine-specific and outside the runtime's control. The "LLM is a
+  consumer" framing is fully realized for the internal engine, side-
+  project; for M1.7's external-engine v1, the framing is "the LLM is a
+  consumer of what the runtime builds" + "the engine's view is
+  engine-specific.")
