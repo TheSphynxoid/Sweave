@@ -420,6 +420,7 @@ class SpecialistRuntime:
         process: OpenCodeProcess,
         body: dict[str, Any],
         trace: TraceLog,
+        on_chunk: "Callable[[str], Any] | None" = None,
     ) -> str:
         """Send one message and return the agent's text output.
 
@@ -427,6 +428,14 @@ class SpecialistRuntime:
         we capture text parts and surface errors verbatim (M1.1
         contract). A fresh delegation_id is assigned to the OpenCodeProcess
         so its ``task_id`` field isn't confused with a stale value.
+
+        M1.8: ``on_chunk`` is an optional async-or-sync callback invoked
+        with each text part as it leaves the opencode stream. Default
+        ``None`` preserves the M1.0+ accumulate-only behavior; all
+        existing tests pass unchanged. The callback receives the
+        **incremental** text (a part of the assistant reply), not the
+        full accumulated output -- the runtime owns the coalescing +
+        WS publish, the harness only delivers the parts.
         """
         from sweave.harness.base import Message
 
@@ -453,7 +462,27 @@ class SpecialistRuntime:
                             continue
                         for part in obj.get("parts", []) or []:
                             if isinstance(part, dict) and part.get("type") == "text":
-                                text_parts.append(part.get("text", ""))
+                                text = part.get("text", "")
+                                text_parts.append(text)
+                                # M1.8: forward the incremental text
+                                # to the caller-supplied callback. The
+                                # callback is the runtime's view; the
+                                # harness only delivers parts. The
+                                # caller is responsible for coalescing
+                                # + WS publish (Step 2).
+                                if on_chunk is not None:
+                                    try:
+                                        result = on_chunk(text)
+                                        if hasattr(result, "__await__"):
+                                            await result
+                                    except Exception as cb_err:  # noqa: BLE001
+                                        # A misbehaving callback must
+                                        # not poison the stream -- log
+                                        # + continue.
+                                        logger.warning(
+                                            "SpecialistRuntime: on_chunk "
+                                            "callback raised: %s", cb_err
+                                        )
                             elif isinstance(part, dict) and part.get("type") == "error":
                                 # Surface upstream error verbatim
                                 return f"[error: {part.get('text') or part.get('error') or str(part)}]"

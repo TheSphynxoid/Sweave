@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -9,7 +10,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -23,6 +24,8 @@ from .base import (
     model_ref_to_wire,
     harness_registry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_provider_model(model: str) -> tuple[str | None, str | None]:
@@ -138,7 +141,9 @@ class OpenCodeProcess:
         self._session_created = True
         return self._session_id
 
-    async def send(self, message: Message) -> AgentResult:
+    async def send(
+        self, message: Message, on_chunk: "Callable[[str], Any] | None" = None
+    ) -> AgentResult:
         """Send a message via v2 ``POST /session/{id}/message``.
 
         The response is a chunked JSON stream of the assistant message +
@@ -154,6 +159,13 @@ class OpenCodeProcess:
         needs a different model on a single turn (e.g. mid-session
         model switch). The override is a :class:`ModelRef` so
         structured ``{providerID, modelID}`` survives.
+
+        **M1.8 streaming (optional).** ``on_chunk`` is invoked with
+        each text part as it leaves the opencode stream. The contract
+        is optional -- existing callers that don't pass it see no
+        change in behaviour. R3 adapters (claude, codex) implement
+        the same optional contract: per-chunk when the engine
+        supports it, single-shot fallback otherwise.
         """
         try:
             session_id = await self._ensure_session()
@@ -208,7 +220,25 @@ class OpenCodeProcess:
                                 if not isinstance(part, dict):
                                     continue
                                 if part.get("type") == "text":
-                                    text_parts.append(part.get("text", ""))
+                                    text = part.get("text", "")
+                                    text_parts.append(text)
+                                    # M1.8: forward the incremental
+                                    # text part to the caller's
+                                    # callback. Same semantics as the
+                                    # runtime's _send_message: the
+                                    # harness only delivers parts;
+                                    # coalescing + WS publish is the
+                                    # caller's job.
+                                    if on_chunk is not None:
+                                        try:
+                                            result = on_chunk(text)
+                                            if hasattr(result, "__await__"):
+                                                await result
+                                        except Exception as cb_err:  # noqa: BLE001
+                                            logger.warning(
+                                                "OpenCodeProcess.send: on_chunk "
+                                                "callback raised: %s", cb_err
+                                            )
                                 elif part.get("type") == "error":
                                     last_error = (
                                         part.get("text")
