@@ -56,6 +56,13 @@ in parallel elsewhere. Planning sessions do not implement.
 **The loop per round**: state → consistency → discuss → confirm → detail →
 commit. If a round finds nothing to plan, say so — don't invent work.
 
+**The planning audit targets execution, not its own design.** When the planner
+audits, it asks: did the executor stick to the plan? Were deviations justified
+and recorded as plan amendments? Do the gate counts / test counts / "done"
+markers match what the executor claimed? Did the design hold? The planner
+does *not* re-derive the plan's design decisions — that's already locked in
+the plan + rulings. The planner audits *execution against the plan*.
+
 ## How we work — execution session method
 
 The execution session's job is to **execute** a milestone plan that was agreed
@@ -104,6 +111,17 @@ The planning session's method is the section above.
 6. **Stop and report.** Final state: which steps landed, which (if any) were
    deferred, what the test count is, what the live gate showed, what gotchas
    landed. Wait for the user's next instruction.
+
+**The execution audit targets the plan, not the plan's design.** When the
+executor audits in step 2, it asks: does the *starting point* still hold
+against the code? Do the rulings still bind? Do the file paths and module
+names still match? Do the test counts in the gate still match? Do the
+explicit non-goals still hold? The executor does *not* re-derive the plan's
+design decisions (e.g. "should chat turns auto-done?" — the planner already
+ruled) and does *not* re-audit the executor's previous execution (that's the
+planner's job in the next round). If the audit finds design-level issues
+the planner didn't consider, surface them as *ask-user*, not as executor
+amendments.
 
 ## Key files
 | Path | What |
