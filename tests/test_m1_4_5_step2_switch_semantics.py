@@ -325,7 +325,7 @@ async def test_switch_records_source_specialist_current_model_on_second_call(
             def __init__(self) -> None:
                 def handler(request: _httpx.Request) -> _httpx.Response:
                     if request.url.path == "/session" and request.method == "POST":
-                        return _httpx.Response(200, content=json.dumps({"id": "sid"}))
+                        return _httpx.Response(200, content=json.dumps({"id": "ses_switch"}))
                     return _httpx.Response(200, content=json.dumps({
                         "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                         "parts": [{"type": "text", "text": "ok"}],
@@ -362,7 +362,7 @@ async def test_switch_records_source_specialist_current_model_on_second_call(
         async def fake_build(self_runner, d, *_args, **_kwargs):
             class _P:
                 _client = client
-                _session_id = "sid"
+                _session_id = "ses_switch"
 
                 async def send(self, message):
                     from sweave.harness.base import AgentResult

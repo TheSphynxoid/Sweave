@@ -319,7 +319,7 @@ async def test_runtime_records_model_used_on_trace(tmp_path: Path):
             def __init__(self) -> None:
                 def handler(request: _httpx.Request) -> _httpx.Response:
                     if request.url.path == "/session" and request.method == "POST":
-                        return _httpx.Response(200, content=_json.dumps({"id": "sid-trace"}))
+                        return _httpx.Response(200, content=_json.dumps({"id": "ses_trace"}))
                     return _httpx.Response(200, content=_json.dumps({
                         "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                         "parts": [{"type": "text", "text": "ok"}],
@@ -338,7 +338,7 @@ async def test_runtime_records_model_used_on_trace(tmp_path: Path):
         delegation = Delegation(agent="alpha", task="x", model="")
 
         async def fake_build(self_runner, d, *_args, **_kwargs):
-            return _Step1MockProcess(client=client, session_id="sid-trace")
+            return _Step1MockProcess(client=client, session_id="ses_trace")
 
         import sweave.runtime.specialist_runtime as sr_mod
 
@@ -402,7 +402,7 @@ async def test_runtime_records_model_used_source_specialist(tmp_path: Path):
             def __init__(self) -> None:
                 def handler(request: _httpx.Request) -> _httpx.Response:
                     if request.url.path == "/session" and request.method == "POST":
-                        return _httpx.Response(200, content=_json.dumps({"id": "sid-spec"}))
+                        return _httpx.Response(200, content=_json.dumps({"id": "ses_spec"}))
                     return _httpx.Response(200, content=_json.dumps({
                         "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                         "parts": [{"type": "text", "text": "ok"}],
@@ -421,7 +421,7 @@ async def test_runtime_records_model_used_source_specialist(tmp_path: Path):
         delegation = Delegation(agent="alpha", task="x", model="")
 
         async def fake_build(self_runner, d, *_args, **_kwargs):
-            return _Step1MockProcess(client=client, session_id="sid-spec")
+            return _Step1MockProcess(client=client, session_id="ses_spec")
 
         import sweave.runtime.specialist_runtime as sr_mod
 

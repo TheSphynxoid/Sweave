@@ -686,6 +686,18 @@ captures the real failure.
                         response=self,  # type: ignore[arg-type]
                     )
 
+            @property
+            def text(self) -> str:
+                # The harness reads ``response.text`` in the
+                # ``HTTPStatusError`` catch path
+                # (``opencode.py::send`` -> ``e.response.text``).
+                # On a non-2xx the body is the error JSON; on a
+                # 2xx it's the concatenated stream content (the
+                # R4.0 wire-shape tests never read this on a 2xx).
+                if self._error_body:
+                    return self._error_body
+                return b"".join(self._chunks).decode("utf-8")
+
             async def __aenter__(self) -> "_StubStreamResponse":
                 return self
 
@@ -822,7 +834,15 @@ captures the real failure.
             spec=spec,
             process=_FakeProcess(),  # type: ignore[arg-type]
             base_url="http://mock-opencode",
-            session_id=self.session_id if False else "",  # placeholder; real one below
+            # R4.0: seed the process's session_id with the issued
+            # id (matching what ``POST /session`` would have
+            # returned). Pre-R4.0 the constructor seeded an empty
+            # string; the lax mock accepted any ``/session/{id}``
+            # URL, so the empty id was silently masked. With the
+            # R4.0 wire-shape tightening, the process must start
+            # with a serve-issued id (``ses_mock_{name}``) so the
+            # harness's ``send`` posts to a valid URL.
+            session_id=session_id,
         )
         # The OpenCodeProcess.__init__ would normally have set
         # _client via httpx.AsyncClient(base_url=...). We replace it
