@@ -628,8 +628,11 @@ captures the real failure.
             )
 
         # Stable per-specialist session id so the GET-reuse path
-        # actually fires on a 2nd delegation.
-        session_id = f"ses-mock-{spec.name}"
+        # actually fires on a 2nd delegation. R4.0: emit a v2-faithful
+        # ``ses_*`` id (underscore) so the runtime's ``ses_`` prefix
+        # assertion passes and the mock matches the real serve's id
+        # shape.
+        session_id = f"ses_mock_{spec.name}"
         captured_session_id: list[str] = [session_id]
 
         class _StubResponse:
@@ -654,13 +657,34 @@ captures the real failure.
                 return self._body.decode("utf-8")
 
         class _StubStreamResponse:
-            def __init__(self, chunks: list[str]) -> None:
-                self.status_code = 200
+            def __init__(
+                self,
+                chunks: list[str],
+                *,
+                status_code: int = 200,
+                error_body: str = "",
+            ) -> None:
+                self.status_code = status_code
                 self.headers = {"content-type": "application/json"}
                 self._chunks = [c.encode("utf-8") for c in chunks]
+                # When the mock returns a non-2xx, the caller still
+                # consumes the response stream; the error body is
+                # what the real serve's JSON error payload looks
+                # like. The R4.0 wire-shape gate relies on
+                # ``raise_for_status`` rejecting unknown ids.
+                self._error_body = error_body
 
             def raise_for_status(self) -> None:
-                pass
+                if self.status_code >= 400:
+                    import httpx as _httpx
+
+                    raise _httpx.HTTPStatusError(
+                        f"mock error {self.status_code}",
+                        request=_httpx.Request(
+                            "POST", "http://mock-opencode"
+                        ),
+                        response=self,  # type: ignore[arg-type]
+                    )
 
             async def __aenter__(self) -> "_StubStreamResponse":
                 return self
@@ -669,10 +693,16 @@ captures the real failure.
                 return None
 
             async def aiter_text(self) -> Any:
+                if self._error_body:
+                    yield self._error_body
+                    return
                 for c in self._chunks:
                     yield c.decode("utf-8")
 
             async def aiter_bytes(self) -> Any:
+                if self._error_body:
+                    yield self._error_body.encode("utf-8")
+                    return
                 for c in self._chunks:
                     yield c
 
@@ -688,7 +718,22 @@ captures the real failure.
 
             async def get(self, url: str, headers: Any = None, **kw: Any) -> _StubResponse:
                 if url.startswith("/session/"):
-                    return _StubResponse(200, _json.dumps({"id": self.session_id}))
+                    sid = url[len("/session/"):].rsplit("/", 1)[0]
+                    if sid == self.session_id:
+                        return _StubResponse(
+                            200, _json.dumps({"id": self.session_id})
+                        )
+                    # R4.0: a non-matching id (including any
+                    # non-``ses_`` prefix) gets the same 404 the
+                    # real serve emits for unknown sessions -- the
+                    # runtime's recreate-on-404 path then creates a
+                    # fresh session and rebinds. Pre-R4.0 the mock
+                    # returned 200 for every /session/{id} GET,
+                    # which is why the recreate path was untested.
+                    return _StubResponse(
+                        404,
+                        _json.dumps({"error": "not_found", "session_id": sid}),
+                    )
                 raise AssertionError(f"unexpected GET {url}")
 
             def stream(
@@ -702,6 +747,36 @@ captures the real failure.
                 asynchronous context manager protocol).
                 """
                 if method == "POST" and url.startswith("/session/"):
+                    # R4.0: wire-shape contract. The mock now rejects
+                    # ids that do not start with ``ses_`` (the v2
+                    # session-id prefix) with a 500 -- matching the
+                    # real serve's response for unknown / malformed
+                    # session ids. Pre-R4.0 the mock accepted any
+                    # ``/session/{anything}`` URL, which is why the
+                    # chat-{hex} placeholder bug slipped through the
+                    # test suite: every path looked fine, but the
+                    # wire hit a real serve and 500'd. Now the mock
+                    # surfaces the same failure mode.
+                    sid = url[len("/session/"):].rsplit("/", 1)[0]
+                    if not sid.startswith("ses_"):
+                        return _StubStreamResponse(
+                            [],
+                            status_code=500,
+                            error_body=_json.dumps({
+                                "error": "unknown_session",
+                                "session_id": sid,
+                            }),
+                        )
+                    if sid != self.session_id:
+                        return _StubStreamResponse(
+                            [],
+                            status_code=500,
+                            error_body=_json.dumps({
+                                "error": "unknown_session",
+                                "session_id": sid,
+                                "expected": self.session_id,
+                            }),
+                        )
                     # Echo the task's last word back so tests can assert
                     # the request body round-tripped through the mock.
                     prompt = ""

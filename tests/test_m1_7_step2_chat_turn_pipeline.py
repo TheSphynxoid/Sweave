@@ -260,12 +260,13 @@ async def test_two_sessions_get_independent_orchestrator_bindings(tmp_path: Path
     per-Session binding (M1.7 step 1) holds.
 
     The mock opencode serve returns a stable per-specialist id
-    (``ses-mock-orchestrator``) so a strict ``!=`` check on the
-    string would be a false negative. The actual invariant we
-    pin is: the binding is stored on the Session record, not on
-    the Specialist record. The specialist_factory returns a
-    fresh Specialist each call (no persistence), so the only
-    place the binding can land is the Session record.
+    (``ses_mock_orchestrator`` -- R4.0 wire-shape prefix) so a
+    strict ``!=`` check on the string would be a false negative.
+    The actual invariant we pin is: the binding is stored on the
+    Session record, not on the Specialist record. The
+    specialist_factory returns a fresh Specialist each call (no
+    persistence), so the only place the binding can land is the
+    Session record.
     """
     pm = ProjectManager(base_path=tmp_path / "projects")
     pm.create_project("demo", path=tmp_path)
@@ -285,8 +286,8 @@ async def test_two_sessions_get_independent_orchestrator_bindings(tmp_path: Path
     # Each session's binding was persisted to its own file on disk.
     # The two sessions have separate files; the on-disk binding
     # for each is the value ChatLoop wrote.
-    assert loaded_s1.orchestrator_session_id == "ses-mock-orchestrator"
-    assert loaded_s2.orchestrator_session_id == "ses-mock-orchestrator"
+    assert loaded_s1.orchestrator_session_id == "ses_mock_orchestrator"
+    assert loaded_s2.orchestrator_session_id == "ses_mock_orchestrator"
 
 
 @pytest.mark.asyncio

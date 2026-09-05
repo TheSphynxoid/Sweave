@@ -183,6 +183,14 @@ async def test_specialist_runtime_default_uses_specialist_session_id(tmp_path: P
     """Backwards-compat invariant: no callbacks = specialist.session_id is
     read/written (M1.3 behaviour). Pinned by the test so M1.7 step 1
     can't silently regress existing specialists.
+
+    R4.0: the mock now 404s unknown ids (matching the real serve),
+    so the ``legacy-stored-id`` prefix is treated as stale and the
+    runtime recreates -- overwriting the stored id with the new
+    ``ses_mock_*`` issued by POST /session. The behaviour we still
+    pin here is *that the binding lives on the specialist record,
+    not on a Session callback*; the exact value now reflects the
+    404-recreate path, not the reuse path.
     """
     from sweave.runtime.delegation_store import Delegation
 
@@ -194,7 +202,9 @@ async def test_specialist_runtime_default_uses_specialist_session_id(tmp_path: P
         task="hi",
         project_name="p",
     )
-    # Pre-set the binding on the specialist (M1.3 style)
+    # Pre-set the binding on the specialist (M1.3 style). R4.0:
+    # the mock now rejects non-``ses_`` ids with 404, so this
+    # drives the recreate-on-404 path.
     spec.session_id = "legacy-stored-id"
     out = await runtime.run(
         specialist=spec,
@@ -205,13 +215,16 @@ async def test_specialist_runtime_default_uses_specialist_session_id(tmp_path: P
         # no session_id_getter / session_id_setter
     )
     assert out == "ok"
-    # The M1.3 path persisted on the specialist (the default path).
-    # Because the stub client under SWEAVE_MOCK_OPENCODE=1 returns a
-    # canned 200 for GET /session/{id}, the runtime hits the *reuse*
-    # branch and does NOT overwrite the existing id. That matches
-    # real production: the binding is on the specialist, not the
-    # session. We assert the binding wasn't silently moved.
-    assert spec.session_id == "legacy-stored-id"
+    # The M1.3 path persists on the specialist. Because the stub
+    # client under SWEAVE_MOCK_OPENCODE=1 returns a 404 for unknown
+    # ids (R4.0 wire-shape tightening), the runtime hit the
+    # recreate branch and overwrote the stored id with the new
+    # ``ses_mock_orchestrator`` id. The invariant we still pin:
+    # the binding lives on the specialist, not on a Session
+    # callback. (See the callback variant below for that
+    # contract.)
+    assert spec.session_id == "ses_mock_orchestrator"
+    assert spec.session_id.startswith("ses_")
 
 
 @pytest.mark.asyncio
