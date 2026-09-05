@@ -414,6 +414,12 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   detail view reading its JSONL trace, promote buttons on every review record, chat
   streaming polish. Purpose: warm-up + **the user daily-drives Sweave on real work**;
   the friction list becomes the requirements input for R4 (UI v2). Gate: the user
+  Hardening items folded in: permission.task: deny on specialist agents (closes the
+  native-subagent bypass around DelegationManager); git-mutation bash denied for the
+  orchestrator; **per-project worktree_base override** (project record field, default =
+  global config) + convention: the dev repo is never its own live-gate target
+  (scratch project in temp instead — the 51-worktree pollution incident, 2026-09-04);
+  WorktreeManager.align() precursor.
   completes one real task end-to-end through the UI and files the friction list.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
@@ -424,6 +430,23 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   worktree and PR each; overflow queues — §2.1). Merge handling: **Stage-0 heuristic**
   (path-overlap check, 0 tokens) → clean work auto-merges into the per-task **integration
   branch** (principle 4 exception); overlapping work goes to the **resolution queue**.
+- **Worktree alignment protocol** (added 2026-09-04, from the concurrent-sessions
+  incident): `WorktreeManager.align()` — rebase/merge the worktree branch onto the
+  integration branch's current state + sanity gate. Triggers: before PR creation;
+  at deferral hand-off when the parent's output is the child's input; on drift budget
+  (base moved > N commits). Dirty worktree => skip and defer to the next clean
+  boundary (never stash-dance a working agent). Alignment failure = small fresh
+  conflict -> resolution queue (early surfacing). Side effect: aligning refreshes the
+  worktree's snapshot of shared-context files (AGENTS.md/DESIGN.md) — kills
+  stale-doc reads. Precursor: `align()` in WorktreeManager (~half a step, rides M1.9).
+- **Commit-authority map** (ruling 2026-09-04): specialists commit freely in their
+  disposable branches (required for alignment + PR; provenance trailer
+  `Sweave-Delegation: {delegation_id}` mandatory on every specialist commit; align
+  commits carry `Sweave-Align: {base_sha}`); the orchestrator **never commits to the
+  user's checkout** (no worktree + git-mutation bash denied — M1.9 hardening); the
+  human commits/merges main, always. The common "agents don't commit" rule protects
+  the human's history curation — Sweave honors it at the merge boundary, not the
+  commit boundary.
 - `/cross-review`: implementer's diff → *different-role* reviewer Delegation; blocking
   issues loop back as fixes. (Same-vendor rule becomes: reviewer model ≠ implementer
   model, later different harness.) Cross-review is also the semantic-conflict layer Git

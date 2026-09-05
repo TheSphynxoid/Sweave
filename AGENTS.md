@@ -272,6 +272,21 @@ amendments.
     var being set in the server's environment, not the
     script's -- a stale server without the env will silently
     consume the test.
+16. **Re-read shared docs from disk immediately before every edit** — never edit
+    from a buffer read earlier in the session. Two live incidents (2026-09-04):
+    a stale-buffer save clobbered both method sections out of this file, and the
+    M1.8 plan got re-saved with U+FFFD mojibake. After editing, `git status` the
+    file; an unexpected ` M` on a file you didn't touch = someone else's write
+    landed. Recovery is always `git show <commit>:<path>` — committed blobs are
+    immutable truth; the working tree is negotiable.
+17. **Never pipe file content through PowerShell redirection** (`>` / `Out-File`)
+    — Windows PowerShell writes **UTF-16 LE with BOM** by default, and cp1252
+    round-trips destroy multi-byte chars (em-dash, §, arrows → U+FFFD; the M1.8
+    plan was committed as a 9.8KB UTF-16 artifact this way). Write bytes with
+    `python -c` (binary mode) or let git do it (`git restore --source=<commit> --
+    <path>`). If a read tool calls a text file "binary", probe bytes first (BOM
+    `ff fe` / NUL count / U+FFFD) before believing any narrative — and check
+    whether HEAD's blob differs from the working tree before diagnosing content.
 
 ## Running & testing
 ```bash

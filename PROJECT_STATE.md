@@ -851,6 +851,12 @@ The user wants:
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.
 
+### Pending: history clean before first remote push
+- When a remote repo is created (R5), do a minimal history alteration first
+  (git filter-repo on docs/M1_8_PLAN.md) to purge the UTF-16-LE artifact blob
+  committed between 64bd013 and the M1.8 docs fix (2026-09-04). Nothing is pushed
+  yet, so this is free today and impossible tomorrow.
+
 ### Known issues (transient - watch before trusting the gates)
 - **Flaky test**: `tests/test_m1_3_step3_job_runner_integration.py::
   test_job_runner_runtime_path_legacy_model_string` fails ~1-in-N full-suite
