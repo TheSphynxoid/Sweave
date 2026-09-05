@@ -1,18 +1,22 @@
-import { useApp } from '../context/AppProvider';
-import { Sidebar } from './Sidebar';
-import { Header } from './Header';
-import { NotificationContainer } from './NotificationContainer';
-import { Outlet } from 'react-router-dom';
+/**
+ * Layout shell (M1.9 Step 1).
+ *
+ * Renders the sidebar + topbar + main content. The layout is
+ * sticky-pinned to the viewport (CSS grid; full-viewport).
+ * Outlet (react-router) hosts the current page.
+ */
+import { Outlet } from "react-router-dom";
+import { Sidebar } from "./Sidebar";
+import { Topbar } from "./Topbar";
+import { NotificationContainer } from "./NotificationContainer";
 
 export function Layout() {
-  const { sidebarOpen, activeView } = useApp();
-
   return (
-    <div className="min-h-screen bg-background flex">
+    <div className="h-screen w-screen flex bg-background text-foreground">
       <Sidebar />
-      <div className={`flex-1 flex flex-col transition-all duration-200 ${sidebarOpen ? 'ml-64' : 'ml-20'}`}>
-        <Header />
-        <main className="flex-1 p-6 overflow-auto">
+      <div className="flex-1 flex flex-col min-w-0">
+        <Topbar />
+        <main className="flex-1 overflow-auto" data-testid="main">
           <Outlet />
         </main>
       </div>

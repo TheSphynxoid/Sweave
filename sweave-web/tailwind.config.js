@@ -32,6 +32,12 @@ export default {
           DEFAULT: 'var(--color-card)',
           foreground: 'var(--color-card-foreground)',
         },
+        popover: {
+          DEFAULT: 'var(--color-popover)',
+          foreground: 'var(--color-popover-foreground)',
+        },
+        ring: 'var(--color-ring)',
+        input: 'var(--color-input)',
       },
       borderRadius: {
         lg: 'var(--radius)',

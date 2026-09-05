@@ -1,6 +1,23 @@
-// Core domain types
+/**
+ * Domain types (M1.9 Step 1).
+ *
+ * The previous version of this file held v1-era ``any``-typed
+ * shapes. This rewrite uses the M1.9 v2 surface (delegations,
+ * specialists, sessions, escalations, detail) with strict types
+ * throughout. Unknown fields are still tolerated on the wire
+ * (the API client returns narrow shapes; the unknown fields
+ * simply aren't surfaced).
+ *
+ * The shapes mirror ``sweave/api/projects.py``,
+ * ``sweave/web/routers/delegations.py``, etc. The Pydantic
+ * models on the server are the source of truth; this file
+ * mirrors them with hand-rolled interfaces (no codegen; the
+ * surface is small and stable enough to hand-maintain).
+ */
 
-export interface Project {
+// ---------- Projects ----------
+
+export interface ProjectSummary {
   name: string;
   path: string;
   description: string;
@@ -10,18 +27,16 @@ export interface Project {
   memory_bank: string;
   model_overrides: Record<string, string>;
   routing_rules: RoutingRule[];
+  /** M1.9 step 2: per-project worktree_base override. */
+  worktree_base: string | null;
+  active: boolean;
 }
 
-export interface Session {
-  id: string;
-  project_name: string;
+export interface ProjectCreate {
   name: string;
-  created_at: string;
-  updated_at: string;
-  active_agent: string | null;
-  current_task: string | null;
-  context: Record<string, any>;
-  memory_bank: string;
+  path: string;
+  description?: string;
+  worktree_base?: string | null;
 }
 
 export interface RoutingRule {
@@ -30,38 +45,188 @@ export interface RoutingRule {
   model?: string;
 }
 
-export interface Agent {
+// ---------- Sessions ----------
+
+export interface SessionSummary {
+  id: string;
   name: string;
-  role: string;
-  model: string;
-  system_prompt: string;
-  description: string;
-  builtin: boolean;
-  dynamic: boolean;
-  harness?: string;
-  tools?: string[];
+  project_name: string;
+  created_at: string;
+  updated_at: string;
+  /** M1.7 step 1: per-Session orchestrator session id. */
+  orchestrator_session_id: string | null;
+  status: "active" | "paused" | "completed";
+  message_count: number;
+  child_count: number;
+  memory_bank: string;
+  active: boolean;
 }
 
-export interface TaskRequest {
+export interface SessionMessage {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  timestamp: string;
+  agent: string | null;
+  tool_name: string | null;
+  tool_result: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface SessionChild {
+  id: string;
+  parent_session_id: string;
+  agent_name: string;
   task: string;
-  agent?: string;
-  model?: string;
-}
-
-export interface TaskResponse {
-  success: boolean;
-  agent: string;
-  task_id: string;
+  worktree_path: string | null;
+  status: "running" | "completed" | "failed";
+  created_at: string;
+  completed_at: string | null;
   output: string;
-  error?: string;
+  error: string | null;
+  /** M1.1: link to the runtime Delegation record. */
+  delegation_id: string | null;
 }
 
-export interface RoutingDecision {
+export interface SessionDetail extends SessionSummary {
+  messages: SessionMessage[];
+  children: SessionChild[];
+}
+
+export interface SessionCreate {
+  name: string;
+  project_name?: string;
+}
+
+// ---------- Specialists ----------
+
+export interface SpecialistSummary {
+  name: string;
+  scope: "project" | "global" | "seed";
+  is_orchestrator: boolean;
+  role_ref: string | null;
+  description: string;
+  system_prompt: string;
+  harness: string;
+  current_model: string | null;
+  session_id: string | null;
+}
+
+export interface SpecialistCreate {
+  name: string;
+  description?: string;
+  system_prompt?: string;
+  harness?: string;
+  role_ref?: string;
+  current_model?: string;
+}
+
+// ---------- Delegations + escalations + detail ----------
+
+export type DelegationStatus =
+  | "queued"
+  | "running"
+  | "review"
+  | "done"
+  | "failed";
+
+export interface Delegation {
+  schema_version: number;
+  delegation_id: string;
+  task_id: string;
   agent: string;
   model: string;
-  confidence: number;
-  reasoning: string;
-  matched_rule?: string;
+  task: string;
+  status: DelegationStatus;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  parent_session_id: string | null;
+  project_name: string | null;
+  output: string;
+  error: string | null;
+  worktree_path: string | null;
+  branch: string | null;
+  pr_url: string | null;
+  parent_task_id: string | null;
+  manifest: Record<string, unknown> | null;
+  depth: number;
+  chain_root_id: string | null;
+  coordination_tokens: number;
+  kind: "task" | "chat";
+  needs_attention: boolean;
+}
+
+export interface DelegationDetail {
+  delegation_id: string;
+  composed_prompt: ComposedPrompt | null;
+  tool_timeline: ToolTimelineEntry[];
+  tokens: Tokens | null;
+  status_timeline: StatusChange[];
+}
+
+export interface ComposedPrompt {
+  memory_chars: number;
+  whats_new_chars: number;
+  synthesis_chars: number;
+  transcript_ref_chars: number;
+  user_chars: number;
+  dropped_memory: number;
+  dropped_whats_new: number;
+  dropped_synthesis: number;
+}
+
+export interface ToolTimelineEntry {
+  callID: string;
+  tool: string | null;
+  status: string | null;
+  output?: unknown;
+  error?: string | null;
+  title?: string | null;
+  input?: unknown;
+  time?: { start?: number; end?: number } | null;
+  states: Array<Record<string, unknown>>;
+  started_at: string | null;
+}
+
+export interface Tokens {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache_read: number;
+  cache_write: number;
+  cost: number;
+}
+
+export interface StatusChange {
+  status: DelegationStatus;
+  source: string | null;
+  ts: string;
+}
+
+export interface EscalationRecord {
+  escalation_id: string;
+  delegation_id: string;
+  question: string;
+  options: string[] | null;
+  status: "pending" | "answered" | "timeout";
+  created_at: string;
+  deadline_at: string;
+  answered_at: string | null;
+  response: string | null;
+}
+
+// ---------- Models + rules + config ----------
+
+export interface ModelConfig {
+  default: string;
+  aliases: string[];
+  provider: string;
+}
+
+export interface ModelsConfig {
+  roles: Record<string, ModelConfig>;
 }
 
 export interface HarnessInfo {
@@ -73,81 +238,22 @@ export interface HarnessInfo {
   models: string[];
 }
 
-export interface MemoryEntry {
-  content: string;
-  tags: string[];
-  metadata: Record<string, any>;
-}
-
-export interface MemoryResult {
-  memories?: MemoryEntry[];
-  reflection?: string;
-  result?: string;
-  error?: string;
-}
-
 export interface Worktree {
   path: string;
   branch: string;
   task_id: string;
   agent: string;
   created_at: string;
-  pr_url?: string;
+  pr_url: string | null;
+  pr_number: number | null;
 }
 
-// API Response types
-export interface ApiResponse<T> {
-  success?: boolean;
-  data?: T;
-  error?: string;
-  detail?: string;
-}
+// ---------- WS envelope ----------
 
-export interface ProjectsResponse {
-  projects: ProjectSummary[];
-}
-
-export interface ProjectSummary {
-  name: string;
-  path: string;
-  description: string;
-  created_at: string;
-  updated_at: string;
-  active: boolean;
-}
-
-export interface SessionsResponse {
-  sessions: SessionSummary[];
-}
-
-export interface SessionSummary {
-  id: string;
-  name: string;
-  project_name: string;
-  created_at: string;
-  updated_at: string;
-  active_agent: string | null;
-  current_task: string | null;
-}
-
-// WebSocket event types
-export interface WSEvent {
+export interface WSEnvelope {
   event: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: string;
 }
 
-// UI State types
-export interface UIState {
-  sidebarOpen: boolean;
-  activeView: 'dashboard' | 'projects' | 'sessions' | 'agents' | 'tasks' | 'settings';
-  selectedProject: string | null;
-  selectedSession: string | null;
-  notifications: Notification[];
-}
-
-export interface Notification {
-  id: number;
-  message: string;
-  type: 'success' | 'error' | 'info' | 'warning';
-}
+export type WSHandler = (envelope: WSEnvelope) => void;

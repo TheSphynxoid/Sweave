@@ -1,11 +1,11 @@
+@import './animations.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import './animations.css';
-
-:root {
-  /* Light theme (default) */
+:root,
+:root[data-theme="light"] {
   --color-background: 255 255 255;
   --color-foreground: 15 23 42;
   --color-muted: 241 245 249;
@@ -21,10 +21,14 @@
   --color-accent-foreground: 15 23 42;
   --color-card: 255 255 255;
   --color-card-foreground: 15 23 42;
+  --color-popover: 255 255 255;
+  --color-popover-foreground: 15 23 42;
+  --color-ring: 139 92 246;
+  --color-input: 226 232 240;
   --radius: 0.5rem;
 }
 
-.dark {
+:root[data-theme="dark"] {
   --color-background: 15 23 42;
   --color-foreground: 248 250 252;
   --color-muted: 30 41 59;
@@ -40,8 +44,18 @@
   --color-accent-foreground: 248 250 252;
   --color-card: 30 41 59;
   --color-card-foreground: 248 250 252;
+  --color-popover: 30 41 59;
+  --color-popover-foreground: 248 250 252;
+  --color-ring: 167 139 250;
+  --color-input: 30 41 59;
 }
 
+/*
+ * Other presets (dracula / nord / catppuccin) are applied at
+ * runtime by the ThemeApplier component -- see
+ * src/lib/theme/tokens.ts. The :root defaults above cover the
+ * first paint so the UI is not unstyled before the JS hydrates.
+ */
 * {
   box-sizing: border-box;
   padding: 0;

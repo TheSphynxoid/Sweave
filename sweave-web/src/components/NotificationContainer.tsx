@@ -1,47 +1,48 @@
-import { useApp } from '../context/AppProvider';
-import { X, CheckCircle, AlertCircle, AlertTriangle, Info } from 'lucide-react';
-import { cn } from '../utils/cn';
+/**
+ * Notification container (M1.9 Step 1).
+ *
+ * Renders the in-memory notification list as a fixed bottom-right
+ * toast stack. The notifications are short-lived (5s TTL by
+ * default; the AppProvider handles auto-dismiss).
+ */
+import { useApp } from "@/context/AppProvider";
+import { cn } from "@/utils/cn";
+import { X } from "lucide-react";
 
-const getIcon = (type: string) => {
-  switch (type) {
-    case 'success': return <CheckCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />;
-    case 'error': return <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />;
-    case 'warning': return <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" />;
-    case 'info': return <Info className="w-5 h-5 flex-shrink-0 mt-0.5" />;
-    default: return <Info className="w-5 h-5 flex-shrink-0 mt-0.5" />;
-  }
-};
-
-const colors = {
-  success: 'bg-green-500/10 text-green-500 border-green-500/20',
-  error: 'bg-red-500/10 text-red-500 border-red-500/20',
-  warning: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20',
-  info: 'bg-blue-500/10 text-blue-500 border-blue-500/20',
-};
+const KIND_CLASS = {
+  info: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300",
+  success:
+    "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  warning:
+    "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  error: "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300",
+} as const;
 
 export function NotificationContainer() {
-  const { notifications, removeNotification } = useApp();
-
+  const { notifications, dismissNotification } = useApp();
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-80 max-w-full">
-      {notifications.map((notification) => (
+    <div
+      data-testid="notification-container"
+      className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"
+    >
+      {notifications.map((n) => (
         <div
-          key={notification.id}
+          key={n.id}
+          role="status"
+          data-testid={`notification-${n.kind}`}
           className={cn(
-            'flex items-start gap-3 p-4 rounded-lg border shadow-lg animate-slide-in',
-            colors[notification.type]
+            "border rounded shadow px-3 py-2 text-sm flex items-start gap-2",
+            KIND_CLASS[n.kind],
           )}
         >
-          {getIcon(notification.type)}
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium">{notification.message}</p>
-          </div>
+          <span className="flex-1">{n.message}</span>
           <button
-            onClick={() => removeNotification(notification.id)}
-            className="p-1 hover:bg-black/10 rounded transition-colors flex-shrink-0"
+            type="button"
+            onClick={() => dismissNotification(n.id)}
             aria-label="Dismiss"
+            className="opacity-70 hover:opacity-100"
           >
-            <X className="w-4 h-4" />
+            <X size={14} />
           </button>
         </div>
       ))}
