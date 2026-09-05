@@ -30,9 +30,9 @@ Sweave is two funnels between the human and the machinery:
 1. **Input funnel** (M1.7): one chat thread. The human states intent; the
    orchestrator decomposes and defers. No opencode instances, no session
    switching visible to the user.
-2. **Output funnel** (M1.6 gating + M1.7 synthesis + M1.9 surfacing + sk_human):
+2. **Output funnel** (M1.6 gating + M1.7 synthesis + M1.9 surfacing `ask_human`):
    one promotion queue carrying results, reviews, questions, and escalations to
-   the human. Specialists get an sk_human tool (MCP, sibling of defer) so a
+   the human. Specialists get an `ask_human` tool (MCP, sibling of defer) so a
    stuck or uncertain agent escalates instead of failing silently.
 
 The funnels multiplex *decisions*, not *work*: with coordination unified, N
@@ -46,7 +46,7 @@ per folder on disk), hierarchical memory banks, model routing by role + rules, W
 
 ## 2. Core concepts
 
-```
+``
 Project   a folder on disk, opened via backend file browser; owns agents, sessions, memory
 Session   an orchestrated conversation inside a project (parent = supervisor)
 Specialist  a PERSISTENT, DYNAMICALLY CREATED worker (per project or globally): identity +
@@ -75,7 +75,7 @@ Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, mod
           unavailable or unsure. Roles are MODEL TIERS (models.yaml:
           orchestrator/backend/frontend/reviewer as default-model buckets), not a closed
           agent set; the rule-router resolves against specialist names.
-```
+``
 
 ### 2.1 Specialist model semantics (user-locked 2026-08-29; consistency audit same day)
 
@@ -162,7 +162,7 @@ eventually consistent — local embedded stays the default; Vectorize is opt-in.
 
 ## 3. Architecture
 
-```
+``
 ┌──────────┐   ┌─────────────────────────────────────────────┐
 │ CLI      │   │ Web SPA (vanilla JS, no build)              │
 │ sweave … │   │ chat · children · agents · memory · settings│
@@ -184,7 +184,7 @@ eventually consistent — local embedded stays the default; Vectorize is opt-in.
 │   OpenCode: `opencode serve --port 0` + HTTP  ✅            │
 │   claude/codex: detect-only 📐 (no spawn)                   │
 └─────────────────────────────────────────────────────────────┘
-```
+``
 
 Data flow of a delegated task (today, real):
 `POST /api/tasks` → RuleRouter.route → DelegateTaskTool.execute →
@@ -426,22 +426,15 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   on message.added via `replaceWith` (no re-render storm; container.innerHTML
   never reset during streaming). Gate: live multi-delta reply rendering
   incrementally, 40/40 UI untouched, 13/13 run.py --check, 400/400 pytest.
-- **M1.9 Dogfood pass** (~0.5-1, added 2026-09-04): minimal daily-driver polish before
-  any feature work resumes - Children tab live tree status (WS events), per-delegation
-  detail view reading its JSONL trace, promote buttons on every review record, chat
-  streaming polish. Purpose: warm-up + **the user daily-drives Sweave on real work**;
-  the friction list becomes the requirements input for R4 (UI v2). Gate: the user
-  Funnel piece: **sk_human(question, options?) MCP tool** (sibling of defer,
-  same server/auth) — a specialist question becomes an escalation event
-  (specialist.escalated WS + delegation flagged needs-attention) with an answer
-  path back to the asking session; surfacing UX in R4, function in M1.9.
-  Hardening items folded in: permission.task: deny on specialist agents (closes the
-  native-subagent bypass around DelegationManager); git-mutation bash denied for the
-  orchestrator; **per-project worktree_base override** (project record field, default =
-  global config) + convention: the dev repo is never its own live-gate target
-  (scratch project in temp instead — the 51-worktree pollution incident, 2026-09-04);
-  WorktreeManager.align() precursor.
-  completes one real task end-to-end through the UI and files the friction list.
+- **M1.9 Dogfood pass** (~2, planned in detail: `docs/M1_9_PLAN.md`): the last M1
+  milestone — funnel completion + visibility + hardening. `sk_human\ MCP tool
+  (escalations instead of silent failure), Children live tree, delegation detail
+  view rendering the full specialist turn (tool timeline from the parts-model
+  trace capture, tokens/cost per step), visibility CLI (`sweave log/watch/tail`),
+  hardening (permission.task deny, orchestrator git-bash deny, per-project
+  worktree_base, align() precursor), terminal-detection fix. Gate: **self-hosting**
+  — one real task end-to-end through the chat thread in a scratch project,
+  funnel leaks counted, friction list becomes R4's input.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.
