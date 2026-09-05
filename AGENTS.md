@@ -254,6 +254,24 @@ amendments.
     add a new engine, decide: external (composed + engine view) or
     internal (composed only) -- the engine's transcript
     compatibility is your call.
+15. **Stale server blocks `start_server.py` silently** (M1.8
+    step 4). When running a live scene with `SWEAVE_MOCK_OPENCODE=1`,
+    a previous `python start_server.py` invocation that wasn't
+    stopped can leave port 8100 bound. The new `start_server.py`
+    will print "Server started" and write a PID, but the new
+    server will fail to bind (you'll see "ERROR: [Errno 10048]
+    only one usage of each socket address" in `web_err.log`).
+    The chat runtime will then hit a real opencode on
+    `127.0.0.1:4096` instead of the mock, producing a 500 in
+    the assistant message and an HTTPStatusError traceback. The
+    M1.8 live scene's first run hit this. Always run
+    `python stop_server.py` before `start_server.py` and verify
+    `Get-NetTCPConnection -LocalPort 8100` is empty (or use
+    `Test-NetConnection 127.0.0.1 -Port 8100` to confirm the
+    port is free). The mock-only behavior is gated on the env
+    var being set in the server's environment, not the
+    script's -- a stale server without the env will silently
+    consume the test.
 
 ## Running & testing
 ```bash

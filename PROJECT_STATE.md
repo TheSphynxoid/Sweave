@@ -298,7 +298,71 @@
      endpoint ✅, transcript system ✅, runtime context builder ✅,
      synthesis loop ✅, per-Session binding ✅, parent-gating row
      updated), R1 M1.7 bullet flipped to ✅, §2.1 noted.
-- ▶ **Next**: M1.8 Streaming (per DESIGN.md §6 R1)
+- ✅ **M1.8 Streaming** — done 2026-09-04 per `docs/M1_8_PLAN.md`.
+  4 steps:
+  1. **Harness streaming callback** (the v1 scope ruling).
+     `OpenCodeProcess.send(message, on_chunk=None)` and
+     `SpecialistRuntime._send_message(process, body, trace, on_chunk=None)`
+     accept an optional async-or-sync callback invoked with each
+     text part as it leaves the opencode stream. Default None
+     preserves the M1.0+ accumulate-only behavior; all
+     pre-M1.8 callers and tests pass unchanged. Async callbacks
+     are awaited (the harness detects coroutine return values);
+     sync callbacks are invoked directly. A misbehaving
+     callback that raises is logged + ignored — streaming is
+     best-effort from the harness's view.
+  2. **ChatLoop wire-up + throttle**. `sweave/chat/streaming.py`
+     (new) `ChatDeltaCoalescer`. ChatLoop wraps the harness's
+     on_chunk in a coalescer that publishes `chat.delta` events
+     on the WSEventBus at most every `stream_coalesce_ms`
+     (default 100) or when the buffer crosses
+     `stream_char_threshold` (default 64). The persisted
+     `message.added` event stays authoritative (full text); the
+     chat.delta events are partial snapshots for incremental
+     UI rendering. The coalescer is created once per turn and
+     closed on every exit path via try/finally. The chat loop's
+     `run_turn` was refactored to delegate to `_run_turn_body`
+     so the same try/finally could wrap the body without
+     repeating the close logic. `SpecialistRuntime.run` gained
+     an `on_chunk` param (default None).
+  3. **UI incremental rendering**. `sweave/web/static/js/app.js`
+     handles `chat.delta` and `message.added` events directly
+     with **no re-render storm**. The streaming lifecycle:
+     create-once, patch in place (`textContent += text` on
+     `.streaming-text`), replace on `message.added` via
+     `replaceWith` (the parent's child list is preserved; the
+     container's `innerHTML` is never reset during streaming).
+     The persisted assistant message now carries
+     `metadata={'delegation_id': chat_d.id}` so the UI can join
+     the message to the streaming bubble. `sweave/web/static/
+     style.css` adds a `.streaming` class (border accent +
+     blinking cursor hint while the orchestrator is replying).
+     The previous UI used `data.type` for WS dispatch which was
+     always undefined (the wire format is `data.event`); the new
+     handler dispatches correctly. `sendChat` now routes
+     through the chat endpoint `/api/sessions/{id}/messages`,
+     not the legacy `/tasks` path. The M1.7 step 2 chat
+     endpoint is now the canonical chat surface; M1.8 makes it
+     the streaming surface.
+  4. **Gates + live gate + docs**. 400/400 pytest (was 381;
+     +19 across 3 new test files:
+     `test_m1_8_step1_harness_streaming_callback.py` (8),
+     `test_m1_8_step2_chat_loop_streaming.py` (10),
+     `test_m1_8_step3_streaming_ui.py` (1, runs a node + jsdom
+     polyfill to exercise the streaming functions in
+     isolation)). 13/13 `run.py --check`; 40/40 `test_full`;
+     suite 3× consecutive green. **Live mini-scene**
+     (`scripts/m1_8_stream_live_scene.py`, `SWEAVE_MOCK_OPENCODE=1`):
+     1 `chat.delta` event with `session_id` + `delegation_id` +
+     `text`; 2 `message.added` events (user + assistant) with
+     `delegation_id` in metadata; status transitions
+     `running → done`; two sessions of the same project get
+     independent `orchestrator_session_id` bindings. 1 python
+     proc before, 1 after; no leaks. Docs: DESIGN §4 R1 M1.8
+     bullet flipped to done; PROJECT_STATE M1.8 done summary;
+     docs/M1_8_PLAN.md status flipped from `planned` to `done`
+     with an execution summary section.
+- ▶ **Next**: M1.9 Dogfood pass (per DESIGN.md §6 R1)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`

@@ -400,12 +400,15 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   silent fallback. Gate: live (`scripts/m1_7_live_scene.py`) — defer tree +
   synthesized answer in Chat + per-Session binding proven on disk + composed_prompt
   event on the trace.
-- **M1.8 Streaming** (~1, planned in detail: `docs/M1_8_PLAN.md`): v1 scope ruling —
-  **assistant-reply token streaming + status transitions only** (specialist tool
-  noise stays in traces for the M1.9 detail view). Harness `send(message, on_chunk)`
+- **M1.8 Streaming** (~1, **done 2026-09-04** per `docs/M1_8_PLAN.md`): v1 scope
+  ruling — **assistant-reply token streaming + status transitions only** (specialist
+  tool noise stays in traces for the M1.9 detail view). Harness `send(message, on_chunk)`
   callback → ChatLoop coalesced `chat.delta` WS events (~100ms flush) → single
-  streaming bubble in Chat; persisted `message.added` stays authoritative. Gate:
-  live multi-delta reply rendering incrementally, 40/40 UI untouched.
+  streaming bubble in Chat; persisted `message.added` stays authoritative.
+  Streaming lifecycle: create-once, patch in place (textContent += text), replace
+  on message.added via `replaceWith` (no re-render storm; container.innerHTML
+  never reset during streaming). Gate: live multi-delta reply rendering
+  incrementally, 40/40 UI untouched, 13/13 run.py --check, 400/400 pytest.
 - **M1.9 Dogfood pass** (~0.5-1, added 2026-09-04): minimal daily-driver polish before
   any feature work resumes - Children tab live tree status (WS events), per-delegation
   detail view reading its JSONL trace, promote buttons on every review record, chat
