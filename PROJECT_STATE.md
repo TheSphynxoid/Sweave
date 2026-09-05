@@ -38,8 +38,8 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-09-04)
-- **336/336** in `pytest tests/` (source of truth for logic tests; +41 since M1.5)
+### Test Results (All Passing - verified 2026-09-05)
+- **447/447** in `pytest tests/` (source of truth for logic tests; +47 since M1.8)
 - **13/13** in `run.py --check` (endpoint smoke)
 - **40/40** in `test_full.py` (comprehensive UI verification)
 - **8/8** in `test_browser.py` (file browser API)
@@ -299,6 +299,53 @@
      synthesis loop ✅, per-Session binding ✅, parent-gating row
      updated), R1 M1.7 bullet flipped to ✅, §2.1 noted.
 - ✅ **M1.8 Streaming** — done 2026-09-04 per `docs/M1_8_PLAN.md`.
+- ✅ **M1.9 Dogfood pass** — done 2026-09-05 per `docs/M1_9_PLAN.md`.
+  5 steps:
+  1. **Trace completeness** — the harness's stream reader captures
+     tool parts (pending → running → completed | error) keyed by
+     callID, step boundaries (start/finish), and per-turn
+     ``tokens_used``. Terminal detection: turn complete iff
+     ``info.time.completed`` AND ``info.finish`` are set (replaces
+     the pre-M1.9 per-chunk "parts + role==assistant" heuristic).
+     The dead ``type:"error"`` part branch was removed; errors come
+     from ``info.error``. Pre-M1.9 fixtures updated to emit the
+     terminal flag (the real wire always does). Reasoning parts
+     default OFF (``trace_reasoning=True`` flag enables them).
+  2. **Hardening bundle** — per-project ``worktree_base`` on the
+     Project record (overrides the global config; legacy files
+     load with ``None``). ``WorktreeManager.align()`` primitive
+     with the dirty-skip rule (never stash-dance a working agent).
+     Specialist permission profile: orchestrator = ``task: deny`` +
+     git bash deny (commit/merge/push/rebase/hard-reset/gh pr merge);
+     specialist = ``task: deny`` only (specialists commit freely in
+     their disposable branches per the 2026-09-04 commit-authority
+     map). ``runtime/mcp_config.py`` injects the orchestrator's
+     profile into the per-project ``opencode.json``.
+  3. **Output funnel completion** — ``ask_human(question, options?)``
+     MCP tool (sibling of ``defer``; same auth + wire surface). The
+     asking delegation is flagged ``needs_attention`` (Delegation
+     schema v5; ``SCHEMA_VERSION=5``, ``_migrate_v4_to_v5``). Endpoints:
+     ``POST /api/delegations/{id}/escalate``, ``/answer``, ``GET
+     /api/delegations/{id}/escalation``. WS events: ``specialist.
+     escalated`` + ``specialist.escalation_resolved``. Timeout (15
+     min default; configurable) records "no answer received" as the
+     placeholder response so the LLM proceeds with best judgment. The
+     MCP server reads ``SWEAVE_MCP_TOKEN`` env first (the opencode.json
+     plumbing seam), falls back to the home file.
+  4. **Visibility surfaces** — ``sweave/web/detail_view.py`` projects
+     the trace JSONL into composed-prompt / tool-timeline / tokens /
+     status-timeline sections. ``GET /api/delegations/{id}/detail``
+     HTTP endpoint + ``sweave log <id>`` / ``sweave tail <id>`` /
+     ``sweave watch`` CLI. The ``tail`` command is an async generator
+     with file-rotation handling; ``watch`` polls the running server.
+  5. **Self-hosting live gate** — ``scripts/m1_9_self_hosting_scene.py``
+     drives one chat turn end-to-end through the HTTP API (mock
+     opencode subprocess; real running server; ``SWEAVE_MOCK_OPENCODE=1``).
+     Funnel-leak report (every forced exit to API/CLI/file) becomes
+     R4's re-planning input. Per-project ``worktree_base`` plumbed
+     through ``/api/projects`` POST.
+  447/447 pytest (was 400 at M1.9 step 0; +47 from the five step
+  files). 13/13 ``run.py --check``; 40/40 ``test_full.py``.
   4 steps:
   1. **Harness streaming callback** (the v1 scope ruling).
      `OpenCodeProcess.send(message, on_chunk=None)` and

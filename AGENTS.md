@@ -220,7 +220,7 @@ amendments.
     `_sweave_mcp_entry` in `runtime/mcp_config.py`; the function
     is the single source of truth. The `M1.6_DISABLE_MCP_PLUMBING=1`
     env var is the test/CI kill switch.
-12. **Delegation schema-version field gate** (M1.7). The
+12. **Delegation schema-version field gate** (M1.7 + M1.9). The
     `test_v3_field_set_includes_all_m1_1_plus_m1_6_fields` test in
     `tests/test_delegation_store.py` pins the public Delegation
     field set -- any new field requires bumping `SCHEMA_VERSION` in
@@ -229,12 +229,14 @@ amendments.
     records. The plan for M1.7 step 2 said "no schema bump" for the
     `kind` field; that reasoning was wrong -- the gate is real.
     Bumping 3 → 4 + `_migrate_v3_to_v4` was the correct fix. The
-    same rule applies for the Session schema: new fields
-    (`orchestrator_session_id` in step 1; `last_memory_recall_ts` +
-    `last_git_snapshot` in step 4) get `data.get("...", default)` in
-    `Session.from_dict`, so legacy session files load without a
-    migration helper. The Delegation dataclass has stricter
-    shape-pinning; check both before adding a field.
+    same rule applied in M1.9 step 3 for `needs_attention` (bump 4 →
+    5 + `_migrate_v4_to_v5`). The same rule applies for the
+    Session schema: new fields (`orchestrator_session_id` in
+    step 1; `last_memory_recall_ts` + `last_git_snapshot` in step 4)
+    get `data.get("...", default)` in `Session.from_dict`, so
+    legacy session files load without a migration helper. The
+    Delegation dataclass has stricter shape-pinning; check both
+    before adding a field.
 13. **Chat loop auto-done is the chat path's job, not JobRunner's**
     (M1.7 step 3). `JobRunner._run` sets `final_status = "review"`
     on success for implementation delegations (M1.4+M1.5 ruling).
@@ -287,6 +289,22 @@ amendments.
     <path>`). If a read tool calls a text file "binary", probe bytes first (BOM
     `ff fe` / NUL count / U+FFFD) before believing any narrative — and check
     whether HEAD's blob differs from the working tree before diagnosing content.
+18. **Mock + wire fixtures MUST emit ``info.time.completed`` + ``info.finish``
+    on every response** (M1.9 step 1). Pre-M1.9 tests used
+    ``{"info": {"role": "assistant"}, "parts": [...]}`` and relied on the
+    "parts + role==assistant" heuristic in `OpenCodeProcess.send` to declare
+    success per-chunk. That heuristic was the bug: it fired on a delta that
+    happened to include a parts list, before the assistant message was done.
+    M1.9's terminal detection requires ``info.time.completed`` set AND
+    ``info.finish`` present; the mock (`OpenCodeHarness._spawn_mock`'s
+    `_StubClient.stream`) was updated to include both, and the pre-M1.9
+    fixtures in 4 test files were patched (one global regex replacement
+    added ``time`` + ``finish`` to every bare ``info: {role: assistant}``).
+    New tests for the parts model that build a stream directly use the
+    `_parts_model_stream` helper which sets the terminal flag by default.
+    If you add a new test that mocks the opencode v2 wire, include the
+    terminal flag from the start or your test will hit the "no terminal
+    flag set" error path.
 
 ## Running & testing
 ```bash

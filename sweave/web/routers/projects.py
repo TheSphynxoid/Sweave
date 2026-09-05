@@ -41,6 +41,10 @@ class ProjectCreateRequest(BaseModel):
     name: str
     path: str
     description: str = ""
+    # M1.9 step 2: per-project worktree_base override. Default is the
+    # global config (set on the project record by the ProjectManager
+    # when ``worktree_base`` is omitted; legacy behaviour preserved).
+    worktree_base: Optional[str] = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -58,7 +62,10 @@ async def api_create_project(request: ProjectCreateRequest):
     try:
         project = await create_project(
             ProjectCreate(
-                name=request.name, path=request.path, description=request.description
+                name=request.name,
+                path=request.path,
+                description=request.description,
+                worktree_base=request.worktree_base,
             )
         )
         return {"success": True, "project": project}

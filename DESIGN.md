@@ -212,6 +212,13 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
 | **SpecialistRuntime (per-specialist ServeRunner + session reuse)** | ✅ | M1.3 — `runtime/specialist_runtime.py` orchestrates one delegation: resolves a ServeRunner (lazy start per (specialist, worktree)), ensures a session (create, recreate on 404, or reuse), sends a single message with structured ModelRef in `body["model"]`. M1.3 step 4 wires a per-turn timeout (default 15 min) and routes success to `review` (M1.4 promotes to `done`). Orphan sweep in `serve_runner.find_orphan_serves` cleans up stale processes on server boot |
 | **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
+| **Parts-model trace capture** | ✅ | M1.9 — `sweave/harness/opencode.py` stream reader captures tool parts (pending → running → completed | error keyed by callID), `step-start`/`step-finish` (→ `step.boundary` events with reason / cost / tokens{input, output, reasoning, cache.{read, write}}), per-turn `tokens_used` audit anchor. Terminal detection: turn complete iff `info.time.completed` AND `info.finish` are set (replaces the per-chunk "parts + role==assistant" heuristic). Reasoning parts default OFF (`trace_reasoning=True` flag enables them). Dead `type:"error"` part branch removed; errors come from `info.error`. |
+| **Delegation detail view (web)** | ✅ | M1.9 — `sweave/web/detail_view.py` projects the trace JSONL into composed-prompt / tool-timeline / tokens / status-timeline sections (the same data the UI detail view patches in place + the `sweave log` CLI prints). `GET /api/delegations/{id}/detail` endpoint. |
+| **Visibility CLI (sweave log/watch/tail)** | ✅ | M1.9 — `sweave log <id>` (pretty-render trace), `sweave tail <id>` (follow a running turn; `sweave/cli/tail.py:follow_trace` async generator with file-rotation handling), `sweave watch` (live tree; polls `/api/delegations` on the running server). |
+| **ask_human MCP tool (escalations)** | ✅ | M1.9 — `sweave/mcp/__init__.py` `ask_human(question, options?, caller_delegation_id?)` (sibling of `defer`; same auth + wire surface). The asking delegation is flagged `needs_attention` (Delegation schema v5); `sweave/runtime/escalation.py:EscalationStore` is the persistence + event surface. WS events: `specialist.escalated` + `specialist.escalation_resolved`. Endpoints: `POST /api/delegations/{id}/escalate`, `/answer`, `GET /api/delegations/{id}/escalation`. Timeout (15 min default; configurable) records "no answer received" as the placeholder response so the LLM proceeds with best judgment. |
+| **Per-project worktree_base** | ✅ | M1.9 — `Project.worktree_base` field overrides the global `config.git.worktree_base` for that project. `sweave/runtime/worktree_base.py:resolve_worktree_base` is the seam. Scratch-project convention: the dev repo (cwd) is never its own live-gate target. Plumbed through `POST /api/projects` (worktree_base in the request body). |
+| **WorktreeManager.align()** | ✅ | M1.9 — primitive: rebase/merge the worktree branch onto the integration branch's current state. Returns `{"rebased", "skipped_dirty", "no_integration_branch", "noop"}`. **Dirty-skip rule** (commit-authority map, 2026-09-04): never stash-dance a working agent; a dirty worktree is skipped, not autostashed. R2's full protocol (drift budget, conflict resolution, shared-context freshness) lands later. |
+| **Specialist permission profile** | ✅ | M1.9 — `sweave/runtime/agent_permission.py:render_agent_permission_profile(is_orchestrator=...)`. Orchestrator = `task: deny` + git bash deny (`commit` / `merge` / `push` / `rebase` / `hard-reset` / `gh pr merge`). Specialist = `task: deny` only (specialists commit freely in their disposable branches). Closed bypass: a specialist's opencode session can't spawn a native sub-subagent outside the DelegationManager. `runtime/mcp_config.py` injects the orchestrator's profile into the per-project `opencode.json`. |
 | **Specialist store + /api/specialists CRUD** | ✅ | M1.2 — `runtime/specialist_store.py` (global `~/.sweave/agents.yaml` + per-project `{project}/.sweave/agents.json`); resolution project→global→seed; `is_orchestrator` flag for the per-project singleton; model precedence chain at submit; `PUT /api/specialists/{name}/model` emits `model.changed {name, model, scope}`; `specialist.created/updated/deleted` events; override log at `{project}/.sweave/override_log.jsonl` (global fallback `~/.sweave/override_log.jsonl`) |
 | **/api/agents bridge + render fix** | ✅ | M1.2 — returns `{builtin, global, dynamic}` arrays (the M1.prep dicts were the root cause of the empty Agents tab); description-overwrite bug fixed; routes writes through the specialist store; orchestrator name 409 on create/delete |
 | **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
@@ -426,15 +433,51 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   on message.added via `replaceWith` (no re-render storm; container.innerHTML
   never reset during streaming). Gate: live multi-delta reply rendering
   incrementally, 40/40 UI untouched, 13/13 run.py --check, 400/400 pytest.
-- **M1.9 Dogfood pass** (~2, planned in detail: `docs/M1_9_PLAN.md`): the last M1
-  milestone — funnel completion + visibility + hardening. `sk_human\ MCP tool
-  (escalations instead of silent failure), Children live tree, delegation detail
-  view rendering the full specialist turn (tool timeline from the parts-model
-  trace capture, tokens/cost per step), visibility CLI (`sweave log/watch/tail`),
-  hardening (permission.task deny, orchestrator git-bash deny, per-project
-  worktree_base, align() precursor), terminal-detection fix. Gate: **self-hosting**
-  — one real task end-to-end through the chat thread in a scratch project,
-  funnel leaks counted, friction list becomes R4's input.
+- **M1.9 Dogfood pass** (~2, **done 2026-09-05** per `docs/M1_9_PLAN.md`):
+  the last M1 milestone — funnel completion + visibility + hardening. 5 steps:
+  (1) **parts-model trace capture** — the harness's stream reader now
+  captures tool parts (pending → running → completed | error) keyed by
+  callID, step boundaries (`step-finish` → `step.boundary` event with
+  reason / cost / tokens{input,output,reasoning,cache.{read,write}}),
+  and a per-turn `tokens_used` audit anchor. Terminal detection: turn
+  complete iff `info.time.completed` AND `info.finish` are set
+  (replaces the pre-M1.9 per-chunk "parts + role==assistant" heuristic
+  that could prematurely declare success on a delta). The dead
+  `type:"error"` part branch was removed; errors come from `info.error`.
+  (2) **hardening** — per-project `worktree_base` on the Project record;
+  `WorktreeManager.align()` primitive with the dirty-skip rule (never
+  stash-dance a working agent); specialist permission profile
+  (`sweave/runtime/agent_permission.py`) — orchestrator = `task: deny`
+  + git bash deny (commit / merge / push / rebase / hard-reset /
+  gh pr merge); specialist = `task: deny` only (specialists commit
+  freely in their disposable branches per the 2026-09-04 commit-
+  authority map). `runtime/mcp_config.py` injects the orchestrator's
+  profile into the per-project `opencode.json` (closes the native
+  opencode subagent bypass). (3) **output funnel completion** —
+  `ask_human(question, options?)` MCP tool (sibling of `defer`; same
+  auth + wire surface). The asking delegation is flagged
+  `needs_attention: bool` (Delegation schema v5; `SCHEMA_VERSION=5`,
+  `_migrate_v4_to_v5` helper); `sweave/runtime/escalation.py` is the
+  persistence + event surface. Endpoints: `POST /api/delegations/{id}/
+  escalate`, `/answer`, `GET /api/delegations/{id}/escalation`. WS
+  events: `specialist.escalated` + `specialist.escalation_resolved`.
+  Timeout (15 min default; configurable) records "no answer received"
+  as the placeholder response so the LLM proceeds with best judgment
+  rather than hanging. The MCP server reads `SWEAVE_MCP_TOKEN` env
+  first (the opencode.json plumbing seam), falls back to the home
+  file. (4) **visibility surfaces** — `sweave/web/detail_view.py`
+  projects the trace JSONL into composed-prompt / tool-timeline /
+  tokens / status-timeline sections (the same data the UI detail
+  view patches in place). `GET /api/delegations/{id}/detail` HTTP
+  endpoint + `sweave log <id>` / `sweave tail <id>` / `sweave watch`
+  CLI. (5) **self-hosting live gate** —
+  `scripts/m1_9_self_hosting_scene.py` drives one chat turn end-to-end
+  through the HTTP API (mock opencode subprocess; real running
+  server; `SWEAVE_MOCK_OPENCODE=1`). Funnel-leak report (every forced
+  exit to API/CLI/file) becomes R4's re-planning input. Per-project
+  `worktree_base` plumbed through `POST /api/projects`.
+  447/447 pytest (was 400 at M1.9 step 0; +47 from the five step
+  files). 13/13 `run.py --check`; 40/40 `test_full.py`.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.

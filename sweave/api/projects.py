@@ -14,6 +14,8 @@ class ProjectCreate:
     name: str
     path: str
     description: str = ""
+    # M1.9 step 2: per-project worktree_base override.
+    worktree_base: str | None = None
 
 
 @dataclass
@@ -46,6 +48,12 @@ async def create_project(request: ProjectCreate) -> dict:
             path=Path(request.path),
             description=request.description,
         )
+        # M1.9 step 2: per-project worktree_base override. Set after
+        # the create (which fills the dataclass from the manager's
+        # defaults); ``None`` is the legacy behaviour.
+        if request.worktree_base:
+            project.worktree_base = request.worktree_base
+            project_manager.save_project(project)
         return project.to_dict()
     except ValueError as e:
         raise e
