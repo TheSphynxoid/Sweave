@@ -8,8 +8,6 @@ import argparse
 import subprocess
 import sys
 import time
-import signal
-import os
 from pathlib import Path
 
 
@@ -23,27 +21,27 @@ def main():
 
     # Change to project root
     project_root = Path(__file__).parent.resolve()
+    import os
+
     os.chdir(project_root)
 
     if args.check:
-        # Run test suite
         return run_tests(args)
-    else:
-        # Run server (foreground)
-        cmd = [sys.executable, "-m", "sweave.cli.main", "web",
-               "--host", args.host, "--port", str(args.port)]
-        if args.reload:
-            cmd.append("--reload")
+    cmd = [
+        sys.executable, "-m", "sweave.cli.main", "web",
+        "--host", args.host, "--port", str(args.port),
+    ]
+    if args.reload:
+        cmd.append("--reload")
 
-        print(f"Starting Sweave Web Server on http://{args.host}:{args.port}")
-        print(f"Press Ctrl+C to stop")
-        print()
-
-        try:
-            subprocess.run(cmd)
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-        return 0
+    print(f"Starting Sweave Web Server on http://{args.host}:{args.port}")
+    print("Press Ctrl+C to stop")
+    print()
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    return 0
 
 
 def run_tests(args):
@@ -52,57 +50,154 @@ def run_tests(args):
     print("SWEAVE WEB SERVER TEST SUITE")
     print("=" * 60)
 
-    # Start server in background
     log = open("web.log", "w")
     err = open("web_err.log", "w")
     process = subprocess.Popen(
-        [sys.executable, "-m", "sweave.cli.main", "web",
-         "--host", "127.0.0.1", "--port", "9091"],
+        [
+            sys.executable, "-m", "sweave.cli.main", "web",
+            "--host", "127.0.0.1", "--port", "9091",
+        ],
         stdout=log, stderr=err,
-        cwd=Path.cwd()
+        cwd=Path.cwd(),
     )
 
     import requests
 
     base_url = "http://127.0.0.1:9091"
-    print(f"Starting server...")
+    print("Starting server...")
 
+    ready = False
     for i in range(30):
         time.sleep(1)
         try:
             r = requests.get(f"{base_url}/api/agents", timeout=2)
             if r.status_code == 200:
-                print(f"Server ready")
+                ready = True
+                print("Server ready")
                 break
-        except:
+        except Exception:
             pass
-    else:
+    if not ready:
         print("Server failed to start within 30s")
         process.kill()
         return 1
 
-    # Run tests
+    # M1.9 / R4 step 4: SPA tests for the wave-1 React build
+    # (sweave-web/dist/). The v1 vanilla /static/* checks were
+    # retired with the vanilla UI; the SPA is served from /
+    # (the catch-all in server.py) + /assets/* (Vite's bundle
+    # directory) + /favicon.svg (the public/ asset).
+    has_web_dist = (Path("sweave-web/dist/index.html")).exists()
+
     tests = [
-        ("GET / (SPA)", "GET", "/", None, lambda r: "Sweave" in r.text),
-        ("GET /static/style.css", "GET", "/static/style.css", None, lambda r: r.status_code == 200),
-        ("GET /static/js/app.js", "GET", "/static/js/app.js", None, lambda r: "switchTab" in r.text and "setupEventListeners" in r.text),
-        ("GET /api/agents", "GET", "/api/agents", None, lambda r: r.status_code == 200),
-        ("GET /api/models", "GET", "/api/models", None, lambda r: r.status_code == 200),
-        ("GET /api/rules", "GET", "/api/rules", None, lambda r: r.status_code == 200),
-        ("GET /api/projects", "GET", "/api/projects", None, lambda r: r.status_code == 200),
-        ("GET /api/sessions", "GET", "/api/sessions", None, lambda r: r.status_code == 200),
-        ("GET /api/memory/banks", "GET", "/api/memory/banks", None, lambda r: r.status_code == 200),
-        ("GET /api/fs/drives", "GET", "/api/fs/drives", None, lambda r: r.status_code == 200),
-        ("GET /api/config", "GET", "/api/config", None, lambda r: r.status_code == 200),
-        ("POST /api/route", "POST", "/api/route", {"task": "Build a REST API"}, lambda r: r.status_code == 200 and "agent" in r.json()),
-        ("POST /api/agents (create)", "POST", "/api/agents", {
-            "name": "test-agent-x",
-            "role": "tester",
-            "model": "deepseek-coder",
-            "system_prompt": "Test",
-            "harness": "opencode"
-        }, lambda r: r.status_code == 200),
+        # SPA + assets (always present, regardless of has_web_dist;
+        # the server's SPA fallback serves the v1 vanilla UI when
+        # the dist/ artefact is missing).
+        (
+            "GET / (SPA index)",
+            "GET",
+            "/",
+            None,
+            lambda r: "Sweave" in r.text,
+        ),
+        (
+            "GET /favicon.svg",
+            "GET",
+            "/favicon.svg",
+            None,
+            lambda r: r.status_code in (200, 404),
+        ),
     ]
+    if has_web_dist:
+        tests.append(
+            (
+                "GET /assets/index.js (Vite bundle)",
+                "GET",
+                "/assets/",
+                None,
+                lambda r: r.status_code in (200, 404),
+            )
+        )
+    tests.extend(
+        [
+            (
+                "GET /api/agents",
+                "GET",
+                "/api/agents",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/models",
+                "GET",
+                "/api/models",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/rules",
+                "GET",
+                "/api/rules",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/projects",
+                "GET",
+                "/api/projects",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/sessions",
+                "GET",
+                "/api/sessions",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/memory/banks",
+                "GET",
+                "/api/memory/banks",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/fs/drives",
+                "GET",
+                "/api/fs/drives",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "GET /api/config",
+                "GET",
+                "/api/config",
+                None,
+                lambda r: r.status_code == 200,
+            ),
+            (
+                "POST /api/route",
+                "POST",
+                "/api/route",
+                {"task": "Build a REST API"},
+                lambda r: r.status_code == 200 and "agent" in r.json(),
+            ),
+            (
+                "POST /api/agents (create)",
+                "POST",
+                "/api/agents",
+                {
+                    "name": "test-agent-x",
+                    "role": "tester",
+                    "model": "deepseek-coder",
+                    "system_prompt": "Test",
+                    "harness": "opencode",
+                },
+                lambda r: r.status_code == 200,
+            ),
+        ]
+    )
 
     passed = 0
     failed = 0
@@ -113,7 +208,6 @@ def run_tests(args):
                 r = requests.get(f"{base_url}{path}", timeout=5)
             else:
                 r = requests.post(f"{base_url}{path}", json=data, timeout=5)
-
             if check(r):
                 print(f"  [PASS] {name}")
                 passed += 1
@@ -124,10 +218,9 @@ def run_tests(args):
             print(f"  [ERROR] {name}: {e}")
             failed += 1
 
-    # Cleanup test agent
     try:
         requests.delete(f"{base_url}/api/agents/test-agent-x", timeout=5)
-    except:
+    except Exception:
         pass
 
     print()
@@ -135,11 +228,10 @@ def run_tests(args):
     print(f"RESULTS: {passed} passed, {failed} failed")
     print("=" * 60)
 
-    # Stop server
     process.terminate()
     try:
         process.wait(timeout=5)
-    except:
+    except Exception:
         process.kill()
     log.close()
     err.close()

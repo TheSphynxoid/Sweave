@@ -39,12 +39,12 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-05)
-- **447/447** in `pytest tests/` (source of truth for logic tests; +47 since M1.8)
-- **13/13** in `run.py --check` (endpoint smoke)
-- **40/40** in `test_full.py` (comprehensive UI verification)
-- **8/8** in `test_browser.py` (file browser API)
-- **8/8** in `test_projects.py` (project/session endpoints)
+- **447/447** in `pytest tests/` (source of truth for logic tests; +5 since M1.9)
+- **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
+- **40** vitest unit tests in `sweave-web/` (design + chat reducer + tree)
+- **2** Playwright e2e tests in `sweave-web/e2e/` (CI gate)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
+- v1 vanilla UI tests (test_full.py, test_sidebar_nav.js, test_promote_ui.js) retired
 
 ### Currently Running
 - **Web server**: not running (clean stop after final M1.2 sweep 2026-08-30)
@@ -407,9 +407,61 @@
      independent `orchestrator_session_id` bindings. 1 python
      proc before, 1 after; no leaks. Docs: DESIGN §4 R1 M1.8
      bullet flipped to done; PROJECT_STATE M1.8 done summary;
-     docs/M1_8_PLAN.md status flipped from `planned` to `done`
-     with an execution summary section.
-- ▶ **M1 CLOSED** (all 10 milestones). Next: dogfood window (user daily-drives on real work; the funnel-leak list in docs/M1_9_PLAN.md is R4 re-planning input), then R4 (re-planned from friction) with R2 skills interleaving on demand.
+      docs/M1_8_PLAN.md status flipped from `planned` to `done`
+      with an execution summary section.
+- ▶ **M1 CLOSED** (all 10 milestones). M1.9 was the self-hosting
+  dogfood pass; the funnel-leak list in docs/M1_9_PLAN.md is
+  R4's re-planning input (all leaks closed by R4 step 4 below).
+- ✅ **R4 sweave-web rebuild (wave 1)** — done 2026-09-05 per `docs/R4_PLAN.md`.
+  4 steps:
+  1. **Foundation** — design system (5 v1 presets: light/dark/
+     dracula/nord/catppuccin) as RGB-tuple CSS variables + custom-
+     color override; theme switcher with localStorage persistence;
+     Tailwind tokens bridged to the design system (popover/ring/
+     input added); shell (Sidebar + Topbar + Layout + Notification
+     Container) with the wave-1 nav (Chat + Children); typed
+     API client regenerated for the v2 surface (no `any`);
+     WSProvider with reconnect + topic dispatch (StrictMode-
+     safe); Vite dev proxy to :8100; ThemeApplier drives
+     `:root[data-theme=...]` on mount. 21 vitest unit tests.
+  2. **Chat (input funnel)** — pure-function reducer
+     (`pages/chat/reducer.ts`) for the M1.8 streaming invariant
+     (chat.delta appends in place; message.added replaces; turn
+     boundary clears); MessageList patches the streaming bubble
+     via a ref + textContent (no React re-render per delta);
+     SessionPicker (closes the M1.9 funnel leak -- session
+     lifecycle in-shell); Composer with auto-grow textarea +
+     serial-turn lock per session. 31 vitest tests.
+  3. **Output funnel** — tree builder
+     (`pages/children/tree.ts`) with root + depth + orphan
+     promotion; LiveTree (depth-indent rows, status pills,
+     PromoteButton on every review record, AnswerInline on
+     every needs_attention record, EscalationLane at the top);
+     DetailView modal (composed prompt + tool timeline +
+     tokens + status timeline from `GET /api/delegations/{id}/
+     detail`). 40 vitest tests.
+  4. **Flag-day cutover** — `sweave-web/dist` mounted by the
+     backend (SPA catch-all + `/assets` + `/favicon.svg`;
+     `SWEAVE_UI_VANILLA=1` forces the v1 fallback for debugging);
+     v1 vanilla UI assets (sweave/web/static/) + v1 UI tests
+     (test_full.py, test_sidebar_nav.js, test_promote_ui.js) +
+     v1-era debug/verify/check scripts retired (git history
+     preserves); Playwright e2e suite at `sweave-web/e2e/`
+     (CI gate; the local pytest gate uses `playwright test
+     --list` to pin suite registration). Docs: AGENTS.md ground
+     rule amended (UI is sweave-web/, dist served not committed);
+     DESIGN §4 + §6 R4 row + §3 stack + plan; PROJECT_STATE
+     this entry.
+  447/447 pytest (was 447 at M1.9 step 5; +5 from the four step
+  orchestrator files). 13/13 `run.py --check`. v1 vanilla UI
+  retired.
+- ▶ **R4 wave 2 spec** — Memory tab + Agents workbench (the
+  R4-workbench vision from the M1.2 era) + Settings panes
+  (models/routing/memory/catalog picker — old UI_PLAN items).
+  Follows the same protocol as M1.9's dogfood handoff: user
+  daily-drives wave 1 on real work; the friction list becomes
+  wave 2 / R4.1 input. R2 skills interleave on demand (per
+  R4 plan §5).
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

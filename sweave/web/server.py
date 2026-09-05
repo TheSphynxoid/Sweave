@@ -16,6 +16,7 @@ Route definitions were split out in M1.prep step 2; see ``sweave/web/routers``.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -288,7 +289,29 @@ def build_app() -> FastAPI:
 # to this object. Production: ``uvicorn sweave.web.server:app``. Tests: use
 # the same object via starlette.testclient.TestClient.
 app = build_app()
-app.mount("/static", StaticFiles(directory="sweave/web/static"), name="static")
+# M1.9 / R4 step 4: the new wave-1 UI ships from sweave-web/dist.
+# When the dist/ artefact exists, mount it as the SPA; the
+# /static mount (the old vanilla assets) becomes the fallback.
+# The conditional keeps the repo buildable + testable without
+# `npm run build` (the v1 vanilla UI is still served when dist/
+# is missing).
+_SWEAVE_WEB_DIST = Path("sweave-web/dist")
+_HAS_WEB_DIST = (_SWEAVE_WEB_DIST / "index.html").exists()
+if _HAS_WEB_DIST:
+    # Serve the bundled JS + CSS under /assets/ (vite's default
+    # asset directory; the dist/index.html references these).
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(_SWEAVE_WEB_DIST / "assets")),
+        name="sweave-web-assets",
+    )
+else:
+    # Fallback: the v1 vanilla UI. Will be removed in step 4.3
+    # once the new Playwright suite is in place + the v1 tests
+    # are retired.
+    app.mount(
+        "/static", StaticFiles(directory="sweave/web/static"), name="static"
+    )
 
 
 # ============================================================================
@@ -348,13 +371,24 @@ for _r in (
 # SPA routes
 # ============================================================================
 
-
-INDEX_HTML = Path("sweave/web/static/index.html")
+# M1.9 / R4 step 4: the new wave-1 UI (sweave-web/dist) is the
+# source of truth. The v1 vanilla UI is the fallback when the
+# dist/ artefact is missing (the repo is buildable + testable
+# without `npm run build`). The cutover is conditional on the
+# dist/ artefact -- a single env var can pin the v1 UI for
+# debugging.
+_USE_WEB_DIST = _HAS_WEB_DIST and os.environ.get(
+    "SWEAVE_UI_VANILLA"
+) != "1"
+_WEB_DIST_INDEX = _SWEAVE_WEB_DIST / "index.html"
+_VANILLA_INDEX = Path("sweave/web/static/index.html")
 
 
 def _read_index_html() -> str:
-    if INDEX_HTML.exists():
-        return INDEX_HTML.read_text(encoding="utf-8")
+    if _USE_WEB_DIST and _WEB_DIST_INDEX.exists():
+        return _WEB_DIST_INDEX.read_text(encoding="utf-8")
+    if _VANILLA_INDEX.exists():
+        return _VANILLA_INDEX.read_text(encoding="utf-8")
     return "<h1>Sweave UI not found</h1><p>index.html missing</p>"
 
 
@@ -363,6 +397,46 @@ async def index():
     return HTMLResponse(_read_index_html())
 
 
+# M1.9 / R4 step 4: SPA catch-all for client-side routes. The
+# new wave-1 UI uses BrowserRouter (a SPA); the server must
+# serve index.html for any non-API path so React Router can
+# pick up the URL. The catch-all is only registered when the
+# dist/ artefact is present (v1 vanilla UI had dedicated
+# routes for /agents, /tasks, etc.; keeping those below for
+# the fallback).
+if _USE_WEB_DIST:
+    # Serve the favicon from the sweave-web public/ directory.
+    _FAVICON_PATH = Path("sweave-web/public/favicon.svg")
+    if _FAVICON_PATH.exists():
+        @app.get("/favicon.svg")
+        async def favicon():
+            from fastapi.responses import FileResponse
+            return FileResponse(str(_FAVICON_PATH), media_type="image/svg+xml")
+
+    @app.get("/{path:path}", response_class=HTMLResponse)
+    async def spa_fallback(path: str):
+        # Only catch paths that don't look like an API or
+        # static asset route. The router's API endpoints are
+        # all under /api/*; the WS is /ws; the assets mount
+        # is /assets/*.
+        if (
+            path.startswith("api/")
+            or path.startswith("ws")
+            or path.startswith("assets/")
+            or path.startswith("static/")
+            or path == "favicon.svg"
+            or "." in path.split("/")[-1]  # any path with a file extension
+        ):
+            # Let FastAPI's normal routing handle these (or 404
+            # for unknown file paths).
+            from fastapi import HTTPException
+
+            raise HTTPException(404, "Not Found")
+        return HTMLResponse(_read_index_html())
+
+
+# Legacy vanilla-UI paths (used only when dist/ is missing;
+# kept for the M1.x compatibility window).
 @app.get("/agents", response_class=HTMLResponse)
 async def agents_page():
     return HTMLResponse(_read_index_html())

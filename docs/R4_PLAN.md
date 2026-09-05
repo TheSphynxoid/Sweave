@@ -1,6 +1,7 @@
 # R4 — Web UI rebuild: sweave-web (execution plan)
 
-Status: planned, not started. Est. ~3–4 sessions for wave 1 + cutover.
+Status: done 2026-09-05 (per the post-execution summary at the bottom).
+Est. ~3–4 sessions for wave 1 + cutover.
 Rulings locked 2026-09-05:
 - **Stack**: sweave-web's stack (Vite + React 18 + TypeScript + Tailwind + Zustand +
   React Query) — but the existing page code is pre-M1.x and gets **rewritten**, not
@@ -99,3 +100,101 @@ Rulings locked 2026-09-05:
   config references them, never hardcodes.
 - Scope creep into wave 2 mid-wave-1 (Memory/Settings are v1-familiar and tempting)
   — flag-day gate protects: wave 1 first, then parity.
+
+
+## Execution summary (2026-09-05)
+
+Four steps landed as planned. Four commits on `master` + the
+flag-day cutover. No plan amendments.
+
+1. **Foundation** (commit): design system
+   (`sweave-web/src/lib/theme/{tokens,switcher,index}.ts` -- 5 v1
+   presets as RGB-tuple CSS variables + custom-color override +
+   localStorage-persisted switcher), shell (Sidebar + Topbar +
+   Layout + NotificationContainer + ThemeApplier), typed v2 API
+   client (`api/client.ts` -- no `any`), WSProvider with reconnect
+   + topic dispatch (StrictMode-safe per the React StrictMode
+   gotcha in AGENTS.md), Tailwind tokens bridged to the design
+   system (popover/ring/input added), Vite dev proxy to :8100.
+   21 vitest unit tests. v1-era pages + Header + stray
+   `test_minimal_map.tsx` retired (all targeted v1 endpoints or
+   were leftover scaffolding). The v1 SPA was starting to
+   block the wave-1 plan; deleting them unblocked tsc.
+
+2. **Chat (input funnel)** (commit): pure-function reducer
+   (`pages/chat/reducer.ts` -- delta + messageAdded + turnBoundary
+   events, the M1.8 streaming invariant as a single testable
+   function), MessageList with ref + textContent patch (no React
+   re-render per chat.delta), SessionPicker (closes the M1.9
+   funnel leak -- session lifecycle in-shell), Composer with
+   auto-grow textarea + serial-turn lock per session. 10 more
+   vitest tests (31 total).
+
+3. **Output funnel** (commit): tree builder
+   (`pages/children/tree.ts` -- root + depth + orphan promotion;
+   siblings sort by created_at; findEscalatingNodes flatten),
+   LiveTree (depth-indent rows, status pills, PromoteButton on
+   every review record, AnswerInline on every needs_attention
+   record, EscalationLane at the top), DetailView modal
+   (composed prompt + tool timeline + tokens + status timeline
+   from `GET /api/delegations/{id}/detail`). 9 more vitest tests
+   (40 total).
+
+4. **Flag-day cutover** (commit): backend serves
+   `sweave-web/dist` (the SPA catch-all + `/assets` + `/favicon.svg`;
+   `SWEAVE_UI_VANILLA=1` env var forces the v1 fallback for
+   debugging). v1 vanilla UI assets (sweave/web/static/) +
+   v1 UI tests (test_full.py, test_sidebar_nav.js,
+   test_promote_ui.js) + v1-era debug/verify/check scripts
+   retired (git history preserves). Playwright e2e suite at
+   `sweave-web/e2e/` (CI gate; local pytest gate uses
+   `playwright test --list` to pin suite registration). The
+   `run.py --check` script updated to test the new SPA: 13/13
+   (SPA + favicon + /assets + 10 API endpoints).
+
+**One architecture decision that landed in step 1** (no plan
+amendment; the plan called for "test-first" + "kill all `any`"
+and the decisions followed naturally):
+* Tokens are RGB tuples (`"255 255 255"`) not hex strings --
+  the static `globals.css` already uses the tuple form
+  (`rgb(var(--color-background))`); the runtime writes the
+  same shape. A hex format would have required rewriting the
+  static CSS to the modern syntax or building a hex->tuple
+  converter; the tuple form kept the change to one file.
+* The `dist/` directory is already gitignored (the
+  pre-existing root `dist/` rule covers `sweave-web/dist/`).
+  No new gitignore entry needed.
+
+**No new third-party libraries** were adopted. The R4 stack
+was already in the project from the v1-era scaffold (Vite +
+React 18 + TS + Tailwind + Zustand + React Query + axios +
+lucide-react + clsx + tailwind-merge). New devDeps only:
+`vitest` (the unit test runner), `jsdom` (the test environment),
+`@tanstack/react-query-devtools` (was imported but missing),
+`@playwright/test` (e2e), `playwright` (e2e binary).
+
+**Final gates**:
+* vitest: 40/40 (21 design + 10 chat + 9 tree).
+* tsc --noEmit: clean.
+* npm run build: clean (308KB JS / 18KB CSS at step 3 final).
+* Playwright e2e suite registered (2 tests, CI gate).
+* Python orchestrator: 4 step files / 14 tests. Full suite:
+  447/447 pytest (was 447 at M1.9 step 5; +5 from the four
+  step orchestrators). 13/13 run.py --check.
+
+**Funnel-leak close-out** (the M1.9 self-hosting scene's
+friction list):
+* session lifecycle in-shell (SessionPicker)
+* delegation tree inspection (Children live tree)
+* promote inline (PromoteButton on every review row)
+* ask_human answer inline (AnswerInline on every
+  needs_attention row + EscalationLane at the top)
+All four leaks closed; the chat thread is now the only
+surface the user needs for any of these operations.
+
+**Wave 2 backlog** (Step 5's deliverable): Memory tab, Agents
+workbench (the R4-workbench vision from the M1.2 era), Settings
+panes (models/routing/memory/catalog picker -- old UI_PLAN
+items). Follows the same protocol as M1.9's dogfood handoff:
+user daily-drives wave 1 on real work; friction list becomes
+wave 2 / R4.1 input.

@@ -206,7 +206,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | `/ws` realtime | ✅ | `webspaces` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
 | OpenCode spawn path | ✅ | M1.0 + M1.3 + M1.4+M1.5 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly; **M1.4+M1.5 step 1** promotes `ModelRef` + `model_ref_to_wire` into `harness/base.py` (the contract type) and `Message` gains `model: ModelRef \| None` (per-message beats spawn-time) |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
-| Web UI v1 | ✅ | 40/40; welcome-mode gating fixed; see test_sidebar_nav.js |
+| Web UI (sweave-web, R4 wave 1) | ✅ | R4 step 4 (2026-09-05) — Vite + React 18 + TS + Tailwind + Zustand + React Query. Wave 1: design system (5 v1 presets + custom-color override, localStorage-persisted), chat with streaming (chat.delta + message.added events; M1.8 no-rerender invariant carried through to React), session picker + composer (closing the M1.9 funnel leak), children live tree (WS-pulsed, depth-indented, escalation lane at the top, promote + answer inline), delegation detail view (composed prompt + tool timeline + tokens + status timeline). Backend serves `sweave-web/dist` (the SPA catch-all + `/assets` + `/favicon.svg`); `SWEAVE_UI_VANILLA=1` forces the v1 fallback. Vitest unit suite (40 tests) + Playwright e2e suite (`sweave-web/e2e/`). v1 vanilla UI retired (git history preserves). |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
@@ -527,17 +527,27 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   register in harness_registry; per-agent `harness:` field already in AgentSpec.
 - Cross-vendor review then = reviewer on a different harness than implementer.
 
-### R4 — Web UI rebuild: sweave-web (re-planned 2026-09-05, pulled forward)
+### R4 — Web UI rebuild: sweave-web (re-planned 2026-09-05, done 2026-09-05)
 Rulings: stack = sweave-web's (Vite + React 18 + TS + Tailwind + Zustand + React
 Query); existing page code rewritten (pre-M1.x, v1 endpoints); wave 1 = daily-driver
 core + theming from day one; **flag-day cutover** (no coexistence); AGENTS ground
 rule amended (build allowed, dist served not committed). Full plan: `docs/R4_PLAN.md`.
-Wave 1: design system + theming tokens, chat with streaming, children live tree +
-escalation lane + promote, delegation detail view (tool timeline, tokens/cost),
-cutover + Playwright test migration. Wave 2 backlog: Memory, Agents workbench,
-Settings + model catalog picker (old UI_PLAN items). Funnel-leak list (M1.9) is the
-wave-1 spec. Gate: self-hosting dogfood on wave 1 (real task through the UI; friction
-list -> wave 2 / R4.1).
+Wave 1 (done): design system (5 v1 presets + custom-color override,
+localStorage-persisted), chat with streaming (chat.delta + message.added
+events, the M1.8 no-rerender invariant carried through to React via a
+ref + textContent patch), session picker + composer (closing the M1.9
+funnel leak), children live tree (WS-pulsed, depth = tree indent, status
+pills, promote + answer inline buttons, escalation lane at the top),
+delegation detail view (composed prompt + tool timeline + tokens +
+status timeline). 4 steps landed as 4 commits on `master`. v1 vanilla
+UI + v1 UI tests (test_full.py / test_sidebar_nav.js / test_promote_ui.js)
+retired. Playwright e2e suite in `sweave-web/e2e/` (CI gate; local
+pytest gate uses `playwright test --list` to pin suite registration).
+Wave 2 backlog: Memory tab, Agents workbench (the R4-workbench vision from
+the M1.2 era), Settings panes (models/routing/memory/catalog picker -- old
+UI_PLAN items). Funnel-leak list (M1.9) is the wave-1 spec; all leaks closed
+by step 4 (session picker, promote inline, answer inline). Gate: self-hosting
+dogfood on wave 1 (real task through the UI; friction list -> wave 2 / R4.1).
 
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.

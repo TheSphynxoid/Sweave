@@ -12,7 +12,7 @@ FastAPI backend, vanilla-JS no-build SPA, OpenCode as first harness. Windows-fir
   honor it when working on Sweave too.
 - The repo had **zero commits** until 2026-08-29. Commit early, small, descriptive.
   Never amend a pushed commit.
-- No build step for the web UI: no npm/bundler in `sweave/web/static/`. Vanilla ES6 only.
+- No build step for the web UI: no npm/bundler in `sweave/web/static/` (the v1 vanilla UI; retired 2026-09-05). The current UI is `sweave-web/` (Vite + React 18 + TS + Tailwind + Zustand + React Query); the build output `sweave-web/dist` is served by the backend's SPA catch-all. Run `cd sweave-web && npm run build` after UI changes; the dist/ artefact is NOT committed (gitignored).
 - Python style: ruff line-length 100, pydantic v2, `from __future__ import annotations`.
 - New dependency? Check DESIGN.md §8 policy first: small, maintained, permissive license;
    no framework that owns the agent loop. Record every adoption in §8.
@@ -127,7 +127,7 @@ amendments.
 | Path | What |
 |---|---|
 | `sweave/web/server.py` | FastAPI app, 40+ routes, SPA serving |
-| `sweave/web/static/{index.html,style.css,js/app.js}` | entire UI; app.js = one IIFE |
+| `sweave-web/src/` | The new wave-1 UI (R4 step 4). Vite + React 18 + TS + Tailwind + Zustand + React Query. Pages: Chat, Children, NotFound. Components: Sidebar, Topbar, ThemeSwitcher, ThemeApplier, Layout, NotificationContainer. Context: AppProvider, WSProvider. Lib: theme (tokens, switcher). Build output `sweave-web/dist/` is served by the backend. |
 | `sweave/tools/__init__.py` | DelegateTaskTool (task→worktree→spawn), RouteTaskTool, MemoryTool |
 | `sweave/harness/{base,opencode,detect}.py` | AgentSpec/AgentProcess protocol; OpenCode impl |
 | `sweave/workspace/manager.py` | git worktrees `.worktrees/{task_id}/{agent}` + PR |
@@ -305,15 +305,25 @@ amendments.
     If you add a new test that mocks the opencode v2 wire, include the
     terminal flag from the start or your test will hit the "no terminal
     flag set" error path.
+19. **React StrictMode + WS connections in dev** (R4 step 1). The
+    WSProvider (`sweave-web/src/context/WSProvider.tsx`) holds the
+    WebSocket in a ref + opens it from a ``useEffect`` that returns a
+    cleanup. StrictMode double-invokes the effect in dev; the cleanup
+    re-runs, the connect re-runs, the new socket replaces the old. The
+    provider is idempotent: a single ref holds the connection; the
+    cleanup only closes when the provider actually unmounts. If you
+    add a new global-side-effect provider (e.g. an EventSource or a
+    long-poll), follow the same pattern: ref + idempotent connect +
+    cleanup that closes on real unmount, not on StrictMode's
+    double-invoke.
 
 ## Running & testing
 ```bash
 python start_server.py 8100 127.0.0.1   # from repo root; logs web.log / web_err.log
 python stop_server.py                   # ditto
-python run.py --check                   # 13 endpoint tests
-python test_full.py                     # 40 UI checks
-node test_sidebar_nav.js                # needs: npm i playwright-core (temp dir), Edge headless
-powershell -File run_sidebar_regression.ps1   # full nav regression, restores server state
+python run.py --check                   # 13 endpoint tests (SPA mounted from sweave-web/dist)
+cd sweave-web && npm test                # vitest unit suite (40+ tests; design + chat + tree)
+cd sweave-web && npm run test:e2e        # Playwright e2e (CI gate; needs chromium binary)
 ```
 UI regression pattern: headless Edge via `playwright-core` (`channel: 'msedge'`), assert
 `offsetParent` visibility (not just classList), capture console + pageerror. Write the
