@@ -138,7 +138,10 @@ amendments.
 | `sweave/projects.py` + `sweave/api/projects.py` | Project/Session/ChildSession model + endpoints |
 | `sweave/config/` | pydantic schemas, ConfigManager (hot reload) |
 | `sweave/memory/backends.py` | hindsight embedded/docker/cloud |
-| `sweave/agents/*/config.yaml` | Omnigent-spec agent defs (loader planned R0 — currently DEAD) |
+| `sweave/runtime/` | delegation store (schema-versioned), JobRunner, SpecialistRuntime (sessions, per-turn prompts), ServeRunner (per-specialist serve), specialist store, escalation store, trace logs |
+| `sweave/chat/loop.py` | ChatLoop: chat-turn delegations, transcript composition (M1.7), synthesis, streaming coalescer |
+| `sweave/mcp/` | MCP server exposing `defer` + `list_specialists` + `ask_human` to the orchestrator's opencode session |
+| `sweave/agents/*/config.yaml` | Omnigent-spec seed agents — LIVE via `sweave/agents/loader.py` (M0); FALLBACK_PROMPTS in tools/ for gaps |
 
 ## Gotchas — read before touching an area
 Full text lives in **`docs/GOTCHAS.md`**, grouped by branch. When a trigger fires,
