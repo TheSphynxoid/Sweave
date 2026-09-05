@@ -87,6 +87,30 @@ Wire-shape regression test (mandatory):
 Est. ~0.3 sessions. This fix is a prerequisite for R4.1 review (chat must work
 to evaluate the shell).
 
+**R4.0 — done 2026-09-05** (3 commits, ~0.3 session). Three commits:
+
+1. `R4.0 step 1` — `_build_process` seeds `session_id=""` (no fabrication);
+   `_ensure_session` writes `process._session_id` in all three paths
+   (create / 404-recreate / reuse); `_send_message` asserts the resolved
+   id starts with `ses_` before posting. Removed dead
+   `_persist_session_id` helper.
+2. `R4.0 step 2` — wire-shape mock tightened: `POST /session/{id}/message`
+   rejects non-`ses_`/non-issued ids with 500; `GET /session/{id}` returns
+   404 for unknown ids (matches the real serve). Mock id format changed
+   from `ses-mock-{name}` to `ses_mock_{name}` (v2-faithful `ses_` prefix).
+3. `R4.0 step 3` — wire-shape regression test (`tests/test_r4_0_wire_shape.py`,
+   5 tests) covering: chat turn posts to resolved `ses_*` (never the
+   `chat-{hex}` placeholder); second turn reuses; 404-recreate rebinds;
+   the chat-hex prefix NEVER appears on the wire; `_send_message` refuses
+   non-`ses_` process ids. Mock plumbed with `_StubStreamResponse.text`
+   (for the harness's `HTTPStatusError` catch) and seeds
+   `process._session_id` with `ses_mock_{name}` at construction.
+
+**Tests**: 452/452 pytest (was 447; +5 from the wire-shape file), 13/13
+`run.py --check`, 40 vitest. The regression test was confirmed to fail
+(4/5) when the `_ensure_session` propagation was temporarily reverted
+— a real regression test for the original bug. R4.1 is now unblocked.
+
 ## Continuation protocol (per sub-milestone)
 Planning round (state → consistency → discuss → confirm → detail `R4_X_PLAN.md`)
 → execution session (steps + gates + commits named `R4.X step N`) → planning

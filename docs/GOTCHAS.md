@@ -128,3 +128,35 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    closes when the provider actually unmounts. Any new global-side-effect provider
    (EventSource, long-poll) follows the same pattern: ref + idempotent connect +
    cleanup that closes on real unmount, not on StrictMode's double-invoke.
+
+## Opencode harness & wire protocol
+
+1. **The mock must match the real v2 wire** (R4.0, 2026-09-05). The
+   `SWEAVE_MOCK_OPENCODE=1` mock in `sweave/harness/opencode.py::_spawn_mock`
+   must faithfully emulate the real opencode v2 HTTP API:
+   - `POST /session` returns `{id: "ses_..."}` (the v2 wire format).
+   - `POST /session/{id}/message` returns 200 only when `id` starts
+     with `ses_` AND equals the id `POST /session` issued; otherwise
+     404 (matches the real serve's unknown-session behaviour).
+   - `GET /session/{id}` returns 200 for the issued id; 404 otherwise.
+   - Mock id format: `ses_mock_{name}` (underscore; v2-faithful), not
+     `ses-mock-{name}` (hyphen; pre-R4.0). The runtime's `_send_message`
+     asserts `process._session_id.startswith("ses_")` before posting —
+     any mock that emits a non-`ses_` id silently masks bugs.
+   - `_StubStreamResponse` must expose `.text` (the harness reads it in
+     the `HTTPStatusError` catch path: `e.response.text`).
+2. **Two sources of truth for one id is a bug** (R4.0). The runtime
+   owns TWO ids for the same opencode session: the external binding
+   (`Session.orchestrator_session_id` or `Specialist.session_id`) and
+   `process._session_id`. Both must be the same value at the moment
+   `_send_message` runs, or the wire gets a placeholder
+   (`chat-{hex}` / empty string / stale value) and the real serve
+   returns 500. `_ensure_session` writes both in all three paths
+   (create / 404-recreate / reuse); `_send_message` refuses to post
+   when they disagree. Pin this in tests — see
+   `tests/test_r4_0_wire_shape.py`.
+3. **`SWEAVE_MOCK_OPENCODE=1` test fixtures must use the `ses_`
+   prefix**. Pre-R4.0 fixtures used `sid-*`, `chat-*`, or other
+   arbitrary ids; the runtime's `ses_` assertion now rejects those.
+   When porting a test to the mock, change the fixture id to
+   `ses_whatever` and the wire-shape mock will pass.

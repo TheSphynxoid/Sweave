@@ -549,14 +549,43 @@ UI_PLAN items). Funnel-leak list (M1.9) is the wave-1 spec; all leaks closed
 by step 4 (session picker, promote inline, answer inline). Gate: self-hosting
 dogfood on wave 1 (real task through the UI; friction list -> R4.1).
 
-### R4.1 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
+### R4.0 — chat session-id hotfix (done 2026-09-05)
+
+Three commits (one step). The chat turn was posting to
+`/session/chat-{delegation_id}/message` (an internal id the
+opencode serve doesn't recognise) and 500'ing. Root cause:
+`SpecialistRuntime._ensure_session` updated the external binding
+(`Session.orchestrator_session_id`) but never propagated the
+resolved id into `process._session_id`. Fix: `_build_process`
+seeds `session_id=""` (no fabrication); `_ensure_session` writes
+`process._session_id` in all three paths (create / 404-recreate /
+reuse); `_send_message` asserts the resolved id starts with `ses_`
+before posting. Wire-shape mock tightened to match the real serve
+(rejects non-`ses_` ids with 500; unknown ids with 404); 5 new
+wire-shape regression tests in `tests/test_r4_0_wire_shape.py`
+(confirmed to fail 4/5 when the propagation was reverted — a real
+regression test). **452/452 pytest** (was 447; +5), 13/13
+`run.py --check`. Plan of record: `docs/R4_PLAN.md`. R4.1 is now
+unblocked.
+
+### R4.1 — UX foundation: navigation tree, theme system, scaffold-first shell (planned 2026-09-05)
+
+Per `docs/R4_1_PLAN.md`. Project → session tree navigation (project
+switcher + session list per project), theme system to the external
+bar (tokens, presets, dark default), app shell redesign, **scaffold-
+first**: every v1 surface (chat, children, detail, memory, agents,
+settings) ships as a designed stub before features fill it. Est.
+~1 session. Predecessor R4.0 is now done.
+
+### R4.4 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
 
 Three panes (Memory → Agents workbench → Settings), sequenced by
 the dogfood handoff: the user drives wave 1 for ~3 sessions; the
 friction list becomes the wave-2 / R4.2 input. The pre-dogfood
-strawman is in `docs/R4_1_PLAN.md`; the dogfood re-cuts it. R4.1
-ships behind a wave-1 gate (the chat thread is the primary
-surface; the three new panes are read-mostly). R2 skills
+strawman is in `docs/R4_4_PLAN.md` (the old R4.1 strawman
+renamed 2026-09-05 per the R4 hub restructure); the dogfood re-
+cuts it. R4.4 ships behind a wave-1 gate (the chat thread is the
+primary surface; the three new panes are read-mostly). R2 skills
 interleave on demand (per R4 plan §5).
 
 ### R5 — Packaging

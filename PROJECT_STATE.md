@@ -39,7 +39,8 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-05)
-- **447/447** in `pytest tests/` (source of truth for logic tests; +5 since M1.9)
+- **452/452** in `pytest tests/` (source of truth for logic tests; +5 from
+  the R4.0 wire-shape regression file)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
 - **40** vitest unit tests in `sweave-web/` (design + chat reducer + tree)
 - **2** Playwright e2e tests in `sweave-web/e2e/` (CI gate)
@@ -452,18 +453,46 @@
      rule amended (UI is sweave-web/, dist served not committed);
      DESIGN §4 + §6 R4 row + §3 stack + plan; PROJECT_STATE
      this entry.
-  447/447 pytest (was 447 at M1.9 step 5; +5 from the four step
-  orchestrator files). 13/13 `run.py --check`. v1 vanilla UI
-  retired.
-- ▶ **R4.1 wave 2 spec** — Memory tab + Agents workbench (the
+447/447 pytest (was 447 at M1.9 step 5; +5 from the four step
+   orchestrator files). 13/13 `run.py --check`. v1 vanilla UI
+   retired.
+- ✅ **R4.0 hotfix — chat session-id resolution** — done 2026-09-05
+  per `docs/R4_PLAN.md`. The chat turn path was posting to
+  `/session/chat-{delegation_id}/message` (an internal id the
+  opencode serve doesn't recognise) and 500'ing. Root cause:
+  `SpecialistRuntime._ensure_session` updated the external
+  binding (`Session.orchestrator_session_id`) but never propagated
+  the resolved id into `process._session_id`; the wire kept the
+  placeholder `_build_process` seeded. Three commits (one step):
+  `_build_process` seeds `session_id=""` (no fabrication);
+  `_ensure_session` writes `process._session_id` in all three
+  paths (create / 404-recreate / reuse); `_send_message` asserts
+  the resolved id starts with `ses_` before posting; the dead
+  `_persist_session_id` helper is removed. Wire-shape mock
+  tightened to match the real serve (rejects non-`ses_` ids /
+  unknown ids on the wire with 500 / 404; mock id format
+  `ses_mock_{name}`). 5 new wire-shape tests in
+  `tests/test_r4_0_wire_shape.py` (confirmed to fail 4/5 when
+  the propagation was temporarily reverted — a real regression
+  test). **452/452 pytest** (was 447; +5), 13/13 `run.py --check`,
+  40 vitest. R4.1 is now unblocked.
+- ▶ **R4.1 UX foundation** (per `docs/R4_1_PLAN.md`, rewritten
+  2026-09-05): project → session tree navigation (project switcher
+  + session list per project), theme system to the external bar
+  (tokens, presets, dark default), app shell redesign, **scaffold-
+  first**: every v1 surface (chat, children, detail, memory,
+  agents, settings) ships as a designed stub before features
+  fill it. Est. ~1 session. Predecessor R4.0 is now done.
+- ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).
   Three panes, sequenced (Memory → Agents workbench →
   Settings) by the dogfood handoff. The pre-dogfood strawman
-  is in `docs/R4_1_PLAN.md`; the dogfood re-cuts it. Same
-  protocol as M1.9's dogfood handoff: user daily-drives wave 1
-  on real work; the friction list becomes R4.1 / R4.2 input.
-  R2 skills interleave on demand (per R4 plan §5).
+  is in `docs/R4_4_PLAN.md` (the old R4.1 strawman renamed
+  2026-09-05 per the hub restructure); the dogfood re-cuts it.
+  Same protocol as M1.9's dogfood handoff: user daily-drives
+  wave 1 on real work; the friction list becomes R4.4 / R4.2
+  input. R2 skills interleave on demand (per R4 plan §5).
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29
