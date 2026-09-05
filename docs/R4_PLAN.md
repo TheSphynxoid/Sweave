@@ -54,6 +54,39 @@ harness accepts any id string.
 | **R4.4** | Memory pane, Agents workbench, Settings + model catalog (the drafted wave-2 spec, re-cut post-R4.1) | ~1.5 | rename `docs/R4_1_PLAN.md` → `docs/R4_4_PLAN.md` |
 | **R4.5** | Dogfood gate: user daily-drives on real work; funnel-leak round 2; friction list → next round (R2 interleave decision happens here) | gate | — |
 
+## R4.0 — Hotfix detail (chat session-id class bug)
+
+Root cause (verified by code read, specialist_runtime.py):
+- _build_process() constructs the OpenCodeProcess with
+  `session_id=delegation.delegation_id` (for chat turns: `chat-{hex}`) as a
+  'placeholder; _ensure_session replaces' — but **`_ensure_session` never touches
+  `process.session_id`**: its three paths (create / recreate-on-404 / reuse) only
+  update the external binding (`_set(new_id)` = Session.orchestrator_session_id or
+  specialist.session_id). The process then POSTs to the placeholder id ->
+  opencode 500. Two sources of truth for one id; the wire got the fake one.
+- The same placeholder pattern applies to non-orchestrator specialists.
+
+Fix (all paths):
+1. `_build_process` passes `session_id=None` (no fabricated id — contract:
+  the id is resolved by `_ensure_session`, never invented).
+2. `_ensure_session` sets `process.session_id` (and marks the process
+  session-created) in ALL three paths: create -> new ses_*; recreate-404 ->
+  new ses_*; reuse -> the stored id. The binding and the process can never
+  diverge again.
+3. `send()` asserts the resolved id is a real serve-issued id (starts with
+  `ses_` per the v2 API); a placeholder-shaped id raises instead of hitting
+  the wire.
+
+Wire-shape regression test (mandatory):
+- Mock emulates the real contract: `POST /session` returns `{id: 'ses_...'}`;
+  message POST to a non-`ses_` id returns 500 like the real serve.
+- Assertions: chat turn posts to the stored/bound id; second turn reuses the
+  same id; a stale binding (404) recreates and rebinds; the internal
+  delegation id NEVER appears in any wire URL.
+
+Est. ~0.3 sessions. This fix is a prerequisite for R4.1 review (chat must work
+to evaluate the shell).
+
 ## Continuation protocol (per sub-milestone)
 Planning round (state → consistency → discuss → confirm → detail `R4_X_PLAN.md`)
 → execution session (steps + gates + commits named `R4.X step N`) → planning
