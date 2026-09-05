@@ -455,13 +455,15 @@
   447/447 pytest (was 447 at M1.9 step 5; +5 from the four step
   orchestrator files). 13/13 `run.py --check`. v1 vanilla UI
   retired.
-- ▶ **R4 wave 2 spec** — Memory tab + Agents workbench (the
+- ▶ **R4.1 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).
-  Follows the same protocol as M1.9's dogfood handoff: user
-  daily-drives wave 1 on real work; the friction list becomes
-  wave 2 / R4.1 input. R2 skills interleave on demand (per
-  R4 plan §5).
+  Three panes, sequenced (Memory → Agents workbench →
+  Settings) by the dogfood handoff. The pre-dogfood strawman
+  is in `docs/R4_1_PLAN.md`; the dogfood re-cuts it. Same
+  protocol as M1.9's dogfood handoff: user daily-drives wave 1
+  on real work; the friction list becomes R4.1 / R4.2 input.
+  R2 skills interleave on demand (per R4 plan §5).
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

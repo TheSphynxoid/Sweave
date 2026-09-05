@@ -547,7 +547,17 @@ Wave 2 backlog: Memory tab, Agents workbench (the R4-workbench vision from
 the M1.2 era), Settings panes (models/routing/memory/catalog picker -- old
 UI_PLAN items). Funnel-leak list (M1.9) is the wave-1 spec; all leaks closed
 by step 4 (session picker, promote inline, answer inline). Gate: self-hosting
-dogfood on wave 1 (real task through the UI; friction list -> wave 2 / R4.1).
+dogfood on wave 1 (real task through the UI; friction list -> R4.1).
+
+### R4.1 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
+
+Three panes (Memory → Agents workbench → Settings), sequenced by
+the dogfood handoff: the user drives wave 1 for ~3 sessions; the
+friction list becomes the wave-2 / R4.2 input. The pre-dogfood
+strawman is in `docs/R4_1_PLAN.md`; the dogfood re-cuts it. R4.1
+ships behind a wave-1 gate (the chat thread is the primary
+surface; the three new panes are read-mostly). R2 skills
+interleave on demand (per R4 plan §5).
 
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
