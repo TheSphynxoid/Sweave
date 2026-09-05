@@ -174,6 +174,14 @@ class SpecialistRuntime:
                 await process.send(_system_message(specialist.system_prompt))
             # Persist the session id (best-effort)
             _set(new_id)
+            # R4.0: the wire MUST see the resolved id. The binding
+            # (``_set``) and the process are two sources of truth;
+            # they diverge unless we propagate the id into the
+            # process here. Without this, the runtime's _send_message
+            # POSTs to the placeholder id _build_process seeded
+            # (``chat-{hex}`` for chat turns) and the opencode serve
+            # returns 500 because the id is unknown.
+            process._session_id = new_id  # type: ignore[attr-defined]
             trace.append("session_created", {"session_id": new_id})
             await self._emit(
                 "session_created",
@@ -206,6 +214,10 @@ class SpecialistRuntime:
             if specialist.system_prompt:
                 await process.send(_system_message(specialist.system_prompt))
             _set(new_id)
+            # R4.0: same propagation as the create path -- a recreate
+            # must also rebind the process's session_id so the wire
+            # gets the freshly-issued id, not the stale ``stored`` id.
+            process._session_id = new_id  # type: ignore[attr-defined]
             trace.append("session_recreated", {"session_id": new_id})
             await self._emit(
                 "session_resumed",  # the user-facing event name; this is a re-resume
@@ -218,6 +230,13 @@ class SpecialistRuntime:
             return process
 
         # Reuse
+        # R4.0: propagate the stored id into the process. The
+        # previous code updated the binding only; the process kept
+        # the placeholder id and the wire hit ``/session/{chat-hex}/
+        # message`` -> 500. The binding and the process are
+        # intentionally the same id -- that single invariant is the
+        # whole point of the R4.0 fix.
+        process._session_id = stored  # type: ignore[attr-defined]
         trace.append("session_resumed", {"session_id": stored})
         await self._emit(
             "session_resumed",
@@ -227,19 +246,6 @@ class SpecialistRuntime:
             },
         )
         return process
-
-    async def _persist_session_id(
-        self, specialist: Specialist, session_id: str
-    ) -> None:
-        """Best-effort: write the session id back to the Specialist record.
-
-        The runtime doesn't import AppState directly (avoids cycles);
-        callers (step 3 / JobRunner integration) can pass a callback.
-        Default: mutate the in-memory record (which is enough for the
-        same ServeRunner to reuse the id; cross-runner reuse happens
-        via the store's persistence layer in step 3+).
-        """
-        specialist.session_id = session_id
 
     async def run(
         self,
@@ -414,11 +420,17 @@ class SpecialistRuntime:
                 f"base_url={runner.base_url}"
             )
         # Reuse the serve's port + URL; we don't manage the subprocess here.
+        # R4.0: pass session_id=None -- the contract is that the id is
+        # resolved by _ensure_session (or the harness's own _ensure_session
+        # for system-prompt sends), never invented. The previous
+        # ``session_id=delegation.delegation_id`` placeholder leaked the
+        # internal chat-{hex} id onto the wire when _ensure_session updated
+        # only the external binding (see docs/R4_PLAN.md R4.0).
         return OpenCodeProcess(
             spec=spec,
             process=runner.process,
             base_url=runner.base_url,
-            session_id=delegation.delegation_id,  # placeholder; _ensure_session replaces
+            session_id="",  # resolved by _ensure_session (create / recreate / reuse)
         )
 
     async def _send_message(
@@ -451,9 +463,25 @@ class SpecialistRuntime:
         # which doesn't carry our structured ModelRef. The runtime owns
         # the model field (M1.3 K-revised); the harness just delivers.
         text_parts: list[str] = []
+        # R4.0: defensive assertion -- _ensure_session always sets
+        # process._session_id to a serve-issued ``ses_*`` id before we
+        # get here. If we ever reach the wire with a placeholder
+        # (``chat-{hex}`` / delegation id / empty), it is a bug; the
+        # opencode serve will return 500 (unknown session) and the
+        # error surfaces to the user as a generic 500. Catching it
+        # here turns a silent regression into a stack trace at the
+        # source.
+        wire_session_id = getattr(process, "_session_id", "") or ""
+        if not wire_session_id.startswith("ses_"):
+            raise RuntimeError(
+                f"SpecialistRuntime: refusing to send -- process._session_id "
+                f"is {wire_session_id!r}; expected a serve-issued id "
+                f"starting with 'ses_'. _ensure_session must resolve "
+                f"the id before _send_message is called."
+            )
         try:
             async with process._client.stream(
-                "POST", f"/session/{process._session_id}/message", json=body
+                "POST", f"/session/{wire_session_id}/message", json=body
             ) as resp:
                 resp.raise_for_status()
                 async for chunk in resp.aiter_text():
