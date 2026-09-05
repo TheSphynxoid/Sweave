@@ -41,10 +41,11 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
+SCHEMA_VERSION_V4 = 4  # M1.7 records (chat kind)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -124,6 +125,13 @@ class Delegation:
     # turn. Additive; from_dict falls back to "task" when the field
     # is absent (pre-M1.7 v3 records).
     kind: str = "task"  # "task" | "chat"
+    # M1.9 step 3: ask_human escalation lane. True iff an
+    # ``ask_human`` call is currently pending for this delegation.
+    # The Children tab surfaces needs-attention delegations in the
+    # top lane with an inline answer button. The EscalationStore is
+    # the source of truth for the question / options / answer; this
+    # flag is the cheap read-side indicator the renderer branches on.
+    needs_attention: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -147,8 +155,10 @@ class Delegation:
             d = _migrate_v1_to_v2(d)
         if schema_version < SCHEMA_VERSION_V3:
             d = _migrate_v2_to_v3(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V4:
             d = _migrate_v3_to_v4(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v4_to_v5(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh v4 record
@@ -208,6 +218,17 @@ def _migrate_v3_to_v4(d: dict[str, Any]) -> dict[str, Any]:
     the chat loop (kind="chat"). So we default to "task".
     """
     d.setdefault("kind", "task")
+    return d
+
+
+def _migrate_v4_to_v5(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v4 record forward to the v5 field set (M1.9 step 3).
+
+    v4 records predate ``ask_human``: they have no
+    ``needs_attention`` flag. Pre-M1.9 delegations were by definition
+    never escalated -- the field defaults to False.
+    """
+    d.setdefault("needs_attention", False)
     return d
 
 

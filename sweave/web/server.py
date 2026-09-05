@@ -232,6 +232,20 @@ async def lifespan(app: FastAPI):
 
     state.delegation_manager = DelegationManager.from_config(config_manager.get())
 
+    # M1.9 step 3: build the EscalationStore for ask_human. The store
+    # bridges its callable emitter to the WSEventBus so escalation events
+    # fan out to every connected WS client (the Children tab patches
+    # the escalation lane in place). Persistence is per-delegation
+    # JSON files under ``~/.sweave/escalations/`` (the same dir the
+    # store module computes from its base_dir arg).
+    from sweave.runtime.escalation import EscalationStore
+
+    state.escalation_store = EscalationStore(
+        base_dir=Path.home() / ".sweave",
+        timeout_seconds=15 * 60,
+        event_bus=state.event_bus,
+    )
+
     app.state.app_state = state
     logger.info(
         "AppState built; %d dynamic agents loaded; JobRunner ready "

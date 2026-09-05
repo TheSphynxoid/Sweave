@@ -110,6 +110,11 @@ class AppState:
     # queue, the Session-bound orchestrator binding (M1.7 step 1),
     # the synthesis loop (step 3), and the transcript system (step 4).
     chat_loop: Any = None  # type: ignore[assignment]
+    # M1.9 step 3: EscalationStore (ask_human escalations). Built
+    # once in lifespan; the routers read it via ``state.escalation_store``
+    # when handling ``POST /api/delegations/{id}/escalate`` and
+    # ``POST /api/delegations/{id}/answer``. ``None`` before lifespan.
+    escalation_store: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":

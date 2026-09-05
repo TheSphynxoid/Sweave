@@ -237,6 +237,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     M1.6 step 2 added the v3 fields (depth/chain_root_id/coordination_tokens) for
     the deferral chain (orchestrator -> specialist -> defer -> ...).
     M1.7 step 2 added the v4 field (kind) for the chat vs task distinction.
+    M1.9 step 3 added the v5 field (needs_attention) for the ask_human
+    escalation lane in the Children tab.
     """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -248,6 +250,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         "depth", "chain_root_id", "coordination_tokens",
         # M1.7 step 2 addition
         "kind",
+        # M1.9 step 3 addition
+        "needs_attention",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -256,11 +260,12 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v4():
-    """M1.7 step 2: the current schema is v4 (kind was added on top of v3)."""
+def test_schema_version_is_v5():
+    """M1.9 step 3: the current schema is v5 (needs_attention was added on
+    top of v4)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 4
+    assert SCHEMA_VERSION == 5
 
 
 def test_v2_to_v3_migration_fills_defaults():

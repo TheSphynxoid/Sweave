@@ -76,6 +76,24 @@ class SubAgentRunFinish(BaseModel):
     output_summary: str = ""
 
 
+class EscalateRequest(BaseModel):
+    """M1.9 step 3: ask_human escalation request.
+
+    * ``question`` -- the question for the human (required).
+    * ``options`` -- optional list of choices; when present the UI
+      renders buttons, when absent a free-form text input.
+    """
+
+    question: str
+    options: list[str] | None = None
+
+
+class AnswerRequest(BaseModel):
+    """M1.9 step 3: the human's answer to an open escalation."""
+
+    response: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -325,6 +343,116 @@ async def wait_for_delegation(
 # (``docs/M1_4_5_PLAN.md`` step 3) extends the "human merges" rule
 # to lifecycle promotion: the only path to ``done`` is this endpoint.
 # ---------------------------------------------------------------------------
+
+
+@router.post("/api/delegations/{delegation_id}/escalate")
+async def escalate_delegation(
+    delegation_id: str,
+    request: "EscalateRequest",
+    state: AppState = Depends(get_state),
+):
+    """M1.9 step 3: ``ask_human`` escalation.
+
+    Persists the escalation (one JSON file per asking delegation;
+    survives server restarts), publishes
+    ``specialist.escalated`` on the WS bus, and flips the asking
+    delegation's ``needs_attention`` flag. The Children tab patches
+    the escalation lane in place (M1.8 no-rerender invariant).
+
+    The MCP server calls this endpoint via the ``ask_human`` tool;
+    the timeout default is 15 minutes, configurable. The answer
+    path is ``POST /api/delegations/{id}/answer {response}``.
+    """
+    if state.escalation_store is None:
+        raise HTTPException(503, "EscalationStore not initialised")
+    # Verify the asking delegation exists in the global per-project
+    # registry (the MCP stdio server is stateless, so a stale id
+    # could mean the delegation was deleted or never existed).
+    found = False
+    for store in _all_stores(state):
+        if store.get(delegation_id) is not None:
+            found = True
+            break
+    if not found:
+        raise HTTPException(
+            404, f"Delegation '{delegation_id}' not found"
+        )
+    rec = await state.escalation_store.create(
+        delegation_id=delegation_id,
+        question=request.question,
+        options=request.options,
+    )
+    # Flip the asking delegation's needs_attention flag. Best-effort:
+    # the persistence is the EscalationStore; the flag is the
+    # renderer's cheap read-side indicator.
+    for store in _all_stores(state):
+        d = store.get(delegation_id)
+        if d is not None:
+            try:
+                await store.update(delegation_id, needs_attention=True)
+            except Exception:
+                pass
+            break
+    return {
+        "escalation_id": rec["escalation_id"],
+        "delegation_id": rec["delegation_id"],
+        "deadline_at": rec["deadline_at"],
+        "status": rec["status"],
+    }
+
+
+@router.post("/api/delegations/{delegation_id}/answer")
+async def answer_delegation(
+    delegation_id: str,
+    request: "AnswerRequest",
+    state: AppState = Depends(get_state),
+):
+    """M1.9 step 3: record the human's answer to an escalation.
+
+    Returns the updated escalation (status=answered, response=<text>).
+    When the timeout elapses without an answer, the escalation is
+    auto-resolved with status=timeout and "no answer received" is
+    recorded as the response -- the asking session proceeds with
+    best judgment rather than hanging.
+    """
+    if state.escalation_store is None:
+        raise HTTPException(503, "EscalationStore not initialised")
+    rec = await state.escalation_store.answer(
+        delegation_id=delegation_id, response=request.response
+    )
+    if rec is None:
+        raise HTTPException(
+            404, f"escalation for delegation '{delegation_id}' not found"
+        )
+    # Clear the asking delegation's needs_attention flag.
+    for store in _all_stores(state):
+        if store.get(delegation_id) is not None:
+            try:
+                await store.update(delegation_id, needs_attention=False)
+            except Exception:
+                pass
+            break
+    return rec
+
+
+@router.get("/api/delegations/{delegation_id}/escalation")
+async def get_escalation(
+    delegation_id: str,
+    state: AppState = Depends(get_state),
+):
+    """M1.9 step 3: read the current escalation for a delegation.
+
+    Returns the full escalation record (question, options, status,
+    response, deadline) or 404 if no escalation exists.
+    """
+    if state.escalation_store is None:
+        raise HTTPException(503, "EscalationStore not initialised")
+    rec = await state.escalation_store.get(delegation_id=delegation_id)
+    if rec is None:
+        raise HTTPException(
+            404, f"escalation for delegation '{delegation_id}' not found"
+        )
+    return rec
 
 
 @router.post("/api/delegations/{delegation_id}/promote")

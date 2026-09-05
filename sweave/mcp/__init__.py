@@ -147,6 +147,22 @@ def _result_text(text: str, *, is_error: bool = False) -> types.CallToolResult:
     )
 
 
+def _token_from_env_or_file() -> str:
+    """Return the MCP token, preferring the env var when set.
+
+    The ``SWEAVE_MCP_TOKEN`` env var is the seam the opencode-spawned
+    subprocess uses (M1.6 step 3): the per-project opencode.json's
+    ``environment.SWEAVE_MCP_TOKEN`` block reads the token from the
+    app's lifespan export, so the subprocess doesn't need to read the
+    home file directly. The home-file path stays the fallback for
+    when the env var isn't set.
+    """
+    env_token = os.environ.get("SWEAVE_MCP_TOKEN")
+    if env_token:
+        return env_token
+    return get_or_create_token()
+
+
 # Tool: list_specialists
 # Returns the resolved specialist pool as plain text: one per line
 # "<name> -- <description>". No secrets, no system prompts, no model
@@ -162,7 +178,7 @@ async def _list_specialists(ctx: Any, params: types.CallToolRequest) -> types.Ca
     """
     from sweave.web.state import AppState  # noqa: F401  (import-time cycle guard)
 
-    token = get_or_create_token()
+    token = _token_from_env_or_file()
     try:
         data = await _http_post(
             "/api/mcp/specialists",
@@ -238,7 +254,7 @@ async def _defer(ctx: Any, params: types.CallToolRequest) -> types.CallToolResul
     if reason:
         body["manifest"] = {"intent": reason, "source": "orchestrator_defer"}
 
-    token = get_or_create_token()
+    token = _token_from_env_or_file()
     try:
         data = await _http_post("/api/v2/tasks", body, token)
     except Exception as e:
@@ -252,6 +268,96 @@ async def _defer(ctx: Any, params: types.CallToolRequest) -> types.CallToolResul
         return _result_text(f"error: {msg}", is_error=True)
     delegation_id = data.get("delegation_id", "?")
     return _result_text(f"queued: {delegation_id} (target={target})", is_error=False)
+
+
+# Tool: ask_human (M1.9 step 3)
+#
+# Sibling of defer. A specialist that needs a human decision (auth
+# strategy, schema migration, anything a LLM can't safely pick on
+# its own) escalates instead of guessing. The escalation is
+# persisted; the WS bus publishes ``specialist.escalated``; the
+# Children tab surfaces it in the needs-attention lane. The
+# ``escalation_id`` is returned as the tool result so the asking
+# session (if it chooses to wait) can correlate the eventual answer.
+#
+# The asking delegation is flagged ``needs_attention=True``; the
+# answer path (``POST /api/delegations/{id}/answer``) clears the
+# flag. If the timeout elapses without an answer, the escalation
+# is auto-resolved with status=timeout and "no answer received"
+# is recorded as the response -- the LLM proceeds with best
+# judgment rather than hanging.
+#
+# Why explicit caller_delegation_id: the opencode MCP context
+# doesn't carry an opaque sweave-delegation id (same reason as
+# ``defer``). The orchestrator's tool-call provides it.
+
+
+async def _ask_human(ctx: Any, params: types.CallToolRequest) -> types.CallToolResult:
+    """Escalate a question to the human. Returns an escalation_id.
+
+    Arguments (per the orchestrator's tool contract):
+    * ``question`` (str, required): the question for the human.
+    * ``options`` (list[str], optional): when present, the UI shows
+      multiple-choice buttons; when absent, a free-form text input.
+    * ``caller_delegation_id`` (str, required): the asking
+      delegation's id; the escalation is keyed to it.
+
+    Returns plain text:
+    * success: ``"escalated: <escalation_id> (deadline=<iso>)"`` so
+      the asking session can correlate the eventual answer.
+    * rejection: ``"rejected: <reason>"`` with ``isError=True`` for
+      missing fields / network failures.
+    """
+    req_params = params.params
+    args = (req_params.arguments or {}) if req_params is not None else {}
+    question = args.get("question")
+    options = args.get("options")
+    caller_delegation_id = args.get("caller_delegation_id")
+
+    if not isinstance(question, str) or not question.strip():
+        return _result_text(
+            "rejected: 'question' is required and must be a non-empty string",
+            is_error=True,
+        )
+    if options is not None and (
+        not isinstance(options, list)
+        or not all(isinstance(o, str) for o in options)
+    ):
+        return _result_text(
+            "rejected: 'options' must be a list of strings when provided",
+            is_error=True,
+        )
+    if not isinstance(caller_delegation_id, str) or not caller_delegation_id.strip():
+        return _result_text(
+            "rejected: 'caller_delegation_id' is required "
+            "(the asking delegation's id; set it in the tool call)",
+            is_error=True,
+        )
+
+    body: dict[str, Any] = {
+        "question": question,
+        "caller_delegation_id": caller_delegation_id,
+    }
+    if options:
+        body["options"] = list(options)
+
+    token = _token_from_env_or_file()
+    try:
+        data = await _http_post(
+            f"/api/delegations/{caller_delegation_id}/escalate",
+            body,
+            token,
+        )
+    except Exception as e:
+        msg = str(e)
+        return _result_text(f"error: {msg}", is_error=True)
+
+    escalation_id = data.get("escalation_id", "?")
+    deadline_at = data.get("deadline_at", "?")
+    return _result_text(
+        f"escalated: {escalation_id} (deadline={deadline_at})",
+        is_error=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +408,41 @@ async def _list_tools_handler(ctx: Any, params: types.ListToolsRequest) -> types
                     "required": ["target", "task", "caller_delegation_id"],
                 },
             ),
+            types.Tool(
+                name="ask_human",
+                description=(
+                    "Escalate a question to the human (auth strategy, "
+                    "schema migration, anything a LLM shouldn't pick on its "
+                    "own). Returns an escalation_id; the Children tab surfaces "
+                    "the question in the needs-attention lane. The answer "
+                    "path is POST /api/delegations/{id}/answer; the timeout "
+                    "(default 15 min) returns 'no answer received' so the "
+                    "LLM proceeds with best judgment."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The question for the human.",
+                        },
+                        "options": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional list of choices. When present, the UI "
+                                "renders them as buttons; when absent, a free-"
+                                "form text input."
+                            ),
+                        },
+                        "caller_delegation_id": {
+                            "type": "string",
+                            "description": "The asking delegation's id; the escalation is keyed to it.",
+                        },
+                    },
+                    "required": ["question", "caller_delegation_id"],
+                },
+            ),
         ]
     )
 
@@ -313,6 +454,8 @@ async def _call_tool_dispatcher(ctx: Any, params: types.CallToolRequest) -> type
         return await _defer(ctx, params)
     if params.name == "list_specialists":
         return await _list_specialists(ctx, params)
+    if params.name == "ask_human":
+        return await _ask_human(ctx, params)
     return _result_text(f"unknown tool: {params.name}", is_error=True)
 
 

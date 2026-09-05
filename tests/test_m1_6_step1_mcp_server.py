@@ -341,8 +341,11 @@ async def test_tools_list_exposes_both_tools():
     result = await _list_tools_handler(
         ctx=None, params=ListToolsRequest(method="tools/list")
     )
+    # M1.9 step 3 added ask_human alongside the original two tools.
+    # The expected set is the superset; future additions (R4+)
+    # update this test, not the other way around.
     names = {t.name for t in result.tools}
-    assert names == {"list_specialists", "defer"}
+    assert names == {"list_specialists", "defer", "ask_human"}
     # The defer schema requires caller_delegation_id (orchestrator
     # contract; nothing about the chain link is optional).
     defer_tool = next(t for t in result.tools if t.name == "defer")
@@ -427,7 +430,8 @@ async def test_mcp_server_stdio_round_trip(monkeypatch, tmp_path: Path):
                     assert init.server_info.name == "sweave-mcp"
                     tools = await session.list_tools()
                     tool_names = {t.name for t in tools.tools}
-                    assert tool_names == {"list_specialists", "defer"}
+                    # M1.9 step 3 added ask_human.
+                    assert tool_names == {"list_specialists", "defer", "ask_human"}
         finally:
             PathCls.home = orig_home  # type: ignore[assignment]
     finally:
