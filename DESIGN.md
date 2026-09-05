@@ -24,6 +24,23 @@ Non-negotiable principles (inherited from Polly):
 5. **Harness-agnostic specs.** Agents are declared in YAML; the executor is swappable
    (OpenCode today; Claude Code / Codex on the roadmap).
 
+### The two funnels (user articulation, 2026-09-04)
+
+Sweave is two funnels between the human and the machinery:
+1. **Input funnel** (M1.7): one chat thread. The human states intent; the
+   orchestrator decomposes and defers. No opencode instances, no session
+   switching visible to the user.
+2. **Output funnel** (M1.6 gating + M1.7 synthesis + M1.9 surfacing + sk_human):
+   one promotion queue carrying results, reviews, questions, and escalations to
+   the human. Specialists get an sk_human tool (MCP, sibling of defer) so a
+   stuck or uncertain agent escalates instead of failing silently.
+
+The funnels multiplex *decisions*, not *work*: with coordination unified, N
+specialists run in parallel at zero extra human attention (the view zooms across
+the delegation tree instead of the human alt-tabbing across instances). The human
+is not stripped from the loop — they are a peer at every decision point (merges,
+promotions, escalations); what disappears is the courier work.
+
 Distinct from Polly (our additions): project-scoped everything (agents, memory, sessions
 per folder on disk), hierarchical memory banks, model routing by role + rules, Windows-first.
 
@@ -414,6 +431,10 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   detail view reading its JSONL trace, promote buttons on every review record, chat
   streaming polish. Purpose: warm-up + **the user daily-drives Sweave on real work**;
   the friction list becomes the requirements input for R4 (UI v2). Gate: the user
+  Funnel piece: **sk_human(question, options?) MCP tool** (sibling of defer,
+  same server/auth) — a specialist question becomes an escalation event
+  (specialist.escalated WS + delegation flagged needs-attention) with an answer
+  path back to the asking session; surfacing UX in R4, function in M1.9.
   Hardening items folded in: permission.task: deny on specialist agents (closes the
   native-subagent bypass around DelegationManager); git-mutation bash denied for the
   orchestrator; **per-project worktree_base override** (project record field, default =
