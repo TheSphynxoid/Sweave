@@ -409,7 +409,8 @@
      bullet flipped to done; PROJECT_STATE M1.8 done summary;
      docs/M1_8_PLAN.md status flipped from `planned` to `done`
      with an execution summary section.
-- ▶ **Next**: M1.9 Dogfood pass (per DESIGN.md §6 R1)
+- ▶ **M1 CLOSED** (all 10 milestones). Next: dogfood window (user daily-drives on real work; the funnel-leak list in docs/M1_9_PLAN.md is R4 re-planning input), then R4 (re-planned from friction) with R2 skills interleaving on demand.
+- **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`
