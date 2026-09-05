@@ -107,7 +107,7 @@ async def test_send_message_model_overrides_spec_model(tmp_path: Path):
             return httpx.Response(
                 200,
                 content=json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 }),
             )
@@ -149,7 +149,7 @@ async def test_send_message_model_bare_falls_back_to_unqualified_name(
             return httpx.Response(
                 200,
                 content=json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 }),
             )
@@ -184,7 +184,7 @@ async def test_send_no_message_model_uses_spec_model(tmp_path: Path):
             return httpx.Response(
                 200,
                 content=json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 }),
             )
@@ -321,7 +321,7 @@ async def test_runtime_records_model_used_on_trace(tmp_path: Path):
                     if request.url.path == "/session" and request.method == "POST":
                         return _httpx.Response(200, content=_json.dumps({"id": "sid-trace"}))
                     return _httpx.Response(200, content=_json.dumps({
-                        "info": {"role": "assistant"},
+                        "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                         "parts": [{"type": "text", "text": "ok"}],
                     }))
                 super().__init__(handler)
@@ -404,7 +404,7 @@ async def test_runtime_records_model_used_source_specialist(tmp_path: Path):
                     if request.url.path == "/session" and request.method == "POST":
                         return _httpx.Response(200, content=_json.dumps({"id": "sid-spec"}))
                     return _httpx.Response(200, content=_json.dumps({
-                        "info": {"role": "assistant"},
+                        "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                         "parts": [{"type": "text", "text": "ok"}],
                     }))
                 super().__init__(handler)

@@ -80,6 +80,85 @@ def _split_json_stream(chunk: str) -> list[str]:
     return pieces
 
 
+def _format_info_error(err_obj: Any) -> str:
+    """Render an ``info.error`` payload as a one-line trace string.
+
+    The v2 wire shape is ``{"name": "ProviderAuthError", "data": {...}}``
+    (see opencode.sdk types.gen.ts). We render ``"<name>: <message>"``
+    when ``data.message`` is present; otherwise the raw repr.
+    """
+    try:
+        name = err_obj.get("name", "Error")
+        data = err_obj.get("data") or {}
+        msg = data.get("message")
+        if msg:
+            return f"{name}: {msg}"
+        return f"{name}: {err_obj}"
+    except Exception:
+        return str(err_obj)
+
+
+def _emit_tool_trace(
+    trace: Any,
+    snapshots: dict[str, dict[str, Any]],
+    first_state: dict[str, str],
+    part: dict[str, Any],
+) -> None:
+    """Emit one trace event for a tool part, keyed by callID.
+
+    Lifecycle mapping:
+    * ``state.status == "pending"`` -> ``tool.started``
+    * ``state.status == "running"`` -> ``tool.updated``
+    * ``state.status == "completed"`` -> ``tool.completed``
+    * ``state.status == "error"`` -> ``tool.failed``
+
+    ``snapshots[callID]`` keeps the latest state seen; ``first_state``
+    records the first non-empty status so a single part can be the
+    *only* transition we see (e.g. only ``error`` -> ``tool.failed``,
+    with no prior pending/running state).
+    """
+    call_id = part.get("callID")
+    tool = part.get("tool")
+    if not call_id:
+        return
+    state = part.get("state") or {}
+    status = state.get("status")
+    payload: dict[str, Any] = {
+        "callID": call_id,
+        "tool": tool,
+        "state": state,
+    }
+    # First-time-only started event: emit on pending, or on the first
+    # non-pending status if we never saw a pending part (the v2 wire
+    # is permissive about whether pending is emitted).
+    if call_id not in first_state:
+        first_state[call_id] = status or "pending"
+        if status == "pending":
+            trace.append("tool.started", payload)
+            snapshots[call_id] = dict(payload)
+            return
+        # No pending seen: emit started on the first part so the
+        # trace still has the begin marker, then fall through to
+        # the per-status event below.
+        started_payload = {
+            "callID": call_id,
+            "tool": tool,
+            "state": {"status": "pending", "input": state.get("input", {})},
+        }
+        trace.append("tool.started", started_payload)
+    # Per-status event
+    if status == "running":
+        trace.append("tool.updated", payload)
+    elif status == "completed":
+        trace.append("tool.completed", payload)
+    elif status == "error":
+        trace.append("tool.failed", payload)
+    # Other statuses (e.g. "pending" after first_state was set) are
+    # intentionally not re-emitted; the started event already covers
+    # the begin marker.
+    snapshots[call_id] = dict(payload)
+
+
 class OpenCodeProcess:
     """Handle to a running OpenCode server process.
 
@@ -142,7 +221,11 @@ class OpenCodeProcess:
         return self._session_id
 
     async def send(
-        self, message: Message, on_chunk: "Callable[[str], Any] | None" = None
+        self,
+        message: Message,
+        on_chunk: "Callable[[str], Any] | None" = None,
+        trace: Any = None,
+        trace_reasoning: bool = False,
     ) -> AgentResult:
         """Send a message via v2 ``POST /session/{id}/message``.
 
@@ -166,9 +249,44 @@ class OpenCodeProcess:
         change in behaviour. R3 adapters (claude, codex) implement
         the same optional contract: per-chunk when the engine
         supports it, single-shot fallback otherwise.
+
+        **M1.9 parts-model capture.** ``trace`` (a
+        :class:`~sweave.runtime.trace_log.TraceLog`) receives structured
+        events for every part we see:
+
+        * ``tool.started | tool.updated | tool.completed | tool.failed``
+          keyed by callID (snapshot-replace semantics on the same
+          callID; the trace gets each transition).
+        * ``step.boundary`` for each ``step-start`` / ``step-finish``
+          pair, carrying ``reason``, ``cost``, ``tokens{input, output,
+          reasoning, cache.{read, write}}``.
+        * ``reasoning`` (only when ``trace_reasoning=True``) for each
+          reasoning part.
+        * ``tokens_used`` once at the terminal, aggregating all
+          ``step-finish`` token deltas across this turn -- the audit
+          anchor that backs the detail view's per-turn tokens/cost.
+
+        **M1.9 terminal detection.** A turn is complete when
+        ``info.time.completed`` is set AND ``info.finish`` is present
+        on the same response object. The pre-M1.9 heuristic
+        ("info.role == 'assistant' AND parts present") fired on every
+        chunk and could prematurely declare success on a delta that
+        happened to include a parts list. The new check pins terminal
+        to the assistant-message-completion signal the v2 wire emits.
+
+        The dead ``part.get("type") == "error"`` branch was removed;
+        errors are read from ``info.error`` (the canonical v2 surface).
         """
         try:
             session_id = await self._ensure_session()
+            # M1.9: instance attribute overrides the per-call kwarg so
+            # callers that set ``proc.trace_reasoning = True`` once at
+            # construction get the flag without re-passing it on every
+            # send. (The kwarg is still useful for one-off overrides.)
+            trace_reasoning = bool(
+                trace_reasoning
+                or getattr(self, "trace_reasoning", False)
+            )
 
             # v2 body shape: parts[].text, optional agent, optional model.
             body: dict[str, Any] = {
@@ -197,6 +315,22 @@ class OpenCodeProcess:
             text_parts: list[str] = []
             saw_terminal = False
             last_error: str | None = None
+            info_error: str | None = None
+            # M1.9: tool snapshot by callID. The v2 wire emits
+            # multiple parts per tool (pending -> running ->
+            # completed | error) carrying the same callID; we keep
+            # the latest state for the trace so the per-turn audit
+            # trail shows the full lifecycle rather than the final
+            # snapshot alone.
+            tool_snapshots: dict[str, dict[str, Any]] = {}
+            tool_first_state: dict[str, str] = {}
+            # Per-turn token aggregator (step-finish parts).
+            total_input = 0
+            total_output = 0
+            total_reasoning = 0
+            total_cache_read = 0
+            total_cache_write = 0
+            total_cost = 0.0
             try:
                 async with self._client.stream(
                     "POST",
@@ -216,19 +350,27 @@ class OpenCodeProcess:
                                 continue
                             if not isinstance(obj, dict):
                                 continue
+                            info = obj.get("info") if isinstance(obj, dict) else None
+                            info = info if isinstance(info, dict) else {}
+                            # M1.9: terminal detection.
+                            # info.time.completed set AND info.finish
+                            # present -> the assistant message is
+                            # done. info.error -> terminal + the
+                            # error string we surface verbatim.
+                            time_obj = info.get("time") or {}
+                            finish = info.get("finish")
+                            if time_obj.get("completed") is not None and finish:
+                                saw_terminal = True
+                                err_obj = info.get("error")
+                                if err_obj:
+                                    info_error = _format_info_error(err_obj)
                             for part in obj.get("parts", []) or []:
                                 if not isinstance(part, dict):
                                     continue
-                                if part.get("type") == "text":
+                                ptype = part.get("type")
+                                if ptype == "text":
                                     text = part.get("text", "")
                                     text_parts.append(text)
-                                    # M1.8: forward the incremental
-                                    # text part to the caller's
-                                    # callback. Same semantics as the
-                                    # runtime's _send_message: the
-                                    # harness only delivers parts;
-                                    # coalescing + WS publish is the
-                                    # caller's job.
                                     if on_chunk is not None:
                                         try:
                                             result = on_chunk(text)
@@ -239,17 +381,76 @@ class OpenCodeProcess:
                                                 "OpenCodeProcess.send: on_chunk "
                                                 "callback raised: %s", cb_err
                                             )
-                                elif part.get("type") == "error":
-                                    last_error = (
-                                        part.get("text")
-                                        or part.get("error")
-                                        or str(part)
-                                    )
-                            if (
-                                obj.get("info", {}).get("role") == "assistant"
-                                and obj.get("parts")
-                            ):
-                                saw_terminal = True
+                                elif ptype == "reasoning":
+                                    if trace_reasoning and trace is not None:
+                                        try:
+                                            trace.append(
+                                                "reasoning",
+                                                {"text": part.get("text", "")},
+                                            )
+                                        except Exception as trace_err:  # noqa: BLE001
+                                            logger.warning(
+                                                "OpenCodeProcess.send: trace "
+                                                "append failed: %s", trace_err
+                                            )
+                                elif ptype == "tool":
+                                    # M1.9: parts-model trace capture.
+                                    # Emit one trace event per state
+                                    # transition; the callID is the
+                                    # stable key.
+                                    if trace is not None:
+                                        try:
+                                            _emit_tool_trace(
+                                                trace,
+                                                tool_snapshots,
+                                                tool_first_state,
+                                                part,
+                                            )
+                                        except Exception as trace_err:  # noqa: BLE001
+                                            logger.warning(
+                                                "OpenCodeProcess.send: tool "
+                                                "trace failed: %s", trace_err
+                                            )
+                                elif ptype == "step-finish":
+                                    if trace is not None:
+                                        try:
+                                            tokens = part.get("tokens") or {}
+                                            cache = tokens.get("cache") or {}
+                                            payload = {
+                                                "reason": part.get("reason"),
+                                                "cost": part.get("cost", 0),
+                                                "tokens": {
+                                                    "input": tokens.get("input", 0),
+                                                    "output": tokens.get("output", 0),
+                                                    "reasoning": tokens.get("reasoning", 0),
+                                                    "cache": {
+                                                        "read": cache.get("read", 0),
+                                                        "write": cache.get("write", 0),
+                                                    },
+                                                },
+                                            }
+                                            trace.append("step.boundary", payload)
+                                        except Exception as trace_err:  # noqa: BLE001
+                                            logger.warning(
+                                                "OpenCodeProcess.send: step "
+                                                "trace failed: %s", trace_err
+                                            )
+                                    # Per-turn aggregation
+                                    tokens = part.get("tokens") or {}
+                                    cache = tokens.get("cache") or {}
+                                    total_input += int(tokens.get("input", 0) or 0)
+                                    total_output += int(tokens.get("output", 0) or 0)
+                                    total_reasoning += int(tokens.get("reasoning", 0) or 0)
+                                    total_cache_read += int(cache.get("read", 0) or 0)
+                                    total_cache_write += int(cache.get("write", 0) or 0)
+                                    total_cost += float(part.get("cost", 0) or 0)
+                                # step-start is currently just a
+                                # marker; no per-event payload beyond
+                                # the eventual step-finish's tokens.
+                                # Note: there is no ``part.type ==
+                                # "error"`` in the v2 wire; errors are
+                                # surfaced via info.error (the
+                                # pre-M1.9 dead branch was removed).
             except httpx.HTTPStatusError as e:
                 upstream = e.response.text.strip() if e.response is not None else ""
                 return AgentResult(
@@ -262,16 +463,53 @@ class OpenCodeProcess:
                     ),
                 )
 
+            # M1.9: per-turn tokens_used audit anchor. Always
+            # emit one at the end of the turn (terminal-bound).
+            if trace is not None:
+                try:
+                    trace.append(
+                        "tokens_used",
+                        {
+                            "input": total_input,
+                            "output": total_output,
+                            "reasoning": total_reasoning,
+                            "cache_read": total_cache_read,
+                            "cache_write": total_cache_write,
+                            "cost": total_cost,
+                        },
+                    )
+                except Exception as trace_err:  # noqa: BLE001
+                    logger.warning(
+                        "OpenCodeProcess.send: tokens_used trace failed: %s",
+                        trace_err,
+                    )
+
             output = "".join(text_parts).strip()
+            if info_error:
+                # info.error is the canonical v2 error surface. When
+                # present (regardless of partial text), the assistant
+                # message failed -- the partial text is included for
+                # the audit trail but the result is failed.
+                return AgentResult(success=False, output=output, error=info_error)
             if last_error and not output:
                 return AgentResult(success=False, output="", error=last_error)
-            if not output and not saw_terminal:
+            if not saw_terminal:
+                # M1.9: the terminal signal (``info.time.completed`` AND
+                # ``info.finish``) is the wire's authoritative "this
+                # assistant message is done". Without it we don't know
+                # whether more parts are coming. The pre-M1.9 heuristic
+                # ("parts + role==assistant") fired on every chunk,
+                # including deltas; the new check pins terminal to the
+                # explicit completion flag. Whether we have partial
+                # output or no output at all, the safe call is
+                # "incomplete turn" rather than "the answer".
                 return AgentResult(
                     success=False,
                     output="",
                     error=(
-                        "opencode serve: empty response "
-                        "(provider unreachable or no model configured?)"
+                        "opencode serve: no terminal flag set "
+                        "(stream ended without info.time.completed + info.finish; "
+                        "mid-stream or empty response?)"
                     ),
                 )
             return AgentResult(success=True, output=output, metadata={})
@@ -474,8 +712,20 @@ captures the real failure.
                     except Exception:
                         prompt = ""
                     last_word = prompt.split()[-1] if prompt.split() else "ACK"
+                    # M1.9: the mock matches the real v2 wire: the
+                    # terminal signal (``info.time.completed`` +
+                    # ``info.finish``) is set on the assistant
+                    # message so the harness's terminal-detection fix
+                    # accepts it as a complete response. Pre-M1.9
+                    # tests relied on the "parts + role == assistant"
+                    # heuristic; the new terminal check is stricter
+                    # but more correct.
                     body = {
-                        "info": {"role": "assistant"},
+                        "info": {
+                            "role": "assistant",
+                            "time": {"created": 0, "completed": 1},
+                            "finish": "stop",
+                        },
                         "parts": [{
                             "type": "text",
                             "text": f"ACK from mock opencode for {spec.name}: {last_word}",

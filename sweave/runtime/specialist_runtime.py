@@ -489,9 +489,14 @@ class SpecialistRuntime:
                                             "SpecialistRuntime: on_chunk "
                                             "callback raised: %s", cb_err
                                         )
-                            elif isinstance(part, dict) and part.get("type") == "error":
-                                # Surface upstream error verbatim
-                                return f"[error: {part.get('text') or part.get('error') or str(part)}]"
+                            # M1.9: the dead ``type: "error"`` part
+                            # branch was removed. The v2 wire surfaces
+                            # errors via info.error (which the harness
+                            # reads and surfaces verbatim); there is no
+                            # ``type: "error"`` part type. The harness's
+                            # terminal detection also sees info.error
+                            # and routes through the explicit error
+                            # path.
         except Exception as e:
             import traceback as _tb
             return f"[error: {type(e).__name__}: {e}]\n{_tb.format_exc()}"

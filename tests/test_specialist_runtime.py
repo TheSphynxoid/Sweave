@@ -236,7 +236,7 @@ async def test_ensure_session_sends_system_prompt_on_create(tmp_path: Path):
                 return _session_id_response("sid-1")
             if request.method == "POST" and request.url.path.endswith("/message"):
                 return _stream_response(json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ack"}],
                 }))
             return httpx.Response(404)
@@ -317,7 +317,7 @@ async def test_run_emits_structured_model_with_k_revised(tmp_path: Path):
                 # the error; for a non-streaming call we POST and
                 # parse the response as a single JSON object).
                 return httpx.Response(200, json={
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "hello back"}],
                 })
             return httpx.Response(404)
@@ -420,7 +420,7 @@ async def test_run_legacy_bare_model_emits_no_structured_body(tmp_path: Path):
                 body = json.loads(request.content)
                 sent_to_message.append(body)
                 return httpx.Response(200, json={
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 })
             return httpx.Response(404)
@@ -505,7 +505,7 @@ async def test_run_with_fresh_creates_new_session_each_time(tmp_path: Path):
                 return _session_id_response(f"sid-{session_create_count}")
             if request.method == "POST" and request.url.path.endswith("/message"):
                 return httpx.Response(200, json={
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 })
             return httpx.Response(404)
@@ -595,7 +595,7 @@ async def test_concurrent_runs_for_same_key_serialise(tmp_path: Path):
             if (request.method, request.url.path) == ("POST", "/session"):
                 return _session_id_response("sid-q")
             return httpx.Response(200, json={
-                "info": {"role": "assistant"},
+                "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                 "parts": [{"type": "text", "text": "x"}],
             })
 
@@ -698,7 +698,7 @@ async def test_different_keys_run_in_parallel(tmp_path: Path):
             if (request.method, request.url.path) == ("POST", "/session"):
                 return _session_id_response("sid-p")
             return httpx.Response(200, json={
-                "info": {"role": "assistant"},
+                "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                 "parts": [{"type": "text", "text": "x"}],
             })
 

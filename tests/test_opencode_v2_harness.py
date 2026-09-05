@@ -47,7 +47,7 @@ def test_split_stream_two_objects():
 
 
 def test_split_stream_nested_object():
-    chunk = '{"info":{"role":"assistant"},"parts":[{"type":"text","text":"hi"}]}'
+    chunk = '{"info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},"parts":[{"type":"text","text":"hi"}]}'
     out = _split_json_stream(chunk)
     assert out == [chunk]
 
@@ -148,7 +148,7 @@ async def test_send_uses_v2_message_path_and_x_opencode_directory(tmp_path: Path
             # Simulate the v2 streaming response: a chunked JSON object
             # containing the assistant message + a text part.
             body = {
-                "info": {"role": "assistant"},
+                "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                 "parts": [{"type": "text", "text": "ACK"}],
             }
             return httpx.Response(
@@ -186,7 +186,7 @@ async def test_send_omits_model_when_spec_has_none(tmp_path: Path):
             return httpx.Response(
                 200,
                 content=json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 }),
             )
@@ -212,8 +212,8 @@ async def test_send_concatenates_multiple_text_parts(tmp_path: Path):
             # Two objects concatenated in the response body (the v2 stream
             # format when the chunks happen to arrive in one buffer).
             chunk = (
-                '{"info":{"role":"assistant"},"parts":[{"type":"text","text":"A"}]}'
-                '{"info":{"role":"assistant"},"parts":[{"type":"text","text":"CK"}]}'
+                '{"info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},"parts":[{"type":"text","text":"A"}]}'
+                '{"info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},"parts":[{"type":"text","text":"CK"}]}'
             )
             return httpx.Response(200, content=chunk)
         return httpx.Response(404)
@@ -244,19 +244,32 @@ async def test_send_returns_empty_response_error_when_stream_has_no_text(
 
 @pytest.mark.asyncio
 async def test_send_surfaces_upstream_error_part(tmp_path: Path):
-    """An AI_APICallError in a 'type: error' part should appear in result.error."""
+    """An AI_APICallError in ``info.error`` should appear in result.error.
+
+    M1.9 update: the v2 wire surfaces errors on ``info.error`` (per
+    opencode SDK types.gen.ts), NOT in a ``type: "error"`` part (the
+    pre-M1.9 wire). The old part-shaped error path is the dead branch
+    that the M1.9 plan removes; this test pins the canonical info.error
+    path instead.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/session":
             return httpx.Response(200, json={"id": "ses_x"})
         body = {
-            "info": {"role": "assistant"},
-            "parts": [
-                {
-                    "type": "error",
-                    "text": "AI_APICallError: Cannot connect to API: Unable to connect.",
-                }
-            ],
+            "info": {
+                "role": "assistant",
+                "time": {"created": 0, "completed": 1},
+                "finish": "stop",
+                "error": {
+                    "name": "ApiError",
+                    "data": {
+                        "message": "AI_APICallError: Cannot connect to API: Unable to connect.",
+                        "isRetryable": False,
+                    },
+                },
+            },
+            "parts": [{"type": "text", "text": "x"}],
         }
         return httpx.Response(200, content=json.dumps(body))
 
@@ -297,7 +310,7 @@ async def test_send_reuses_session_id_across_calls(tmp_path: Path):
             return httpx.Response(
                 200,
                 content=json.dumps({
-                    "info": {"role": "assistant"},
+                    "info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},
                     "parts": [{"type": "text", "text": "ok"}],
                 }),
             )
