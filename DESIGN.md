@@ -586,6 +586,16 @@ runtimes). Every adoption gets recorded here.
 - Model cost map: models.dev metadata (already planned via catalog API); litellm's
   registry as inspiration only
 
+License: **MIT** (verified via GitHub API 2026-09-04) - compatible with our
+Apache-2.0 AND with a future commercial/closed license (MIT is sublicensable).
+Reference clone: C:/Users/user/opencode-reference (shallow, read-only, outside
+the repo per the scratch-project convention). Mining priorities: server/sdk
+streaming event shapes (feeds M1.9 trace capture), session-ui interaction
+patterns (feeds the delegation detail view + R4), tui skim only (Go/BubbleTea -
+we chose CLI+Web). If code is ever lifted: preserve the MIT notice
+(THIRD_PARTY_NOTICES); patterns are free, components mostly violate our
+vanilla-JS no-build rule.
+
 ### Opencode platform notes (docs read 2026-09-04)
 | Capability | Relevance | Action |
 |---|---|---|
