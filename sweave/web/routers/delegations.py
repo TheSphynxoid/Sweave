@@ -312,6 +312,24 @@ async def get_delegation(
     raise HTTPException(404, f"Delegation '{delegation_id}' not found")
 
 
+@router.get("/api/delegations/{delegation_id}/detail")
+async def get_delegation_detail(
+    delegation_id: str, state: AppState = Depends(get_state)
+):
+    """M1.9 step 4: detail view (composed prompt + tool timeline +
+    tokens + status timeline).
+
+    The trace JSONL is the source of truth. A missing trace returns
+    a minimal record (id + empty sections) -- never a 500. The UI
+    detail view reads this endpoint and patches the sections in
+    place (M1.8 no-rerender invariant; the same shape the
+    ``sweave log`` CLI prints).
+    """
+    from sweave.web.detail_view import render_detail_view
+
+    return render_detail_view(delegation_id, trace_dir=state.traces_dir)
+
+
 # ---------------------------------------------------------------------------
 # Optional convenience: block-wait for a delegation to reach a terminal state.
 # Subject to the timeout in the query string (default 30s, max 600s).

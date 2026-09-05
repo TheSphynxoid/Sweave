@@ -523,3 +523,169 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# M1.9 step 4: visibility CLI commands (log / watch / tail).
+# Imported at the bottom so the @app.command decorators register
+# against the same ``app`` instance defined above. (Late import to
+# avoid a circular dep with the panel module's helpers.)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def log(delegation_id: str = typer.Argument(..., help="Delegation id to render")):
+    """Pretty-render a delegation's trace JSONL.
+
+    Sections:
+    * Composed prompt (memory/whats_new/synthesis/transcript_ref/user char counts).
+    * Tool timeline (callID-keyed, snapshot state per tool).
+    * Tokens / cost (aggregated across step-finish parts).
+    * Status timeline (queued -> running -> review | done | failed).
+    """
+    from sweave.web.detail_view import render_detail_view
+
+    trace_dir = Path.home() / ".sweave" / "traces"
+    detail = render_detail_view(delegation_id, trace_dir=trace_dir)
+    console.print(f"[bold]Delegation {detail['delegation_id']}[/bold]")
+    if detail["composed_prompt"]:
+        cp = detail["composed_prompt"]
+        console.print(
+            Panel(
+                f"memory: {cp['memory_chars']}\n"
+                f"whats_new: {cp['whats_new_chars']}\n"
+                f"synthesis: {cp['synthesis_chars']}\n"
+                f"transcript_ref: {cp['transcript_ref_chars']}\n"
+                f"user: {cp['user_chars']}",
+                title="Composed prompt",
+                border_style="cyan",
+            )
+        )
+    if detail["tool_timeline"]:
+        table = Table(title="Tool timeline")
+        table.add_column("callID", style="cyan")
+        table.add_column("tool", style="green")
+        table.add_column("status", style="yellow")
+        table.add_column("title", style="blue")
+        for t in detail["tool_timeline"]:
+            table.add_row(
+                t["callID"],
+                t.get("tool") or "",
+                t.get("status") or "",
+                t.get("title") or "",
+            )
+        console.print(table)
+    if detail["tokens"]:
+        t = detail["tokens"]
+        console.print(
+            Panel(
+                f"input: {t['input']}\n"
+                f"output: {t['output']}\n"
+                f"reasoning: {t['reasoning']}\n"
+                f"cost: {t['cost']}",
+                title="Tokens / cost",
+                border_style="magenta",
+            )
+        )
+    if detail["status_timeline"]:
+        console.print("[bold]Status timeline:[/bold]")
+        for c in detail["status_timeline"]:
+            console.print(f"  - {c['status']}")
+    if not any(
+        [
+            detail["composed_prompt"],
+            detail["tool_timeline"],
+            detail["tokens"],
+            detail["status_timeline"],
+        ]
+    ):
+        console.print(
+            f"[yellow]No trace for delegation {delegation_id}.[/yellow]"
+        )
+
+
+@app.command()
+def tail(delegation_id: str = typer.Argument(..., help="Delegation id to follow")):
+    """Follow a running delegation's trace JSONL.
+
+    Streams new lines as they're appended. Press Ctrl+C to stop.
+    """
+    import asyncio as _asyncio
+    from sweave.cli.tail import follow_trace
+
+    path = Path.home() / ".sweave" / "traces" / f"{delegation_id}.jsonl"
+    if not path.exists():
+        console.print(
+            f"[yellow]Trace file not found for {delegation_id}; "
+            f"waiting for it to appear at {path}.[/yellow]"
+        )
+
+    async def _run():
+        async for line in follow_trace(path, from_start=False):
+            console.print(line)
+
+    try:
+        _asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def watch():
+    """Watch the live delegation tree.
+
+    Polls ``GET /api/delegations`` on the running server (default
+    host/port from the MCP plumbing) and prints the tree of
+    delegations + statuses. Updates every second. Press Ctrl+C to stop.
+    """
+    import asyncio as _asyncio
+
+    async def _one_iteration() -> int:
+        """Poll once. Returns the number of delegations seen."""
+        import httpx as _httpx
+        from sweave.mcp import _sweave_base_url
+
+        base = _sweave_base_url()
+        try:
+            async with _httpx.AsyncClient(base_url=base, timeout=5.0) as client:
+                r = await client.get("/api/delegations")
+                if r.status_code >= 400:
+                    console.print(
+                        f"[red]Server returned {r.status_code} for /api/delegations[/red]"
+                    )
+                    return 0
+                data = r.json()
+                delegations = data.get("delegations") or []
+                if not delegations:
+                    console.print("[dim]No delegations yet.[/dim]")
+                    return 0
+                table = Table(title=f"Live tree ({len(delegations)} delegations)")
+                table.add_column("id", style="cyan")
+                table.add_column("agent", style="green")
+                table.add_column("status", style="yellow")
+                table.add_column("kind", style="magenta")
+                for d in delegations[:20]:
+                    table.add_row(
+                        d.get("delegation_id", "?"),
+                        d.get("agent", "?"),
+                        d.get("status", "?"),
+                        d.get("kind", "?"),
+                    )
+                console.print(table)
+                return len(delegations)
+        except _httpx.ConnectError:
+            console.print(
+                f"[yellow]No sweave server at {base}. Start the server with "
+                f"`python start_server.py` first.[/yellow]"
+            )
+            return 0
+
+    async def _loop():
+        while True:
+            await _one_iteration()
+            await _asyncio.sleep(1.0)
+
+    try:
+        _asyncio.run(_loop())
+    except KeyboardInterrupt:
+        pass
