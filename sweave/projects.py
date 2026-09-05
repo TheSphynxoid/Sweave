@@ -268,6 +268,14 @@ class Project:
     # Project-scoped agents (in addition to global)
     agents: list[dict[str, Any]] = field(default_factory=list)
 
+    # M1.9 step 2: per-project worktree base path. Overrides the
+    # global ``config.git.worktree_base`` for this project. ``None``
+    # means "use the global default" -- the legacy behaviour. The
+    # scratch-project convention: the dev repo is never its own
+    # live-gate target; a scratch project always sets
+    # ``worktree_base`` to a temp dir.
+    worktree_base: str | None = None
+
     def __post_init__(self):
         if not self.memory_bank:
             self.memory_bank = f"project-{self.name}"
@@ -284,6 +292,7 @@ class Project:
             "model_overrides": self.model_overrides,
             "routing_rules": self.routing_rules,
             "agents": self.agents,
+            "worktree_base": self.worktree_base,
         }
 
     @classmethod
@@ -299,6 +308,9 @@ class Project:
             model_overrides=data.get("model_overrides", {}),
             routing_rules=data.get("routing_rules", []),
             agents=data.get("agents", []),
+            # M1.9 step 2: legacy project files (pre-M1.9) have no
+            # ``worktree_base`` field -- the global default wins.
+            worktree_base=data.get("worktree_base"),
         )
         return project
 

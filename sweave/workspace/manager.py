@@ -23,12 +23,105 @@ class WorktreeInfo:
 
 class WorktreeManager:
     """Manages git worktrees for specialist agents."""
-    
+
     def __init__(self, base_path: str = ".worktrees", git_dir: str | None = None):
         self.base_path = Path(base_path).resolve()
         self.git_dir = Path(git_dir).resolve() if git_dir else Path.cwd()
         self.base_path.mkdir(parents=True, exist_ok=True)
-    
+
+    # ---- M1.9 step 2: alignment primitive --------------------
+
+    def _is_git_dirty(self, worktree_path: Path) -> bool:
+        """True iff ``worktree_path`` has uncommitted changes.
+
+        ``git status --porcelain`` is the cheap path: an empty output
+        means a clean tree. The M1.9 dirty-skip rule (per the
+        commit-authority map ruling 2026-09-04) is: never stash-dance
+        a working agent.
+        """
+        try:
+            result = self._run_git(
+                ["status", "--porcelain"], cwd=worktree_path
+            )
+            return bool(result.stdout.strip())
+        except subprocess.CalledProcessError:
+            return False
+        except Exception:
+            # Not a git repo (or git unavailable) -- treat as not-dirty
+            # so ``align`` can take the no-integration-branch path
+            # instead of erroring on a non-git directory.
+            return False
+
+    def align(
+        self,
+        worktree_path: Path,
+        *,
+        base_branch: str = "main",
+    ) -> str:
+        """M1.9 step 2: alignment primitive (R2's full protocol lands later).
+
+        Rebase / merge the worktree's branch onto the integration
+        branch's current state. The full protocol (drift budget,
+        conflict resolution, freshness checks for shared-context
+        files) is R2 scope; this step ships the primitive + the
+        dirty-skip rule.
+
+        Returns one of:
+        * ``"skipped_dirty"`` -- uncommitted changes; never stash-dance
+        * ``"no_integration_branch"`` -- the integration branch is
+          missing or the worktree is not a git repo; soft no-op
+        * ``"rebased"`` -- the rebase ran (whether or not it actually
+          moved the branch is unobserved)
+        * ``"noop"`` -- rebase is a no-op (already up to date)
+
+        Raises: nothing. Callers branch on the returned string; this
+        is the contract. ``align`` is intentionally non-raising so
+        it can be called from a sweep loop without exception plumbing.
+        """
+        try:
+            worktree_path = Path(worktree_path)
+            if not worktree_path.exists():
+                return "no_integration_branch"
+            # Dirty-skip rule: never stash-dance a working agent.
+            if self._is_git_dirty(worktree_path):
+                return "skipped_dirty"
+            # Verify the integration branch exists locally. (A
+            # worktree that was never pushed doesn't have a remote
+            # tracking branch; align on a missing branch is a no-op.)
+            try:
+                self._run_git(
+                    ["rev-parse", "--verify", f"refs/heads/{base_branch}"],
+                    cwd=worktree_path,
+                )
+            except subprocess.CalledProcessError:
+                return "no_integration_branch"
+            # Rebase. ``--autostash`` is intentionally NOT used -- the
+            # dirty-skip rule above guarantees we never have anything
+            # to autostash. If we get here dirty, something changed
+            # under us; the rebase will fail safely with a non-zero
+            # exit, which we report as ``skipped_dirty`` (conservative
+            # -- the agent's state is suspect).
+            try:
+                self._run_git(
+                    ["rebase", base_branch], cwd=worktree_path
+                )
+                return "rebased"
+            except subprocess.CalledProcessError:
+                # Abort the in-progress rebase so the agent's tree is
+                # left in a clean state. (Stashing-on-rebase-failure
+                # would violate the dirty-skip rule; we abort.)
+                try:
+                    self._run_git(
+                        ["rebase", "--abort"], cwd=worktree_path
+                    )
+                except subprocess.CalledProcessError:
+                    pass
+                return "skipped_dirty"
+        except Exception:
+            # Catch-all so the sweep loop never crashes on a bad
+            # worktree. The contract is the return string.
+            return "no_integration_branch"
+
     def create_worktree(self, task_id: str, agent_name: str) -> WorktreeInfo:
         """Create a new worktree for a task/agent combination."""
         branch_name = f"sweave/{task_id}/{agent_name}"

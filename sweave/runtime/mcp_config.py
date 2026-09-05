@@ -67,8 +67,21 @@ def _sweave_mcp_entry(token: str, env_token_var: str) -> dict[str, Any]:
     process uses the same Python interpreter that runs the sweave
     server (no PATH/venv drift). The ``cwd`` is implicitly the
     project root (opencode inherits from the serve's cwd).
+
+    M1.9 step 2 hardening: the orchestrator session config denies
+    native opencode subagent spawning (``task: deny``) and
+    git-mutation bash patterns (commit / merge / push). The deny
+    closes the bypass paths: a specialist's session can't spawn a
+    native sub-subagent (all deferral goes through MCP, with depth
+    / loop / budget enforcement), and the orchestrator never
+    commits to the user's checkout (that's the user's job).
     """
     import sys
+
+    # Local import to avoid pulling in the runtime's permission
+    # renderer at import time of this module (which the AppState
+    # lifespan does early).
+    from sweave.runtime.agent_permission import render_agent_permission_profile
 
     return {
         "type": "local",
@@ -78,6 +91,13 @@ def _sweave_mcp_entry(token: str, env_token_var: str) -> dict[str, Any]:
         },
         "enabled": True,
         "timeout": 30000,
+        # M1.9 step 2: per-agent permission block (orchestrator =
+        # task deny + git bash deny; specialists = task deny only).
+        # The orchestrator session is the one that consumes the
+        # ``mcp.sweave`` block; specialists don't see MCP at all
+        # (MCP is the orchestrator-only defer path). The deny is the
+        # safety net for both.
+        "permission": render_agent_permission_profile(is_orchestrator=True),
         # Marker: presence of this key means sweave wrote the block.
         # Re-runs are no-ops; user-edited blocks (no marker) are
         # left alone.
