@@ -527,13 +527,17 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   register in harness_registry; per-agent `harness:` field already in AgentSpec.
 - Cross-vendor review then = reviewer on a different harness than implementer.
 
-### R4 — Web UI v2 (folded from UI_PLAN.md)
-- Phase 1: statusline topbar (project + visible CWD), session dropdown w/ search,
-  Ctrl+K palette, `GET /api/models/catalog` (live harness models + models.dev cache).
-- Phase 2: model combobox grouped by provider with live/catalog badges.
-- Phase 3: agents workbench (two-pane, specialists grouped by scope with idle/running
-  status, inline model switch on idle specialists, ▶ Run → child, activity, pulse via /ws).
-- Regression harness: Playwright+Edge scripts (see test_sidebar_nav.js pattern).
+### R4 — Web UI rebuild: sweave-web (re-planned 2026-09-05, pulled forward)
+Rulings: stack = sweave-web's (Vite + React 18 + TS + Tailwind + Zustand + React
+Query); existing page code rewritten (pre-M1.x, v1 endpoints); wave 1 = daily-driver
+core + theming from day one; **flag-day cutover** (no coexistence); AGENTS ground
+rule amended (build allowed, dist served not committed). Full plan: `docs/R4_PLAN.md`.
+Wave 1: design system + theming tokens, chat with streaming, children live tree +
+escalation lane + promote, delegation detail view (tool timeline, tokens/cost),
+cutover + Playwright test migration. Wave 2 backlog: Memory, Agents workbench,
+Settings + model catalog picker (old UI_PLAN items). Funnel-leak list (M1.9) is the
+wave-1 spec. Gate: self-hosting dogfood on wave 1 (real task through the UI; friction
+list -> wave 2 / R4.1).
 
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
