@@ -35,6 +35,15 @@ foundation and quality passes).
   `session.created/deleted`, `active_session.changed`. The live tree needs them.
 - Backend: full v2 API otherwise. dist served, not committed.
 
+## Amendment (2026-09-06, user ruling — mid-execution)
+
+**Stack upgrade inserted as step 1c; UI direction locked for R4.2/R4.3.**
+R4.2/R4.3 adopt assistant-ui (runtime + thread primitives, MIT; official
+opencode adapter exists) + agent-elements-derived tool/escalation cards
+(MIT shadcn registry) — both require **React 19 + Tailwind v4**, so the
+upgrade lands here, before shell work that would otherwise need migrating.
+Delegation tree + detail views remain custom (no library covers them).
+
 ## Steps
 
 ### Step 1 — Theme completion ~0.15
@@ -49,7 +58,16 @@ foundation and quality passes).
 - pytest: event published on each mutation (bus-subscriber assertion).
 - Gate: pytest green; events visible in a WS listener during the step-2 tests.
 
-### Step 2 — Shell: project → session tree + statusline ~0.4
+### Step 1c — Stack upgrade: React 19 + Tailwind v4 ~0.4
+- sweave-web: React 18 → 19 (types, render-behavior audit), Tailwind 3 → 4
+  (CSS-first `@theme` config — migrate `globals.css`/tokens; content-detection
+  changes), dependency bumps, lockfile refresh.
+- Migrate the shipped theme system (tokens.ts/presets + custom-color picker)
+  onto v4; 51+ vitest suite green; visual smoke of all five presets + custom
+  overrides (step-1 features must survive the migration).
+- Gate: vitest green, `npm run build` green, presets + custom colors live.
+
+### Step 2 — Shell: project → session tree + statusline ~0.4 (on React 19 / Tailwind v4)
 - Sidebar = **project switcher** (dropdown of projects, create-project entry) +
   **session tree** for the active project (sessions list, active highlight, inline
   create-session form). AppProvider gains active-project + session selection state.
@@ -83,3 +101,12 @@ foundation and quality passes).
   truth) — mitigated by the no-hardcoded-hex gate.
 - Scaffold-first can silently grow scope (a "stub" is really a feature) — the
   definition: layout + nav + empty states only; zero data wiring.
+
+
+## Direction note (R4.2/R4.3)
+Chat thread mechanics adopt **assistant-ui** (custom runtime adapter fed by our
+WS events: chat.delta / message.added / delegation.status_changed /
+specialist.escalated). Tool timeline + escalation answer cards render as
+generative-UI components (**agent-elements-derived**). Delegation tree + detail
+views remain custom. `@assistant-ui/react-opencode` (official opencode adapter)
+is the first thing to evaluate in R4.2 planning.

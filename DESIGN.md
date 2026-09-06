@@ -685,6 +685,15 @@ we chose CLI+Web). If code is ever lifted: preserve the MIT notice
 (THIRD_PARTY_NOTICES); patterns are free, components mostly violate our
 vanilla-JS no-build rule.
 
+### UI stack adoptions (2026-09-06, R4.2/R4.3 direction)
+| Library | License | Role | Verdict |
+|---|---|---|---|
+| assistant-ui (12k stars) | MIT | chat runtime + primitives (Thread/Composer, streaming, retries, a11y); **generative UI for tool calls + inline approvals** (= ask_human surfacing); official `@assistant-ui/react-opencode` adapter to evaluate | **Adopt** (R4.2) - custom runtime adapter fed by our WS events |
+| agent-elements (21st.dev) | MIT (shadcn registry - code lands in our repo) | tool cards (Bash/Edit-diffs/Search/Plan/Subagent/MCP/Thinking), Question card (= ask_human UX), streaming Markdown, composer pieces. Requires React 19 + Tailwind v4 | **Adopt selectively** (R4.2/R4.3) - lift cards, wire to our delegation state |
+| vercel/ai | Apache-2.0 | AI SDK: useChat hooks + data-stream protocol - the substrate both above build on; client-side only (our backend protocol stays ours) | Substrate only |
+
+Stack consequence: sweave-web upgrades to **React 19 + Tailwind v4** (R4.1 step 1c).
+
 ### Opencode platform notes (docs read 2026-09-04)
 | Capability | Relevance | Action |
 |---|---|---|
