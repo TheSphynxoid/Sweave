@@ -33,6 +33,26 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
+# R4.1 step 1b: WS event vocabulary for the foundation nav.
+#
+# The live project/session tree in the sidebar needs WS events to
+# refresh without polling. The router is the publish boundary
+# (it's the only layer with ``state`` in scope; the service layer
+# stays pure). Five events, unified names, no legacy aliases (the
+# v1 vanilla UI is retired).
+#
+#   project.created       {name, path}
+#   project.deleted       {name}
+#   session.created       {id, name, project_name}
+#   session.deleted       {id, project_name}
+#   active_session.changed {id, project_name}
+#
+# The data payloads are minimal -- the consumer refetches the
+# list/detail. The events just say "something changed, invalidate".
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # Pydantic request models (Pydantic validates; services take dataclasses).
 # ---------------------------------------------------------------------------
 
@@ -58,7 +78,10 @@ class SessionCreateRequest(BaseModel):
 
 
 @router.post("/api/projects")
-async def api_create_project(request: ProjectCreateRequest):
+async def api_create_project(
+    request: ProjectCreateRequest,
+    state: AppState = Depends(get_state),
+):
     try:
         project = await create_project(
             ProjectCreate(
@@ -68,9 +91,17 @@ async def api_create_project(request: ProjectCreateRequest):
                 worktree_base=request.worktree_base,
             )
         )
-        return {"success": True, "project": project}
     except Exception as e:
         raise HTTPException(400, str(e))
+    # R4.1: notify subscribers (the foundation nav refetches
+    # the project list on this event; no payload refetch
+    # needed -- ``name`` + ``path`` are enough to render the
+    # new entry if the consumer chose to).
+    await state.publish(
+        "project.created",
+        {"name": project["name"], "path": project["path"]},
+    )
+    return {"success": True, "project": project}
 
 
 @router.get("/api/projects")
@@ -100,8 +131,17 @@ async def api_set_active_project(name: str):
 
 
 @router.delete("/api/projects/{name}")
-async def api_delete_project(name: str):
-    return await delete_project(name)
+async def api_delete_project(
+    name: str,
+    state: AppState = Depends(get_state),
+):
+    result = await delete_project(name)
+    # R4.1: the session list for the deleted project also
+    # becomes invalid. The consumer's React Query tree handles
+    # the cascade (it refetches on session.created/deleted too),
+    # so a single event is enough.
+    await state.publish("project.deleted", {"name": name})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -110,14 +150,29 @@ async def api_delete_project(name: str):
 
 
 @router.post("/api/sessions")
-async def api_create_session(request: SessionCreateRequest):
+async def api_create_session(
+    request: SessionCreateRequest,
+    state: AppState = Depends(get_state),
+):
     try:
         session = await create_session(
             SessionCreate(name=request.name, project_name=request.project_name)
         )
-        return {"success": True, "session": session}
     except Exception as e:
         raise HTTPException(400, str(e))
+    # R4.1: the session tree refreshes on this event. The
+    # payload carries the project_name so consumers can
+    # decide whether to invalidate their own list (the
+    # sidebar only shows the active project's tree).
+    await state.publish(
+        "session.created",
+        {
+            "id": session["id"],
+            "name": session["name"],
+            "project_name": session["project_name"],
+        },
+    )
+    return {"success": True, "session": session}
 
 
 @router.get("/api/sessions")
@@ -140,16 +195,47 @@ async def api_get_session(session_id: str):
 
 
 @router.post("/api/sessions/{session_id}/active")
-async def api_set_active_session(session_id: str):
+async def api_set_active_session(
+    session_id: str,
+    state: AppState = Depends(get_state),
+):
     try:
-        return await set_active_session(session_id)
+        result = await set_active_session(session_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    # R4.1: the active session pill + the topbar statusline
+    # need to refresh without a page reload. The full
+    # session id is enough (the consumer's session query
+    # already caches the details).
+    active = await get_active_session()
+    await state.publish(
+        "active_session.changed",
+        {
+            "id": session_id,
+            "project_name": active["project_name"] if active else None,
+        },
+    )
+    return result
 
 
 @router.delete("/api/sessions/{session_id}")
-async def api_delete_session(session_id: str):
-    return await delete_session(session_id)
+async def api_delete_session(
+    session_id: str,
+    state: AppState = Depends(get_state),
+):
+    # R4.1: resolve the project_name BEFORE the delete -- the
+    # post-delete get_session would 404, and the foundation nav
+    # uses the project_name to decide whether the session was
+    # in the active project (and therefore the user's tree
+    # needs an invalidation).
+    session = await get_session(session_id)
+    project_name = session["project_name"] if session else None
+    result = await delete_session(session_id)
+    await state.publish(
+        "session.deleted",
+        {"id": session_id, "project_name": project_name},
+    )
+    return result
 
 
 @router.post("/api/sessions/{session_id}/messages")
