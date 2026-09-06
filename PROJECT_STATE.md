@@ -39,7 +39,7 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-05)
-- **460/460** in `pytest tests/` (source of truth for logic tests; +8
+- **458/458** in `pytest tests/` (source of truth for logic tests; +6
   from the R4.1 step-1b WS-event tests; +5 from R4.0 wire-shape)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
 - **60** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
@@ -511,7 +511,7 @@
      (6 tests; CI-time per the wave-1 pattern — chromium 1243
      dependency); DESIGN §4 component table + R4 hub status updated.
 
-  **460/460 pytest** (was 452; +8 from step 1b), 13/13
+  **458/458 pytest** (was 452; +6 from step 1b), 13/13
   `run.py --check`, 60 vitest (+9 wsInvalidations + the 11 from
   step 1), `npm run build` green. R4.2/R4.3 are now unblocked
   (the assistant-ui + agent-elements-derived cards adoption

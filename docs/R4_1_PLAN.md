@@ -141,7 +141,7 @@ Tailwind v4).
    Playwright suite is CI-time per the wave-1 pattern (chromium
    1243 dependency not bundled in this repo).
 
-**460/460 pytest** (was 452; +8), 13/13 `run.py --check`, 60 vitest
+**458/458 pytest** (was 452; +6), 13/13 `run.py --check`, 60 vitest
 (+9 + 11), `npm run build` green. R4.2 / R4.3 are now unblocked
 (React 19 + Tailwind v4 prerequisite met).
 
