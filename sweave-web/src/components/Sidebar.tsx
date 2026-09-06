@@ -1,12 +1,19 @@
 /**
- * Sidebar (M1.9 Step 1).
+ * Sidebar (M1.9 Step 1, R4.1 Step 2).
  *
- * Wave-1 nav: Chat (the input funnel) + Children (the output
- * funnel). Wave-2 nav (Memory / Agents workbench / Settings)
- * lands in step 5. The statusline vision from the plan (topbar
- * with project + path + session + conn state) is delivered in
- * this step; the topbar is a sub-component so the layout is
- * straightforward to read.
+ * R4.1 Step 2 nav backbone: project switcher (dropdown of all
+ * projects) + session tree (always-visible list of the active
+ * project's sessions, with the active session highlighted) +
+ * inline create-session form (at the bottom of the tree) +
+ * primary nav (Chat + Children, the input + output funnels).
+ *
+ * The session tree is the foundation of the chat/children
+ * navigation: every surface scopes to the active session. The
+ * inline create-session form closes the M1.9 funnel leak
+ * (creating a session previously required leaving the chat).
+ *
+ * Memory / Agents / Settings are R4.4; the project-create entry
+ * is R4.4 too (the R4.1 amendment: foundation nav only).
  */
 import { NavLink, useLocation } from "react-router-dom";
 import { MessageSquare, Network, ChevronLeft, ChevronRight } from "lucide-react";
@@ -14,6 +21,8 @@ import { useState } from "react";
 import { cn } from "@/utils/cn";
 import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
+import { ProjectSwitcher } from "./ProjectSwitcher";
+import { SessionTree } from "./SessionTree";
 
 const NAV = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
@@ -22,7 +31,7 @@ const NAV = [
 
 export function Sidebar() {
   const [open, setOpen] = useState(true);
-  const { activeProject, activeSession } = useApp();
+  const { activeSession } = useApp();
   const { state: wsState } = useWS();
   const location = useLocation();
 
@@ -46,7 +55,7 @@ export function Sidebar() {
       data-testid="sidebar"
       className={cn(
         "flex flex-col border-r border-border bg-card transition-[width] duration-200",
-        open ? "w-64" : "w-16",
+        open ? "w-72" : "w-16",
       )}
     >
       <div className="flex items-center justify-between h-14 px-4 border-b border-border">
@@ -64,7 +73,17 @@ export function Sidebar() {
       </div>
       {open && (
         <>
-          <nav className="flex-1 overflow-y-auto p-3 space-y-1" aria-label="Primary">
+          <div className="p-3 space-y-3 border-b border-border">
+            <ProjectSwitcher />
+            <SessionTree />
+          </div>
+          <nav
+            className="flex-1 overflow-y-auto p-3 space-y-1"
+            aria-label="Primary"
+          >
+            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+              Funnels
+            </div>
             {NAV.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
@@ -89,14 +108,14 @@ export function Sidebar() {
               <span className={cn("w-2 h-2 rounded-full", connClass)} />
               <span>{connLabel}</span>
             </div>
-            {activeProject && (
-              <div className="truncate" title={activeProject.path}>
-                {activeProject.name}
-              </div>
-            )}
             {activeSession && (
-              <div className="truncate" title={activeSession.id}>
-                {activeSession.name}
+              <div
+                className="truncate font-mono text-[10px]"
+                title={activeSession.orchestrator_session_id ?? activeSession.id}
+              >
+                {activeSession.orchestrator_session_id
+                  ? `orch: ${activeSession.orchestrator_session_id.slice(0, 12)}…`
+                  : activeSession.id}
               </div>
             )}
           </div>

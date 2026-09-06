@@ -1,5 +1,5 @@
 /**
- * Typed app context (M1.9 Step 1).
+ * Typed app context (M1.9 Step 1, R4.1 Step 2).
  *
  * The previous AppProvider was v1-era (``any`` types; in-memory
  * state mutated imperatively). This rewrite uses the v2 surface
@@ -12,6 +12,15 @@
  * ``/projects/active`` + ``/sessions/active`` endpoints. The
  * context methods set the active project/session via the API
  * (the server is the source of truth) and update the local cache.
+ *
+ * R4.1 step 2: the provider now subscribes to the step-1b WS
+ * events (``project.created`` / ``project.deleted`` /
+ * ``session.created`` / ``session.deleted`` /
+ * ``active_session.changed``) so the QueryClient's project +
+ * session caches refresh without polling. Invalidations are
+ * scoped: a session event only invalidates the project the
+ * session belongs to; a project event invalidates the project
+ * list + that project's session list.
  */
 import {
   createContext,
@@ -21,7 +30,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
+import { useWS } from "./WSProvider";
+import { invalidationsForEvent } from "./wsInvalidations";
 import type { ProjectSummary, SessionSummary } from "@/types";
 
 export type NotificationKind = "info" | "success" | "warning" | "error";
@@ -53,6 +65,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeProject, setActiveProject] = useState<ProjectSummary | null>(null);
   const [activeSession, setActiveSession] = useState<SessionSummary | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const qc = useQueryClient();
+  const { subscribe } = useWS();
 
   // Load active project + session on mount.
   useEffect(() => {
@@ -75,6 +89,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  // R4.1 step 2: WS-driven cache invalidation. Each event
+  // invalidates the smallest set of query keys that need to
+  // refresh. The active session change refreshes the
+  // /sessions/active fetch (the AppProvider's own state).
+  useEffect(() => {
+    const unsubs: Array<() => void> = [];
+
+    // Subscribe to the five known events. The invalidation
+    // mapping lives in ``wsInvalidations.ts`` so it's a pure,
+    // testable function; the AppProvider is just the wiring.
+    for (const eventName of [
+      "project.created",
+      "project.deleted",
+      "session.created",
+      "session.deleted",
+      "active_session.changed",
+    ] as const) {
+      unsubs.push(
+        subscribe(eventName, (env) => {
+          for (const key of invalidationsForEvent(env)) {
+            qc.invalidateQueries({ queryKey: key });
+          }
+          // The active_session.changed event also refreshes
+          // the AppProvider's own active session (the local
+          // cache that the topbar statusline + sidebar
+          // active-pill read). The active_session.changed
+          // handler is the only one with a side effect beyond
+          // query invalidation.
+          if (eventName === "active_session.changed") {
+            (async () => {
+              try {
+                const refreshed = await api.getActiveSession();
+                setActiveSession(refreshed);
+              } catch {
+                // ignore; the next user action will resync
+              }
+            })();
+          }
+        }),
+      );
+    }
+
+    return () => {
+      for (const u of unsubs) u();
+    };
+  }, [qc, subscribe]);
 
   const pushNotification = useCallback(
     (kind: NotificationKind, message: string) => {
@@ -99,6 +160,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setActiveProject(refreshed);
         // Switching projects invalidates the active session.
         setActiveSession(null);
+        // The new project's session list is fetched lazily by
+        // the SessionTree's query (keyed on activeProject.name).
+        // No explicit invalidation needed; the query refetches
+        // on key change.
       } catch (err) {
         pushNotification("error", `Failed to activate project: ${name}`);
         throw err;
