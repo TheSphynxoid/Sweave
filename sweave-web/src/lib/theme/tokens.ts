@@ -210,10 +210,18 @@ export function resolveTokens(
   return { ...preset, ...override };
 }
 
-/** Convert a token map to the CSS string for a `:root[data-theme=...]` block. */
+/** Convert a token map to the CSS string for a `:root[data-theme=...]` block.
+ *
+ * R4.1 step 1c (Tailwind v4): each `--color-*` variable carries
+ * a full ``rgb()`` value (not a bare tuple) so the Tailwind v4
+ * utility classes (``bg-background``, ``text-foreground`` etc.)
+ * resolve without arbitrary-value wrappers. The preset
+ * ``TokenMap`` stores bare tuples (the on-disk + in-memory
+ * source of truth); this writer wraps each one.
+ */
 export function tokensToCssVariables(tokens: TokenMap, indent: string = "  "): string {
   return Object.entries(tokens)
-    .map(([name, value]) => `${indent}--color-${name}: ${value};`)
+    .map(([name, value]) => `${indent}--color-${name}: rgb(${value});`)
     .join("\n");
 }
 

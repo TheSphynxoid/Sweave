@@ -94,7 +94,9 @@ export function ThemeSwitcher() {
                   <span
                     aria-hidden
                     className="inline-block w-3 h-3 rounded"
-                    style={{ background: `rgb(var(--color-primary))` }}
+                    /* R4.1 step 1c: v4 --color-primary is a full
+                     * rgb() value; reference it directly. */
+                    style={{ background: `var(--color-primary)` }}
                   />
                   <span>{preset.label}</span>
                 </span>

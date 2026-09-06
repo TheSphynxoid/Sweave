@@ -63,14 +63,16 @@
 
 /* Focus visible styles */
 *:focus-visible {
-  outline: 2px solid rgb(var(--color-primary));
+  /* R4.1 step 1c: v4 tokens carry full rgb() values, so
+   * the consumer references var(--color-*) directly. */
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
 /* Scrollbar utilities */
 .scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: rgb(var(--color-muted-foreground) / 0.3) transparent;
+  scrollbar-color: color-mix(in oklch, var(--color-muted-foreground) 30%, transparent) transparent;
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -83,12 +85,12 @@
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgb(var(--color-muted-foreground) / 0.3);
+  background: color-mix(in oklch, var(--color-muted-foreground) 30%, transparent);
   border-radius: 3px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--color-muted-foreground) / 0.5);
+  background: color-mix(in oklch, var(--color-muted-foreground) 50%, transparent);
 }
 
 /* Line clamp utility */

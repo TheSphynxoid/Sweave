@@ -108,10 +108,13 @@ describe("resolveTokens", () => {
 
 describe("tokensToCssVariables", () => {
   it("emits one --color-<name> line per token", () => {
+    // R4.1 step 1c: each variable carries a full rgb() value
+    // (not a bare tuple) so Tailwind v4 utilities resolve
+    // without arbitrary-value wrappers.
     const tokens = getPreset("nord").tokens;
     const css = tokensToCssVariables(tokens);
     for (const key of REQUIRED_TOKENS) {
-      expect(css).toContain(`--color-${key}: ${tokens[key]};`);
+      expect(css).toContain(`--color-${key}: rgb(${tokens[key]});`);
     }
   });
 

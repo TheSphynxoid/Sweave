@@ -103,9 +103,12 @@ describe("custom-color override round-trip", () => {
     expect(el).not.toBeNull();
     const text = el!.textContent ?? "";
     expect(text).toContain(`[${THEME_DATA_ATTR}="dracula"]`);
-    expect(text).toContain("--color-primary: 12 34 56;");
+    // R4.1 step 1c: the writer wraps each variable in rgb()
+    // so Tailwind v4 utilities resolve without an
+    // arbitrary-value wrapper.
+    expect(text).toContain("--color-primary: rgb(12 34 56);");
     // A non-customised token still flows through from the preset:
-    expect(text).toContain("--color-background: 40 42 54;");
+    expect(text).toContain("--color-background: rgb(40 42 54);");
   });
 
   it("a full reset (custom: {}) yields the preset's bare values", () => {

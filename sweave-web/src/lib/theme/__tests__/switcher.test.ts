@@ -18,11 +18,15 @@ describe("defaultActiveTheme", () => {
 
 describe("saveActiveTheme + loadActiveTheme round-trip", () => {
   it("persists the preset name and the custom override", () => {
-    const theme: ActiveTheme = { preset: "nord", custom: { primary: "#abcdef" } };
+    // R4.1 step 1c: the override is stored as an RGB tuple
+    // (the same shape the preset tokens use). The custom-color
+    // picker writes RGB tuples via hexToRgbTuple; the runtime
+    // then wraps in rgb() for the v4 @theme contract.
+    const theme: ActiveTheme = { preset: "nord", custom: { primary: "171 205 239" } };
     saveActiveTheme(theme);
     const loaded = loadActiveTheme();
     expect(loaded.preset).toBe("nord");
-    expect(loaded.custom).toEqual({ primary: "#abcdef" });
+    expect(loaded.custom).toEqual({ primary: "171 205 239" });
   });
 
   it("returns the default when nothing is persisted", () => {
@@ -56,12 +60,13 @@ describe("saveActiveTheme + loadActiveTheme round-trip", () => {
 
 describe("resolveThemeTokens", () => {
   it("merges preset + custom override", () => {
+    // R4.1 step 1c: the override is an RGB tuple.
     const theme: ActiveTheme = {
       preset: "light",
-      custom: { primary: "#123456" },
+      custom: { primary: "18 52 86" },
     };
     const tokens = resolveThemeTokens(theme);
-    expect(tokens.primary).toBe("#123456");
+    expect(tokens.primary).toBe("18 52 86");
     // Other tokens come from the light preset.
     const light = getPreset("light").tokens;
     expect(tokens.background).toBe(light.background);
@@ -81,23 +86,29 @@ describe("applyThemeToDocument", () => {
   });
 
   it("writes CSS variables to a <style> element keyed by the preset", () => {
-    applyThemeToDocument({ preset: "dark", custom: { primary: "#aaaaaa" } });
+    // R4.1 step 1c: the runtime wraps custom values in rgb();
+    // the override is an RGB tuple, the same shape the preset
+    // tokens use.
+    applyThemeToDocument({
+      preset: "dark",
+      custom: { primary: "170 170 170" },
+    });
     const el = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
     expect(el).not.toBeNull();
     const text = el!.textContent ?? "";
     expect(text).toContain(`[${THEME_DATA_ATTR}="dark"]`);
-    expect(text).toContain("--color-primary: #aaaaaa;");
+    expect(text).toContain("--color-primary: rgb(170 170 170);");
   });
 
   it("is idempotent: re-applying the same theme replaces the <style> text", () => {
     applyThemeToDocument({ preset: "nord", custom: {} });
     const el1 = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
     const before = el1?.textContent ?? "";
-    applyThemeToDocument({ preset: "nord", custom: { primary: "#ff00ff" } });
+    applyThemeToDocument({ preset: "nord", custom: { primary: "255 0 255" } });
     const el2 = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
     const after = el2?.textContent ?? "";
     expect(el1).toBe(el2); // same element
     expect(after).not.toBe(before);
-    expect(after).toContain("--color-primary: #ff00ff;");
+    expect(after).toContain("--color-primary: rgb(255 0 255);");
   });
 });
