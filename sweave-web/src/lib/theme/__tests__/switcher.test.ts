@@ -1,0 +1,103 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  defaultActiveTheme,
+  loadActiveTheme,
+  saveActiveTheme,
+  applyThemeToDocument,
+  resolveThemeTokens,
+  THEME_DATA_ATTR,
+  type ActiveTheme,
+} from "../switcher";
+import { listPresetNames, getPreset } from "../tokens";
+
+describe("defaultActiveTheme", () => {
+  it("returns the dark preset with an empty custom override", () => {
+    expect(defaultActiveTheme()).toEqual({ preset: "dark", custom: {} });
+  });
+});
+
+describe("saveActiveTheme + loadActiveTheme round-trip", () => {
+  it("persists the preset name and the custom override", () => {
+    const theme: ActiveTheme = { preset: "nord", custom: { primary: "#abcdef" } };
+    saveActiveTheme(theme);
+    const loaded = loadActiveTheme();
+    expect(loaded.preset).toBe("nord");
+    expect(loaded.custom).toEqual({ primary: "#abcdef" });
+  });
+
+  it("returns the default when nothing is persisted", () => {
+    const loaded = loadActiveTheme();
+    expect(loaded).toEqual(defaultActiveTheme());
+  });
+
+  it("returns the default when the persisted preset is unknown", () => {
+    window.localStorage.setItem("sweave.theme.preset", "not-a-preset");
+    window.localStorage.setItem("sweave.theme.custom", "{}");
+    expect(loadActiveTheme()).toEqual(defaultActiveTheme());
+  });
+
+  it("ignores bad JSON in the custom key", () => {
+    window.localStorage.setItem("sweave.theme.preset", "dark");
+    window.localStorage.setItem("sweave.theme.custom", "{not json");
+    const loaded = loadActiveTheme();
+    expect(loaded.preset).toBe("dark");
+    expect(loaded.custom).toEqual({});
+  });
+
+  it("preserves every preset across a round-trip", () => {
+    for (const name of listPresetNames()) {
+      const t: ActiveTheme = { preset: name, custom: {} };
+      saveActiveTheme(t);
+      const loaded = loadActiveTheme();
+      expect(loaded.preset).toBe(name);
+    }
+  });
+});
+
+describe("resolveThemeTokens", () => {
+  it("merges preset + custom override", () => {
+    const theme: ActiveTheme = {
+      preset: "light",
+      custom: { primary: "#123456" },
+    };
+    const tokens = resolveThemeTokens(theme);
+    expect(tokens.primary).toBe("#123456");
+    // Other tokens come from the light preset.
+    const light = getPreset("light").tokens;
+    expect(tokens.background).toBe(light.background);
+  });
+});
+
+describe("applyThemeToDocument", () => {
+  beforeEach(() => {
+    document.documentElement.removeAttribute(THEME_DATA_ATTR);
+    const el = document.getElementById("sweave-theme-vars");
+    if (el) el.remove();
+  });
+
+  it("sets the data attribute on :root to the preset name", () => {
+    applyThemeToDocument({ preset: "dracula", custom: {} });
+    expect(document.documentElement.getAttribute(THEME_DATA_ATTR)).toBe("dracula");
+  });
+
+  it("writes CSS variables to a <style> element keyed by the preset", () => {
+    applyThemeToDocument({ preset: "dark", custom: { primary: "#aaaaaa" } });
+    const el = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
+    expect(el).not.toBeNull();
+    const text = el!.textContent ?? "";
+    expect(text).toContain(`[${THEME_DATA_ATTR}="dark"]`);
+    expect(text).toContain("--color-primary: #aaaaaa;");
+  });
+
+  it("is idempotent: re-applying the same theme replaces the <style> text", () => {
+    applyThemeToDocument({ preset: "nord", custom: {} });
+    const el1 = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
+    const before = el1?.textContent ?? "";
+    applyThemeToDocument({ preset: "nord", custom: { primary: "#ff00ff" } });
+    const el2 = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
+    const after = el2?.textContent ?? "";
+    expect(el1).toBe(el2); // same element
+    expect(after).not.toBe(before);
+    expect(after).toContain("--color-primary: #ff00ff;");
+  });
+});
