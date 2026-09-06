@@ -23,46 +23,56 @@ foundation and quality passes).
 - sweave-web current surface: pages = `chat/`, `children/`, `NotFound` ONLY (the
   pre-M1.x scaffold pages were removed in wave 1). Step 3 creates the missing
   routes fresh: memory, agents, settings, delegation detail.
-- **Theme machinery partially exists** (wave 1): `ThemeApplier.tsx` (16 lines) +
-  `ThemeSwitcher.tsx` (94 lines) — audit + extend, don't rebuild blind.
-- **v1 presets live in git history only** (static/ deleted at cutover): port source
-  = `git show ee094ae:sweave/web/static/style.css` (data-theme token blocks:
-  --bg/--fg/--panel/--border/--red/--muted/--dim).
-- Backend: full v2 API + WS vocabulary (M1.9 state). dist served, not committed.
+- **Theme system largely SHIPPED** (verified 2026-09-06, committed b400b9d):
+  `sweave-web/src/lib/theme/` = `tokens.ts` (presets as typed tokens), `switcher.ts`
+  (+ localStorage), `ThemeApplier`/`ThemeSwitcher` components, 21 vitest tests green.
+  Remaining gap: **custom-color override UI** (v1 parity hook — `ActiveTheme`
+  typing exists, editor doesn't).
+- **v1 presets already ported** into tokens.ts — git history (`git show
+  ee094ae:sweave/web/static/style.css`) remains the reference if tokens drifted.
+- **Backend gap (executor finding, verified in code)**: the projects router
+  publishes **zero WS events** — no `project.created/deleted`,
+  `session.created/deleted`, `active_session.changed`. The live tree needs them.
+- Backend: full v2 API otherwise. dist served, not committed.
 
 ## Steps
 
-### Step 1 — Design tokens + theme system ~0.3
-- `styles/tokens.css`: CSS variables per v1 preset (--bg, --fg, --panel, --border,
-  --red, --muted, accent set) + custom-color override hooks; dark default.
-- Tailwind config references tokens (never hardcodes); ThemeSwitcher (v1 parity) +
-  localStorage persistence; document class-name conventions.
-- Gate: all five presets switchable live; no hardcoded hex outside tokens.css.
+### Step 1 — Theme completion ~0.15
+- Custom-color override UI (the v1 parity hook): preset + per-token overrides,
+  persisted; wire into ThemeSwitcher. No hardcoded hex anywhere (audit gate).
+- Gate: switch presets AND override colors live; 21 existing tests + new ones green.
+
+### Step 1b — Backend WS events for projects/sessions ~0.2
+- `routers/projects.py` publishes: `project.created`, `project.deleted`,
+  `session.created`, `session.deleted`, `active_session.changed` (existing WSEventBus
+  vocabulary style; legacy names preserved if any consumers exist — none known).
+- pytest: event published on each mutation (bus-subscriber assertion).
+- Gate: pytest green; events visible in a WS listener during the step-2 tests.
 
 ### Step 2 — Shell: project → session tree + statusline ~0.4
 - Sidebar = **project switcher** (dropdown of projects, create-project entry) +
-  **session tree** for the active project (sessions list, active highlight, create
-  session). The AppProvider gains active-project + session selection state (WS-aware:
-  new/deleted sessions refresh).
+  **session tree** for the active project (sessions list, active highlight, inline
+  create-session form). AppProvider gains active-project + session selection state.
 - Topbar statusline: project name + path chip + session + connection state.
-- React Query keys + WS invalidation for projects/sessions (no polling).
+- React Query keys + WS invalidation via the step-1b events (no polling).
 - Gate: switching projects swaps the session list; creating a session appears
-  without reload; WS events refresh state.
+  without reload, driven by `session.created`.
 
-### Step 3 — Scaffold-first: all surfaces routed ~0.3
-- Routes + designed stubs for: Chat, Children, Delegation detail, Memory, Agents,
-  Settings (each with real layout, empty-state design, "wave N" badge where features
-  are pending — honest scaffolds, not fake UI).
-- 404 page. Nav order matches the funnel priority (Chat, Children, then wave-2
-  panes).
-- Gate: every route renders a designed scaffold; visual review by the user
-  (screenshots or live) against the quality bar before step 4 proceeds.
+### Step 3 — Scaffold-first: R4 surfaces routed ~0.3
+- Routes + designed stubs for: **delegation detail**, Memory, Agents, Settings
+  (chat + children already exist from wave 1 — polish to the bar only). Each stub:
+  real layout, designed empty state, "R4.2/R4.4" badge where features are pending —
+  honest scaffolds, not fake UI. Memory/Agents/Settings content stays R4.4 scope;
+  only the designed shells land here.
+- Gate: every route renders a designed scaffold; visual review by the user against
+  the quality bar before step 4 proceeds.
 
 ### Step 4 — Gates + docs ~0.1
-- Playwright: navigation tree (switch project → session list swaps), theme switch,
-  scaffold presence for all routes. pytest untouched (backend only).
-- Docs: DESIGN §4 (UI rows: shell/tree ✅, theme ✅), R4 hub status, screenshots
-  attached to the round report.
+- Playwright: navigation tree (switch project → session list swaps),
+  `session.created` live update, theme switch + override, scaffold presence for all
+  routes. pytest for the new WS events.
+- Docs: DESIGN §4 (UI rows: shell/tree ✅, theme ✅, WS events ✅), R4 hub status,
+  screenshots in the round report.
 
 ## Explicit non-goals
 - Chat/children/detail *features* (R4.2/R4.3 — scaffolds only here). Memory/Agents/
