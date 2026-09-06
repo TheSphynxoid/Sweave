@@ -1,15 +1,10 @@
 /**
- * Theme switcher (M1.9 Step 1).
+ * Theme switcher (M1.9 Step 1, R4.1 Step 1).
  *
- * v1 parity: a dropdown listing the 5 presets + an "open editor"
- * affordance for custom-color overrides. The active preset is
- * stored in localStorage; the custom override (the
- * CustomOverride map) is stored under a separate key.
- *
- * The dropdown is intentionally minimal for Step 1 -- the full
- * color-picker UI lands in a later step. The reader is enough
- * to verify the v1 customization ruling: pick a preset, see the
- * theme change, reload, see the same theme.
+ * v1 parity: a dropdown listing the 5 presets + a "Customize"
+ * panel (R4.1) for per-token color overrides. The active preset
+ * is stored in localStorage; the custom override is stored as a
+ * partial TokenMap under a separate key.
  */
 import { useEffect, useState } from "react";
 import { Palette, Check } from "lucide-react";
@@ -23,6 +18,10 @@ import {
   type ActiveTheme,
 } from "@/lib/theme";
 import { cn } from "@/utils/cn";
+import {
+  CustomColorEditor,
+  applyCustomColorChange,
+} from "./CustomColorEditor";
 
 export function ThemeSwitcher() {
   const [open, setOpen] = useState(false);
@@ -42,6 +41,18 @@ export function ThemeSwitcher() {
     setOpen(false);
   };
 
+  const handleCustomChange = (next: ActiveTheme) => {
+    setTheme(next);
+    applyCustomColorChange(next);
+  };
+
+  const handleReset = () => {
+    const next: ActiveTheme = { ...theme, custom: {} };
+    setTheme(next);
+    saveActiveTheme(next);
+    applyThemeToDocument(next);
+  };
+
   return (
     <div className="relative">
       <button
@@ -59,7 +70,7 @@ export function ThemeSwitcher() {
         <div
           data-testid="theme-switcher-menu"
           role="menu"
-          className="absolute right-0 mt-1 w-44 border border-border bg-card rounded shadow-lg z-50"
+          className="absolute right-0 mt-1 w-64 border border-border bg-card rounded shadow-lg z-50"
         >
           {listPresetNames().map((name) => {
             const preset = PRESETS.find((p) => p.name === name);
@@ -83,7 +94,7 @@ export function ThemeSwitcher() {
                   <span
                     aria-hidden
                     className="inline-block w-3 h-3 rounded"
-                    style={{ background: `rgb(${preset.tokens.primary})` }}
+                    style={{ background: `rgb(var(--color-primary))` }}
                   />
                   <span>{preset.label}</span>
                 </span>
@@ -91,6 +102,11 @@ export function ThemeSwitcher() {
               </button>
             );
           })}
+          <CustomColorEditor
+            theme={theme}
+            onChange={handleCustomChange}
+            onReset={handleReset}
+          />
         </div>
       )}
     </div>

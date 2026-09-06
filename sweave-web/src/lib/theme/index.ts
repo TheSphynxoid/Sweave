@@ -17,6 +17,8 @@ export {
   listPresetNames,
   resolveTokens,
   tokensToCssVariables,
+  rgbTupleToHex,
+  hexToRgbTuple,
 } from "./tokens";
 
 export {

@@ -216,3 +216,36 @@ export function tokensToCssVariables(tokens: TokenMap, indent: string = "  "): s
     .map(([name, value]) => `${indent}--color-${name}: ${value};`)
     .join("\n");
 }
+
+/**
+ * The picker UI uses ``<input type="color">`` which round-trips
+ * hex strings (``#rrggbb``). The preset tokens are stored as RGB
+ * tuples (``"r g b"``); the custom override map lets the user
+ * store either shape. ``rgbTupleToHex`` converts a preset value
+ * to the form the picker expects; ``hexToRgbTuple`` converts a
+ * picker value back to the RGB-tuple shape when the user picks
+ * a color (so the merged map is consistently RGB-tuple, matching
+ * Tailwind config + globals.css expectations).
+ */
+export function rgbTupleToHex(value: string): string {
+  // Already hex?
+  if (value.startsWith("#")) return value;
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 3) return "#000000";
+  const [r, g, b] = parts.map((p) => {
+    const n = Number.parseInt(p, 10);
+    return Number.isFinite(n) ? Math.max(0, Math.min(255, n)) : 0;
+  });
+  const toHex = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+export function hexToRgbTuple(hex: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return "0 0 0";
+  const n = m[1];
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  return `${r} ${g} ${b}`;
+}
