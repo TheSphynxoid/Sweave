@@ -207,6 +207,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | OpenCode spawn path | ✅ | M1.0 + M1.3 + M1.4+M1.5 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly; **M1.4+M1.5 step 1** promotes `ModelRef` + `model_ref_to_wire` into `harness/base.py` (the contract type) and `Message` gains `model: ModelRef \| None` (per-message beats spawn-time) |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
 | Web UI (sweave-web, R4 wave 1) | ✅ | R4 step 4 (2026-09-05) — Vite + React 18 + TS + Tailwind + Zustand + React Query. Wave 1: design system (5 v1 presets + custom-color override, localStorage-persisted), chat with streaming (chat.delta + message.added events; M1.8 no-rerender invariant carried through to React), session picker + composer (closing the M1.9 funnel leak), children live tree (WS-pulsed, depth-indented, escalation lane at the top, promote + answer inline), delegation detail view (composed prompt + tool timeline + tokens + status timeline). Backend serves `sweave-web/dist` (the SPA catch-all + `/assets` + `/favicon.svg`); `SWEAVE_UI_VANILLA=1` forces the v1 fallback. Vitest unit suite (40 tests) + Playwright e2e suite (`sweave-web/e2e/`). v1 vanilla UI retired (git history preserves). |
+| Web UI foundation nav (R4.1) | ✅ | R4.1 (2026-09-06) — the project→session tree navigation backbone: `ProjectSwitcher` (dropdown of all projects) + `SessionTree` (always-visible per-project session list with active highlight + inline create-session form) wired into the Sidebar; AppProvider subscribes to the 5 new WS events (`project.created` / `project.deleted` / `session.created` / `session.deleted` / `active_session.changed`) and invalidates the smallest scope of React Query keys (mapping in `src/context/wsInvalidations.ts`, 9 vitest pin the contract). Custom-color editor: 8-token picker (background/foreground/primary/primary-fg/border/muted/muted-fg/accent) + 'Reset to preset' button, mounted in the ThemeSwitcher dropdown. Scaffold-first: designed stubs for `/delegations/:id` (R4.3), `/memory`, `/agents`, `/settings` (R4.4) with the 'Pending R4.X' badge — honest scaffolds, not fake UI. **Stack upgrade**: React 19.2.8 + Tailwind 4.3.3 (CSS-first `@theme`; tokens carry full `rgb()` values so v4 utilities resolve without arbitrary-value wrappers). 60 vitest, 460 pytest (was 452; +8 from `test_r4_1_ws_events.py`), 13/13 `run.py --check`, `npm run build` green. R4.2/R4.3 adopt assistant-ui runtime + agent-elements-derived cards (per §8). |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
@@ -568,14 +569,34 @@ regression test). **452/452 pytest** (was 447; +5), 13/13
 `run.py --check`. Plan of record: `docs/R4_PLAN.md`. R4.1 is now
 unblocked.
 
-### R4.1 — UX foundation: navigation tree, theme system, scaffold-first shell (planned 2026-09-05)
+### R4.1 — UX foundation: navigation tree, theme system, scaffold-first shell (done 2026-09-06)
 
-Per `docs/R4_1_PLAN.md`. Project → session tree navigation (project
-switcher + session list per project), theme system to the external
-bar (tokens, presets, dark default), app shell redesign, **scaffold-
-first**: every v1 surface (chat, children, detail, memory, agents,
-settings) ships as a designed stub before features fill it. Est.
-~1 session. Predecessor R4.0 is now done.
+Per `docs/R4_1_PLAN.md`. Four steps; one commit per step; same
+planning/execution method as M1. Steps 1+1b ship theme completion
++ WS event vocabulary; step 1c is the React 19 + Tailwind v4 stack
+upgrade (R4.2/R4.3 adopt assistant-ui + agent-elements-derived cards,
+both need React 19 + Tailwind v4 — the upgrade lands here, before
+shell work would otherwise need migrating); step 2 ships the
+foundation nav (ProjectSwitcher dropdown + SessionTree always-
+visible per-project session list with active highlight + inline
+create-session form); step 3 ships designed scaffolds for the R4.1
+surfaces whose feature work lands in R4.3 (delegation detail) and
+R4.4 (memory + agents + settings). **460/460 pytest** (was 452; +8
+from the step-1b WS-event tests), 13/13 `run.py --check`, 60
+vitest (+9 wsInvalidations + the wave-1 51), `npm run build` green
+(post step-1c migration). AppProvider subscribes to the five
+WS events; the invalidation map is extracted to
+`src/context/wsInvalidations.ts` (9 vitest pin the contract; the
+mapping is the smallest scope of React Query keys to refresh).
+Stack: React 19.2.8 + Tailwind 4.3.3 (CSS-first `@theme`; tokens
+carry full `rgb()` values so v4 utilities resolve without
+arbitrary-value wrappers). Playwright e2e spec for the foundation
+nav + scaffold presence is checked in (`sweave-web/e2e/
+foundation-nav.spec.ts`); CI-time concern per the wave-1 pattern
+(chromium 1243 dependency not bundled in this repo). Delegation
+tree + detail views remain custom (no library covers them);
+R4.2/R4.3 will lift cards from agent-elements (MIT shadcn
+registry) per §8.
 
 ### R4.4 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
 

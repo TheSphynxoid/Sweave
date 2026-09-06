@@ -39,11 +39,14 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-05)
-- **452/452** in `pytest tests/` (source of truth for logic tests; +5 from
-  the R4.0 wire-shape regression file)
+- **460/460** in `pytest tests/` (source of truth for logic tests; +8
+  from the R4.1 step-1b WS-event tests; +5 from R4.0 wire-shape)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **40** vitest unit tests in `sweave-web/` (design + chat reducer + tree)
-- **2** Playwright e2e tests in `sweave-web/e2e/` (CI gate)
+- **60** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
+  picker + chat reducer + children tree + wsInvalidations; +20 in R4.1)
+- **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
+  R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
+  1243 dependency makes the suite CI-time per the wave-1 pattern)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 - v1 vanilla UI tests (test_full.py, test_sidebar_nav.js, test_promote_ui.js) retired
 
@@ -476,13 +479,43 @@
   the propagation was temporarily reverted — a real regression
   test). **452/452 pytest** (was 447; +5), 13/13 `run.py --check`,
   40 vitest. R4.1 is now unblocked.
-- ▶ **R4.1 UX foundation** (per `docs/R4_1_PLAN.md`, rewritten
-  2026-09-05): project → session tree navigation (project switcher
-  + session list per project), theme system to the external bar
-  (tokens, presets, dark default), app shell redesign, **scaffold-
-  first**: every v1 surface (chat, children, detail, memory,
-  agents, settings) ships as a designed stub before features
-  fill it. Est. ~1 session. Predecessor R4.0 is now done.
+- ✅ **R4.1 UX foundation** — done 2026-09-06 per `docs/R4_1_PLAN.md`.
+  Four steps; one commit per step:
+  1. **Step 1 — Custom-color UI**: 8-token picker (background /
+     foreground / primary / primary-fg / border / muted /
+     muted-fg / accent) + "Reset to preset" button, mounted in
+     the ThemeSwitcher dropdown. `rgbTupleToHex` / `hexToRgbTuple`
+     helpers for picker round-trip. 11 new vitest (51 total).
+  2. **Step 1b — Backend WS events**: 5 events published from
+     `sweave/web/routers/projects.py` (project.created /
+     project.deleted / session.created / session.deleted /
+     active_session.changed; unified names, no legacy aliases).
+     6 new pytest (`test_r4_1_ws_events.py`; 458 total).
+  3. **Step 1c — Stack upgrade**: React 18.3.1 → 19.2.8 (lucide-react
+     bumped for React 19 peer); Tailwind 3.4 → 4.3.3 (CSS-first
+     `@theme`; no `tailwind.config.js` / `postcss.config.js`;
+     `@tailwindcss/vite` plugin). Tokens migrated to full `rgb()`
+     values so v4 utilities resolve without arbitrary-value
+     wrappers. All 51 vitest pass; build green.
+  4. **Step 2 — Foundation nav**: `ProjectSwitcher` (dropdown of
+     all projects) + `SessionTree` (always-visible per-project
+     session list with active highlight + inline create-session
+     form) wired into the Sidebar. AppProvider subscribes to the 5
+     WS events and invalidates the smallest scope of React Query
+     keys; the mapping is in `src/context/wsInvalidations.ts` (9
+     vitest pin the contract). 9 new vitest (60 total).
+  5. **Step 3 — Scaffolds**: `/delegations/:id` (R4.3), `/memory`,
+     `/agents`, `/settings` (R4.4) — designed stubs with the
+     "Pending R4.X" badge; honest scaffolds, not fake UI.
+  6. **Step 4 — E2e + docs**: `sweave-web/e2e/foundation-nav.spec.ts`
+     (6 tests; CI-time per the wave-1 pattern — chromium 1243
+     dependency); DESIGN §4 component table + R4 hub status updated.
+
+  **460/460 pytest** (was 452; +8 from step 1b), 13/13
+  `run.py --check`, 60 vitest (+9 wsInvalidations + the 11 from
+  step 1), `npm run build` green. R4.2/R4.3 are now unblocked
+  (the assistant-ui + agent-elements-derived cards adoption
+  requires React 19 + Tailwind v4, both landed in step 1c).
 - ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).

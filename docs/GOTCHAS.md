@@ -160,3 +160,65 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    arbitrary ids; the runtime's `ses_` assertion now rejects those.
    When porting a test to the mock, change the fixture id to
    `ses_whatever` and the wire-shape mock will pass.
+
+## Playwright e2e (R4.1, 2026-09-06)
+
+1. **Chromium build is version-pinned per Playwright release**.
+   `sweave-web/e2e/` runs via `npx playwright test`; the test driver
+   needs the exact chromium build that ships with the locked
+   `@playwright/test` version. `npx playwright install chromium` is
+   required when the Playwright version is bumped, OR when the
+   test environment doesn't have a matching build. The wave-1 +
+   R4.1 suites both pin a chromium build; local environments
+   without internet access (or with older browsers cached at a
+   different revision) will see the tests fail with
+   ``Executable doesn't exist at .../chromium_headless_shell-NNNN/...``.
+   The local gates (pytest + run.py --check + vitest + npm run
+   build) are the source of truth; the e2e suite is CI-time.
+   When the chromium version mismatches, the wave-1 e2e is the
+   simplest reproduction.
+
+2. **The e2e dev server is bound to ``127.0.0.1``**. The
+   ``playwright.config.ts`` webServer URL is ``http://127.0.0.1:3000``;
+   Vite by default binds to ``localhost`` (IPv6). When starting
+   the dev server manually (not via the webServer config), pass
+   ``--host 127.0.0.1`` so the URL check succeeds.
+
+## React Query invalidation map (R4.1, 2026-09-06)
+
+1. **The five WS events invalidate the smallest scope of
+   query keys**. The mapping lives in
+   ``sweave-web/src/context/wsInvalidations.ts`` (a pure
+   function; 9 vitest pin the contract). The AppProvider
+   subscribes once per event and iterates the returned key
+   list. Adding a new WS event is a 3-line change (one event
+   name in the switch, one entry in the AppProvider subscribe
+   loop, one vitest). The invalidation map must never
+   cross-invalidate: a session event for project p1 must not
+   touch project p2's session list. (Tests cover this in
+   ``wsInvalidations.test.ts``.)
+2. **``active_session.changed`` has a side effect beyond
+   query invalidation**: the AppProvider refetches
+   ``/sessions/active`` and patches its own state (the
+   topbar statusline + sidebar active-pill read it). The
+   invalidation map returns an empty list for this event;
+   the AppProvider's subscribe loop handles the refetch
+   directly (not through the map) so the side effect stays
+   in one place.
+
+## Tailwind v4 token format (R4.1 step 1c, 2026-09-06)
+
+1. **Each ``--color-*`` variable in the ``@theme`` block carries
+   a full ``rgb()`` value**, not a bare ``<r> <g> <b>`` tuple.
+   Tailwind v4 generates ``bg-<name>`` utilities that resolve to
+   ``var(--color-<name>)``; a bare tuple is not a valid CSS color
+   value. The runtime theme writer (``tokensToCssVariables`` in
+   ``src/lib/theme/tokens.ts``) wraps each preset tuple in
+   ``rgb()`` on write. Consumers reference the variable directly
+   (no ``rgb()`` wrapper): ``background-color: var(--color-background)``.
+2. **The runtime override path is RGB tuples** (the same shape
+   the preset tokens use). The custom-color editor writes via
+   ``hexToRgbTuple(hex)`` so the merged map is consistently
+   RGB-tuple. Pre-R4.1 step 1c the override was a hex string
+   (``#rrggbb``); post-migration the override is ``<r> <g> <b>``.
+   The localStorage round-trip tests reflect the new contract.

@@ -1,9 +1,9 @@
 # R4.1 — UX foundation: navigation tree, theme system, scaffold-first shell (execution plan)
 
-Status: planned, not started. Est. ~1 session. Predecessor: R4.0 (hotfix, lands first
-— chat must work before the foundation is reviewed). Supersedes the wave-2 draft
-(moved to `docs/R4_4_PLAN.md` — Memory/Agents/Settings land in R4.4, after the
-foundation and quality passes).
+Status: **done 2026-09-06** (5 commits; 4 implementation + 1 e2e/docs; ~1.2 session).
+Predecessor: R4.0 (hotfix, landed first — chat must work before the foundation is
+reviewed). Supersedes the wave-2 draft (moved to `docs/R4_4_PLAN.md` — Memory/Agents/
+Settings land in R4.4, after the foundation and quality passes).
 
 ## Rulings applied (2026-09-05 wave-1 review)
 - Project → session tree navigation is the backbone (per-project sessions; project
@@ -102,6 +102,58 @@ Delegation tree + detail views remain custom (no library covers them).
 - Scaffold-first can silently grow scope (a "stub" is really a feature) — the
   definition: layout + nav + empty states only; zero data wiring.
 
+## Execution summary (2026-09-06)
+
+Five commits on `master`. One step per implementation commit (steps 1, 1b,
+1c, 2, 3); step 4 (gates + docs) folded into the final commit. Step 1c
+was inserted mid-execution by the user ruling (R4.2/R4.3 adopt
+assistant-ui + agent-elements-derived cards, which require React 19 +
+Tailwind v4).
+
+1. `R4.1 step 1` — Custom-color UI: 8-token picker (background /
+   foreground / primary / primary-fg / border / muted / muted-fg /
+   accent) + 'Reset to preset' button, mounted in the ThemeSwitcher
+   dropdown. `rgbTupleToHex` / `hexToRgbTuple` helpers for picker
+   round-trip. 11 new vitest (51 total).
+2. `R4.1 step 1b` — Backend WS events: 5 events published from
+   `sweave/web/routers/projects.py` (project.created / project.deleted
+   / session.created / session.deleted / active_session.changed;
+   unified names, no legacy aliases). 6 new pytest (458 total).
+3. `R4.1 step 1c` — Stack upgrade: React 18.3.1 → 19.2.8 (lucide-react
+   bumped for React 19 peer); Tailwind 3.4 → 4.3.3 (CSS-first `@theme`;
+   no `tailwind.config.js` / `postcss.config.js`; `@tailwindcss/vite`
+   plugin). Tokens migrated to full `rgb()` values so v4 utilities
+   resolve without arbitrary-value wrappers. All 51 vitest pass;
+   build green.
+4. `R4.1 step 2` — Foundation nav: `ProjectSwitcher` (dropdown of
+   all projects) + `SessionTree` (always-visible per-project session
+   list with active highlight + inline create-session form) wired
+   into the Sidebar. AppProvider subscribes to the 5 WS events
+   and invalidates the smallest scope of React Query keys; the
+   mapping is in `src/context/wsInvalidations.ts` (9 vitest pin
+   the contract). 9 new vitest (60 total).
+5. `R4.1 step 3` — Scaffolds: `/delegations/:id` (R4.3), `/memory`,
+   `/agents`, `/settings` (R4.4) — designed stubs with the
+   'Pending R4.X' badge; honest scaffolds, not fake UI. Sidebar
+   nav extended with a 'Pane shells' section.
+6. `R4.1 step 4` — E2E spec (`sweave-web/e2e/foundation-nav.spec.ts`,
+   6 tests) + DESIGN/PROJECT_STATE/R4 hub status updates. The
+   Playwright suite is CI-time per the wave-1 pattern (chromium
+   1243 dependency not bundled in this repo).
+
+**460/460 pytest** (was 452; +8), 13/13 `run.py --check`, 60 vitest
+(+9 + 11), `npm run build` green. R4.2 / R4.3 are now unblocked
+(React 19 + Tailwind v4 prerequisite met).
+
+## Amendments during execution
+
+- **Step 1c inserted** (2026-09-06, user ruling): the R4.2/R4.3
+  stack direction (assistant-ui + agent-elements-derived cards)
+  requires React 19 + Tailwind v4. The upgrade lands as R4.1
+  step 1c, between 1b (backend WS events) and 2 (foundation
+  nav). One commit, end-to-end; tokens stay RGB-tuple per the
+  R4.1 ruling; presets + custom-color picker survive the
+  migration.
 
 ## Direction note (R4.2/R4.3)
 Chat thread mechanics adopt **assistant-ui** (custom runtime adapter fed by our
