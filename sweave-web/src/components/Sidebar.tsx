@@ -16,7 +16,15 @@
  * is R4.4 too (the R4.1 amendment: foundation nav only).
  */
 import { NavLink, useLocation } from "react-router-dom";
-import { MessageSquare, Network, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  MessageSquare,
+  Network,
+  ChevronLeft,
+  ChevronRight,
+  Brain,
+  Users,
+  Settings,
+} from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/utils/cn";
 import { useApp } from "@/context/AppProvider";
@@ -24,9 +32,15 @@ import { useWS } from "@/context/WSProvider";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { SessionTree } from "./SessionTree";
 
-const NAV = [
+const FUNNELS = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/children", label: "Children", icon: Network },
+] as const;
+
+const SCAFFOLDS = [
+  { to: "/memory", label: "Memory", icon: Brain, milestone: "R4.4" },
+  { to: "/agents", label: "Agents", icon: Users, milestone: "R4.4" },
+  { to: "/settings", label: "Settings", icon: Settings, milestone: "R4.4" },
 ] as const;
 
 export function Sidebar() {
@@ -84,7 +98,7 @@ export function Sidebar() {
             <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
               Funnels
             </div>
-            {NAV.map(({ to, label, icon: Icon }) => (
+            {FUNNELS.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -100,6 +114,30 @@ export function Sidebar() {
               >
                 <Icon size={16} />
                 <span>{label}</span>
+              </NavLink>
+            ))}
+            <div className="px-2 py-1 mt-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+              Pane shells
+            </div>
+            {SCAFFOLDS.map(({ to, label, icon: Icon, milestone }) => (
+              <NavLink
+                key={to}
+                to={to}
+                data-testid={`nav-${to.slice(1)}`}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors",
+                    isActive || location.pathname.startsWith(to)
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )
+                }
+              >
+                <Icon size={16} />
+                <span className="flex-1">{label}</span>
+                <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-700 border border-amber-500/30">
+                  {milestone}
+                </span>
               </NavLink>
             ))}
           </nav>
