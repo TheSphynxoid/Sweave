@@ -67,3 +67,7 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# UI test artifacts
+test-results/
+playwright-report/

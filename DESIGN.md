@@ -546,7 +546,8 @@ retired. Playwright e2e suite in `sweave-web/e2e/` (CI gate; local
 pytest gate uses `playwright test --list` to pin suite registration).
 Wave 2 backlog: Memory tab, Agents workbench (the R4-workbench vision from
 the M1.2 era), Settings panes (models/routing/memory/catalog picker -- old
-UI_PLAN items). Funnel-leak list (M1.9) is the wave-1 spec; all leaks closed
+UI_PLAN items) + **Specialist gallery** (LobeChat-Market-inspired:
+browse/install specialist presets, import/export via Omnigent-spec YAML). Funnel-leak list (M1.9) is the wave-1 spec; all leaks closed
 by step 4 (session picker, promote inline, answer inline). Gate: self-hosting
 dogfood on wave 1 (real task through the UI; friction list -> R4.1).
 
