@@ -222,3 +222,39 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    RGB-tuple. Pre-R4.1 step 1c the override was a hex string
    (``#rrggbb``); post-migration the override is ``<r> <g> <b>``.
    The localStorage round-trip tests reflect the new contract.
+
+## Opencode serve CMD window stays open after a turn crash (R4.2, 2026-09-07)
+
+1. **Symptom**: When the opencode serve dies mid-stream (e.g. the
+   connection is reset or the process crashes), the user sees a
+   black CMD window that stays open indefinitely. The chat turn
+   appears "frozen" -- the assistant bubble never finalizes.
+
+2. **Root causes** (two independent bugs):
+
+   a. **Error-prefix mismatch** (fixed in R4.2 step 0 hotfix):
+      The runtime's error sentinel was ` [error: ...] ` but the
+      chat loop checked for ` [chat error: ` (see
+      `sweave/chat/loop.py` lines 492, 549). The first-turn error
+      didn't match, so the chat loop fell through to a wasteful
+      synthesis turn (another full orchestrator call) that also
+      failed. The user waited ~30-60s for the turn to finish.
+      **Fixed**: the runtime now returns ` [chat error: ...] `.
+
+   b. **Periodic `sweep_idle` never runs** (still open):
+      The opencode serve process is never reaped because the
+      `ServeRunnerRegistry.sweep_idle()` method exists but is
+      never called. The M1.3 design intended a periodic task to
+      shut down idle serves; the periodic task was never wired.
+      The CMD window (the opencode serve process) lives on.
+
+3. **Workarounds** (until the sweep is wired):
+   - Manual cleanup: `python stop_server.py` (calls
+     `ServeRunnerRegistry.shutdown_all`).
+   - Or `taskkill /IM opencode.exe /F` in an admin shell.
+
+4. **Tracking**: The periodic sweep is tracked as a follow-up
+   (not in the R4.2 scope per the "no backend change" non-goal,
+   but the root cause of the stray CMD windows). When the sweep
+   lands, the idle TTL (default 5 min) will clean up stray
+   serves automatically.
