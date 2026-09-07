@@ -36,6 +36,28 @@ tree/detail stay custom (R4.3).
   adapter is a *view projection* of our WS stream + REST history — no
   browser-to-opencode calls.
 
+**Decision (recorded 2026-09-07): REJECT `@assistant-ui/react-opencode`; adopt
+`useExternalStoreRuntime` with a custom adapter.**
+
+Evidence (assistant-ui docs + npm registry, 2026-09-07):
+- `useOpenCodeRuntime({ baseUrl: "http://localhost:4096" })` opens an **SSE event
+  stream directly against the OpenCode serve from the browser** and is layered on
+  `ExternalStoreRuntime` + `RemoteThreadList` via `@opencode-ai/sdk`. The browser
+  would talk straight to the serve — bypassing our backend funnel (transcript
+  composition, memory recall/synthesis, delegation gating, and the R4.0
+  per-Session orchestrator binding). This violates the plan's hard rule
+  ("no browser-to-opencode calls").
+- `useExternalStoreRuntime` (from `@assistant-ui/react`) is the designed
+  fallback and is what the opencode adapter itself is built on: same primitives
+  (`Thread`, `Composer`, `AssistantRuntimeProvider`), our state. The adapter is a
+  view projection: REST history (`GET /api/sessions/{id}`) → thread messages;
+  WS `chat.delta` → in-flight assistant message; `message.added` → finalize;
+  `delegation.status_changed` → turn status. Capability-based: providing
+  `onNew`/`onCancel`/`setMessages`/`queue` turns on the matching UI affordances
+  (the `queue` adapter maps to our serial-turn semantics).
+- Package pinned: `@assistant-ui/react@0.15.18` (exact; peer `react ^18 || ^19` —
+  React 19 satisfied by R4.1 step 1c). `npm run build` green with it installed.
+
 ### Step 1 — Thread runtime integration ~0.4
 - Implement the adapter: REST history load (`GET /api/sessions/{id}`) → runtime
   messages; WS `chat.delta` → append deltas to the running assistant message;
