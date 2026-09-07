@@ -134,6 +134,23 @@ This amendment does not change the **decision** in step 0
 the **scope** of step 2: the polish work moves from "step-3 finish"
 to "step 2-pre prerequisite."
 
+## Planner rulings (2026-09-07, answering the hand-back)
+
+1. **Multi-round + visual gate.** 2-pre (polish) is its own execution round;
+   the round gate is the user's visual sign-off of `/chat` against the
+   LibreChat reference BEFORE 2b/2c build on it. R4.2 step numbering:
+   2-pre (this round) -> 2b -> 2c -> 3.
+2. **Stop affordance: wire it.** Surface a stop button hitting the existing
+   chat-loop cancel path. If the cancel path proves non-trivial at
+   implementation time, degrade to disabled-with-tooltip and move it to R4.3
+   (record which happened).
+3. **Edit + rerun: deferred to R4.3** (semantics with the serial queue and the
+   Session.messages system of record need design). The polish step ships a
+   small REAL action bar (copy message, timestamp) — no disabled fake buttons.
+4. **chat-lab: replacement confirmed.** The real-Thread lab replaces the
+   markdown-only lab; the markdown demo survives as a section inside it;
+   `Markdown.test.tsx` renderer tests stay (they pin the component).
+
 ## Explicit non-goals
 - Children tree / detail view / promote (R4.3). Memory/Agents/Settings (R4.4).
 - Voice, attachments (later waves). Multi-turn parallel conversations in one
