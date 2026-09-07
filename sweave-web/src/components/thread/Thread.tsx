@@ -21,6 +21,7 @@ import {
 } from "@assistant-ui/react";
 import { ArrowUp } from "lucide-react";
 import { cn } from "@/utils/cn";
+import { AssistantTextPart } from "./markdown/AssistantTextPart";
 
 // ---------------------------------------------------------------------------
 // Thread
@@ -67,8 +68,10 @@ function Message() {
       </MessagePrimitive.If>
       <MessagePrimitive.If assistant>
         <div className="flex justify-start">
-          <div className="max-w-[92%] rounded-lg px-3 py-2 bg-card border border-border text-foreground text-sm whitespace-pre-wrap">
-            <MessagePrimitive.Parts />
+          <div className="max-w-[92%] rounded-lg px-3 py-2 bg-card border border-border text-foreground text-sm">
+            <MessagePrimitive.Parts
+              components={{ Text: AssistantTextPart }}
+            />
           </div>
         </div>
       </MessagePrimitive.If>

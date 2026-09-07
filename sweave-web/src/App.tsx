@@ -26,6 +26,7 @@ import { SettingsPage } from "@/pages/Settings";
 import { DelegationDetailPage } from "@/pages/DelegationDetail";
 import { NotFoundPage } from "@/pages/NotFound";
 import { ThemeApplier } from "@/components/ThemeApplier";
+import { ChatLab } from "@/dev/chat-lab/ChatLab";
 import "@/styles/globals.css";
 
 export default function App() {
@@ -54,6 +55,12 @@ export default function App() {
                 <Route path="memory" element={<MemoryPage />} />
                 <Route path="agents" element={<AgentsPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                {/* R4.2 step 2a: dev-only chat-lab visual test.
+                    Gated by import.meta.env.DEV so the lab is
+                    tree-shaken from the production bundle. */}
+                {import.meta.env.DEV && (
+                  <Route path="dev/chat-lab" element={<ChatLab />} />
+                )}
                 <Route path="*" element={<NotFoundPage />} />
               </Route>
             </Routes>
