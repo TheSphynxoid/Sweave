@@ -16,10 +16,12 @@ Covers:
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import Any
 
 import pytest
+from contextlib import asynccontextmanager
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +337,93 @@ async def test_runtime_send_message_mixed_sync_and_async_callbacks():
     )
     assert out == "xyz"
     assert received == ["a:x", "a:y", "a:z"]
+
+
+# ---------------------------------------------------------------------------
+# R4.0 / R4.2 hotfix (2026-09-07): error-prefix contract.
+#
+# The chat loop (``sweave/chat/loop.py`` lines 492 + 549) short-circuits a
+# hard-failed first/synthesis turn on the ``[chat error:`` prefix --
+# skipping the second orchestrator call when the first one already
+# errored. The previous prefix (``[error:``) didn't match, so the
+# prefix was effectively dead and every error triggered a wasted
+# synthesis turn (~30-60s wait on a doomed run). The user reported a
+# "frozen" turn: the second orchestrator call was hanging on a
+# connection that the opencode serve had already closed (the
+# ``httpx.ReadError`` from ``_send_message`` reached the chat loop,
+# but only via the wasteful second attempt). This test pins the
+# contract so a future refactor can't reintroduce the bug.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingProcess:
+    """Minimal OpenCodeProcess-shaped stub whose ``_client.stream``
+    raises ``httpx.ReadError`` (the symptom the user reported:
+    the opencode serve died mid-stream)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    @property
+    def _session_id(self) -> str:
+        return "ses_real_001"
+
+    @property
+    def _client(self) -> Any:  # type: ignore[override]
+        outer = self
+
+        class _Client:
+            def stream(self, *args: Any, **kwargs: Any) -> Any:
+                # ``async with process._client.stream(...)`` calls
+                # ``__aenter__`` on the returned context manager; the
+                # exception is raised there, which is the same
+                # surface as the live httpx error.
+                @asynccontextmanager  # type: ignore[misc]
+                async def _cm() -> Any:
+                    raise outer._exc
+                    yield  # pragma: no cover -- unreachable
+
+                return _cm()
+
+        return _Client()
+
+
+@pytest.mark.asyncio
+async def test_runtime_send_message_read_error_surfaces_chat_error_prefix(caplog):
+    """``httpx.ReadError`` (opencode serve died mid-stream) must
+    surface as ``[chat error: ReadError: ...]`` so the chat loop's
+    hard-fail branch fires and skips the wasteful synthesis turn.
+    The traceback is logged at WARNING/DEBUG, NOT surfaced to the
+    user -- a stack trace in the chat bubble is noise.
+    """
+    import contextlib  # noqa: F401 -- used by the inline stub
+    import logging
+
+    import httpx
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+    from sweave.runtime.trace_log import TraceLog
+
+    proc = _RaisingProcess(
+        httpx.ReadError("peer closed connection without sending complete response")
+    )
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    trace = TraceLog("d1", base_dir=__import__("pathlib").Path(".").resolve().parent / "tests" / "_scratch_readerror")
+
+    with caplog.at_level(logging.WARNING, logger="sweave.runtime.specialist_runtime"):
+        out = await runtime._send_message(
+            proc,  # type: ignore[arg-type]
+            {"parts": [{"type": "text", "text": "hi"}]},
+            trace,
+        )
+
+    # The prefix is the contract the chat loop checks.
+    assert out.startswith("[chat error: "), (
+        f"expected [chat error: ...] prefix; got: {out[:80]!r}"
+    )
+    # The exception class is in the surfaced text (so the user can
+    # tell what failed) but the traceback is NOT.
+    assert "ReadError" in out
+    assert "Traceback" not in out
+    # The traceback IS logged for the dev (WARNING + DEBUG).
+    assert any("SpecialistRuntime._send_message failed" in r.message for r in caplog.records)

@@ -526,8 +526,28 @@ class SpecialistRuntime:
                             # and routes through the explicit error
                             # path.
         except Exception as e:
+            # R4.0 / R4.2 hotfix (2026-09-07): the chat loop checks for the
+            # ``[chat error:`` prefix (see ``sweave/chat/loop.py`` lines
+            # 492 + 549) to short-circuit a hard-failed first/synthesis
+            # turn -- the second orchestrator call would otherwise
+            # also error and the user waits ~30-60s on a doomed run.
+            # The previous prefix (``[error:``) didn't match the
+            # chat-loop check, so the prefix was effectively dead and
+            # every error triggered a wasted synthesis turn. The full
+            # traceback is logged at WARNING (dev visibility) but is
+            # NOT surfaced to the user -- a stack trace in the chat
+            # is noise, the dev sees it in the backend log.
             import traceback as _tb
-            return f"[error: {type(e).__name__}: {e}]\n{_tb.format_exc()}"
+            logger.warning(
+                "SpecialistRuntime._send_message failed: %s\n%s",
+                type(e).__name__,
+                e,
+            )
+            logger.debug(
+                "SpecialistRuntime._send_message traceback:\n%s",
+                _tb.format_exc(),
+            )
+            return f"[chat error: {type(e).__name__}: {e}]"
         trace.append("output_text", {"chunks": len(text_parts), "length": sum(len(t) for t in text_parts)})
         return "".join(text_parts)
 
