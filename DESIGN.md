@@ -599,6 +599,27 @@ tree + detail views remain custom (no library covers them);
 R4.2/R4.3 will lift cards from agent-elements (MIT shadcn
 registry) per §8.
 
+### R4.2 — Chat surface to the quality bar (in execution; 2026-09-07 amendment)
+
+**Status: hand-back to planning.** Step 0 (adapter spike) and step 1
+(custom `useExternalStoreRuntime` adapter over our REST + WS
+contract) are shipped (`docs/R4_2_PLAN.md` step 0 decision: REJECT
+`@assistant-ui/react-opencode`; ADOPT `useExternalStoreRuntime`).
+Step 2a (markdown + GFM + copy button + dev-only `/dev/chat-lab`)
+is shipped. The user reviewed the `/chat` surface and rejected it
+as "unpolished and frankly bad" — the chat renders but looks bare.
+
+**The visual polish is the bulk of step 2, not a step-3 cosmetic
+finish.** The full design spec (per-region surface spec anchored
+on LibreChat v0.8.x + assistant-ui shadcn registry, a visual
+test approach that replaces the markdown-only lab with a real-Thread
+lab, and a proposed step-2-pre polish step) is in
+`docs/R4_2_VISUAL_POLISH.md`. The plan amendment referencing it is
+in `docs/R4_2_PLAN.md` ("Amendment (2026-09-07, user ruling —
+mid-execution)"). The planner will amend the step structure; the
+executor hands back here without shipping the polish work in the
+same round.
+
 ### R4.4 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
 
 Three panes (Memory → Agents workbench → Settings), sequenced by

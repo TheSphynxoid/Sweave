@@ -102,6 +102,38 @@ Evidence (assistant-ui docs + npm registry, 2026-09-07):
   `docs/R4_2_PLAN.md` status + execution summary, §8 adoption entry updated with
   the adapter verdict.
 
+## Amendment (2026-09-07, user ruling — mid-execution)
+
+**The visual polish is the bulk of step 2, not a step-3 cosmetic finish.**
+
+The user reviewed the `/chat` surface after R4.2 step 1 + step 2a
+shipped and rejected it as "unpolished and frankly bad." The R4.2
+plan under-scoped the visual polish — steps 2b/2c/3 only build cards
++ keyboard polish on top of a bare-bones Thread. The bars named in
+`DESIGN.md §8` (assistant-ui shadcn registry + agent-elements, LibreChat
+visual/interaction reference) are the contract; the work to reach
+them is the primary deliverable, not garnish.
+
+**Full design spec**: `docs/R4_2_VISUAL_POLISH.md`. The spec
+diagnoses the gap (per region: thread, message bubble, tool / thinking
+surfaces, composer, sidebar, header), specifies the surfaces to the
+LibreChat v0.8.x + assistant-ui shadcn-registry bar, specifies the
+visual test (replace the markdown-only `/dev/chat-lab` with a
+real-Thread visual test — the current lab is a component gallery
+that couldn't have surfaced the polish gap), and proposes a new
+step structure: a **"2-pre" polish step (~0.6)** that copies the
+assistant-ui shadcn-registry Thread + supporting primitives and
+builds the polished message bubble / composer / scroll viewport
+before 2b/2c/3. The open questions for the planner (round
+boundaries, cancel affordance, edit affordance, lab removal) are
+listed at the end of the design spec.
+
+This amendment does not change the **decision** in step 0
+(REJECT `@assistant-ui/react-opencode`; use
+`useExternalStoreRuntime` with a custom adapter) — it changes
+the **scope** of step 2: the polish work moves from "step-3 finish"
+to "step 2-pre prerequisite."
+
 ## Explicit non-goals
 - Children tree / detail view / promote (R4.3). Memory/Agents/Settings (R4.4).
 - Voice, attachments (later waves). Multi-turn parallel conversations in one
