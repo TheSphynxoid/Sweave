@@ -141,6 +141,13 @@ to "step 2-pre prerequisite."
    LibreChat reference BEFORE 2b/2c build on it. R4.2 step numbering:
    2-pre (this round) -> 2b -> 2c -> 3.
 2. **Stop affordance: wire it.** Surface a stop button hitting the existing
+   VERIFIED (planner, 2026-09-07): the claim was wrong as stated - the
+   asyncio.Lock is a queue gate, not a cancel path; no cancel endpoint exists;
+   JobRunner handles CancelledError -> failed/error=cancelled (plumbing exists) but
+   nothing triggers it. opencode HAS POST /session/{id}/abort (v2, verified in the
+   reference clone). Total work = endpoint + task cancellation + abort call + status
+   semantics => NON-TRIVIAL -> degrade clause triggers: ship disabled-with-tooltip,
+   cancel affordance moves to R4.3 (design note: opencode abort endpoint exists).
    chat-loop cancel path. If the cancel path proves non-trivial at
    implementation time, degrade to disabled-with-tooltip and move it to R4.3
    (record which happened).
