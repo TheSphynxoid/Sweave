@@ -1,204 +1,279 @@
 /**
- * Sweave chat runtime adapter (R4.2 step 0 — spike skeleton).
+ * Sweave chat runtime adapter (R4.2 step 1 — pure state machine).
  *
- * DECISION (recorded in docs/R4_2_PLAN.md, 2026-09-07):
- * `@assistant-ui/react-opencode` is REJECTED — its `useOpenCodeRuntime`
- * opens an SSE stream straight to the opencode serve from the browser,
- * bypassing our backend funnel (transcript composition, memory,
- * delegation gating, the R4.0 per-Session binding). We adopt
- * `useExternalStoreRuntime` (from `@assistant-ui/react`) with a custom
- * adapter instead: the same primitives, our state.
+ * DECISION (R4.2 step 0): `@assistant-ui/react-opencode` is REJECTED.
+ * We adopt `useExternalStoreRuntime` (from `@assistant-ui/react`) with
+ * a custom adapter over our REST + WS contract.
  *
- * The adapter is a VIEW PROJECTION of our backend contract:
- *   - REST history (`GET /api/sessions/{id}` → messages) is the
- *     source of truth for the thread.
+ * The adapter is a VIEW PROJECTION:
+ *   - REST history (`GET /api/sessions/{id}` → messages) is authoritative.
  *   - WS `chat.delta {session_id, delegation_id, text}` patches the
- *     in-flight assistant message (coalesced ~100ms; M1.8 invariant:
- *     patch in place, never re-render the whole thread).
- *   - WS `message.added` finalizes the authoritative persisted message.
- *   - WS `delegation.status_changed` drives turn status (queued /
- *     running / done) — the serial-turn indicator.
+ *     in-flight assistant bubble (coalesced; M1.8 invariant: patch in
+ *     place, never re-render the whole thread).
+ *   - WS `message.added` finalizes the authoritative persisted message
+ *     (user AND assistant messages both flow through here).
+ *   - WS `delegation.status_changed` drives the serial-turn indicator
+ *     (queued → running → done/failed).
  *
- * This module owns the PURE functions (message projection + event
- * mapping). The React hook that wraps them in
- * `useExternalStoreRuntime` lands in R4.2 step 1. Step 0 ships the
- * types + signatures + the trivial projection; the event mapping is
- * stubbed so step 1 fills it against the real WS envelope.
+ * One-turn event order (from sweave/chat/loop.py `_run_turn_body` +
+ * `_finalise_turn`), all scoped by `session_id`:
+ *   1. `message.added` (user)      — the optimistic user message is
+ *                                   confirmed by this persisted copy.
+ *   2. `delegation.status_changed` (running)
+ *   3. `chat.delta` × N            — streaming deltas, keyed by
+ *                                   `delegation_id`.
+ *   4. `delegation.status_changed` (done | failed)
+ *   5. `message.added` (assistant) — `metadata.delegation_id` is the
+ *                                   join key; this replaces the bubble.
+ *
+ * This module is PURE (no React). The React hook in step 1b wraps it in
+ * `useExternalStoreRuntime`. All functions are side-effect free and the
+ * state machine is fully deterministic per event sequence -- the vitest
+ * suite pins the ordering + finalize + queue semantics.
  */
 import type { SessionMessage } from "@/types";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 
 // ---------------------------------------------------------------------------
-// Types
+// State model
 // ---------------------------------------------------------------------------
 
-/** One turn of the orchestrator's serial queue (per session). */
-export type SweaveTurnState = "idle" | "queued" | "running";
-
-/** A WS `chat.delta` event (the backend envelope, narrowed). */
-export interface ChatDeltaEvent {
-  session_id: string;
-  delegation_id: string;
-  text: string;
-}
-
-/** A WS `delegation.status_changed` event (the backend envelope, narrowed). */
-export interface DelegationStatusEvent {
-  delegation_id: string;
-  status: string;
-  agent?: string;
-  task_id?: string;
-}
+/** Serial-turn state per session. */
+export type TurnState = "idle" | "queued" | "running";
 
 /**
- * The adapter's message model. A single list carries both the
- * persisted messages (REST history, authoritative) and the
- * in-flight streaming assistant message (the last element while a
- * turn runs). The projection flattens this into
- * ``ThreadMessageLike[]`` for assistant-ui.
+ * One entry in the adapter's message list. The list carries both
+ * the authoritative persisted messages and the optimistic/streaming
+ * ones; the projection flattens it into ``ThreadMessageLike[]``.
  */
-export interface SweaveChatMessage {
-  /** Persisted message (authoritative) or the optimistic/streaming one. */
+export interface ChatEntry {
   message: SessionMessage;
-  /** True when this entry is the in-flight streaming assistant message. */
+  /** True for the in-flight assistant bubble (gets a "running" status in the thread). */
   streaming: boolean;
-  /** The delegation driving the in-flight turn (streaming entries only). */
+  /** Join key for streaming/finalize (chat turn delegation id). */
   delegationId?: string;
+  /** True for a locally-optimistic user message (not yet confirmed by the server). */
+  optimistic?: boolean;
 }
 
-/**
- * The adapter's full state. ``messages`` is the projection source;
- * ``turn`` is the serial-queue indicator; ``sessionId`` scopes every
- * WS event (events for other sessions are ignored).
- */
-export interface SweaveChatRuntimeState {
-  sessionId: string | null;
-  messages: SweaveChatMessage[];
-  turn: SweaveTurnState;
-  /** Delegation currently streaming (the one the turn belongs to). */
+export interface SweaveThreadState {
+  entries: ChatEntry[];
+  turn: TurnState;
   activeDelegationId: string | null;
 }
 
-export function initialRuntimeState(sessionId: string | null): SweaveChatRuntimeState {
-  return { sessionId, messages: [], turn: "idle", activeDelegationId: null };
+export function initialThreadState(): SweaveThreadState {
+  return { entries: [], turn: "idle", activeDelegationId: null };
 }
 
-// ---------------------------------------------------------------------------
-// Projection: REST history + streaming entries -> ThreadMessageLike[]
-// ---------------------------------------------------------------------------
-
-/**
- * Project one persisted/streaming entry into an assistant-ui
- * ``ThreadMessageLike``. Only ``user`` and ``assistant`` roles map
- * to thread messages today; ``system``/``tool`` records are part of
- * the session detail but are NOT rendered as thread bubbles (they
- * belong to the delegation detail view / tool cards, R4.2 step 2).
- *
- * A streaming entry gets ``status: { type: "running" }`` so
- * assistant-ui renders the "still generating" affordance; the
- * finalized entry (post ``message.added``) gets the default
- * complete status.
- */
-export function projectMessage(entry: SweaveChatMessage): ThreadMessageLike | null {
-  const { message, streaming } = entry;
-  if (message.role !== "user" && message.role !== "assistant") return null;
-  const content: ThreadMessageLike["content"] = [
-    { type: "text", text: message.content },
-  ];
-  const like: ThreadMessageLike = {
-    id: message.id,
-    role: message.role,
-    content,
-  };
-  if (streaming) {
-    // TODO(R4.2 step 1): confirm the exact status shape against
-    // the installed @assistant-ui/react 0.15.18 types when the
-    // hook lands. The running status is what turns on the
-    // streaming affordance in the Thread.
-    (like as { status?: unknown }).status = { type: "running" };
-  }
-  return like;
-}
-
-/**
- * Project the full state's message list. Streaming entries render
- * as their current accumulated text (the coalescer's latest).
- */
-export function projectMessages(
-  state: SweaveChatRuntimeState,
-): ThreadMessageLike[] {
-  const out: ThreadMessageLike[] = [];
-  for (const entry of state.messages) {
-    const projected = projectMessage(entry);
-    if (projected) out.push(projected);
-  }
-  return out;
-}
-
-/**
- * Fold the REST history (from ``GET /api/sessions/{id}``) into the
- * initial adapter state. Every persisted message is authoritative;
- * no streaming entries yet.
- */
-export function stateFromHistory(
-  sessionId: string,
-  history: SessionMessage[],
-): SweaveChatRuntimeState {
+/** Fold REST history into the initial authoritative state. */
+export function stateFromHistory(messages: SessionMessage[]): SweaveThreadState {
   return {
-    sessionId,
-    messages: history.map((message) => ({ message, streaming: false })),
+    entries: messages.map((message) => ({ message, streaming: false })),
     turn: "idle",
     activeDelegationId: null,
   };
 }
 
+/** Synthetic id prefix for optimistic user messages. */
+const OPTIMISTIC_PREFIX = "local-";
+
 // ---------------------------------------------------------------------------
-// Event mapping (STUBBED — R4.2 step 1 fills these against the real
-// WS envelope; the signatures below are the contract).
+// Projection -> ThreadMessageLike[]
+// ---------------------------------------------------------------------------
+
+function textContent(text: string): ThreadMessageLike["content"] {
+  return [{ type: "text", text }];
+}
+
+/** Project one entry; only user/assistant become thread bubbles. */
+export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
+  const { message, streaming } = entry;
+  if (message.role !== "user" && message.role !== "assistant") return null;
+  const like: ThreadMessageLike = {
+    id: message.id,
+    role: message.role,
+    content: textContent(message.content),
+  };
+  if (streaming) {
+    (like as { status?: unknown }).status = { type: "running" };
+  }
+  return like;
+}
+
+/** Project the full state's entries. */
+export function projectThread(state: SweaveThreadState): ThreadMessageLike[] {
+  const out: ThreadMessageLike[] = [];
+  for (const entry of state.entries) {
+    const p = projectEntry(entry);
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Event mapping (pure)
 // ---------------------------------------------------------------------------
 
 /**
- * STUB — apply a ``chat.delta`` event: append ``text`` to the
- * in-flight streaming assistant message (keyed by delegation id),
- * creating the entry on first delta. Scoped to the active session;
- * events for other sessions are ignored.
+ * Submit a user turn. Optimistically appends the user message and
+ * moves the turn to ``queued`` (the serial loop will run it next).
+ * The optimistic message is later reconciled by ``message.added``
+ * (the user role) matching the ``local-`` id.
  */
-export function applyChatDelta(
-  _state: SweaveChatRuntimeState,
-  _event: ChatDeltaEvent,
-): SweaveChatRuntimeState {
-  // TODO(R4.2 step 1): implement — map the coalesced delta onto
-  // the streaming entry for ``event.delegation_id``; set
-  // ``turn: "running"`` and ``activeDelegationId`` on the first
-  // delta of a turn.
-  throw new Error("applyChatDelta: not implemented (R4.2 step 1)");
+export function applySubmit(
+  state: SweaveThreadState,
+  content: string,
+): SweaveThreadState {
+  const optimistic: SessionMessage = {
+    id: `${OPTIMISTIC_PREFIX}${Date.now()}`,
+    role: "user",
+    content,
+    timestamp: new Date().toISOString(),
+    agent: null,
+    tool_name: null,
+    tool_result: null,
+    metadata: {},
+  };
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      { message: optimistic, streaming: false, optimistic: true },
+    ],
+    turn: "queued",
+  };
 }
 
 /**
- * STUB — apply a ``message.added`` event: replace the streaming
- * entry (matched by ``metadata.delegation_id``) with the
- * authoritative persisted message; clear the active delegation;
- * mark the turn complete.
+ * Apply a ``chat.delta`` event. Appends ``text`` to the streaming
+ * assistant bubble keyed by ``delegationId``, creating the bubble on
+ * the first delta. Also flips the turn to ``running`` + records the
+ * active delegation (fallback in case ``status_changed`` was missed).
+ */
+export function applyDelta(
+  state: SweaveThreadState,
+  delegationId: string,
+  text: string,
+): SweaveThreadState {
+  const existing = state.entries.find(
+    (e) => e.streaming && e.delegationId === delegationId,
+  );
+  if (existing) {
+    const entries = state.entries.map((e) =>
+      e.delegationId === delegationId && e.streaming
+        ? {
+            ...e,
+            message: { ...e.message, content: e.message.content + text },
+          }
+        : e,
+    );
+    return { ...state, entries, turn: "running", activeDelegationId: delegationId };
+  }
+
+  // First delta of the turn: create the streaming bubble.
+  const bubble: SessionMessage = {
+    id: `stream-${delegationId}`,
+    role: "assistant",
+    content: text,
+    timestamp: new Date().toISOString(),
+    agent: "orchestrator",
+    tool_name: null,
+    tool_result: null,
+    metadata: { delegation_id: delegationId },
+  };
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      { message: bubble, streaming: true, delegationId },
+    ],
+    turn: "running",
+    activeDelegationId: delegationId,
+  };
+}
+
+/**
+ * Extract the delegation join key from a persisted message's
+ * metadata, if present.
+ */
+export function delegationIdOf(message: SessionMessage): string | null {
+  const meta = message.metadata ?? {};
+  const id = meta.delegation_id;
+  return typeof id === "string" && id ? id : null;
+}
+
+/**
+ * Apply a ``message.added`` event (user or assistant).
+ *
+ * - user: reconcile the optimistic message. The optimistic entry (id
+ *   prefixed ``local-``) is replaced by the authoritative copy; if
+ *   there is no optimistic entry (e.g. a history replay), the message
+ *   is appended — with id-dedupe so a re-delivery is a no-op.
+ * - assistant: finalize. The streaming bubble (joined by
+ *   ``metadata.delegation_id``, or ``activeDelegationId`` as fallback)
+ *   is replaced by the authoritative message; the turn returns to
+ *   ``idle`` and the active delegation is cleared.
  */
 export function applyMessageAdded(
-  _state: SweaveChatRuntimeState,
-  _message: SessionMessage,
-): SweaveChatRuntimeState {
-  // TODO(R4.2 step 1): implement — the authoritative finalize
-  // (M1.8 invariant: message.added replaces the bubble).
-  throw new Error("applyMessageAdded: not implemented (R4.2 step 1)");
+  state: SweaveThreadState,
+  message: SessionMessage,
+): SweaveThreadState {
+  // Id-dedupe: re-delivery of the same persisted message is a no-op.
+  if (state.entries.some((e) => !e.streaming && e.message.id === message.id)) {
+    return state;
+  }
+
+  if (message.role === "user") {
+    const optimisticIdx = state.entries.findIndex(
+      (e) => e.optimistic && e.message.id.startsWith(OPTIMISTIC_PREFIX),
+    );
+    if (optimisticIdx >= 0) {
+      const entries = state.entries.slice();
+      entries[optimisticIdx] = { message, streaming: false };
+      return { ...state, entries };
+    }
+    return {
+      ...state,
+      entries: [...state.entries, { message, streaming: false }],
+    };
+  }
+
+  // assistant -> finalize
+  const join = delegationIdOf(message) ?? state.activeDelegationId;
+  const streamingIdx = state.entries.findIndex(
+    (e) => e.streaming && (join === null || e.delegationId === join),
+  );
+  if (streamingIdx >= 0) {
+    const entries = state.entries.slice();
+    entries[streamingIdx] = { message, streaming: false };
+    return { ...state, entries, turn: "idle", activeDelegationId: null };
+  }
+  return {
+    ...state,
+    entries: [...state.entries, { message, streaming: false }],
+    turn: "idle",
+    activeDelegationId: null,
+  };
 }
 
 /**
- * STUB — apply a ``delegation.status_changed`` event: update the
- * serial-queue indicator (queued → running → done/failed). The
- * ``done`` transition matches the turn boundary.
+ * Apply a ``delegation.status_changed`` event. Only the ``running``
+ * transition mutates state (queued → running + record the delegation);
+ * ``done``/``failed`` are informational — the authoritative close is
+ * the assistant ``message.added`` which always follows.
  */
 export function applyStatusChanged(
-  _state: SweaveChatRuntimeState,
-  _event: DelegationStatusEvent,
-): SweaveChatRuntimeState {
-  // TODO(R4.2 step 1): implement — turn-status projection; the
-  // "queued" status drives the serial-queue indicator.
-  throw new Error("applyStatusChanged: not implemented (R4.2 step 1)");
+  state: SweaveThreadState,
+  delegationId: string,
+  status: string,
+): SweaveThreadState {
+  if (status === "running") {
+    return {
+      ...state,
+      turn: "running",
+      activeDelegationId: delegationId,
+    };
+  }
+  return state;
 }
