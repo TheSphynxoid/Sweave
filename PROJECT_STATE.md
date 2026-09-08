@@ -611,6 +611,19 @@ setTimeout(() => {
 **Root cause**: The `UserMessage` component rendered `message.content` directly as a string, but `ThreadMessageLike` from assistant-ui expects `content` to be `Part[]` (array of parts) for ALL messages. The adapter's `projectEntry` correctly wrapped messages in `textContent()` (producing `[{type: "text", text: "..."}]`), but the UserMessage component didn't extract the text from parts.
 
 **Fix**: Added `extractText()` helper in `UserMessage` component (`sweave-web/src/components/thread/Thread.tsx`) to handle both string and `Part[]` content formats. Updated rendering and copy button to use extracted text.
+(Superseded by the R4.2 step 2-pre Thread rebuild — Parts slots render content now; see GOTCHAS.)
+
+### Bug 6: User messages duplicated on disk (Session 2026-09-08, commit `8ff681e`)
+**Root cause**: `POST /api/sessions/{id}/messages` persisted the user message AND then ran the chat loop, whose `_run_turn_body` persists it again — one POST produced TWO user rows + two `message.added` events. The UI's reconcile replaced the optimistic copy with the first event, then the second event (different id) appended another bubble. Refresh couldn't fix it because the duplication was in the system of record.
+**Fix**: when the chat loop owns the turn, only the loop persists + emits; non-user roles keep the persist-only contract. Verified with `scripts/ui-chat-repro.mjs` (one POST → one persisted user message). Pre-fix sessions keep their duplicated history (stale data).
+**Gotcha re-confirmed**: a stale server (PID file pointing at a dead process) kept serving pre-fix code while `start_server.py` reported success — always check `Get-NetTCPConnection -LocalPort 8100` → OwningProcess against the freshly started PID before trusting a fix.
+
+### Bug 7: Chat thread read as frozen while queued (Session 2026-09-08, commit `8ff681e`)
+**Root cause**: between submit and the first `chat.delta` there is no streaming bubble, so the thread showed nothing new while the orchestrator warmed up (tens of seconds on some models).
+**Fix**: `PendingTurnIndicator` in the Thread — avatar + shimmer, rendered while the run is in flight and the last message is still the user's; the streaming cursor takes over at the first delta.
+
+### Session-row hover overlap (Session 2026-09-08, commit `8ff681e`)
+The active session's check icon sat under the hover-revealed delete button. The check now fades on row hover (LibreChat/VSCode pattern: the affordance swaps in place).
 
 ---
 
