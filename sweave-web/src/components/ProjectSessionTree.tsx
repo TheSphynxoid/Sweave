@@ -277,7 +277,12 @@ function ProjectSessions({
             >
               <MessageSquare size={13} className="shrink-0" />
               <span className="truncate flex-1">{s.name}</span>
-              {isActive && <Check size={13} className="shrink-0" />}
+              {isActive && (
+                <Check
+                  size={13}
+                  className="shrink-0 transition-opacity group-hover:opacity-0"
+                />
+              )}
             </button>
             <button
               type="button"

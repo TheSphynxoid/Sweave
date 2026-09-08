@@ -48,6 +48,7 @@ import { Avatar } from "@/components/assistant-ui/elements/avatar";
 import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
+import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 import { cn } from "@/utils/cn";
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ export function Thread() {
               message.role === "user" ? <UserMessage /> : <AssistantMessage />
             }
           </ThreadPrimitive.Messages>
+          <PendingTurnIndicator />
         </div>
 
         <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto">
@@ -107,6 +109,31 @@ export function Thread() {
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pending turn indicator (the dead zone between submit and the first
+// chat.delta: no streaming bubble exists yet, so show a shimmer row
+// under the user's message instead of an apparently frozen thread)
+// ---------------------------------------------------------------------------
+
+function PendingTurnIndicator() {
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const messages = useAuiState((s) => s.thread.messages);
+  const lastRole = messages.length ? messages[messages.length - 1]?.role : undefined;
+  if (!isRunning || lastRole !== "user") return null;
+  return (
+    <div className="flex gap-3" data-testid="pending-turn-indicator">
+      <Avatar
+        size="sm"
+        className="mt-0.5 border border-border bg-card"
+        fallback={<Bot size={15} className="text-primary" />}
+      />
+      <div className="flex items-center py-2 text-sm">
+        <TextShimmer className="text-muted-foreground">Thinking…</TextShimmer>
+      </div>
+    </div>
   );
 }
 

@@ -244,20 +244,14 @@ async def api_add_message(
     message: MessageCreate,
     state: AppState = Depends(get_state),
 ):
-    try:
-        msg = await add_message(session_id, message)
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    except TypeError as e:
-        raise HTTPException(400, str(e))
-
     # M1.7 step 2: a user message drives the orchestrator chat loop.
-    # The user message is persisted; the loop then runs the
-    # orchestrator specialist and persists the assistant reply. Both
-    # messages are returned in the response (the user message that
-    # was just persisted, plus the assistant message the loop just
-    # produced). Non-user roles (system, tool, assistant) skip the
-    # loop -- the legacy persist-only contract is preserved.
+    # M1.8 fix (2026-09-08): when the chat loop owns the turn, the LOOP
+    # persists the user message + emits the single ``message.added``
+    # (its ``_run_turn_body`` step 1). The route used to persist first,
+    # so every user turn recorded TWO user messages (one POST -> two
+    # user rows on disk + two WS events; the UI then showed duplicated
+    # user bubbles). Non-user roles (system, tool, assistant) keep the
+    # legacy persist-only contract.
     if message.role == "user" and state.chat_loop is not None:
         try:
             assistant_msg = await state.chat_loop.run_turn(
@@ -266,19 +260,24 @@ async def api_add_message(
             )
             return {
                 "success": True,
-                "message": msg,
                 "assistant": assistant_msg,
             }
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from e
         except Exception as e:  # noqa: BLE001
             # The loop is best-effort from the router's perspective:
-            # if the orchestrator is unreachable, the user message is
-            # already persisted. Surface the error so the client can
-            # render it. The loop itself persists an explicit
-            # assistant error message in this case; the catch here is
-            # only for catastrophic loop failures (e.g. session not
-            # found -- which the persist call would already have
-            # rejected).
+            # if the orchestrator is unreachable, the loop itself
+            # persists an explicit assistant error message before this
+            # fires. Surface catastrophic failures (e.g. session not
+            # found) as a 500.
             raise HTTPException(500, f"chat loop error: {e}") from e
+
+    try:
+        msg = await add_message(session_id, message)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except TypeError as e:
+        raise HTTPException(400, str(e))
 
     return {"success": True, "message": msg}
 
