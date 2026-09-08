@@ -156,6 +156,8 @@ read that whole group first.
 | add a field to a Delegation or Session record | Delegation & Session schema |
 | wire a new orchestrator surface or add a new engine | Lifecycle & engine contracts |
 | construct a path for `agents.yaml` / home-anchored config | Paths & config |
+| touch the chat Thread / assistant-ui primitives / ThreadMessageLike projection | assistant-ui 0.15 primitives |
+| bulk-edit UTF-8 source files (string replaces, encodings) | sweave-web UI (last item) |
 | add a global-side-effect provider in sweave-web (WS, EventSource, long-poll) | sweave-web UI |
 
 ## Doc-editing discipline (binds every session)
