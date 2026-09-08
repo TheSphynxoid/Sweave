@@ -82,21 +82,42 @@ const OPTIMISTIC_PREFIX = "local-";
 // Projection -> ThreadMessageLike[]
 // ---------------------------------------------------------------------------
 
-function textContent(text: string): ThreadMessageLike["content"] {
-  return [{ type: "text", text }];
+function textContent(text: string, streaming: boolean): ThreadMessageLike["content"] {
+  return [
+    {
+      type: "text",
+      text,
+      // Per-part status: the strict ThreadMessageLike normalization
+      // requires it, and the Text slot components read it.
+      status: { type: streaming ? "running" : "complete" },
+    } as { type: "text"; text: string },
+  ];
 }
 
 /** Project one entry; only user/assistant become thread bubbles. */
 export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
   const { message, streaming } = entry;
   if (message.role !== "user" && message.role !== "assistant") return null;
+  // assistant-ui expects content as Part[] for all messages; the
+  // sanctioned metadata bag is `metadata.custom` (surfaced to the UI
+  // components via the message state; R4.2 step 2-pre).
   const like: ThreadMessageLike = {
     id: message.id,
     role: message.role,
-    content: textContent(message.content),
+    content: textContent(message.content, streaming),
+    metadata: {
+      custom: {
+        timestamp: message.timestamp ?? null,
+        delegationId: entry.delegationId ?? delegationIdOf(message),
+      },
+    },
   };
   if (streaming) {
     (like as { status?: unknown }).status = { type: "running" };
+  } else if (message.role === "assistant") {
+    // Non-running assistant messages need an explicit terminal status
+    // (the part-state normalization reads message.status.type).
+    (like as { status?: unknown }).status = { type: "complete", reason: "stop" };
   }
   return like;
 }

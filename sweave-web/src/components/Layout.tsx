@@ -9,6 +9,8 @@ import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Topbar } from "./Topbar";
 import { NotificationContainer } from "./NotificationContainer";
+import { CreateProjectDialog } from "./CreateProjectDialog";
+import { CommandPalette } from "./CommandPalette";
 
 export function Layout() {
   return (
@@ -21,6 +23,8 @@ export function Layout() {
         </main>
       </div>
       <NotificationContainer />
+      <CreateProjectDialog />
+      <CommandPalette />
     </div>
   );
 }

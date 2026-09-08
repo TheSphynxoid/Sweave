@@ -1,36 +1,40 @@
 /**
- * Sidebar (M1.9 Step 1, R4.1 Step 2).
+ * Sidebar (M1.9 Step 1, R4.1 Step 2, R4.4 polish).
  *
- * R4.1 Step 2 nav backbone: project switcher (dropdown of all
- * projects) + session tree (always-visible list of the active
- * project's sessions, with the active session highlighted) +
- * inline create-session form (at the bottom of the tree) +
- * primary nav (Chat + Children, the input + output funnels).
+ * Modern agent-shell nav: brand header + collapse toggle, the project
+ * switcher, the always-visible session tree, the primary funnels
+ * (Chat / Children) and the pane shells (Memory / Agents / Settings).
+ * Active items get a left accent bar (expanded) or a filled chip (collapsed);
+ * section labels + counts keep it scannable. A ⌘K hint at the bottom opens
+ * the command palette.
  *
- * The session tree is the foundation of the chat/children
- * navigation: every surface scopes to the active session. The
- * inline create-session form closes the M1.9 funnel leak
- * (creating a session previously required leaving the chat).
- *
- * Memory / Agents / Settings are R4.4; the project-create entry
- * is R4.4 too (the R4.1 amendment: foundation nav only).
+ * Nav items are deliberately SEPARATE rounded buttons with a small gap
+ * (space-y-1) rather than a margin-less connected toolbar — that is the
+ * shadcn / agent-UI convention and reads cleaner at 36px height.
  */
 import { NavLink, useLocation } from "react-router-dom";
+import { type LucideIcon } from "lucide-react";
 import {
   MessageSquare,
   Network,
-  ChevronLeft,
-  ChevronRight,
   Brain,
   Users,
   Settings,
+  ChevronLeft,
+  ChevronRight,
+  Command,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/utils/cn";
 import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
-import { ProjectSwitcher } from "./ProjectSwitcher";
-import { SessionTree } from "./SessionTree";
+import { useUIStore } from "@/store/ui";
+import { ProjectSessionTree } from "./ProjectSessionTree";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Kbd } from "@/components/ui/kbd";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 
 const FUNNELS = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
@@ -38,25 +42,65 @@ const FUNNELS = [
 ] as const;
 
 const SCAFFOLDS = [
-  { to: "/memory", label: "Memory", icon: Brain, milestone: "R4.4" },
-  { to: "/agents", label: "Agents", icon: Users, milestone: "R4.4" },
-  { to: "/settings", label: "Settings", icon: Settings, milestone: "R4.4" },
+  { to: "/memory", label: "Memory", icon: Brain },
+  { to: "/agents", label: "Agents", icon: Users },
+  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
+
+type NavItemDef = { to: string; label: string; icon: LucideIcon };
+
+function NavItem({ item, collapsed }: { item: NavItemDef; collapsed?: boolean }) {
+  const location = useLocation();
+  const active = location.pathname === item.to || location.pathname.startsWith(item.to);
+  const Icon = item.icon;
+
+  if (collapsed) {
+    return (
+      <NavLink
+        to={item.to}
+        title={item.label}
+        aria-label={item.label}
+        data-testid={`nav-${item.to.slice(1)}`}
+        className={cn(
+          "grid h-10 w-10 place-items-center rounded-lg transition-colors mx-auto",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+          active
+            ? "bg-primary/10 text-primary"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+      >
+        <Icon size={18} className="shrink-0" />
+      </NavLink>
+    );
+  }
+
+  return (
+    <NavLink
+      to={item.to}
+      data-testid={`nav-${item.to.slice(1)}`}
+      className={cn(
+        "group relative flex h-9 items-center gap-3 rounded-lg pl-4 pr-3 text-sm font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+        active
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+      )}
+    >
+      {active && (
+        <span className="absolute left-0.5 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-primary" />
+      )}
+      <Icon size={17} className="shrink-0" />
+      <span className="flex-1 truncate">{item.label}</span>
+    </NavLink>
+  );
+}
 
 export function Sidebar() {
   const [open, setOpen] = useState(true);
   const { activeSession } = useApp();
   const { state: wsState } = useWS();
-  const location = useLocation();
+  const setCommandOpen = useUIStore((s) => s.setCommandOpen);
 
-  const connLabel =
-    wsState === "open"
-      ? "Connected"
-      : wsState === "connecting"
-        ? "Connecting"
-        : wsState === "reconnecting"
-          ? "Reconnecting"
-          : "Disconnected";
   const connClass =
     wsState === "open"
       ? "bg-emerald-500"
@@ -68,97 +112,105 @@ export function Sidebar() {
     <aside
       data-testid="sidebar"
       className={cn(
-        "flex flex-col border-r border-border bg-card transition-[width] duration-200",
-        open ? "w-72" : "w-16",
+        "flex flex-col border-r border-border bg-card transition-[width] duration-200 ease-in-out",
+        open ? "w-64" : "w-[4.5rem]",
       )}
     >
-      <div className="flex items-center justify-between h-14 px-4 border-b border-border">
-        {open && (
-          <span className="text-base font-bold tracking-tight">Sweave</span>
+      <div className="flex items-center justify-between h-14 px-3 border-b border-border shrink-0">
+        {open ? (
+          <div className="flex items-center gap-2 overflow-hidden">
+            <div className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground font-bold text-sm shrink-0">
+              S
+            </div>
+            <span className="text-base font-semibold tracking-tight truncate">Sweave</span>
+          </div>
+        ) : (
+          <div className="mx-auto grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground font-bold text-sm">
+            S
+          </div>
         )}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0"
           aria-label={open ? "Collapse sidebar" : "Expand sidebar"}
           onClick={() => setOpen(!open)}
-          className="p-1.5 rounded hover:bg-muted"
         >
-          {open ? <ChevronLeft size={18} /> : <ChevronRight size={18} />}
-        </button>
+          {open ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+        </Button>
       </div>
+
       {open && (
-        <>
-          <div className="p-3 space-y-3 border-b border-border">
-            <ProjectSwitcher />
-            <SessionTree />
-          </div>
-          <nav
-            className="flex-1 overflow-y-auto p-3 space-y-1"
-            aria-label="Primary"
-          >
-            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-              Funnels
-            </div>
-            {FUNNELS.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                data-testid={`nav-${to.slice(1)}`}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors",
-                    isActive || location.pathname.startsWith(to)
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )
-                }
-              >
-                <Icon size={16} />
-                <span>{label}</span>
-              </NavLink>
-            ))}
-            <div className="px-2 py-1 mt-2 text-[10px] uppercase tracking-wide text-muted-foreground">
-              Pane shells
-            </div>
-            {SCAFFOLDS.map(({ to, label, icon: Icon, milestone }) => (
-              <NavLink
-                key={to}
-                to={to}
-                data-testid={`nav-${to.slice(1)}`}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors",
-                    isActive || location.pathname.startsWith(to)
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )
-                }
-              >
-                <Icon size={16} />
-                <span className="flex-1">{label}</span>
-                <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-700 border border-amber-500/30">
-                  {milestone}
-                </span>
-              </NavLink>
-            ))}
-          </nav>
-          <div className="border-t border-border p-3 space-y-1 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <span className={cn("w-2 h-2 rounded-full", connClass)} />
-              <span>{connLabel}</span>
-            </div>
-            {activeSession && (
-              <div
-                className="truncate font-mono text-[10px]"
-                title={activeSession.orchestrator_session_id ?? activeSession.id}
-              >
-                {activeSession.orchestrator_session_id
-                  ? `orch: ${activeSession.orchestrator_session_id.slice(0, 12)}…`
-                  : activeSession.id}
-              </div>
-            )}
-          </div>
-        </>
+        <div className="p-3 border-b border-border">
+          <ProjectSessionTree />
+        </div>
       )}
+
+      <ScrollArea className="flex-1">
+        <nav aria-label="Primary" className="space-y-1 px-3 py-3">
+          {open && (
+            <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Funnels
+            </p>
+          )}
+          {FUNNELS.map((item) => (
+            <NavItem key={item.to} item={item} collapsed={!open} />
+          ))}
+
+          {open && (
+            <p className="px-2 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Panes
+            </p>
+          )}
+          {SCAFFOLDS.map((item) => (
+            <NavItem key={item.to} item={item} collapsed={!open} />
+          ))}
+        </nav>
+      </ScrollArea>
+
+      <Separator />
+      <div className={cn("p-3 space-y-2", !open && "flex flex-col items-center")}>
+        <Button
+          variant="outline"
+          onClick={() => setCommandOpen(true)}
+          data-testid="command-palette-trigger"
+          className={cn(
+            "w-full justify-start gap-2 text-sm text-muted-foreground",
+            !open && "w-10 justify-center px-0",
+          )}
+          title="Command palette"
+        >
+          <Command size={15} />
+          {open && (
+            <>
+              <span className="flex-1 text-left">Command</span>
+              <Kbd>⌘K</Kbd>
+            </>
+          )}
+        </Button>
+        <div
+          className={cn(
+            "flex items-center gap-2 px-1 text-xs text-muted-foreground",
+            !open && "flex-col gap-1 px-0",
+          )}
+        >
+          <span className={cn("w-2 h-2 rounded-full shrink-0", connClass)} />
+          {open ? (
+            <span className="capitalize">
+              {wsState === "open" ? "Connected" : wsState}
+            </span>
+          ) : (
+            <span className="sr-only">
+              {wsState === "open" ? "Connected" : wsState}
+            </span>
+          )}
+          {open && activeSession && (
+            <Badge variant="muted" className="ml-auto truncate max-w-[8rem]">
+              {activeSession.name}
+            </Badge>
+          )}
+        </div>
+      </div>
     </aside>
   );
 }

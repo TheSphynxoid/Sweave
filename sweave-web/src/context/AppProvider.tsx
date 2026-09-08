@@ -128,6 +128,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
             })();
           }
+          // R4.4: if the active project was deleted, drop both the
+          // active project + session pointers so the UI falls back to
+          // the empty "create a project" state instead of showing a
+          // stale, now-nonexistent project.
+          if (eventName === "project.deleted") {
+            const deletedName = (env.data as { name?: string }).name;
+            if (deletedName && activeProject?.name === deletedName) {
+              setActiveProject(null);
+              setActiveSession(null);
+            }
+          }
         }),
       );
     }

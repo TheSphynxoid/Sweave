@@ -1,110 +1,383 @@
 /**
- * Assistant-ui Thread, Message and Composer (R4.2 step 1) — built
- * from assistant-ui primitives, shadcn-style (we own this code).
+ * Assistant-ui Thread, Message and Composer (R4.2 step 2-pre).
  *
- * Step 1 renders plain text bubbles (whitespace-pre-wrap). Markdown +
- * code highlighting + tool cards land in step 2 (agent-elements-derived
- * copied components). Session management stays in the R4.1 tree; the
- * thread header (create/switch/rename in-thread) lands in step 3.
+ * Built against the INSTALLED @assistant-ui/react 0.15.18 primitive
+ * API (canonical anatomy per the registry Thread element):
  *
- * API note (assistant-ui 0.15.18): the deprecated `components={...}`
- * form of `ThreadPrimitive.Messages` can't coexist with `children`
- * (used for the empty state), so we use the render-function children
- * form and render the empty placeholder at the Viewport level via
- * ``useThreadIsEmpty``.
+ *   ThreadPrimitive.Root
+ *     ThreadPrimitive.Viewport (autoScroll + turnAnchor="bottom")
+ *       AuiIf empty  -> Welcome (suggested prompts)
+ *       AuiIf loading-> HistorySkeleton
+ *       ThreadPrimitive.Messages -> {({message}) => user|assistant}
+ *       ThreadPrimitive.ViewportFooter
+ *         ThreadPrimitive.ScrollToBottom + Composer
+ *
+ * Message components read their own state via the ambient message
+ * scope (`useAuiState((s) => s.message...)`); content renders through
+ * `MessagePrimitive.Parts` with the Text slot. Timestamps + the
+ * delegation id ride in `metadata.custom` (projected by
+ * `src/lib/chat/runtime.ts`).
+ *
+ * Rulings (2026-09-07): the action bar is REAL affordances only
+ * (copy + timestamp); edit/regenerate/fork are R4.3 (no disabled fake
+ * buttons); the composer stop affordance is disabled-with-tooltip
+ * (no backend cancel path yet; opencode /abort verified for R4.3).
  */
+
 import {
   ThreadPrimitive,
   MessagePrimitive,
   ComposerPrimitive,
+  ActionBarPrimitive,
+  AuiIf,
   useAuiState,
+  useAui,
 } from "@assistant-ui/react";
-import { ArrowUp } from "lucide-react";
-import { cn } from "@/utils/cn";
+import {
+  ArrowDown,
+  ArrowUp,
+  Bot,
+  Check,
+  Copy,
+  OctagonX,
+  Sparkles,
+  User,
+} from "lucide-react";
+import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { Avatar } from "@/components/assistant-ui/elements/avatar";
+import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
+import { cn } from "@/utils/cn";
 
 // ---------------------------------------------------------------------------
 // Thread
 // ---------------------------------------------------------------------------
 
+const SUGGESTED_PROMPTS = [
+  "Help me understand this codebase",
+  "Write a test for the auth module",
+  "Refactor the chat component",
+  "Explain the delegation flow",
+];
+
 export function Thread() {
-  const isEmpty = useAuiState((s) => s.thread.isEmpty);
   return (
-    <ThreadPrimitive.Root className="flex flex-col h-full min-h-0">
+    <ThreadPrimitive.Root
+      className="flex h-full min-h-0 flex-col bg-transparent"
+      style={{ ["--thread-max-width" as string]: "48rem" }}
+    >
       <ThreadPrimitive.Viewport
-        className="flex-1 overflow-y-auto scrollbar-thin"
+        autoScroll
+        turnAnchor="bottom"
+        scrollToBottomOnRunStart
+        scrollToBottomOnThreadSwitch
+        scrollToBottomOnInitialize
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin"
         data-testid="thread-viewport"
       >
-        {isEmpty && (
-          <div
-            data-testid="thread-empty"
-            className="flex items-center justify-center h-full text-sm text-muted-foreground py-8"
-          >
-            Send a message to start the conversation.
-          </div>
-        )}
-        <ThreadPrimitive.Messages>
-          {() => <Message />}
-        </ThreadPrimitive.Messages>
+        <AuiIf condition={(s) => s.thread.isEmpty && !s.thread.isLoading}>
+          <Welcome prompts={SUGGESTED_PROMPTS} />
+        </AuiIf>
+
+        <AuiIf condition={(s) => s.thread.isLoading && !s.thread.isEmpty}>
+          <HistorySkeleton />
+        </AuiIf>
+
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pb-6 pt-4">
+          <ThreadPrimitive.Messages>
+            {({ message }) =>
+              message.role === "user" ? <UserMessage /> : <AssistantMessage />
+            }
+          </ThreadPrimitive.Messages>
+        </div>
+
+        <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto">
+          <ThreadPrimitive.ScrollToBottom asChild>
+            <button
+              type="button"
+              aria-label="Scroll to bottom"
+              data-testid="thread-scroll-to-bottom"
+              className="mx-auto mb-2 grid h-8 w-8 place-items-center rounded-full border border-border bg-popover text-muted-foreground shadow-md transition-opacity hover:text-foreground disabled:opacity-0"
+            >
+              <ArrowDown size={15} />
+            </button>
+          </ThreadPrimitive.ScrollToBottom>
+          <Composer />
+        </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
-      <Composer />
     </ThreadPrimitive.Root>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Message
+// Welcome (empty-thread state with suggested prompts)
 // ---------------------------------------------------------------------------
 
-function Message() {
+function Welcome({ prompts }: { prompts: string[] }) {
+  const aui = useAui();
   return (
-    <MessagePrimitive.Root className="group/message relative mx-auto w-full max-w-3xl px-4 py-1">
-      <MessagePrimitive.If user>
-        <div className="flex justify-end">
-          <div className="max-w-[80%] rounded-lg px-3 py-2 bg-primary/10 text-foreground text-sm whitespace-pre-wrap">
-            <MessagePrimitive.Parts />
-          </div>
-        </div>
-      </MessagePrimitive.If>
-      <MessagePrimitive.If assistant>
-        <div className="flex justify-start">
-          <div className="max-w-[92%] rounded-lg px-3 py-2 bg-card border border-border text-foreground text-sm">
-            <MessagePrimitive.Parts
-              components={{ Text: AssistantTextPart }}
-            />
-          </div>
-        </div>
-      </MessagePrimitive.If>
-    </MessagePrimitive.Root>
+    <div
+      data-testid="welcome-screen"
+      className="mx-auto my-auto flex w-full max-w-2xl flex-col items-center px-4 py-10"
+    >
+      <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border border-border bg-card shadow-sm">
+        <Sparkles size={24} className="text-primary" />
+      </div>
+      <h2 className="text-lg font-semibold tracking-tight">Sweave orchestrator</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Start a conversation or pick a suggested prompt.
+      </p>
+      <div className="mt-6 grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+        {prompts.map((prompt, i) => (
+          <button
+            key={i}
+            type="button"
+            data-testid={`suggested-prompt-${i}`}
+            onClick={() => aui.thread.append(prompt)}
+            className="rounded-xl border border-border bg-card px-3.5 py-3 text-left text-sm text-foreground/90 transition-colors hover:border-ring hover:bg-accent"
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Composer
+// History loading skeleton (thread switch)
+// ---------------------------------------------------------------------------
+
+function HistorySkeleton() {
+  return (
+    <div
+      data-testid="history-skeleton"
+      className="mx-auto w-full max-w-3xl space-y-4 px-4 py-6"
+      aria-busy="true"
+    >
+      <div className="flex gap-3">
+        <Skeleton className="h-8 w-8 rounded-full" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-4 w-1/3" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      </div>
+      <div className="flex justify-end">
+        <Skeleton className="h-10 w-1/2 rounded-2xl" />
+      </div>
+      <div className="flex gap-3">
+        <Skeleton className="h-8 w-8 rounded-full" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-4 w-1/2" />
+          <Skeleton className="h-4 w-3/4" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Message metadata (projected via metadata.custom)
+// ---------------------------------------------------------------------------
+
+interface SweaveCustom {
+  timestamp?: string | null;
+  delegationId?: string | null;
+}
+
+function useMessageCustom(): SweaveCustom {
+  const metadata = useAuiState((s) => s.message.metadata);
+  return ((metadata as { custom?: SweaveCustom } | undefined)?.custom ?? {}) as SweaveCustom;
+}
+
+function formatTimestamp(ts: string | null | undefined): string | null {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ---------------------------------------------------------------------------
+// Assistant message (avatar + header + markdown body + footer/action bar)
+// ---------------------------------------------------------------------------
+
+function AssistantMessage() {
+  const custom = useMessageCustom();
+  const messageId = useAuiState((s) => s.message.id);
+  const isRunning = useAuiState((s) => s.message.status?.type === "running");
+  const time = formatTimestamp(custom.timestamp);
+
+  return (
+    <div
+      className="group/message flex gap-3"
+      data-testid="assistant-message-row"
+      data-message-id={messageId}
+    >
+      <Avatar
+        size="sm"
+        className="mt-0.5 border border-border bg-card"
+        fallback={<Bot size={15} className="text-primary" />}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex items-center gap-2 text-xs">
+          <span className="font-medium text-foreground">Assistant</span>
+          {custom.delegationId && (
+            <span
+              className="rounded border border-border bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground"
+              title={`Chat turn delegation ${custom.delegationId}`}
+            >
+              {custom.delegationId.slice(0, 8)}
+            </span>
+          )}
+        </div>
+
+        <div className="text-sm leading-relaxed">
+          <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
+          {isRunning && <span className="streaming-cursor" aria-hidden />}
+        </div>
+
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
+          <div className="flex-1" />
+          <AssistantActionBar />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Copy + timestamp only (ruling 3: no disabled fake buttons; R4.3 adds the rest).
+ * The Root unmounts itself on non-last messages and while the run is in
+ * flight (hideWhenRunning + autohide="not-last"), so no hover CSS is needed.
+ */
+function AssistantActionBar() {
+  const isCopied = useAuiState((s) => s.message.isCopied);
+  return (
+    <ActionBarPrimitive.Root
+      hideWhenRunning
+      autohide="not-last"
+      className="flex items-center gap-0.5"
+      data-testid="action-bar"
+    >
+      <ActionBarPrimitive.Copy asChild>
+        <TooltipIconButton
+          tooltip={isCopied ? "Copied" : "Copy"}
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7"
+        >
+          {isCopied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
+        </TooltipIconButton>
+      </ActionBarPrimitive.Copy>
+    </ActionBarPrimitive.Root>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// User message (right-aligned bubble + plain text)
+// ---------------------------------------------------------------------------
+
+function UserPlainText({
+  text,
+  part,
+}: {
+  text?: string;
+  part?: { text?: string };
+}) {
+  const value = text ?? part?.text ?? "";
+  return <span className="whitespace-pre-wrap">{value}</span>;
+}
+
+function UserMessage() {
+  const custom = useMessageCustom();
+  const messageId = useAuiState((s) => s.message.id);
+  const time = formatTimestamp(custom.timestamp);
+
+  return (
+    <div
+      className="flex justify-end"
+      data-testid="user-message-row"
+      data-message-id={messageId}
+    >
+      <div className="flex max-w-[75%] items-end gap-2">
+        <div className="flex min-w-0 flex-col items-end gap-1">
+          <div className="rounded-2xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-sm shadow-sm transition-shadow group-hover/message:shadow-md">
+            <MessagePrimitive.Parts components={{ Text: UserPlainText }} />
+          </div>
+          {time && <time className="pr-1 text-[11px] text-muted-foreground/70">{time}</time>}
+        </div>
+        <Avatar
+          size="sm"
+          className="border border-border bg-card"
+          fallback={<User size={15} className="text-muted-foreground" />}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Composer (Enter sends / Shift+Enter newline via ComposerPrimitive;
+// stop affordance disabled-with-tooltip per the 2026-09-07 ruling)
 // ---------------------------------------------------------------------------
 
 function Composer() {
+  const isEmpty = useAuiState((s) => s.composer.isEmpty);
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+
   return (
-    <ComposerPrimitive.Root className="border-t border-border p-3 flex items-end gap-2">
-      <ComposerPrimitive.Input
-        placeholder="Write a message…"
-        autoFocus
-        data-testid="chat-composer-input"
-        className={cn(
-          "flex-1 resize-none bg-input rounded-lg px-3 py-2 text-sm",
-          "border border-border focus:outline-none focus:ring-2 focus:ring-ring",
-          "min-h-[40px] max-h-[200px]",
+    <div className="px-4 pb-4">
+      <ComposerPrimitive.Root
+        className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-lg focus-within:border-ring/60"
+        data-testid="chat-composer"
+      >
+        <ComposerPrimitive.Input
+          placeholder={isRunning ? "The orchestrator is replying…" : "Write a message…"}
+          autoFocus
+          rows={1}
+          data-testid="chat-composer-input"
+          className="max-h-40 min-h-[38px] flex-1 resize-none bg-transparent px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+        />
+        {isRunning ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  disabled
+                  data-testid="chat-composer-stop"
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground opacity-60"
+                >
+                  <OctagonX size={16} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Stop lands with R4.3 (cancel path)</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          <ComposerPrimitive.Send asChild>
+            <button
+              type="button"
+              aria-label="Send message"
+              data-testid="chat-composer-send"
+              className={cn(
+                "grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors",
+                "bg-primary text-primary-foreground hover:bg-primary/90",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "disabled:cursor-not-allowed disabled:opacity-40",
+              )}
+              disabled={isEmpty}
+            >
+              <ArrowUp size={16} />
+            </button>
+          </ComposerPrimitive.Send>
         )}
-      />
-      <ComposerPrimitive.Send asChild>
-        <button
-          type="button"
-          data-testid="chat-composer-send"
-          className="shrink-0 p-2 rounded-lg bg-primary text-primary-foreground hover:opacity-80 disabled:opacity-50"
-        >
-          <ArrowUp size={16} />
-        </button>
-      </ComposerPrimitive.Send>
-    </ComposerPrimitive.Root>
+      </ComposerPrimitive.Root>
+      <p className="mx-auto mt-1.5 w-full max-w-3xl text-center text-[10px] text-muted-foreground/60">
+        Enter to send · Shift+Enter for a newline
+      </p>
+    </div>
   );
 }

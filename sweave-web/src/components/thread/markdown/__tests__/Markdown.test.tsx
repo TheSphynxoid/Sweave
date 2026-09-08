@@ -9,7 +9,7 @@
  * partial markdown (unclosed code fence) pins the contract.
  */
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Markdown } from "../Markdown";
 import { AssistantTextPart } from "../AssistantTextPart";
 import { ChatLab } from "../../../../dev/chat-lab/ChatLab";
@@ -93,24 +93,48 @@ describe("AssistantTextPart", () => {
   });
 });
 
-describe("ChatLab (visual test gallery)", () => {
-  it("renders every step-2 surface", () => {
+describe("ChatLab (real-Thread visual test)", () => {
+  it("renders the seeded thread inside the real Thread (markdown + code blocks survive)", () => {
     render(<ChatLab />);
-    // Top-level container
     expect(screen.getByTestId("chat-lab")).toBeTruthy();
-    // At least one assistant bubble with a code block + copy
-    // button is present (the full-markdown section).
+    // The seeded assistant message renders through the real
+    // MessagePrimitive.Parts -> AssistantTextPart -> Markdown path.
+    expect(screen.getAllByTestId("assistant-message-row").length).toBe(2);
+    expect(screen.getAllByTestId("user-message-row").length).toBe(2);
+    // The markdown demo survives as seeded content: a code block
+    // with the copy affordance is present.
     const copies = screen.getAllByTestId("markdown-copy-code");
     expect(copies.length).toBeGreaterThan(0);
   });
 
-  it("renders the user-message section with plain text (no markdown)", () => {
+  it("renders the user message as plain text (no markdown)", () => {
     render(<ChatLab />);
-    // The user bubble contains the literal text the user typed.
-    // (The markdown sections don't render the string "?" in the
-    // exact same form -- the assistant message has "?" inside
-    // a table cell, so the user bubble's text is its own match.)
-    const userText = screen.getByText("What does the chat-lab show?");
+    const userText = screen.getByText("Show me what the chat surface renders.");
     expect(userText).toBeTruthy();
+  });
+
+  it("shows the action bar (copy) only on the last assistant message", () => {
+    render(<ChatLab />);
+    // autohide="not-last": the bar unmounts on non-last messages.
+    const bars = screen.getAllByTestId("action-bar");
+    expect(bars.length).toBe(1);
+  });
+
+  it("renders the welcome screen with suggested prompts when emptied", () => {
+    render(<ChatLab />);
+    fireEvent.click(screen.getByTestId("lab-btn-empty"));
+    expect(screen.getByTestId("welcome-screen")).toBeTruthy();
+    expect(screen.getByTestId("suggested-prompt-0").textContent).toContain(
+      "Help me understand this codebase",
+    );
+  });
+
+  it("mid-stream: composer swaps send for the disabled stop affordance", () => {
+    render(<ChatLab />);
+    fireEvent.click(screen.getByTestId("lab-btn-stream"));
+    // The stop affordance appears while the run is in flight
+    // (disabled-with-tooltip per the 2026-09-07 ruling).
+    const stop = screen.getByTestId("chat-composer-stop");
+    expect(stop.hasAttribute("disabled")).toBe(true);
   });
 });

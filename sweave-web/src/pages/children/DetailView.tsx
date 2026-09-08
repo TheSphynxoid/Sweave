@@ -18,7 +18,9 @@ import { useQuery } from "@tanstack/react-query";
 import { X, ChevronDown, ChevronRight } from "lucide-react";
 import { useState, useEffect } from "react";
 import { api } from "@/api/client";
-import { cn } from "@/utils/cn";
+import { BashTool } from "@/components/agent-elements/tools/bash-tool";
+import { EditTool } from "@/components/agent-elements/tools/edit-tool";
+import { AgentToolCard } from "@/components/agent/AgentToolCard";
 import type { DelegationDetail, ToolTimelineEntry } from "@/types";
 
 export interface DetailViewProps {
@@ -172,40 +174,25 @@ function ToolTimelineSection({
       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
         Tool timeline
       </h3>
-      <ul className="space-y-1">
+      <ul className="space-y-2">
         {tools.map((t) => (
           <li
             key={t.callID}
             data-testid={`tool-${t.callID}`}
-            className="border border-border rounded p-2"
+            className="animate-in fade-in-0 slide-in-from-bottom-1"
           >
-            <div className="flex items-center gap-2 text-xs">
-              <span className="font-mono text-muted-foreground">
-                {t.callID}
-              </span>
-              {t.tool && (
-                <span className="px-1.5 py-0.5 bg-muted rounded">{t.tool}</span>
-              )}
-              {t.status && (
-                <span
-                  className={cn(
-                    "px-1.5 py-0.5 rounded",
-                    t.status === "completed" && "bg-emerald-500/15 text-emerald-700",
-                    t.status === "error" && "bg-rose-500/15 text-rose-700",
-                    t.status === "running" && "bg-amber-500/15 text-amber-700",
-                  )}
-                >
-                  {t.status}
-                </span>
-              )}
-            </div>
-            {typeof t.output !== "undefined" && t.output !== null && (
-              <pre className="mt-1 text-[10px] font-mono whitespace-pre-wrap break-words p-1 bg-muted rounded max-h-32 overflow-auto">
-                {String(typeof t.output === "string" ? t.output : JSON.stringify(t.output, null, 2))}
-              </pre>
-            )}
-            {t.error && (
-              <p className="mt-1 text-[10px] text-rose-600 font-mono">{t.error}</p>
+            {isBashTool(t) ? (
+              <BashTool part={toBashPart(t)} />
+            ) : isEditTool(t) ? (
+              <EditTool part={toEditPart(t)} isCollapsible />
+            ) : (
+              <AgentToolCard
+                tool={t.tool ?? "tool"}
+                status={t.status ?? "unknown"}
+                input={t.input}
+                output={t.output}
+                error={t.error}
+              />
             )}
           </li>
         ))}
@@ -290,4 +277,62 @@ function StatusTimelineSection({
       </ul>
     </section>
   );
+}
+
+/** Map a backend tool timeline entry to the AI-SDK-style `part` shape the
+ *  agent-elements BashTool card expects. */
+function toBashPart(t: ToolTimelineEntry): Record<string, unknown> {
+  const state =
+    t.status === "completed"
+      ? "output-available"
+      : t.status === "running"
+        ? "input-streaming"
+        : "call";
+  const input =
+    typeof t.input === "object" && t.input
+      ? (t.input as Record<string, unknown>)
+      : { command: typeof t.input === "string" ? t.input : t.title ?? t.tool ?? "" };
+  return {
+    id: t.callID,
+    toolCallId: t.callID,
+    toolName: t.tool ?? "Bash",
+    state,
+    input,
+    output: t.output,
+    result: t.error ? { error: t.error } : t.output,
+  };
+}
+
+function isBashTool(t: ToolTimelineEntry): boolean {
+  return /bash|shell|terminal|sh$/i.test(t.tool ?? "") || (t.title ?? "").includes("$");
+}
+
+function isEditTool(t: ToolTimelineEntry): boolean {
+  const tool = t.tool ?? "";
+  if (!/edit|write|create|file|patch/i.test(tool)) return false;
+  const input = typeof t.input === "object" && t.input ? (t.input as Record<string, unknown>) : {};
+  return "file_path" in input || "old_string" in input || "new_string" in input || "path" in input;
+}
+
+function toEditPart(t: ToolTimelineEntry): Record<string, unknown> {
+  const state =
+    t.status === "completed"
+      ? "output-available"
+      : t.status === "running"
+        ? "input-streaming"
+        : "call";
+  const input =
+    typeof t.input === "object" && t.input
+      ? (t.input as Record<string, unknown>)
+      : {};
+  const isWrite = /write|create/i.test(t.tool ?? "");
+  return {
+    id: t.callID,
+    toolCallId: t.callID,
+    type: isWrite ? "tool-write" : "tool-edit",
+    state,
+    input,
+    output: t.output,
+    result: t.error ? { error: t.error } : t.output,
+  };
 }

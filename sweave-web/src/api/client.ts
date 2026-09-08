@@ -88,6 +88,13 @@ class ApiClient {
     return r.data;
   }
 
+  async deleteProject(name: string): Promise<{ success: boolean }> {
+    const r = await this.client.delete<{ success: boolean }>(
+      `/projects/${encodeURIComponent(name)}`,
+    );
+    return r.data;
+  }
+
   // ---- Sessions ----
 
   async listSessions(projectName?: string): Promise<SessionSummary[]> {
@@ -122,6 +129,13 @@ class ApiClient {
     const r = await this.client.post<{ success: boolean; active_session: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/active`,
       {},
+    );
+    return r.data;
+  }
+
+  async deleteSession(sessionId: string): Promise<{ success: boolean }> {
+    const r = await this.client.delete<{ success: boolean }>(
+      `/sessions/${encodeURIComponent(sessionId)}`,
     );
     return r.data;
   }
@@ -170,6 +184,17 @@ class ApiClient {
   ): Promise<{ success: boolean }> {
     const r = await this.client.delete<{ success: boolean }>(
       `/specialists/${encodeURIComponent(name)}?scope=${scope}`,
+    );
+    return r.data;
+  }
+
+  async setSpecialistModel(
+    name: string,
+    model: string,
+  ): Promise<SpecialistSummary> {
+    const r = await this.client.put<SpecialistSummary>(
+      `/specialists/${encodeURIComponent(name)}/model`,
+      { model },
     );
     return r.data;
   }
@@ -259,9 +284,63 @@ class ApiClient {
     return r.data.harnesses;
   }
 
+  async getMemoryBanks(): Promise<{ banks: { id: string; scope: string; name: string }[] }> {
+    const r = await this.client.get<{ banks: { id: string; scope: string; name: string }[] }>(
+      "/memory/banks",
+    );
+    return r.data;
+  }
+
   async listWorktrees(): Promise<Worktree[]> {
     const r = await this.client.get<{ worktrees: Worktree[] }>("/worktrees");
     return r.data.worktrees;
+  }
+
+  // ---- Memory (recall / retain / reflect) ----
+
+  async recallMemory(query: string, bankId?: string, limit = 10): Promise<unknown> {
+    const r = await this.client.post("/memory/recall", { query, bank_id: bankId, limit });
+    return r.data;
+  }
+
+  async retainMemory(content: string, bankId?: string, tags?: string[]): Promise<unknown> {
+    const r = await this.client.post("/memory/retain", { content, bank_id: bankId, tags });
+    return r.data;
+  }
+
+  // ---- Filesystem browser (project path picker) ----
+
+  async listDrives(): Promise<{ name: string; path: string; is_dir: boolean }[]> {
+    const r = await this.client.get<{ drives: { name: string; path: string; is_dir: boolean }[] }>(
+      "/fs/drives",
+    );
+    return r.data.drives;
+  }
+
+  async listDirectory(
+    path: string,
+  ): Promise<{ path: string; parent: string | null; entries: { name: string; path: string; is_dir: boolean }[] }> {
+    const r = await this.client.get<{ path: string; parent: string | null; entries: { name: string; path: string; is_dir: boolean }[] }>(
+      "/fs/list",
+      { params: { path } },
+    );
+    return r.data;
+  }
+
+  async validatePath(path: string): Promise<{ valid: boolean; path?: string; name?: string; error?: string }> {
+    const r = await this.client.post<{ valid: boolean; path?: string; name?: string; error?: string }>(
+      "/fs/validate",
+      { path },
+    );
+    return r.data;
+  }
+
+  async createDirectory(parent: string, name: string): Promise<{ success: boolean; path: string; name: string }> {
+    const r = await this.client.post<{ success: boolean; path: string; name: string }>(
+      "/fs/create",
+      { path: parent, name },
+    );
+    return r.data;
   }
 }
 

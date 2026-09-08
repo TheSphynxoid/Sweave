@@ -17,7 +17,11 @@
  * commit for the wrapping details.)
  */
 @import "tailwindcss";
+@import "tw-animate-css";
 @import './animations.css';
+@import "../components/agent-elements/agent-ui.css";
+
+@custom-variant dark (&:is([data-theme="dark"] *));
 
 @theme {
   --color-background: rgb(15 23 42);
@@ -40,7 +44,7 @@
   --color-ring: rgb(167 139 250);
   --color-input: rgb(30 41 59);
 
-  /* The static <style> element the runtime writes to starts
+  /* The static \3c style> element the runtime writes to starts
    * with a copy of the dark preset (the @theme defaults); the
    * :root[data-theme=...] selector then narrows per active
    * preset. The static CSS keeps the first paint unstyled. */
@@ -77,11 +81,13 @@
  * non-JS first paint; the runtime injection replaces them
  * per active preset.
  */
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
-}
+/* R4.2 step 2-pre fix: the previous unlayered universal reset
+ * (`padding: 0; margin: 0` on everything) outranked ALL Tailwind v4
+ * @layer utilities (unlayered styles beat layered ones regardless of
+ * specificity), silently disabling every padding and margin utility
+ * app-wide (topbar clipped at the window edge, composer flush,
+ * bubbles cramped). Tailwind's preflight already resets margins and
+ * paddings in @layer base -- this block must NOT exist unlayered. */
 
 html,
 body {
@@ -93,6 +99,21 @@ body {
    * rgb() wrapper. */
   background-color: var(--color-background);
   color: var(--color-foreground);
+}
+
+/* Subtle "agent" ambience: a faint primary-tinted glow in the
+ * top-right corner so the surface isn't a flat slab. */
+body {
+  background-image: radial-gradient(
+    48rem 48rem at 100% 0%,
+    color-mix(in oklch, var(--color-primary) 9%, transparent),
+    transparent 60%
+  );
+  background-attachment: fixed;
+}
+
+::selection {
+  background: color-mix(in oklch, var(--color-primary) 30%, transparent);
 }
 
 a {
@@ -126,5 +147,36 @@ button {
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklch, var(--color-muted-foreground) 30%, transparent) transparent;
+  }
+}
+
+/* Streaming cursor (R4.2 step 2-pre): a pulsing primary dot shown at
+ * the end of the assistant bubble while its status is "running".
+ * CSS-only (no JS animation loop); honors prefers-reduced-motion. */
+@keyframes sweave-caret-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 0.5rem;
+  height: 1rem;
+  margin-left: 0.3rem;
+  border-radius: 9999px;
+  background: var(--color-primary);
+  vertical-align: text-bottom;
+  animation: sweave-caret-pulse 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-cursor {
+    animation: none;
+    opacity: 0.6;
   }
 }

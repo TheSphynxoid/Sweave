@@ -1,31 +1,29 @@
 /**
- * Session tree (R4.1 step 2).
+ * Session tree (R4.1 step 2, R4.4 polish).
  *
- * The always-visible session list for the active project. The
- * active session is highlighted; clicking another session
- * switches to it via the AppProvider. The inline create-session
- * form sits at the bottom of the tree (the M1.9 funnel-leak
- * "you have to leave the chat to make a session" is closed by
- * surfacing the form right where the sessions live).
- *
- * The data is React-Query driven so the step-1b WS events
- * (``session.created`` / ``session.deleted`` /
- * ``active_session.changed``) refresh the tree without polling.
+ * Always-visible list of the active project's sessions with the active
+ * one highlighted, inline create form, and a per-row delete
+ * affordance. React-Query driven so WS ``session.created`` /
+ * ``session.deleted`` events refresh it without polling.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Plus, MessageSquare } from "lucide-react";
+import { Check, Plus, MessageSquare, Trash2, Loader2 } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
 import { cn } from "@/utils/cn";
 import type { SessionSummary } from "@/types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function SessionTree() {
-  const { activeProject, activeSession, setActiveSession, pushNotification } =
-    useApp();
+  const { activeProject, activeSession, setActiveSession, pushNotification } = useApp();
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const { data: sessions = [], isLoading } = useQuery<SessionSummary[]>({
     queryKey: ["sessions", activeProject?.name ?? null],
@@ -43,24 +41,26 @@ export function SessionTree() {
       });
     },
     onSuccess: async (res) => {
-      // The step-1b ``session.created`` WS event also invalidates
-      // this key; the explicit invalidation is the deterministic
-      // path (in case the WS event arrives after the navigation).
-      await qc.invalidateQueries({
-        queryKey: ["sessions", activeProject?.name],
-      });
+      await qc.invalidateQueries({ queryKey: ["sessions", activeProject?.name] });
       await setActiveSession(res.session.id);
       setName("");
     },
     onError: (err) => {
-      pushNotification(
-        "error",
-        `Failed to create session: ${(err as Error).message}`,
-      );
+      pushNotification("error", `Failed to create session: ${(err as Error).message}`);
     },
-    onSettled: () => {
-      setCreating(false);
+    onSettled: () => setCreating(false),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteSession(id),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["sessions", activeProject?.name] });
+      pushNotification("success", "Session deleted.");
     },
+    onError: (err) => {
+      pushNotification("error", `Failed to delete session: ${(err as Error).message}`);
+    },
+    onSettled: () => setDeleting(null),
   });
 
   const handleCreate = () => {
@@ -71,10 +71,7 @@ export function SessionTree() {
 
   if (!activeProject) {
     return (
-      <div
-        data-testid="session-tree-empty"
-        className="text-xs text-muted-foreground px-2 py-3"
-      >
+      <div data-testid="session-tree-empty" className="text-xs text-muted-foreground px-2 py-3">
         Select a project to see its sessions.
       </div>
     );
@@ -83,57 +80,67 @@ export function SessionTree() {
   return (
     <div data-testid="session-tree" className="space-y-1">
       <div className="flex items-center justify-between px-2 py-1">
-        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Sessions
         </span>
         <span className="text-[10px] text-muted-foreground">{sessions.length}</span>
       </div>
-      <ul className="space-y-0.5 max-h-64 overflow-y-auto">
-        {isLoading && (
-          <li className="px-2 py-1 text-xs text-muted-foreground">
-            Loading…
-          </li>
-        )}
-        {!isLoading && sessions.length === 0 && (
-          <li className="px-2 py-1 text-xs text-muted-foreground">
-            No sessions yet
-          </li>
-        )}
-        {sessions.map((s) => (
-          <li key={s.id}>
-            <button
-              type="button"
-              onClick={async () => {
-                if (s.id === activeSession?.id) return;
-                try {
-                  await setActiveSession(s.id);
-                } catch (err) {
-                  pushNotification(
-                    "error",
-                    `Failed to switch session: ${(err as Error).message}`,
-                  );
-                }
-              }}
-              data-testid={`session-tree-item-${s.id}`}
-              className={cn(
-                "w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs text-left",
-                activeSession?.id === s.id
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
-              <MessageSquare size={12} className="shrink-0" />
-              <span className="truncate flex-1">{s.name}</span>
-              {activeSession?.id === s.id && <Check size={12} />}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <div
-        data-testid="session-tree-create"
-        className="border-t border-border pt-2 mt-1 px-1 space-y-1"
-      >
-        <input
+      <ScrollArea className="max-h-56">
+        <ul className="space-y-0.5 pr-2">
+          {isLoading && (
+            <li className="px-2 py-1 text-xs text-muted-foreground">Loading…</li>
+          )}
+          {!isLoading && sessions.length === 0 && (
+            <li className="px-2 py-1 text-xs text-muted-foreground">No sessions yet</li>
+          )}
+          {sessions.map((s) => {
+            const isActive = activeSession?.id === s.id;
+            return (
+              <li key={s.id} className="group relative">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (s.id === activeSession?.id) return;
+                    try {
+                      await setActiveSession(s.id);
+                    } catch (err) {
+                      pushNotification("error", `Failed to switch session: ${(err as Error).message}`);
+                    }
+                  }}
+                  data-testid={`session-tree-item-${s.id}`}
+                  className={cn(
+                    "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-left transition-colors",
+                    isActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  <MessageSquare size={13} className="shrink-0" />
+                  <span className="truncate flex-1">{s.name}</span>
+                  {isActive && <Check size={13} className="shrink-0" />}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Delete ${s.name}`}
+                  onClick={() => {
+                    if (deleting) return;
+                    setDeleting(s.id);
+                    remove.mutate(s.id);
+                  }}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
+                >
+                  {deleting === s.id ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={13} />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </ScrollArea>
+      <Separator className="my-2" />
+      <div data-testid="session-tree-create" className="px-1 space-y-1">
+        <Input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -142,18 +149,19 @@ export function SessionTree() {
           }}
           placeholder="New session name"
           data-testid="session-tree-name-input"
-          className="w-full px-2 py-1 text-xs border border-border rounded bg-input"
+          className="w-full text-xs h-8"
+          disabled={creating}
         />
-        <button
+        <Button
           type="button"
           onClick={handleCreate}
           disabled={creating}
           data-testid="session-tree-create-btn"
-          className="w-full flex items-center justify-center gap-1 px-2 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50"
+          className="w-full gap-1 text-xs h-8"
         >
-          <Plus size={12} />
+          {creating ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
           New session
-        </button>
+        </Button>
       </div>
     </div>
   );

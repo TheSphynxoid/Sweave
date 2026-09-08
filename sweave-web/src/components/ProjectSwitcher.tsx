@@ -1,32 +1,35 @@
 /**
- * Project switcher (R4.1 step 2).
+ * Project switcher (R4.1 step 2, R4.4).
  *
- * A small dropdown of every project; the active project is
- * highlighted. The list comes from React Query (the
- * ``["projects"]`` key) so the same data drives the Sessions
- * tree below -- the user can pick a project and watch the
- * sessions refresh without a page reload.
- *
- * The "create project" entry is deferred to R4.4 (per the R4.1
- * amendment: foundation nav only). The dropdown is a pure
- * affordance for switching, not creating.
+ * A dropdown of every project with the active one highlighted, plus a
+ * "Create project" entry (the R4.4 unblock) and an inline delete
+ * affordance. Project list is React-Query driven (``["projects"]``) so
+ * the WS ``project.created`` / ``project.deleted`` events keep it fresh.
  */
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, Folder } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, ChevronDown, Folder, FolderPlus, Trash2, Loader2 } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
+import { useUIStore } from "@/store/ui";
 import { cn } from "@/utils/cn";
 import type { ProjectSummary } from "@/types";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 
 export function ProjectSwitcher() {
   const { activeProject, setActiveProject, pushNotification } = useApp();
+  const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
+  const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  // R4.1 step 1b: the project list is invalidated by the
-  // ``project.created`` / ``project.deleted`` WS events
-  // (subscribed at the AppProvider level). The same key the
-  // Sessions tree uses ensures both stay in sync.
   const { data: projects = [] } = useQuery<ProjectSummary[]>({
     queryKey: ["projects"],
     queryFn: () => api.listProjects(),
@@ -45,55 +48,103 @@ export function ProjectSwitcher() {
     }
   };
 
+  const handleDelete = async (name: string) => {
+    if (deleting) return;
+    setDeleting(name);
+    try {
+      await api.deleteProject(name);
+      await qc.invalidateQueries({ queryKey: ["projects"] });
+      pushNotification("success", `Project "${name}" deleted.`);
+    } catch (err) {
+      pushNotification("error", `Failed to delete project: ${(err as Error).message}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        data-testid="project-switcher-toggle"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="w-full flex items-center gap-2 px-3 py-2 border border-border rounded text-sm hover:bg-muted"
-      >
-        <Folder size={14} className="text-muted-foreground" />
-        <span className="truncate flex-1 text-left">
-          {activeProject?.name ?? "Select project"}
-        </span>
-        <ChevronDown size={14} className="text-muted-foreground" />
-      </button>
-      {open && (
-        <div
-          data-testid="project-switcher-menu"
-          role="menu"
-          className="absolute left-0 right-0 mt-1 border border-border bg-card rounded shadow-lg z-40 max-h-64 overflow-y-auto"
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          data-testid="project-switcher-toggle"
+          className="w-full flex items-center gap-2 px-3 py-2 border border-border rounded-md text-sm bg-background hover:bg-muted transition-colors"
         >
-          {projects.length === 0 && (
-            <div className="px-3 py-2 text-xs text-muted-foreground">
-              No projects yet
-            </div>
-          )}
-          {projects.map((p) => (
-            <button
+          <Folder size={14} className="text-muted-foreground shrink-0" />
+          <span className="truncate flex-1 text-left">
+            {activeProject?.name ?? "Select project"}
+          </span>
+          <ChevronDown size={14} className="text-muted-foreground shrink-0" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-full min-w-[15rem] max-h-72 overflow-y-auto">
+        <DropdownMenuLabel className="flex items-center justify-between">
+          <span>Projects</span>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              setCreateOpen(true);
+            }}
+            className="flex items-center gap-1 text-[11px] text-primary hover:underline"
+          >
+            <FolderPlus size={12} /> New
+          </button>
+        </DropdownMenuLabel>
+        {projects.length === 0 && (
+          <DropdownMenuItem disabled className="px-3 py-2 text-xs text-muted-foreground">
+            No projects yet
+          </DropdownMenuItem>
+        )}
+        {projects.map((p) => {
+          const isActive = activeProject?.name === p.name;
+          return (
+            <DropdownMenuItem
               key={p.name}
-              type="button"
-              role="menuitemradio"
-              aria-checked={activeProject?.name === p.name}
-              onClick={() => handleSelect(p.name)}
-              data-testid={`project-option-${p.name}`}
+              onSelect={(e) => {
+                e.preventDefault();
+                void handleSelect(p.name);
+              }}
               className={cn(
-                "w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-left",
-                activeProject?.name === p.name
-                  ? "bg-primary/10 text-primary"
-                  : "hover:bg-muted",
+                "group flex items-center gap-2 px-3 py-2 text-sm cursor-pointer",
+                isActive ? "bg-primary/10 text-primary" : "",
               )}
               title={p.path}
             >
-              <span className="truncate">{p.name}</span>
-              {activeProject?.name === p.name && <Check size={14} />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+              <span className="truncate flex-1">{p.name}</span>
+              {isActive && <Check size={14} className="shrink-0" />}
+              <button
+                type="button"
+                aria-label={`Delete ${p.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleDelete(p.name);
+                }}
+                className="opacity-0 group-hover:opacity-100 hover:text-destructive data-[open]:opacity-60 transition-opacity"
+                disabled={!!deleting}
+              >
+                {deleting === p.name ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Trash2 size={13} />
+                )}
+              </button>
+            </DropdownMenuItem>
+          );
+        })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            setOpen(false);
+            setCreateOpen(true);
+          }}
+          className="flex items-center gap-2 px-3 py-2 text-sm text-primary cursor-pointer"
+        >
+          <FolderPlus size={14} />
+          Create new project…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

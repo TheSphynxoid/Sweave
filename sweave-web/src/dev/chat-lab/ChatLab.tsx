@@ -1,233 +1,273 @@
 /**
- * Dev-only visual test (R4.2 step 2a).
+ * Dev-only REAL-Thread visual test (R4.2 step 2-pre; ruling 4).
  *
- * The chat-lab is a **component gallery** that renders every step-2
- * surface in its final visual state with fixture data, so a
- * developer (or the user, for review) can hit
- * ``/dev/chat-lab`` in the dev server and exercise the new
- * rendering without a real running orchestrator.
+ * The old lab rendered a component gallery (bubble shells + markdown)
+ * outside any runtime — it structurally COULD NOT surface thread-level
+ * polish gaps, which is how step 2a shipped a thread the user rejected.
+ * This lab renders the actual `Thread` component against a fixture
+ * `useExternalStoreRuntime`, with controls to toggle the states that
+ * matter for review:
  *
- * The lab is intentionally NOT wired to ``useSweaveChatRuntime``
- * (that's the integration path; the manual ``/chat`` route and the
- * ``runtime.test.ts`` vitest already cover it). The lab is a
- * surface-level visual smoke: markdown render, GFM tables,
- * Shiki-highlighted code block with copy button, etc.
+ *   - Seed    — the resolved 4-message thread (markdown + GFM + code
+ *               block with the copy affordance; the step-2a markdown
+ *               demo survives here, rendered inside the real Thread).
+ *   - Empty   — the welcome screen with suggested prompts.
+ *   - Stream  — a user turn followed by a chunked assistant reply
+ *               (streaming cursor + partial-markdown fallback +
+ *               composer send->stop swap; the stop affordance is
+ *               disabled-with-tooltip per the 2026-09-07 ruling).
  *
- * The route is gated by ``import.meta.env.DEV`` at registration
- * time so the lab is tree-shaken from the production bundle.
+ * The route is gated by ``import.meta.env.DEV`` at registration time
+ * (App.tsx) so the lab is tree-shaken from the production bundle.
  */
-import { ArrowUp, Code2, Eye, FileText, MessageSquare } from "lucide-react";
-import { Markdown } from "../../components/thread/markdown/Markdown";
-import { AssistantTextPart } from "../../components/thread/markdown/AssistantTextPart";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  AssistantRuntimeProvider,
+  useExternalStoreRuntime,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
+import { Eraser, ListRestart, Play } from "lucide-react";
+import { Thread } from "@/components/thread/Thread";
 
 const MARKDOWN_SAMPLE = [
-  "# R4.2 chat surface",
+  "## Markdown inside the real Thread",
   "",
-  "R4.2 step 2a: **markdown + Shiki**. The thread now renders assistant",
-  "messages as real markdown (GFM tables, code blocks with syntax",
-  "highlight, links open in a new tab).",
-  "",
-  "## Code block",
+  "Assistant text renders as **markdown** (GFM tables, lists, links,",
+  "blockquotes) with Shiki-highlighted code blocks:",
   "",
   "```ts",
   "import { useSweaveChatRuntime } from '@/lib/chat/useSweaveChatRuntime';",
   "",
   "export function ChatPage() {",
   "  const runtime = useSweaveChatRuntime(activeSession?.id ?? null);",
-  "  // ... etc",
+  "  return <AssistantRuntimeProvider runtime={runtime}><Thread /></AssistantRuntimeProvider>;",
   "}",
   "```",
   "",
-  "## GFM table",
+  "| state     | meaning                      |",
+  "| --------- | ---------------------------- |",
+  "| `idle`    | no turn in flight            |",
+  "| `queued`  | submit fired, server pending |",
+  "| `running` | chat.delta streaming         |",
   "",
-  "| state           | meaning                     |",
-  "| --------------- | --------------------------- |",
-  "| `idle`          | no turn in flight           |",
-  "| `queued`        | submit fired, server pending |",
-  "| `running`       | chat.delta deltas streaming |",
-  "",
-  "## List + link",
-  "",
-  "- agent-elements-derived cards (shadcn-style, we own)",
   "- runtime view-projection of REST + WS",
   "- [assistant-ui docs](https://assistant-ui.com) for primitives",
   "",
   "> Streaming is safe: partial markdown falls back to plain text.",
 ].join("\n");
 
-const PARTIAL_STREAM_SAMPLE = [
-  "# streaming test",
-  "",
-  "Here is a code block that hasn't closed yet:",
+const STREAM_REPLY = [
+  "Streaming answer: the cursor pulses while the run is in flight,",
+  "the composer swaps send for the stop affordance,",
+  "and a partial code block must not crash the renderer:",
   "",
   "```ts",
   "const x: number = 1;",
-  "// still streaming",
-].join("\n");
+  "// still streaming ...",
+  "```",
+  "",
+  "Done.",
+].join(" ");
+
+const minsAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+const SEED: ThreadMessageLike[] = [
+  {
+    id: "lab-u1",
+    role: "user",
+    content: [{ type: "text", text: "Show me what the chat surface renders.", status: { type: "complete" } }],
+    metadata: { custom: { timestamp: minsAgo(4) } },
+  },
+  {
+    id: "lab-a1",
+    role: "assistant",
+    status: { type: "complete", reason: "stop" },
+    content: [{ type: "text", text: MARKDOWN_SAMPLE, status: { type: "complete" } }],
+    metadata: { custom: { timestamp: minsAgo(4), delegationId: "chat-lab-1" } },
+  },
+  {
+    id: "lab-u2",
+    role: "user",
+    content: [{ type: "text", text: "Nice. And a code block with a copy affordance?", status: { type: "complete" } }],
+    metadata: { custom: { timestamp: minsAgo(2) } },
+  },
+  {
+    id: "lab-a2",
+    role: "assistant",
+    status: { type: "complete", reason: "stop" },
+    content: [
+      {
+        type: "text",
+        text: "```python\ndef hello():\n    return 'world'\n```\nHover the block — the copy button is on its header.",
+        status: { type: "complete" },
+      },
+    ],
+    metadata: { custom: { timestamp: minsAgo(2), delegationId: "chat-lab-2" } },
+  },
+];
+
+const CHUNK = 14;
+const CHUNK_MS = 90;
 
 export function ChatLab() {
+  const [messages, setMessages] = useState<ThreadMessageLike[]>(SEED);
+  const [running, setRunning] = useState(false);
+  const timersRef = useRef<number[]>([]);
+
+  const clearTimers = useCallback(() => {
+    for (const t of timersRef.current) window.clearTimeout(t);
+    timersRef.current = [];
+  }, []);
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const streamReply = useCallback(() => {
+    const streamId = `lab-stream-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: streamId,
+        role: "assistant",
+        content: [{ type: "text", text: "", status: { type: "running" } }],
+        status: { type: "running" },
+        metadata: { custom: { timestamp: new Date().toISOString() } },
+      } as ThreadMessageLike,
+    ]);
+    setRunning(true);
+
+    let i = 0;
+    const tick = () => {
+      i += CHUNK;
+      const partial = STREAM_REPLY.slice(0, i);
+      const done = i >= STREAM_REPLY.length;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === streamId
+            ? {
+                ...m,
+                content: [{ type: "text", text: partial, status: done ? { type: "complete" } : { type: "running" } }],
+                ...(done ? { status: { type: "complete", reason: "stop" } } : {}),
+              }
+            : m,
+        ),
+      );
+      if (done) {
+        setRunning(false);
+      } else {
+        timersRef.current.push(window.setTimeout(tick, CHUNK_MS));
+      }
+    };
+    timersRef.current.push(window.setTimeout(tick, CHUNK_MS));
+  }, []);
+
+  const runtime = useExternalStoreRuntime({
+    messages,
+    isRunning: running,
+    isSendDisabled: running,
+    convertMessage: (m) => m,
+    onNew: async (message) => {
+      const text = message.content
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join("");
+      if (!text.trim() || running) return;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `lab-user-${Date.now()}`,
+          role: "user",
+          content: [{ type: "text", text, status: { type: "complete" } }],
+          metadata: { custom: { timestamp: new Date().toISOString() } },
+        },
+      ]);
+      streamReply();
+    },
+  });
+
+  const seed = () => {
+    clearTimers();
+    setRunning(false);
+    setMessages(SEED);
+  };
+  const empty = () => {
+    clearTimers();
+    setRunning(false);
+    setMessages([]);
+  };
+  const runStream = () => {
+    if (running) return;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `lab-user-${Date.now()}`,
+        role: "user",
+        content: [{ type: "text", text: "Stream a reply for the visual check.", status: { type: "complete" } }],
+        metadata: { custom: { timestamp: new Date().toISOString() } },
+      },
+    ]);
+    streamReply();
+  };
+
   return (
-    <div
-      data-testid="chat-lab"
-      className="mx-auto w-full max-w-3xl px-4 py-6 space-y-8"
-    >
-      <header className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">R4.2 chat lab</h1>
-        <p className="text-sm text-muted-foreground">
-          Dev-only visual smoke for step 2 surfaces. Renders every
-          component in its final visual state with fixture data.
-        </p>
+    <div data-testid="chat-lab" className="flex h-full flex-col">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2">
+        <div className="min-w-0">
+          <h1 className="text-sm font-semibold tracking-tight">R4.2 real-Thread lab</h1>
+          <p className="text-xs text-muted-foreground">
+            The actual Thread + runtime with fixture data. Toggle states and watch the
+            surface: welcome, resolved thread, streaming, composer states.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <LabButton testid="lab-btn-seed" onClick={seed} icon={<ListRestart size={13} />}>
+            Seed thread
+          </LabButton>
+          <LabButton testid="lab-btn-empty" onClick={empty} icon={<Eraser size={13} />}>
+            Empty
+          </LabButton>
+          <LabButton
+            testid="lab-btn-stream"
+            onClick={runStream}
+            icon={<Play size={13} />}
+            disabled={running}
+          >
+            Stream reply
+          </LabButton>
+        </div>
       </header>
 
-      {/* ----------------------------------------------------------------- */}
-      {/* 1. Markdown (assistant message, full)                            */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<MessageSquare size={14} />}
-        title="Assistant message — full markdown"
-        note="GFM tables, Shiki code block, links, lists, blockquote."
-      >
-        <Bubble role="assistant">
-          <AssistantTextPart
-            type="text"
-            text={MARKDOWN_SAMPLE}
-            status={{ type: "complete" }}
-          />
-        </Bubble>
-      </Section>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* 2. Markdown (partial / mid-stream)                                 */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<Eye size={14} />}
-        title="Assistant message — partial stream (streaming-safety)"
-        note="Unclosed code block: must not crash; the raw text is the fallback."
-      >
-        <Bubble role="assistant">
-          <AssistantTextPart
-            type="text"
-            text={PARTIAL_STREAM_SAMPLE}
-            status={{ type: "running" }}
-          />
-        </Bubble>
-      </Section>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* 3. User message (plain text)                                      */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<MessageSquare size={14} />}
-        title="User message — plain text"
-        note="User side keeps the plain pre-wrap (no markdown, no shiki)."
-      >
-        <Bubble role="user">What does the chat-lab show?</Bubble>
-      </Section>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* 4. Bare Markdown component (no aui context)                       */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<FileText size={14} />}
-        title="Markdown — standalone"
-        note="Same component used by the assistant message-part wrapper."
-      >
-        <div className="rounded-md border border-border bg-card p-4 text-sm">
-          <Markdown source={"Hello **world**.\n\n```ts\nconst x = 1;\n```"} />
-        </div>
-      </Section>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* 5. Code block with copy button (hover)                            */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<Code2 size={14} />}
-        title="Code block — copy button"
-        note="Hover the block to surface the copy affordance. The lab"
-        note2="renders the same component the thread uses."
-      >
-        <div className="rounded-md border border-border bg-card p-4 text-sm">
-          <Markdown
-            source={"```python\ndef hello():\n    return 'world'\n```"}
-          />
-        </div>
-      </Section>
-
-      {/* ----------------------------------------------------------------- */}
-      {/* 6. Composer (visual only — no submit)                              */}
-      {/* ----------------------------------------------------------------- */}
-      <Section
-        icon={<ArrowUp size={14} />}
-        title="Composer (visual)"
-        note="Live in /chat. The lab renders the same primitives for"
-        note2="the visual reference; the submit handler is inert."
-      >
-        <div className="rounded-md border border-border bg-card p-3 flex items-end gap-2">
-          <div className="flex-1 rounded-lg px-3 py-2 text-sm border border-border bg-input text-muted-foreground min-h-[40px]">
-            Write a message…
-          </div>
-          <button
-            type="button"
-            data-testid="chat-lab-send"
-            className="shrink-0 p-2 rounded-lg bg-primary text-primary-foreground"
-            disabled
-          >
-            <ArrowUp size={16} />
-          </button>
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Local helpers
-// ---------------------------------------------------------------------------
-
-function Section({
-  icon,
-  title,
-  note,
-  note2,
-  children,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  note: string;
-  note2?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span className="text-muted-foreground">{icon}</span>
-        <h2 className="text-sm font-medium tracking-tight">{title}</h2>
+      <div className="min-h-0 flex-1">
+        <AssistantRuntimeProvider runtime={runtime}>
+          <Thread />
+        </AssistantRuntimeProvider>
       </div>
-      <p className="text-xs text-muted-foreground">{note}</p>
-      {note2 && <p className="text-xs text-muted-foreground">{note2}</p>}
-      <div className="pt-2">{children}</div>
-    </section>
+    </div>
   );
 }
 
-function Bubble({
-  role,
+function LabButton({
+  onClick,
+  icon,
   children,
+  testid,
+  disabled,
 }: {
-  role: "user" | "assistant";
+  onClick: () => void;
+  icon: React.ReactNode;
   children: React.ReactNode;
+  testid: string;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex">
-      {role === "user" ? (
-        <div className="ml-auto max-w-[80%] rounded-lg px-3 py-2 bg-primary/10 text-foreground text-sm whitespace-pre-wrap">
-          {children}
-        </div>
-      ) : (
-        <div className="mr-auto max-w-[92%] rounded-lg px-3 py-2 bg-card border border-border text-foreground text-sm">
-          {children}
-        </div>
-      )}
-    </div>
+    <button
+      type="button"
+      data-testid={testid}
+      onClick={onClick}
+      disabled={disabled}
+      className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {icon}
+      {children}
+    </button>
   );
 }

@@ -2,7 +2,20 @@
 // theme switcher tests rely on both. Per-test cleanup wipes the
 // persisted keys so order doesn't matter.
 
-import { afterEach } from "vitest";
+import { afterEach, beforeAll } from "vitest";
+
+// jsdom has no ResizeObserver; the assistant-ui thread viewport
+// (auto-scroll) and other layout-sensitive components need it.
+beforeAll(() => {
+  const g = globalThis as unknown as Record<string, unknown>;
+  if (!g.ResizeObserver) {
+    g.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+  }
+});
 
 afterEach(() => {
   try {

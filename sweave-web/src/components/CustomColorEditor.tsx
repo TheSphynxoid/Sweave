@@ -24,6 +24,7 @@ import {
   saveActiveTheme,
   applyThemeToDocument,
 } from "@/lib/theme";
+import { Button } from "@/components/ui/button";
 
 export const CUSTOM_PICKER_TOKENS: readonly TokenName[] = [
   "background",
@@ -100,15 +101,17 @@ export function CustomColorEditor({
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Customize
         </span>
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           type="button"
           onClick={onReset}
           disabled={!hasOverrides}
           data-testid="custom-color-reset"
-          className="text-[10px] text-primary disabled:text-muted-foreground disabled:cursor-not-allowed"
+          className="text-[10px] h-auto px-2 py-1"
         >
           Reset to preset
-        </button>
+        </Button>
       </div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-2">
         {CUSTOM_PICKER_TOKENS.map((token) => {
