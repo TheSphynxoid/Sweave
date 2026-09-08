@@ -1,9 +1,11 @@
 # R4.2 — Chat surface to the quality bar (execution plan)
 
-Status: planned, not started. Est. ~1.25 sessions. Predecessor: R4.1 ✅ (React 19 +
-Tailwind v4 live; WS events for projects/sessions published). Direction locked
-(2026-09-06): assistant-ui runtime + agent-elements-derived cards; delegation
-tree/detail stay custom (R4.3).
+Status: **in execution — step 2-pre (visual polish) shipped 2026-09-08; the
+user's visual gate on `/chat` is next, then 2b → 2c → 3.** Est. ~1.25 sessions.
+Predecessor: R4.1 ✅ (React 19 + Tailwind v4 live; WS events for
+projects/sessions published). Direction locked (2026-09-06): assistant-ui
+runtime + agent-elements-derived cards; delegation tree/detail stay custom
+(R4.3).
 
 ## Starting point (do NOT rebuild)
 - Wave-1 chat page: `pages/chat/` = Composer.tsx, MessageList.tsx, reducer.ts,
@@ -133,6 +135,82 @@ This amendment does not change the **decision** in step 0
 `useExternalStoreRuntime` with a custom adapter) — it changes
 the **scope** of step 2: the polish work moves from "step-3 finish"
 to "step 2-pre prerequisite."
+
+## Step 2-pre execution summary (shipped 2026-09-08)
+
+The 2-pre round (this plan's amendment + the rulings below) landed in
+two commits (`d11b54a` hotfix, `1c95323` step 2-pre) after the prior
+session's in-flight work was audited and folded in. What shipped vs.
+the amendment text:
+
+- **Thread rebuilt on the INSTALLED 0.15.18 primitive API** (canonical
+  anatomy: `Messages` per-message dispatch, `Viewport` autoScroll +
+  `turnAnchor="bottom"` + `ScrollToBottom`, `Parts` Text slots,
+  `ActionBarPrimitive.Copy` with `hideWhenRunning` +
+  `autohide="not-last"`, native composer keyboard). The prior
+  session's "shadcn-registry copies" in
+  `components/assistant-ui/elements/` turned out to be hand-written
+  stubs (a fake `MessagePrimitive` whose `Parts` renders nothing) and
+  the Thread used the real API incorrectly — the deviation from
+  "copy the registry file verbatim" is that we now BUILD on the real
+  package primitives and own only the small styling wrappers
+  (avatar/skeleton/tooltip-icon-button). The fake `message.tsx` +
+  `bubble.tsx` stubs were deleted.
+- **Bugs fixed en route** (all found by driving the real app with the
+  new `scripts/ui-chat-probe.mjs`): 3x message-triplication (the
+  `Messages` function-child renders PER MESSAGE), "Invalid Date"
+  timestamps (projection now carries `metadata.custom`), double
+  `useSweaveChatRuntime` (Chat.tsx + Thread.tsx both created one —
+  two WS subscriptions per session), and an unlayered universal CSS
+  reset that killed every Tailwind v4 spacing utility app-wide.
+- **Rulings honored**: action bar = copy + timestamp only (edit/
+  regenerate/fork NOT rendered at all — no disabled fake buttons);
+  composer stop = disabled-with-tooltip ("Stop lands with R4.3");
+  lab replaced by the real-Thread lab (Seed / Empty / Stream controls;
+  the markdown demo survives as seeded content); `Markdown.test.tsx`
+  renderer tests stay, ChatLab tests rewritten for the real lab
+  (5 new pins: seeded thread, plain user text, action-bar not-last,
+  welcome prompts, mid-stream stop).
+- **Step 2b scope partially landed early**: shiki highlighting was
+  wired by the prior session's work (kept + verified here), so 2b's
+  remainder is the tool cards + Question card.
+- **Suggested prompts are static** (the amendment's "sourced from the
+  active project's recent task history" is deferred — no fetch
+  needed for the visual gate; revisit in step 3).
+- Gates: 459/459 pytest (the +1 is the prior session's error-prefix
+  hotfix test, committed as `d11b54a` with the models.yaml +
+  CREATE_NO_WINDOW fixes), 81/81 vitest, `npm run build` green,
+  headless-Edge screenshot gates green (`npm run ui:shot`,
+  `scripts/ui-chat-probe.mjs`) over the real backend with a real
+  session.
+
+## 2026-09-08 Hotfixes — Execution session fixes
+
+**Bug 1: Chat API 500 Internal Server Error**
+- **Root cause**: `models.yaml` used provider names (`tokengo`, `subconscious`, `nano-gpt`) that opencode doesn't recognize. The orchestrator's model resolution fell back to these unqualified names, causing the opencode serve to reject the request with 500.
+- **Fix**: Updated `models.yaml` to use the **opencode** provider with working models:
+  - `opencode/nemotron-3-ultra-free` (orchestrator)
+  - `opencode/glm-5.3` (backend)  
+  - `opencode/hy3` (frontend)
+  - `opencode/claude-sonnet-4` (reviewer)
+  - Added Nvidia provider fallbacks with working models.
+
+**Bug 2: Empty CMD window flashes on Windows**
+- **Root cause**: When spawning the opencode serve subprocess on Windows, a brief console window appeared because `CREATE_NO_WINDOW` flag was not set.
+- **Fix**: Added `CREATE_NO_WINDOW` flag to `asyncio.create_subprocess_exec` in:
+  - `sweave/harness/opencode.py` (line ~892)
+  - `sweave/runtime/serve_runner.py` (line ~164)
+
+**Bug 3: React Error "Objects are not valid as a React child (found: object with keys {type, text})"**
+- **Root cause**: The `UserMessage` component rendered `message.content` directly as a string, but `ThreadMessageLike` from assistant-ui expects `content` to be `Part[]` (array of parts) for ALL messages. The adapter's `projectEntry` correctly wrapped messages in `textContent()` (producing `[{type: "text", text: "..."}]`), but the UserMessage component didn't extract the text from parts.
+- **Fix**: Added `extractText()` helper in `UserMessage` component (`sweave-web/src/components/thread/Thread.tsx`) to handle both string and `Part[]` content formats:
+  ```typescript
+  function extractText(content: string | { type: string; text: string }[]): string {
+    if (typeof content === "string") return content;
+    return content.filter((p) => p.type === "text").map((p) => p.text).join("");
+  }
+  ```
+  Updated rendering and copy button to use extracted text.
 
 ## Planner rulings (2026-09-07, answering the hand-back)
 

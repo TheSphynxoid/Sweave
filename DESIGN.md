@@ -599,26 +599,32 @@ tree + detail views remain custom (no library covers them);
 R4.2/R4.3 will lift cards from agent-elements (MIT shadcn
 registry) per §8.
 
-### R4.2 — Chat surface to the quality bar (in execution; 2026-09-07 amendment)
+### R4.2 — Chat surface to the quality bar (in execution; step 2-pre shipped 2026-09-08)
 
-**Status: hand-back to planning.** Step 0 (adapter spike) and step 1
-(custom `useExternalStoreRuntime` adapter over our REST + WS
-contract) are shipped (`docs/R4_2_PLAN.md` step 0 decision: REJECT
-`@assistant-ui/react-opencode`; ADOPT `useExternalStoreRuntime`).
-Step 2a (markdown + GFM + copy button + dev-only `/dev/chat-lab`)
-is shipped. The user reviewed the `/chat` surface and rejected it
-as "unpolished and frankly bad" — the chat renders but looks bare.
-
-**The visual polish is the bulk of step 2, not a step-3 cosmetic
-finish.** The full design spec (per-region surface spec anchored
-on LibreChat v0.8.x + assistant-ui shadcn registry, a visual
-test approach that replaces the markdown-only lab with a real-Thread
-lab, and a proposed step-2-pre polish step) is in
-`docs/R4_2_VISUAL_POLISH.md`. The plan amendment referencing it is
-in `docs/R4_2_PLAN.md` ("Amendment (2026-09-07, user ruling —
-mid-execution)"). The planner will amend the step structure; the
-executor hands back here without shipping the polish work in the
-same round.
+**Status: step 2-pre (visual polish) shipped; awaiting the user's visual
+gate on `/chat` before 2b/2c.** Step 0 (adapter spike — REJECT
+`@assistant-ui/react-opencode`, ADOPT `useExternalStoreRuntime`),
+step 1 (custom adapter over our REST + WS contract) and step 2a
+(markdown + GFM + Shiki-highlighted code blocks with copy button) are
+shipped. Step 2-pre rebuilt the surface against the INSTALLED
+assistant-ui 0.15.18 primitive API: per-message dispatch via
+`ThreadPrimitive.Messages`, `Viewport` auto-scroll + `turnAnchor=bottom`
++ `ScrollToBottom`, `MessagePrimitive.Parts` Text slots, real
+`ActionBarPrimitive.Copy` (hideWhenRunning + autohide="not-last"),
+native composer keyboard (Enter/Shift+Enter), welcome screen with
+suggested prompts, history skeleton, streaming cursor, timestamps +
+delegation badges via `metadata.custom`. Rulings honored: action bar =
+copy + timestamp only (edit/regenerate/fork are R4.3, no fake disabled
+buttons); composer stop = disabled-with-tooltip (no cancel endpoint
+until R4.3; opencode `/session/{id}/abort` verified). The markdown-only
+lab was replaced by the real-Thread lab (fixture runtime + Seed/Empty/
+Stream controls) per ruling 4. Also fixed this round: an unlayered
+universal CSS reset that silently disabled all Tailwind v4 spacing
+utilities app-wide, a 3x message-triplication bug, a double
+`useSweaveChatRuntime` instantiation, and "Invalid Date" timestamps.
+Gates: 459/459 pytest, 81/81 vitest, `npm run build` green, headless-
+Edge screenshot gates (`npm run ui:shot` + `sweave-web/scripts/
+ui-chat-probe.mjs`) over the real backend.
 
 ### R4.4 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
 
@@ -734,6 +740,9 @@ vanilla-JS no-build rule.
 | assistant-ui (12k stars) | MIT | chat runtime + primitives (Thread/Composer, streaming, retries, a11y); **generative UI for tool calls + inline approvals** (= ask_human surfacing); official `@assistant-ui/react-opencode` adapter to evaluate | **Adopt** (R4.2) - custom runtime adapter fed by our WS events |
 | agent-elements (21st.dev) | MIT (shadcn registry - code lands in our repo) | tool cards (Bash/Edit-diffs/Search/Plan/Subagent/MCP/Thinking), Question card (= ask_human UX), streaming Markdown, composer pieces. Requires React 19 + Tailwind v4 | **Adopt selectively** (R4.2/R4.3) - lift cards, wire to our delegation state |
 | vercel/ai | Apache-2.0 | AI SDK: useChat hooks + data-stream protocol - the substrate both above build on; client-side only (our backend protocol stays ours) | Substrate only |
+| shiki + @shikijs/* | MIT | server-free syntax highlighting for markdown code blocks (bundled langs; code-split by the Vite build) | **Adopted** (R4.2 step 2a/2-pre) |
+| @pierre/diffs + @pierre/theme | Apache-2.0 | diff rendering for Edit-tool cards (R4.2 step 2c) | **Adopted** (installed; first use lands with the tool cards) |
+| radix-ui primitives + cmdk + class-variance-authority + tw-animate-css | MIT | shadcn/ui kit (dialog/popover/select/command palette/tooltip/...) the shell is built on | **Adopted** (R4.2 step 2-pre shell) |
 
 Stack consequence: sweave-web upgrades to **React 19 + Tailwind v4** (R4.1 step 1c).
 

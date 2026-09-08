@@ -38,15 +38,19 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-09-05)
-- **458/458** in `pytest tests/` (source of truth for logic tests; +6
-  from the R4.1 step-1b WS-event tests; +5 from R4.0 wire-shape)
+### Test Results (All Passing - verified 2026-09-08)
+- **459/459** in `pytest tests/` (source of truth for logic tests; +6
+  from the R4.1 step-1b WS-event tests; +5 from R4.0 wire-shape; +1 from R4.2 hotfix)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **60** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
-  picker + chat reducer + children tree + wsInvalidations; +20 in R4.1)
+- **81** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
+  picker + chat reducer + children tree + wsInvalidations; +18 from R4.2 chat
+  runtime; +3 real-Thread lab pins from R4.2 step 2-pre)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
-  1243 dependency makes the suite CI-time per the wave-1 pattern)
+  1243 dependency makes the suite CI-time per the wave-1 pattern);
+  plus the local screenshot gates `npm run ui:shot` +
+  `sweave-web/scripts/ui-chat-probe.mjs` (system Edge headless,
+  need the backend on :8100)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 - v1 vanilla UI tests (test_full.py, test_sidebar_nav.js, test_promote_ui.js) retired
 
@@ -516,6 +520,26 @@
   step 1), `npm run build` green. R4.2/R4.3 are now unblocked
   (the assistant-ui + agent-elements-derived cards adoption
   requires React 19 + Tailwind v4, both landed in step 1c).
+- ▶ **R4.2 step 2-pre (visual polish)** — shipped 2026-09-08 per
+  `docs/R4_2_PLAN.md` ("Step 2-pre execution summary"). The user
+  had rejected the step-1/2a `/chat` surface as "unpolished and
+  frankly bad"; this round rebuilt it on the INSTALLED
+  assistant-ui 0.15.18 primitive API (per-message dispatch,
+  auto-scroll viewport + scroll-to-bottom, Parts slots, real copy
+  action bar on the last message, native Enter/Shift+Enter
+  composer, welcome prompts, history skeleton, streaming cursor,
+  timestamps + delegation badges) and fixed four bugs found by
+  driving the real app (message triplication, Invalid Dates,
+  double chat-runtime instantiation, an unlayered CSS reset that
+  disabled all Tailwind v4 spacing utilities). The markdown-only
+  lab is replaced by the real-Thread lab (Seed/Empty/Stream);
+  rulings honored: copy + timestamp action bar only, stop
+  disabled-with-tooltip (R4.3), suggested prompts static for now.
+  Hotfix commit `d11b54a` (models.yaml provider names +
+  CREATE_NO_WINDOW), step commit `1c95323`.
+  **459/459 pytest, 81/81 vitest, build green, screenshot gates
+  green. NEXT: the user's visual sign-off of `/chat`, then
+  step 2b (tool cards + Question card) → 2c → 3.**
 - ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).
@@ -565,6 +589,28 @@ setTimeout(() => {
   if (app) app.classList.remove('hidden');
 }, 500);
 ```
+
+### Bug 3: Chat API 500 Internal Server Error (Session 2026-09-08)
+**Root cause**: `models.yaml` used provider names (`tokengo`, `subconscious`, `nano-gpt`, etc.) that opencode doesn't recognize. The orchestrator's model resolution fell back to these unqualified names, causing the opencode serve to reject the request with 500.
+
+**Fix**: Updated `models.yaml` to use the **opencode** provider with working models:
+- `opencode/nemotron-3-ultra-free` (orchestrator)
+- `opencode/glm-5.3` (backend)  
+- `opencode/hy3` (frontend)
+- `opencode/claude-sonnet-4` (reviewer)
+- Added Nvidia provider fallbacks with working models.
+
+### Bug 4: Empty CMD window flashes on Windows (Session 2026-09-08)
+**Root cause**: When spawning the opencode serve subprocess on Windows, a brief console window appeared because `CREATE_NO_WINDOW` flag was not set.
+
+**Fix**: Added `CREATE_NO_WINDOW` flag to `asyncio.create_subprocess_exec` in:
+- `sweave/harness/opencode.py` (line ~892)
+- `sweave/runtime/serve_runner.py` (line ~164)
+
+### Bug 5: React Error "Objects are not valid as a React child" (Session 2026-09-08)
+**Root cause**: The `UserMessage` component rendered `message.content` directly as a string, but `ThreadMessageLike` from assistant-ui expects `content` to be `Part[]` (array of parts) for ALL messages. The adapter's `projectEntry` correctly wrapped messages in `textContent()` (producing `[{type: "text", text: "..."}]`), but the UserMessage component didn't extract the text from parts.
+
+**Fix**: Added `extractText()` helper in `UserMessage` component (`sweave-web/src/components/thread/Thread.tsx`) to handle both string and `Part[]` content formats. Updated rendering and copy button to use extracted text.
 
 ---
 

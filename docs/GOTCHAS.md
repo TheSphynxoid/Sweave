@@ -127,7 +127,29 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    The provider is idempotent: a single ref holds the connection; the cleanup only
    closes when the provider actually unmounts. Any new global-side-effect provider
    (EventSource, long-poll) follows the same pattern: ref + idempotent connect +
-   cleanup that closes on real unmount, not on StrictMode's double-invoke.
+    cleanup that closes on real unmount, not on StrictMode's double-invoke.
+
+2. **Pulling agent-elements via shadcn CLI hits the npm 12 `--allow-scripts` gate**
+   (R4.2/R4.3, 2026-09-08). `npx shadcn@latest add https://agent-elements.21st.dev/r/<name>.json`
+   runs `npm install <deps>` and **fails with `EALLOWSCRIPTS`** because the CLI passes
+   `--allow-scripts`, which npm 12 forbids for project installs ("add the entries to the
+   `allowScripts` field in package.json, or to .npmrc, instead"). The global `~/.npmrc`
+   `allow-scripts=opencode-ai` is also in force. Working recipe:
+   - Add an `"allowScripts"` **array** to `sweave-web/package.json` listing the pulled
+     deps' runtime deps that run install scripts (e.g. `ai`, `@tabler/icons-react`,
+     `@pierre/diffs`, `shiki`, `@shikijs/*`, `diff`, `esbuild`, `hast-util-to-html`,
+     `@pierre/theme`, `@pierre/theming`, `lru_map`). `esbuild`'s postinstall is the one
+     that actually fires.
+   - Use **`npx shadcn@4.20.0`** (not `@latest`): 4.20.0 doesn't pass `--allow-scripts`,
+     so it relies on the package.json `allowScripts` field and succeeds. `@latest` hard-fails.
+   - Known-good slugs: `bash-tool`, `text-shimmer`, `input-bar`, `edit-tool`. `tool-card`,
+     `tool-ui`, `agent-thought` return 404 (not valid registry names).
+   - The CLI's `.npmrc allow-scripts=*` is ignored for project installs in npm 12; only
+     the package.json field works. Don't waste time on a project `.npmrc`.
+   - After the pull, re-apply the `[data-theme="dark"]` selector to
+     `src/components/agent-elements/agent-ui.css` line 56 (`.dark {` → `.dark,[data-theme="dark"] {`)
+     — the CLI re-imports the file and drops it. `edit-tool` already ships its own
+     `[data-theme="dark"]` rules, so only the BashTool token block needs the patch.
 
 ## Opencode harness & wire protocol
 
@@ -258,3 +280,102 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    but the root cause of the stray CMD windows). When the sweep
    lands, the idle TTL (default 5 min) will clean up stray
    serves automatically.
+
+## Opencode model provider config (R4.2, 2026-09-08)
+
+1. **Symptom**: Chat API returns 500 with `HTTPStatusError: Server error '500 Internal Server Error' for url 'http://127.0.0.1:XXXX/session/ses_.../message'`. The opencode serve log shows the request received but the model provider is unknown.
+
+2. **Root cause**: `models.yaml` used provider names (`tokengo`, `subconscious`, `nano-gpt`, `qiniu-ai`, etc.) that opencode doesn't recognize. The model resolution chain falls back to these unqualified names, and the opencode serve rejects the structured model with an unknown provider.
+
+3. **Fix**: Use the **opencode** provider (built-in to opencode) with models that opencode actually serves:
+   ```yaml
+   models:
+     orchestrator:
+       default: opencode/nemotron-3-ultra-free
+       aliases:
+       - opencode/deepseek-v4-flash
+       - opencode/gemini-3.5-flash
+       - nvidia/nemotron-3-ultra-550b-a55b
+       provider: opencode
+   ```
+   Run `opencode models --provider opencode` and `opencode models --provider nvidia` to see available models.
+
+4. **Testing**: After updating models.yaml, restart the server (`python stop_server.py && python start_server.py 8100 127.0.0.1`) and test the chat endpoint.
+
+## React rendering error with assistant-ui ThreadMessageLike (R4.2, 2026-09-08) — SUPERSEDED
+
+The `extractText()` workaround below this note described the step-1
+Thread, which rendered `message.content` directly. R4.2 step 2-pre
+(2026-09-08) rebuilt the Thread on `MessagePrimitive.Parts` slots, so
+the failure mode is gone — see the "assistant-ui 0.15 primitives"
+group below for the traps that REPLACE this one.
+
+1. **Symptom**: Uncaught Error: `Objects are not valid as a React child (found: object with keys {type, text})`. The UI flashes and disappears when sending a message.
+
+2. **Root cause**: `ThreadMessageLike` from `@assistant-ui/react` expects `content` to be `Part[]` (array of `{type: "text", text: string}`) for ALL messages (both user and assistant). The adapter's `projectEntry` correctly wraps all messages in this format, but the `UserMessage` component rendered `message.content` directly — when `content` is an array, React tries to render each part object as a child.
+
+3. **Fix**: Add an `extractText()` helper in the `UserMessage` component to handle both string and `Part[]` content formats:
+   ```typescript
+   function extractText(content: string | { type: string; text: string }[]): string {
+     if (typeof content === "string") return content;
+     return content.filter((p) => p.type === "text").map((p) => p.text).join("");
+   }
+   ```
+   Use `extractText(message.content)` for rendering and for the copy-to-clipboard action.
+
+4. **Note**: The `AssistantMessage` component already handles `Part[]` correctly via `AssistantTextPart` which extracts text from parts.
+
+## assistant-ui 0.15 primitives (R4.2 step 2-pre, 2026-09-08)
+
+1. **`ThreadPrimitive.Messages` with a children render function renders
+   the function PER MESSAGE**. The canonical anatomy is
+   `{({ message }) => <UserOrAssistant />}` — one call per message,
+   each ambient-scoped to that message. The step-1 Thread rendered the
+   ENTIRE message list inside the function: N messages rendered the
+   list N times (3 API messages → 9 DOM roots, 4 visible user rows,
+   4 empty phantom rows). If row counts don't match the API, check
+   this first; the probe (`sweave-web/scripts/ui-chat-probe.mjs`)
+   dumps `[data-message-id]` per row to catch it.
+2. **ThreadMessageLike normalization is strict on the no-convertMessage
+   path**: assistant entries need a top-level `status` (terminal =
+   `{ type: "complete", reason: "stop" }`; running = `{ type:
+   "running" }`) or part-state computation crashes with
+   `Cannot read properties of undefined (reading 'type')` in
+   `normalizePartStatus`. Text parts carry their own `status`
+   (`{ type: "complete" }` — no `reason` on PART status; the reason
+   lives on message status only). `useExternalStoreRuntime` requires
+   `convertMessage` for the ThreadMessageLike[] flavor (identity
+   `(m) => m` is what our hook uses).
+3. **`ActionBarPrimitive.Root` with `hideWhenRunning` +
+   `autohide="not-last"` UNMOUNTS on non-last messages and while
+   running** — it renders `null`, no data attribute is emitted. Do
+   NOT add hover-reveal CSS on top (`opacity-0 group-hover:...`);
+   that hides the bar that the primitive intentionally shows on the
+   last message.
+4. **`ThreadPrimitive.Viewport` owns auto-scroll**: pass `autoScroll`,
+   `turnAnchor="bottom"`, `scrollToBottomOnRunStart/Initialize/
+   ThreadSwitch` as PROPS. The `useThreadViewportAutoScroll` hook is
+   for custom scroll containers, not for the primitive's viewport.
+5. **jsdom lacks `ResizeObserver`** — the viewport needs it; the vitest
+   setup (`src/test/setup.ts`) stubs it. Any new test that mounts the
+   Thread depends on that stub.
+6. **Our `ui/tooltip` has NO implicit provider** — a bare `<Tooltip>`
+   outside `<TooltipProvider>` throws at render. `TooltipIconButton`
+   self-wraps; hand-rolled tooltips (e.g. the composer stop button)
+   must wrap themselves.
+7. **Tailwind v4: unlayered CSS beats `@layer utilities` regardless of
+   specificity.** An unlayered `* { padding: 0; margin: 0 }` reset in
+   globals.css silently disabled EVERY `p-*`/`px-*`/`m-*` utility
+   app-wide (topbar clipped at the window edge, composer flush,
+   bubbles cramped) while everything still built and tests passed.
+   Tailwind's preflight already resets margins in `@layer base` —
+   never add an unlayered universal reset. (Also: never write `p-*/`
+   inside a CSS comment — the `*/` terminates it.)
+8. **PowerShell round-trips destroy UTF-8 source files**: a
+   `Get-Content` + `Set-Content -Encoding UTF8` pass on a UTF-8 (no
+   BOM) file reads it as cp1252 and writes back double-encoded
+   (`—` → `â€"`) plus a BOM. This bit a bulk string-replace in this
+   round (em-dashes in .tsx docstrings became mojibake). For any
+   byte-level edit of source files use `python -c` in binary mode;
+   the repair is `raw.decode('utf-8').encode('cp1252').decode('utf-8')`
+   after stripping a leading `\xef\xbb\xbf`.
