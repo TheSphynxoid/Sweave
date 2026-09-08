@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import jinja2
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -289,6 +289,25 @@ def build_app() -> FastAPI:
 # to this object. Production: ``uvicorn sweave.web.server:app``. Tests: use
 # the same object via starlette.testclient.TestClient.
 app = build_app()
+
+
+# R4.2 (2026-09-08): SPA cache headers. Without them the browser
+# heuristically caches index.html, so a UI fix keeps "not appearing"
+# after a normal reload (the shell references an old hashed bundle).
+# index/SPA HTML must revalidate on every load; the hashed /assets
+# bundles are content-addressed by vite and safe to cache forever.
+@app.middleware("http")
+async def _spa_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers.setdefault(
+            "Cache-Control", "public, max-age=31536000, immutable"
+        )
+    elif response.headers.get("content-type", "").startswith("text/html"):
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
 # M1.9 / R4 step 4: the new wave-1 UI ships from sweave-web/dist.
 # When the dist/ artefact exists, mount it as the SPA; the
 # /static mount (the old vanilla assets) becomes the fallback.

@@ -239,9 +239,11 @@ export function PathPickerBrowser({
       </div>
 
       {/* Listing (native scroll — faster wheel than the radix viewport);
-          flexes to the popover's available height. */}
+          flexes to the popover's available height. min-h-0 is REQUIRED:
+          a flex child's default min-height:auto refuses to shrink below
+          its content, which silently kills the scrolling. */}
       <div
-        className="flex-1 overflow-y-auto scrollbar-thin"
+        className="min-h-0 flex-1 overflow-y-auto scrollbar-thin"
         data-testid={`${testPrefix}-list`}
       >
         {loading && (
@@ -283,7 +285,7 @@ export function PathPickerBrowser({
           ))}
       </div>
 
-      <div className="space-y-2 border-t border-border p-2">
+      <div className="shrink-0 space-y-2 border-t border-border p-2">
         {error && !loading && (
           <p className="text-[11px] text-muted-foreground">
             Still on <span className="font-mono">{current}</span> — check the typed path.
@@ -365,7 +367,7 @@ export function PathPicker({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className="flex max-h-[var(--radix-popover-content-available-height)] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden p-0"
+        className="flex max-h-[var(--radix-popper-available-height)] w-[min(560px,calc(100vw-2rem))] flex-col overflow-hidden p-0"
       >
         <PathPickerBrowser
           initialPath={value || "C:\\"}

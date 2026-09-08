@@ -405,10 +405,13 @@ group below for the traps that REPLACE this one.
    hang-probe scratch tests — a leftover one silently hangs the whole
    suite (files are listed by name in the failure output; anything
    with `__min`/scratch naming is suspect).
-10. **Tall popovers must respect
-   `--radix-popover-content-available-height`**: without a
-   `max-h-[var(--radix-popover-content-available-height)]` +
-   `overflow-hidden` + internal flex list, a popover anchored near the
-   viewport edge overflows the screen (the picker's breadcrumbs
-   rendered off-screen). Give the popover a flex column and let the
-   scrolling region flex-shrink (`min-h-0 flex-1 overflow-y-auto`).
+10. **Tall popovers must respect ``--radix-popper-available-height``**
+    (note the name: it is the POPPER var; there is no
+    ``--radix-popover-content-*`` var in this radix version). Without
+    ``max-h-[var(--radix-popper-available-height)]`` + ``overflow-hidden``
+    + internal flex, a popover anchored near the viewport edge overflows
+    the screen (the picker's breadcrumbs rendered off-screen). The
+    scrolling region must carry ``min-h-0 flex-1 overflow-y-auto`` —
+    the same ``min-height: auto`` flex trap as the sidebar; without
+    ``min-h-0`` the list refuses to shrink and never scrolls. Footer
+    rows inside the popover take ``shrink-0``.
