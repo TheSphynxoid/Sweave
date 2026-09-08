@@ -71,3 +71,13 @@ htmlcov/
 # UI test artifacts
 test-results/
 playwright-report/
+
+# Sweave-managed per-project opencode config (repo root is a live project dir)
+/opencode.json
+
+# UI build artifacts (vite.config compiled by tsc)
+sweave-web/vite.config.js
+sweave-web/vite.config.d.ts
+sweave-web/tsconfig.tsbuildinfo
+sweave-web/tsconfig.node.tsbuildinfo
+sweave-web/scripts/shots/

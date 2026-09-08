@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -106,8 +108,8 @@ class ServeRunner:
             if m:
                 target = m.group(1)
                 shim_dir = str(Path(resolved).resolve().parent)
-                target = re.sub(r"%~?dp0%", lambda _m: shim_dir, target, flags=re.IGNORECASE)
-                target = Path(__import__("os").path.expandvars(target))
+                target = re.sub(r"%~?dp0%|%basedir%", lambda _m: shim_dir, target, flags=re.IGNORECASE)
+                target = Path(os.path.expandvars(target))
                 if target.is_file():
                     return str(target)
         return resolved or self.command
@@ -159,11 +161,16 @@ class ServeRunner:
         )
         log_file = open(self.log_path, "ab")
         try:
+            # On Windows, use CREATE_NO_WINDOW to prevent a console window from briefly appearing
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NO_WINDOW
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.worktree_path),
                 stdout=log_file,
                 stderr=asyncio.subprocess.STDOUT,
+                creationflags=creationflags,
             )
         except Exception:
             log_file.close()

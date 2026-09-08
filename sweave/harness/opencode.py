@@ -889,12 +889,17 @@ captures the real failure.
         log_file = open(log_path, "ab")
 
         try:
+            # On Windows, use CREATE_NO_WINDOW to prevent a console window from briefly appearing
+            creationflags = 0
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NO_WINDOW
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=spec.worktree_path,
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
+                creationflags=creationflags,
             )
         except Exception:
             log_file.close()
@@ -957,9 +962,9 @@ captures the real failure.
         if not match:
             return None
         target = match.group(1)
-        # Expand npm shim variables (%dp0% / %~dp0% = the shim's directory)
+        # Expand npm shim variables (%dp0% / %~dp0% / %basedir% = the shim's directory)
         shim_dir = str(Path(shim).resolve().parent)
-        target = re.sub(r"%~?dp0%", lambda _m: shim_dir, target, flags=re.IGNORECASE)
+        target = re.sub(r"%~?dp0%|%basedir%", lambda _m: shim_dir, target, flags=re.IGNORECASE)
         target = Path(os.path.expandvars(target))
         if target.is_file():
             return str(target)
