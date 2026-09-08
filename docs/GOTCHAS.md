@@ -200,11 +200,24 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    When the chromium version mismatches, the wave-1 e2e is the
    simplest reproduction.
 
-2. **The e2e dev server is bound to ``127.0.0.1``**. The
-   ``playwright.config.ts`` webServer URL is ``http://127.0.0.1:3000``;
-   Vite by default binds to ``localhost`` (IPv6). When starting
-   the dev server manually (not via the webServer config), pass
-   ``--host 127.0.0.1`` so the URL check succeeds.
+ 2. **The e2e dev server is bound to ``127.0.0.1``**. The
+    ``playwright.config.ts`` webServer URL is ``http://127.0.0.1:3000``;
+    Vite by default binds to ``localhost`` (IPv6). When starting
+    the dev server manually (not via the webServer config), pass
+    ``--host 127.0.0.1`` so the URL check succeeds.
+
+3. **Bounded scroll regions need ``min-h-0`` on the whole flex chain**
+   (R4.2, 2026-09-08). A flex child's default ``min-height: auto``
+   refuses to shrink below its content, so a sidebar section wrapping a
+   ``max-h-[40vh]`` list pushed the nav + status rows BELOW the
+   viewport (content "overflowing underneath the limit"; the active
+   session's tick/delete affordances sat under the fold). The fix is
+   structural: make the scroll-owning section ``flex-1 min-h-0`` inside
+   an ``overflow-hidden`` column, let the radix ``ScrollArea`` flex
+   (drop fixed ``max-h-*`` caps), and pin everything else
+   (``shrink-0``). Verify with the geometry probe: ``sidebarBottom ==
+   innerHeight`` and the active row's rect inside the tree rect
+   (pattern in the ui-chat-probe family).
 
 ## React Query invalidation map (R4.1, 2026-09-06)
 

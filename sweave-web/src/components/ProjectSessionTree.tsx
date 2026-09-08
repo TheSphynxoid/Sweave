@@ -8,7 +8,7 @@
  *
  * Replaces the old separate ProjectSwitcher + SessionTree.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -104,8 +104,8 @@ export function ProjectSessionTree() {
   });
 
   return (
-    <div data-testid="project-session-tree" className="space-y-1">
-      <div className="flex items-center justify-between px-2 py-1">
+    <div data-testid="project-session-tree" className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center justify-between px-2 pb-1 pt-0">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Projects
         </span>
@@ -119,8 +119,11 @@ export function ProjectSessionTree() {
         </button>
       </div>
 
-      <ScrollArea className="max-h-[40vh]">
-        <ul className="space-y-0.5 pr-1">
+      {/* Scrolls within ALL leftover sidebar height (the wrapper in the
+          Sidebar is the bounded flex parent; the old max-h-[40vh] cap
+          clipped long project lists and pushed the nav out of view). */}
+      <ScrollArea className="min-h-0 flex-1">
+        <ul className="space-y-0.5 pr-1 pb-1">
           {projects.length === 0 && (
             <li className="px-2 py-1 text-xs text-muted-foreground">
               No projects yet.
@@ -252,6 +255,14 @@ function ProjectSessions({
     enabled: true,
   });
 
+  // Keep the active session in view inside the sidebar's scroll area —
+  // activating a session deep in the tree must not leave its row (and
+  // with it the check / delete affordances) below the fold.
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeSessionId, sessions.length]);
+
   return (
     <div className="mt-0.5 space-y-0.5 pb-1">
       {isLoading && (
@@ -265,11 +276,12 @@ function ProjectSessions({
         return (
           <div key={s.id} className="group relative">
             <button
+              ref={isActive ? activeRowRef : undefined}
               type="button"
               onClick={() => onPickSession(s.id)}
               data-testid={`session-tree-item-${s.id}`}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md py-1.5 pl-9 pr-2 text-sm text-left transition-colors",
+                "flex w-full items-center gap-2 rounded-md py-1.5 pl-9 pr-8 text-sm text-left transition-colors",
                 isActive
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",

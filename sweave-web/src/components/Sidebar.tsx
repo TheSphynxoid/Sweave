@@ -31,7 +31,6 @@ import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { ProjectSessionTree } from "./ProjectSessionTree";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Kbd } from "@/components/ui/kbd";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -112,7 +111,7 @@ export function Sidebar() {
     <aside
       data-testid="sidebar"
       className={cn(
-        "flex flex-col border-r border-border bg-card transition-[width] duration-200 ease-in-out",
+        "flex min-h-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-in-out",
         open ? "w-64" : "w-[4.5rem]",
       )}
     >
@@ -140,33 +139,35 @@ export function Sidebar() {
         </Button>
       </div>
 
+      {/* The project/session tree owns ALL leftover height (min-h-0 so it
+          can shrink) and scrolls internally — the nav + status rows below
+          stay pinned instead of being pushed out of the viewport (the old
+          max-h-[40vh] tree + non-shrinkable wrapper overflowed them). */}
       {open && (
-        <div className="p-3 border-b border-border">
+        <div className="flex min-h-0 flex-1 flex-col border-b border-border p-3 pb-2">
           <ProjectSessionTree />
         </div>
       )}
 
-      <ScrollArea className="flex-1">
-        <nav aria-label="Primary" className="space-y-1 px-3 py-3">
-          {open && (
-            <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Funnels
-            </p>
-          )}
-          {FUNNELS.map((item) => (
-            <NavItem key={item.to} item={item} collapsed={!open} />
-          ))}
+      <nav aria-label="Primary" className="shrink-0 space-y-1 px-3 py-3">
+        {open && (
+          <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Funnels
+          </p>
+        )}
+        {FUNNELS.map((item) => (
+          <NavItem key={item.to} item={item} collapsed={!open} />
+        ))}
 
-          {open && (
-            <p className="px-2 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Panes
-            </p>
-          )}
-          {SCAFFOLDS.map((item) => (
-            <NavItem key={item.to} item={item} collapsed={!open} />
-          ))}
-        </nav>
-      </ScrollArea>
+        {open && (
+          <p className="px-2 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Panes
+          </p>
+        )}
+        {SCAFFOLDS.map((item) => (
+          <NavItem key={item.to} item={item} collapsed={!open} />
+        ))}
+      </nav>
 
       <Separator />
       <div className={cn("p-3 space-y-2", !open && "flex flex-col items-center")}>
