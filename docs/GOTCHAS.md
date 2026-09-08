@@ -371,11 +371,31 @@ group below for the traps that REPLACE this one.
    Tailwind's preflight already resets margins in `@layer base` —
    never add an unlayered universal reset. (Also: never write `p-*/`
    inside a CSS comment — the `*/` terminates it.)
-8. **PowerShell round-trips destroy UTF-8 source files**: a
-   `Get-Content` + `Set-Content -Encoding UTF8` pass on a UTF-8 (no
-   BOM) file reads it as cp1252 and writes back double-encoded
-   (`—` → `â€"`) plus a BOM. This bit a bulk string-replace in this
-   round (em-dashes in .tsx docstrings became mojibake). For any
-   byte-level edit of source files use `python -c` in binary mode;
-   the repair is `raw.decode('utf-8').encode('cp1252').decode('utf-8')`
-   after stripping a leading `\xef\xbb\xbf`.
+ 8. **PowerShell round-trips destroy UTF-8 source files**: a
+    `Get-Content` + `Set-Content -Encoding UTF8` pass on a UTF-8 (no
+    BOM) file reads it as cp1252 and writes back double-encoded
+    (`—` → `â€"`) plus a BOM. This bit a bulk string-replace in this
+    round (em-dashes in .tsx docstrings became mojibake). For any
+    byte-level edit of source files use `python -c` in binary mode;
+    the repair is `raw.decode('utf-8').encode('cp1252').decode('utf-8')`
+    after stripping a leading `\xef\xbb\xbf`.
+9. **A bare Radix popover hangs jsdom in this dependency tree**
+   (R4.2 picker polish, 2026-09-08): rendering `Popover` +
+   `PopoverTrigger` + `PopoverContent` and clicking the trigger under
+   `@testing-library/react` puts the vitest worker into a sync loop
+   (no testTimeout fires, the whole process hangs, zero output). Real
+   browsers are fine. Consequence: any test that needs a popover-
+   mounted surface must mount the panel component DIRECTLY — keep
+   popover-bodied widgets split into a testable panel export (see
+   `PathPickerBrowser`) and verify the popover shell via the
+   screenshot probes (`scripts/ui-picker-probe.mjs`). Never commit
+   hang-probe scratch tests — a leftover one silently hangs the whole
+   suite (files are listed by name in the failure output; anything
+   with `__min`/scratch naming is suspect).
+10. **Tall popovers must respect
+   `--radix-popover-content-available-height`**: without a
+   `max-h-[var(--radix-popover-content-available-height)]` +
+   `overflow-hidden` + internal flex list, a popover anchored near the
+   viewport edge overflows the screen (the picker's breadcrumbs
+   rendered off-screen). Give the popover a flex column and let the
+   scrolling region flex-shrink (`min-h-0 flex-1 overflow-y-auto`).

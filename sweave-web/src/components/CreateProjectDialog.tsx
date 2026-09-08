@@ -91,8 +91,8 @@ export function CreateProjectDialog() {
             <Label>Folder</Label>
             <PathPicker value={path} onChange={setPath} />
             <p className="text-[11px] text-muted-foreground">
-              Absolute path on the server's filesystem. Use "Browse" to pick or
-              create a folder.
+              Absolute path on the server's filesystem. Type or paste a path
+              ("~" works), or Browse to pick and create folders.
             </p>
           </div>
 
