@@ -38,13 +38,16 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-09-08)
-- **459/459** in `pytest tests/` (source of truth for logic tests; +6
-  from the R4.1 step-1b WS-event tests; +5 from R4.0 wire-shape; +1 from R4.2 hotfix)
+### Test Results (All Passing - verified 2026-09-09)
+- **486/486** in `pytest tests/` (source of truth for logic tests; +1
+  hermetic models-registry fallback test, +26 across the native-agents /
+  models-registry / platform / streaming-feedback strands)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
 - **81** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
   picker + chat reducer + children tree + wsInvalidations; +18 from R4.2 chat
-  runtime; +3 real-Thread lab pins from R4.2 step 2-pre)
+   runtime; +3 real-Thread lab pins from R4.2 step 2-pre) **= 105 total
+   (2026-09-09 recount: +8 PathPicker + 11 ModelPicker + 3 runtime
+   mergeHistory + 2 streaming pins)**
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -551,10 +554,12 @@
   upward config resolution. Now: managed `agent` map
   (`sweave-orchestrator` with the YAML prompt, `sweave-specialist`
   with `sweave_*: deny`) rendered on activation, pinned per message
-  (`body["agent"]`); MCP entry gained `cwd` = Sweave root (package
-  runs from source). **485 pytest, 13/13 run.py --check** (1
-  pre-existing models-registry failure from the parallel session's
-  uncommitted models.yaml work, untouched).
+   (`body["agent"]`); MCP entry gained `cwd` = Sweave root (package
+   runs from source). **486 pytest, 105 vitest, 13/13 run.py --check,
+   `npm run build` green** (the 1 models-registry failure noted at the
+   time was a brittle test coupling to the machine's generated default;
+   fixed hermetically the same day — tmp registry without `default` —
+   during the commit sweep `fb5f9fe`).
 - ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).
@@ -562,9 +567,19 @@
   Settings) by the dogfood handoff. The pre-dogfood strawman
   is in `docs/R4_4_PLAN.md` (the old R4.1 strawman renamed
   2026-09-05 per the hub restructure); the dogfood re-cuts it.
-  Same protocol as M1.9's dogfood handoff: user daily-drives
-  wave 1 on real work; the friction list becomes R4.4 / R4.2
-  input. R2 skills interleave on demand (per R4 plan §5).
+   Same protocol as M1.9's dogfood handoff: user daily-drives
+   wave 1 on real work; the friction list becomes R4.4 / R4.2
+   input. R2 skills interleave on demand (per R4 plan §5).
+- ▶ **Next: chat transparency + specialist forking (user-locked
+  rulings 2026-09-09, DESIGN.md §2.2 + §5 item 6)** — (a) inline
+  delegation cards in Chat for deferring turns (status + tool
+  timeline from existing WS/detail surfaces) + read-only specialist
+  drill-down drawer (follow-up via orchestrator); (b) `fork_specialist`
+  MCP tool (project scope, reuse-first, `forked_from` + reason on
+  trace) gated by `fork_policy: auto | confirm | disabled`
+  (session → project → global → `auto`). Uncommitted probe/tmp
+  scratch (`sweave-web/probe*.mjs`, `shots/`, `tmp-*/`) stays out
+  of version control.
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

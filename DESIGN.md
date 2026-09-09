@@ -140,6 +140,18 @@ Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, mod
 - **Routing authority (amended 2026-08-29)**: the orchestrator decides which specialist
   receives a task via its own LLM `defer` tool call. The rule-router is a temporary
   hard-edge fallback returning a *recommended primary*, not a hard decision.
+- **LLM-called fork (user-locked 2026-09-09)**: the orchestrator may fork a
+  specialist at runtime (`fork_specialist(base, name?, focus, reason)` MCP tool,
+  sibling of `defer`; project scope only) instead of asking the user to clone
+  one — e.g. `backend` → `backend-orders` + `backend-payments` on a microservices
+  project. Reuse-first (`list_specialists` → reuse if fit → fork only with a
+  reason; `forked_from` + reason recorded on the trace). Each fork is a separate
+  persistent identity (own `session_id`, own lock) — no threads-under-one-name.
+  Gated by `fork_policy: "auto" | "confirm" | "disabled"` (resolution session →
+  project → global → `"auto"`): `auto` creates immediately; `confirm` files an
+  escalation via the M1.9 store instead of creating; `disabled` rejects the fork
+  (`rejected: forking disabled by policy`) and the orchestrator reuses. Creation
+  only — existing specialists, `defer`, and manual UI creation are unaffected.
 - **Child runs = traditional sub-agents**: ephemeral, used for exploration/investigation
   (Polly's `/investigate` pattern); no worktree or PR by default. Delegation of
   *implementation* work goes to specialists in worktrees; delegation of *read* work
@@ -249,6 +261,10 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
    repo; PROJECT_STATE.md = runtime state + session history.
 4. Vanilla-JS no-build SPA; FastAPI serves static + REST + WS.
 5. Windows-first (detached servers via scripts, backend-driven file browser).
+6. Chat transparency (user-locked 2026-09-09): a deferring turn shows inline
+   delegation cards in Chat (status + tool timeline from existing surfaces);
+   the specialist drill-down is read-only record-keeping — follow-ups go via
+   the orchestrator, never a second input funnel.
 
 ## 6. Roadmap
 
