@@ -1,6 +1,6 @@
 spec_version: 1
 name: backend-specialist
-description: Backend engineering specialist
+description: Backend engineering (APIs, databases, auth, server architecture, testing, CI/CD) — defer here for any server-side implementation work
 
 executor:
   type: omnigent

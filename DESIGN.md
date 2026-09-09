@@ -151,7 +151,20 @@ Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, mod
   project → global → `"auto"`): `auto` creates immediately; `confirm` files an
   escalation via the M1.9 store instead of creating; `disabled` rejects the fork
   (`rejected: forking disabled by policy`) and the orchestrator reuses. Creation
-  only — existing specialists, `defer`, and manual UI creation are unaffected.
+   only — existing specialists, `defer`, and manual UI creation are unaffected.
+- **Prompt template variables (2026-09-09)**: a specialist's
+  `system_prompt` may reference live per-delegation values as
+  `{{var}}` (`task`, `worktree_path`, `project_name`,
+  `delegation_id`, `today`, `branch`, `git_status`,
+  `recent_commits`, …; full table in
+  `sweave/runtime/prompt_template.py`). Static prompts keep the
+  legacy one-off send on session create; templated prompts render
+  fresh and send per delegation (per-turn values would otherwise
+  bake the first turn into a reused session). Unknown names stay
+  verbatim; `${VAR}` (other apps' spelling) is not expanded.
+  Seed views are never persisted: the session saver skips
+  `scope == "seed"` (a saved seed materialises a shadowing
+  global/project copy that hides the seed).
 - **Child runs = traditional sub-agents**: ephemeral, used for exploration/investigation
   (Polly's `/investigate` pattern); no worktree or PR by default. Delegation of
   *implementation* work goes to specialists in worktrees; delegation of *read* work

@@ -1,6 +1,6 @@
 spec_version: 1
 name: reviewer-specialist
-description: Code review and quality specialist
+description: Code review and quality (correctness, security, API-contract and cross-stack consistency) — defer here to review another specialist's diff, never for primary implementation
 
 executor:
   type: omnigent

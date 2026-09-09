@@ -45,6 +45,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from sweave.harness.opencode import OpenCodeProcess
 from sweave.runtime.delegation_store import Delegation
+from sweave.runtime.prompt_template import (
+    build_template_context,
+    has_template_vars,
+    render_prompt_template,
+    template_var_names,
+)
 from sweave.runtime.mcp_config import (
     ORCHESTRATOR_AGENT_NAME,
     SPECIALIST_AGENT_NAME,
@@ -176,13 +182,20 @@ class SpecialistRuntime:
             new_id = data.get("id")
             if not new_id:
                 raise RuntimeError("opencode serve returned no session id")
-            # One-off system prompt, specialists only. The
+            # One-off system prompt, specialists only, STATIC prompts
+            # only. Templated prompts (``{{var}}``) are rendered fresh
+            # per delegation in run() — sending them here would bake
+            # the first turn's values into the reused session. The
             # orchestrator's charter lives on the managed
             # ``sweave-orchestrator`` agent (pinned per message), so
             # sending it here too would duplicate it every session;
             # specialists keep the one-off role prompt on top of the
             # generic ``sweave-specialist`` charter.
-            if specialist.system_prompt and not specialist.is_orchestrator:
+            if (
+                specialist.system_prompt
+                and not specialist.is_orchestrator
+                and not has_template_vars(specialist.system_prompt)
+            ):
                 await process.send(_system_message(specialist.system_prompt))
             # Persist the session id (best-effort)
             _set(new_id)
@@ -223,7 +236,14 @@ class SpecialistRuntime:
             new_id = data.get("id")
             if not new_id:
                 raise RuntimeError("opencode serve returned no session id")
-            if specialist.system_prompt and not specialist.is_orchestrator:
+            # One-off system prompt: static prompts only (see the
+            # create path — templated prompts render per delegation
+            # in run()).
+            if (
+                specialist.system_prompt
+                and not specialist.is_orchestrator
+                and not has_template_vars(specialist.system_prompt)
+            ):
                 await process.send(_system_message(specialist.system_prompt))
             _set(new_id)
             # R4.0: same propagation as the create path -- a recreate
@@ -335,6 +355,46 @@ class SpecialistRuntime:
 
             # Per-delegation body: structured ModelRef when known.
             model_body = self._model_body(model_ref or specialist.model_ref)
+
+            # Templated system prompt (``{{var}}``): render fresh with
+            # this delegation's values and send as a system message on
+            # EVERY turn. Static prompts keep the legacy one-off send
+            # in _ensure_session (zero wire change); the orchestrator
+            # is excluded (its charter is the pinned native agent).
+            if (
+                specialist.system_prompt
+                and not specialist.is_orchestrator
+                and has_template_vars(specialist.system_prompt)
+            ):
+                used_ref = model_ref or specialist.model_ref
+                if used_ref is not None:
+                    _provider = used_ref.get("provider")
+                    _model_id = used_ref.get("model_id")
+                    model_str = (
+                        f"{_provider}/{_model_id}"
+                        if _provider and _model_id
+                        else (_model_id or "")
+                    )
+                else:
+                    model_str = ""
+                context = build_template_context(
+                    specialist=specialist,
+                    delegation=delegation,
+                    worktree_path=worktree_path,
+                    model=model_str,
+                )
+                rendered = render_prompt_template(specialist.system_prompt, context)
+                await process.send(_system_message(rendered))
+                trace.append(
+                    "prompt_template_rendered",
+                    {
+                        "specialist": specialist.name,
+                        "vars": sorted(
+                            set(template_var_names(specialist.system_prompt))
+                            & set(context)
+                        ),
+                    },
+                )
 
             # Worktree re-injection: include the cwd preamble on the
             # FIRST message of the session (or every message if

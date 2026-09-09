@@ -361,7 +361,14 @@ class JobRunner:
                     # specialist.session_id during run()). Best-effort:
                     # a saver failure is logged, never raised -- the
                     # delegation result stands on its own.
-                    if self.specialist_saver is not None:
+                    #
+                    # Seed-scope views are NEVER persisted: writing one
+                    # would materialise a global/project shadow copy
+                    # that hides the seed via resolution shadowing
+                    # (2026-09-09: seed `backend-specialist` vanished
+                    # behind an auto-saved global of the same name).
+                    # Seed sessions are intentionally transient.
+                    if self.specialist_saver is not None and specialist.scope != "seed":
                         try:
                             self.specialist_saver(specialist, delegation.project_name)
                             trace.append(
@@ -376,6 +383,14 @@ class JobRunner:
                                 "JobRunner: specialist_saver failed for %s: %s",
                                 specialist.name, saver_err,
                             )
+                    elif specialist.scope == "seed":
+                        trace.append(
+                            "session_id_transient",
+                            {
+                                "specialist": specialist.name,
+                                "reason": "seed-scope views are never persisted",
+                            },
+                        )
                     from sweave.tools import DelegationResult
 
                     result = DelegationResult(

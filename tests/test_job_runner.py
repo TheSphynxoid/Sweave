@@ -232,3 +232,101 @@ async def test_corrupted_disk_file_does_not_500(tmp_path: Path):
     # Subsequent write replaces the bad file with valid JSON.
     payload = json.loads((target / "delegations.json").read_text(encoding="utf-8"))
     assert "delegations" in payload
+
+
+class _StubSpecialistRuntime:
+    """Mimics SpecialistRuntime.run: records the call, stamps a
+    session id on the specialist (the M1.3 contract the saver
+    persists), and returns canned output. No subprocess."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(
+        self,
+        *,
+        specialist,
+        delegation,
+        worktree_path,
+        message,
+        trace,
+        model_ref=None,
+    ) -> str:
+        self.calls.append({"specialist": specialist.name, "message": message})
+        specialist.session_id = "ses_stub_1"
+        return "stub output"
+
+
+def _make_runtime_runner(
+    tmp_path: Path, factory, saver_calls: list
+) -> JobRunner:
+    """JobRunner on the SpecialistRuntime path with an isolated
+    traces dir (never the real ~/.sweave/traces)."""
+    return JobRunner(
+        delegate_tool=StubDelegateTool(),
+        delegation_stores=PerProjectDelegationStores(),
+        event_bus=None,
+        traces_dir=tmp_path / "traces",
+        project_dir_resolver=lambda name: tmp_path,
+        specialist_runtime=_StubSpecialistRuntime(),
+        specialist_factory=factory,
+        specialist_saver=lambda spec, project: saver_calls.append(
+            (spec.name, spec.scope, spec.session_id, project)
+        ),
+    )
+
+
+def _seed_backend() -> Any:
+    from sweave.runtime.specialist_store import Specialist
+
+    return Specialist(
+        name="backend-specialist",
+        scope="seed",
+        is_orchestrator=False,
+        system_prompt="seed prompt",
+        harness="opencode",
+    )
+
+
+@pytest.mark.asyncio
+async def test_seed_specialist_session_never_persisted(tmp_path: Path):
+    """Seed-scope views must not materialise store copies.
+
+    2026-09-09: seed `backend-specialist` vanished behind an
+    auto-saved global of the same name (resolution shadowing).
+    The delegation still succeeds; only the saver call is skipped,
+    with a `session_id_transient` trace note."""
+    saver_calls: list = []
+    runner = _make_runtime_runner(tmp_path, lambda name: _seed_backend(), saver_calls)
+
+    d = await runner.submit("backend-specialist", "do work", project_name="p1")
+    final = await runner.wait(d.delegation_id, timeout=10)
+    assert final is not None and final.status == "review"
+    assert saver_calls == []
+    events = read_trace(d.delegation_id, base_dir=tmp_path / "traces")
+    kinds = [e.get("event") for e in events]
+    assert "session_id_transient" in kinds
+    assert "session_id_persisted" not in kinds
+
+
+@pytest.mark.asyncio
+async def test_project_specialist_session_persisted(tmp_path: Path):
+    """Control: project/global records still persist their session."""
+    from sweave.runtime.specialist_store import Specialist
+
+    saver_calls: list = []
+    rec = Specialist(
+        name="alpha",
+        scope="project",
+        is_orchestrator=False,
+        system_prompt="p",
+        harness="opencode",
+    )
+    runner = _make_runtime_runner(tmp_path, lambda name: rec, saver_calls)
+
+    d = await runner.submit("alpha", "do work", project_name="p1")
+    final = await runner.wait(d.delegation_id, timeout=10)
+    assert final is not None and final.status == "review"
+    assert saver_calls == [("alpha", "project", "ses_stub_1", "p1")]
+    events = read_trace(d.delegation_id, base_dir=tmp_path / "traces")
+    assert "session_id_persisted" in [e.get("event") for e in events]

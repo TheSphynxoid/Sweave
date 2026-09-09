@@ -1,6 +1,6 @@
 spec_version: 1
 name: frontend-specialist
-description: Frontend engineering specialist
+description: Frontend engineering (components, styling, client state, browser APIs, UI testing) — defer here for any client-side implementation work
 
 executor:
   type: omnigent
