@@ -580,8 +580,22 @@
   childless (childless turns byte-identical); fetch failures never
   break the thread. 6 new vitest. **486 pytest, 111 vitest, 13/13
   run.py --check, build green.** Still open: read-only specialist
-  drawer, `fork_specialist` MCP tool + `fork_policy`
-  (rulings in DESIGN.md §2.2 + §5 item 6).
+   drawer, `fork_specialist` MCP tool + `fork_policy`
+   (rulings in DESIGN.md §2.2 + §5 item 6).
+- ✅ **Test project-list pollution fixed (2026-09-09)** — every
+  `POST /api/projects` in pytest landed in the REAL
+  `~/.sweave/projects` (130+ `p-*`/`proj-*` dirs, `active_project`
+  hijacked): the HTTP stack runs on the import-time singleton
+  (`sweave/projects.py:617`), early-bound by `sweave/api/projects.py`
+  + `sweave/web/server.py`, which no `Path.home` patch can redirect.
+  Fix: autouse `_isolate_project_manager_singleton` in
+  `tests/conftest.py` (tmp-backed singleton, all three bindings) +
+  `Path.home` added to the visibility file's env-only fixture + the
+  registry fallback test made fully hermetic (plants its own
+  opencode.json). Home cleaned (junk deleted, pointer back to
+  `Sweave`). **486 pytest, zero real-home growth per run.**
+  `run.py --check` already self-cleans (creates + deletes
+  `test-agent-x`).
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

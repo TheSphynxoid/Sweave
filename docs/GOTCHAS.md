@@ -61,6 +61,23 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    (`test_runtime_runner_is_mocked_no_real_subprocess`) pins the invariant. Copy the
    fixture from one of those three into any new runtime-path test file.
 
+2. **Never assert against the real `~/.sweave` from tests — and never
+   assume `Path.home` patches are enough** (2026-09-09: every
+   `POST /api/projects` in the suite landed `p-*` / `proj-*` junk in
+   the REAL `~/.sweave/projects`, 130+ dirs, and hijacked the
+   `active_project` pointer). The HTTP stack runs on the import-time
+   `project_manager` singleton (`sweave/projects.py:617`), early-bound
+   by `sweave/api/projects.py` and `sweave/web/server.py` — an
+   already-built object no home patch can redirect. Cover comes from
+   the autouse `_isolate_project_manager_singleton` fixture in
+   `tests/conftest.py` (tmp-backed singleton, all three bindings,
+   per test). If you add a FOURTH early-bound `from sweave.projects
+   import project_manager`, extend that fixture. Env-only home
+   fixtures (`HOME`/`USERPROFILE` without a `Path.home` patch) are
+   banned for home-reading tests — the autouse patch wins and the
+   planted files diverge (see `test_m1_9_step4_visibility.py`
+   `home_dir`).
+
 ## MCP surface
 
 1. **The auth token is the only seam between the sweave MCP server and the API**

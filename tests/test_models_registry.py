@@ -42,23 +42,26 @@ def test_default_is_qualified_and_in_registry():
     assert default in set(cm.get_all_models())
 
 
-def test_default_prefers_opencode_configured_model(tmp_path: Path):
+def test_default_prefers_opencode_configured_model(tmp_path: Path, tmp_home: Path):
     """The user's opencode.json model is the fallback default.
 
     Hermetic: a tmp registry WITHOUT an explicit ``default`` must
-    resolve to the serve's own configured model. (An explicit
-    ``default`` wins over opencode.json — pinned by
-    ``test_set_default_model_persists_and_reloads`` — so asserting
-    against the real models.yaml couples the test to whatever
-    default was last generated/picked on this machine. 2026-09-09:
-    the real models.yaml carries ``openrouter/...`` while this
-    machine's opencode.json says ``ollama/qwen3:8b``.)
+    resolve to the serve's own configured model. The fake
+    opencode.json is planted in the test home (the suite isolates
+    home per test, so the real user file is never read — 2026-09-09:
+    asserting against the real models.yaml coupled the test to
+    whatever default was last generated on this machine, and the
+    suite-wide home isolation would otherwise skip it always).
     """
+    import json
+
     from sweave.config.manager import ConfigManager as CM
 
-    configured = CM._opencode_configured_model()
-    if configured is None:
-        pytest.skip("no opencode.json model configured")
+    fake_configured = "opencode/test-fallback-model"
+    opencode_json = tmp_home / ".config" / "opencode" / "opencode.json"
+    opencode_json.parent.mkdir(parents=True, exist_ok=True)
+    opencode_json.write_text(json.dumps({"model": fake_configured}), encoding="utf-8")
+    assert CM._opencode_configured_model() == fake_configured
     registry = tmp_path / "models.yaml"
     registry.write_text(
         yaml.safe_dump(
@@ -77,7 +80,7 @@ def test_default_prefers_opencode_configured_model(tmp_path: Path):
     )
     cm = ConfigManager(config_path=config_path)
     cm.load()
-    assert cm.get_default_model() == configured
+    assert cm.get_default_model() == fake_configured
 
 
 def test_set_default_model_rejects_unqualified():

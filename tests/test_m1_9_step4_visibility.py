@@ -29,10 +29,15 @@ import pytest
 
 
 # Each test gets its own home dir so traces and tokens don't bleed.
+# Both mechanisms are patched: env vars (for os.path.expanduser users)
+# AND Path.home (the classmethod most code calls; an autouse suite
+# fixture also patches it, and the LAST patch wins — it must agree
+# with the env vars or planted files and reads diverge).
 @pytest.fixture
 def home_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     return tmp_path
 
 
