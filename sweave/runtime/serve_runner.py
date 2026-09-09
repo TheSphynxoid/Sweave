@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from sweave.platform import creationflags_no_window
+
 if TYPE_CHECKING:
     from sweave.harness.opencode import OpenCodeHarness, OpenCodeProcess
 
@@ -161,16 +163,12 @@ class ServeRunner:
         )
         log_file = open(self.log_path, "ab")
         try:
-            # On Windows, use CREATE_NO_WINDOW to prevent a console window from briefly appearing
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = subprocess.CREATE_NO_WINDOW
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.worktree_path),
                 stdout=log_file,
                 stderr=asyncio.subprocess.STDOUT,
-                creationflags=creationflags,
+                creationflags=creationflags_no_window(),
             )
         except Exception:
             log_file.close()

@@ -71,3 +71,26 @@ def test_load_skips_malformed_json(tmp_project_manager: ProjectManager, tmp_path
     pm._sessions.clear()
     pm.load()
     assert "p-bad" not in pm._projects
+
+
+def test_load_reads_utf8_session_content(tmp_project_manager: ProjectManager, tmp_path: Path):
+    """Non-ASCII session content (emoji in a chat reply) round-trips.
+
+    Writes are UTF-8 (atomic_write_json_sync); the read side must
+    match. 2026-09-09: a live assistant reply containing an emoji
+    crashed every lifespan load on cp1252-locale systems because the
+    reads used the locale default encoding.
+    """
+    pm = tmp_project_manager
+    project_path = tmp_path / "p-emoji"
+    project_path.mkdir(parents=True, exist_ok=True)
+    pm.create_project("p-emoji", project_path)
+    s = pm.create_session("p-emoji", "S1")
+    s.add_message("assistant", "I'm \U0001F916 the orchestrator, ready to help")
+    pm.save_session(s)
+
+    pm._projects.clear()
+    pm._sessions.clear()
+    pm.load()  # must not raise
+    assert s.id in pm._sessions
+    assert "\U0001F916" in pm._sessions[s.id].messages[-1].content

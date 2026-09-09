@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 
+from sweave.platform import run_no_window
+
+
 @dataclass
 class WorktreeInfo:
     """Information about a git worktree."""
@@ -237,7 +240,7 @@ class WorktreeManager:
     def _has_gh(self) -> bool:
         """Check if gh CLI is available."""
         try:
-            subprocess.run(["gh", "--version"], capture_output=True, check=True)
+            run_no_window(["gh", "--version"], capture_output=True, check=True)
             return True
         except Exception:
             return False
@@ -256,7 +259,7 @@ class WorktreeManager:
             self._run_git(["push", "origin", branch], cwd=worktree)
             
             # Create PR
-            result = subprocess.run(
+            result = run_no_window(
                 [
                     "gh", "pr", "create",
                     "--title", title,
@@ -326,7 +329,7 @@ class WorktreeManager:
     
     def _run_git(self, args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
         """Run a git command."""
-        return subprocess.run(
+        return run_no_window(
             ["git", *args],
             cwd=cwd or self.git_dir,
             capture_output=True,

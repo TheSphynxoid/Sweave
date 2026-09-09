@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional, Protocol
 
 from sweave.chat.synthesis import _approx_tokens, truncate_to_tokens
+from sweave.platform import check_output_no_window
 from sweave.runtime.delegation_store import Delegation
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class GitSnapshotter:
         if not (project_dir / ".git").exists():
             return None
         try:
-            sha = subprocess.check_output(
+            sha = check_output_no_window(
                 ["git", "rev-parse", "HEAD"],
                 cwd=str(project_dir),
                 stderr=subprocess.DEVNULL,
@@ -121,7 +122,7 @@ class GitSnapshotter:
             return None
         dirty = ""
         try:
-            status = subprocess.check_output(
+            status = check_output_no_window(
                 ["git", "status", "--porcelain"],
                 cwd=str(project_dir),
                 stderr=subprocess.DEVNULL,
@@ -159,7 +160,7 @@ class GitSnapshotter:
             # Same commit -- but the dirty hash may differ. We
             # include a brief dirty-state summary.
             try:
-                status = subprocess.check_output(
+                status = check_output_no_window(
                     ["git", "status", "--porcelain"],
                     cwd=str(project_dir),
                     stderr=subprocess.DEVNULL,
@@ -172,7 +173,7 @@ class GitSnapshotter:
             lines = status.splitlines()
             return _summarise_git_status(lines, max_lines=10)
         try:
-            stat = subprocess.check_output(
+            stat = check_output_no_window(
                 ["git", "diff", "--stat", f"{last_sha}..{current_sha}"],
                 cwd=str(project_dir),
                 stderr=subprocess.DEVNULL,

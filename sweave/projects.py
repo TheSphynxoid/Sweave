@@ -348,11 +348,15 @@ class ProjectManager:
         # Load global config
         if self.global_config_path.exists():
             try:
-                with open(self.global_config_path) as f:
+                # UTF-8: writes go through atomic_write_json_sync
+                # (utf-8); the read side must match or any non-ASCII
+                # content (e.g. an emoji in a chat message) breaks
+                # the load on locale-default (cp1252) systems.
+                with open(self.global_config_path, encoding="utf-8") as f:
                     global_config = json.load(f)
                 self._active_project = global_config.get("active_project")
                 self._active_session = global_config.get("active_session")
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 # Corrupt global config shouldn't kill the server; the
                 # active-project pointers will be None and the user can
                 # re-set them via /api/projects/{name}/active.
@@ -367,9 +371,9 @@ class ProjectManager:
             if not config_file.exists():
                 continue
             try:
-                with open(config_file) as f:
+                with open(config_file, encoding="utf-8") as f:
                     data = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 continue
             try:
                 project = Project.from_dict(data)
@@ -386,9 +390,9 @@ class ProjectManager:
                 if session_file.name.endswith(".tmp"):
                     continue
                 try:
-                    with open(session_file) as f:
+                    with open(session_file, encoding="utf-8") as f:
                         session_data = json.load(f)
-                except (OSError, json.JSONDecodeError):
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 try:
                     session = Session.from_dict(session_data)

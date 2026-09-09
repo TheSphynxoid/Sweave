@@ -14,6 +14,8 @@ from typing import Any, Callable
 
 import httpx
 
+from sweave.platform import creationflags_no_window
+
 from .base import (
     Harness,
     AgentSpec,
@@ -597,6 +599,7 @@ captures the real failure.
                 self._resolve_command(), "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=creationflags_no_window(),
             )
             await proc.wait()
             return proc.returncode == 0
@@ -889,17 +892,13 @@ captures the real failure.
         log_file = open(log_path, "ab")
 
         try:
-            # On Windows, use CREATE_NO_WINDOW to prevent a console window from briefly appearing
-            creationflags = 0
-            if os.name == "nt":
-                creationflags = subprocess.CREATE_NO_WINDOW
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=spec.worktree_path,
                 env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                creationflags=creationflags,
+                creationflags=creationflags_no_window(),
             )
         except Exception:
             log_file.close()

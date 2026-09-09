@@ -9,6 +9,8 @@ import asyncio
 import os
 import subprocess
 
+from sweave.platform import creationflags_no_window
+
 
 @dataclass
 class MemoryEntry:
@@ -237,6 +239,7 @@ class HindsightDockerMemory:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                creationflags=creationflags_no_window(),
             )
             if result.returncode == 0:
                 self._container_id = result.stdout.strip()
@@ -254,6 +257,7 @@ class HindsightDockerMemory:
                 subprocess.run,
                 ["docker", "stop", self._container_id],
                 capture_output=True,
+                creationflags=creationflags_no_window(),
             )
             self._container_id = None
     
