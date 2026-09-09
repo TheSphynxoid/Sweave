@@ -78,7 +78,11 @@ def test_ensure_mcp_config_writes_per_project_opencode_json(tmp_path: Path):
     # The returned config has the sweave block.
     sweave = config["mcp"]["sweave"]
     assert sweave["type"] == "local"
-    assert sweave["command"][0].endswith("python") or "python.exe" in sweave["command"][0]
+    # Windowless interpreter on Windows (pythonw.exe never owns a
+    # console, so the opencode-spawned MCP server can't flash a CMD
+    # window); the plain interpreter elsewhere.
+    exe = sweave["command"][0].lower()
+    assert exe.endswith("python") or exe.endswith("python.exe") or exe.endswith("pythonw.exe")
     assert sweave["command"][1:] == ["-m", "sweave.mcp"]
     assert sweave["environment"]["SWEAVE_MCP_TOKEN"] == "{env:SWEAVE_MCP_TOKEN}"
     assert sweave["enabled"] is True

@@ -535,11 +535,26 @@
   lab is replaced by the real-Thread lab (Seed/Empty/Stream);
   rulings honored: copy + timestamp action bar only, stop
   disabled-with-tooltip (R4.3), suggested prompts static for now.
-  Hotfix commit `d11b54a` (models.yaml provider names +
-  CREATE_NO_WINDOW), step commit `1c95323`.
-  **459/459 pytest, 81/81 vitest, build green, screenshot gates
-  green. NEXT: the user's visual sign-off of `/chat`, then
-  step 2b (tool cards + Question card) → 2c → 3.**
+   Hotfix commit `d11b54a` (models.yaml provider names +
+   CREATE_NO_WINDOW), step commit `1c95323`.
+   **459/459 pytest, 81/81 vitest, build green, screenshot gates
+   green. NEXT: the user's visual sign-off of `/chat`, then
+   step 2b (tool cards + Question card) → 2c → 3.**
+- ▶ **Native agents cutover + MCP -32602 fix (unplanned hardening,
+  2026-09-09, user rulings: full cutover; orchestrator keeps file
+  write)** — the user's "list specialists" call surfaced `MCP error
+  -32602`: handlers were registered against full request models, so
+  every `tools/call` failed (fix: params models; stdio round-trip
+  test now covers `tools/call`). Same round found: the M1.9
+  permission block never took effect (nested in the MCP entry +
+  invalid list shape); specialists saw `sweave_*` MCP tools via
+  upward config resolution. Now: managed `agent` map
+  (`sweave-orchestrator` with the YAML prompt, `sweave-specialist`
+  with `sweave_*: deny`) rendered on activation, pinned per message
+  (`body["agent"]`); MCP entry gained `cwd` = Sweave root (package
+  runs from source). **485 pytest, 13/13 run.py --check** (1
+  pre-existing models-registry failure from the parallel session's
+  uncommitted models.yaml work, untouched).
 - ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
   R4-workbench vision from the M1.2 era) + Settings panes
   (models/routing/memory/catalog picker — old UI_PLAN items).

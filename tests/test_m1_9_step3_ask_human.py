@@ -46,10 +46,10 @@ def test_ask_human_tool_is_registered():
     ``defer`` and ``list_specialists``. The tool is on the same
     auth / wire surface."""
     from sweave.mcp import _list_tools_handler
-    from mcp.types import ListToolsRequest
+    from mcp.types import PaginatedRequestParams
 
     async def _list():
-        return await _list_tools_handler(None, ListToolsRequest())
+        return await _list_tools_handler(None, PaginatedRequestParams())
 
     tools = asyncio.run(_list()).tools
     names = sorted(t.name for t in tools)
@@ -64,10 +64,10 @@ def test_ask_human_tool_schema():
     ``caller_delegation_id`` is required (the asking delegation id,
     same pattern as ``defer``)."""
     from sweave.mcp import _list_tools_handler
-    from mcp.types import ListToolsRequest
+    from mcp.types import PaginatedRequestParams
 
     async def _list():
-        return await _list_tools_handler(None, ListToolsRequest())
+        return await _list_tools_handler(None, PaginatedRequestParams())
 
     tools = asyncio.run(_list()).tools
     by_name = {t.name: t for t in tools}
@@ -89,7 +89,7 @@ def test_ask_human_returns_escalation_id_and_publishes_event(home_dir):
     publishes ``specialist.escalated`` on the WS bus, returns an
     ``escalation_id`` the LLM can use to fetch the answer later."""
     from sweave.mcp import _ask_human
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
     import sweave.mcp as mcp_mod
 
     captured: list[tuple[str, dict[str, Any]]] = []
@@ -102,16 +102,13 @@ def test_ask_human_returns_escalation_id_and_publishes_event(home_dir):
     mcp_mod._http_post = fake_http_post
     try:
         async def _run():
-            req = CallToolRequest(
+            req = CallToolRequestParams(
                 name="ask_human",
-                params=CallToolRequestParams(
-                    name="ask_human",
-                    arguments={
-                        "question": "Which auth strategy?",
-                        "options": ["JWT", "session", "OAuth"],
-                        "caller_delegation_id": "d-1",
-                    },
-                ),
+                arguments={
+                    "question": "Which auth strategy?",
+                    "options": ["JWT", "session", "OAuth"],
+                    "caller_delegation_id": "d-1",
+                },
             )
             return await _ask_human(None, req)
 
@@ -137,13 +134,10 @@ def test_ask_human_requires_question_and_caller_delegation_id(home_dir):
     contract as ``defer``: a code-mode client branches on isError,
     a text-mode client reads the line."""
     from sweave.mcp import _ask_human
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
 
     def _req(args):
-        return CallToolRequest(
-            name="ask_human",
-            params=CallToolRequestParams(name="ask_human", arguments=args),
-        )
+        return CallToolRequestParams(name="ask_human", arguments=args)
 
     async def _run(args):
         return await _ask_human(None, _req(args))

@@ -7,11 +7,21 @@ this: a ``opencode.json`` in the project root (or in ``.opencode/``)
 with an ``mcp.sweave = {type: "local", command: [...], ...}`` entry
 makes the MCP server visible to the orchestrator's session.
 
+The same write also renders the managed opencode-native ``agent``
+map (``sweave-orchestrator`` / ``sweave-specialist``): custom
+prompts (sourced from ``sweave/agents/*/config.yaml``) plus the
+per-role permission profiles. SpecialistRuntime pins every message
+to the matching agent (``body["agent"]``), so tool gating is
+enforced by opencode itself -- specialists cannot see the sweave
+MCP tools even though the serve discovers the shared ``mcp.sweave``
+block via upward config resolution.
+
 This module writes that file **idempotently** with a versioned
 marker, so re-activation is a no-op and a user-edited config isn't
 clobbered on every activate. The marker is the key
-``_sweave_managed`` inside the ``mcp.sweave`` entry; if the marker
-is absent (user wrote their own block) we leave the file alone.
+``_sweave_managed`` inside the ``mcp.sweave`` entry (and inside each
+managed ``agent`` entry); if the marker is absent (user wrote their
+own block) we leave the file alone.
 
 Token + activation: the shared MCP token is read from
 ``~/.sweave/mcp_token`` and embedded in the spawned process's
@@ -63,45 +73,93 @@ def _sweave_mcp_entry(token: str, env_token_var: str) -> dict[str, Any]:
     """Build the ``mcp.sweave`` entry that gets merged into the
     project's ``opencode.json``.
 
-    The command array uses ``sys.executable`` so the spawned
-    process uses the same Python interpreter that runs the sweave
-    server (no PATH/venv drift). The ``cwd`` is implicitly the
-    project root (opencode inherits from the serve's cwd).
+    The command array uses :func:`sweave.platform.pythonw_executable`
+    (windowless; opencode spawns this process itself so our
+    CREATE_NO_WINDOW can't cover it). ``cwd`` pins the Sweave package
+    root: ``python -m sweave.mcp`` only resolves where the package is
+    importable, and sweave runs from source (not pip-installed), so
+    any non-repo project would otherwise get a crashing MCP server.
+    The ``cwd`` is the Sweave installation, NOT the project -- the
+    server is project-agnostic (project comes from SWEAVE_PORT/HOST
+    + the API calls it makes).
 
-    M1.9 step 2 hardening: the orchestrator session config denies
-    native opencode subagent spawning (``task: deny``) and
-    git-mutation bash patterns (commit / merge / push). The deny
-    closes the bypass paths: a specialist's session can't spawn a
-    native sub-subagent (all deferral goes through MCP, with depth
-    / loop / budget enforcement), and the orchestrator never
-    commits to the user's checkout (that's the user's job).
+    NOTE: opencode strips unknown keys inside an MCP server entry
+    (``additionalProperties: false``) -- tool permissions do NOT
+    belong here. They live on the managed agents (see
+    :func:`_sweave_agent_map`), which is also why the M1.9
+    ``permission`` key once nested here never took effect.
     """
-    import sys
-
-    # Local import to avoid pulling in the runtime's permission
-    # renderer at import time of this module (which the AppState
-    # lifespan does early).
-    from sweave.runtime.agent_permission import render_agent_permission_profile
+    from sweave.platform import pythonw_executable
 
     return {
         "type": "local",
-        "command": [sys.executable, "-m", "sweave.mcp"],
+        "command": [pythonw_executable(), "-m", "sweave.mcp"],
+        "cwd": str(_sweave_package_root()),
         "environment": {
             "SWEAVE_MCP_TOKEN": f"{{env:{env_token_var}}}",
         },
         "enabled": True,
         "timeout": 30000,
-        # M1.9 step 2: per-agent permission block (orchestrator =
-        # task deny + git bash deny; specialists = task deny only).
-        # The orchestrator session is the one that consumes the
-        # ``mcp.sweave`` block; specialists don't see MCP at all
-        # (MCP is the orchestrator-only defer path). The deny is the
-        # safety net for both.
-        "permission": render_agent_permission_profile(is_orchestrator=True),
         # Marker: presence of this key means sweave wrote the block.
         # Re-runs are no-ops; user-edited blocks (no marker) are
         # left alone.
         _MANAGED_KEY: _MANAGED_VALUE,
+    }
+
+
+def _sweave_package_root() -> Path:
+    """Directory containing the ``sweave`` package (repo root in
+    source runs). The MCP server's ``cwd`` so ``python -m
+    sweave.mcp`` resolves regardless of the project directory."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+# Opencode-native agent names managed by Sweave. Pinned per message
+# by SpecialistRuntime (``body["agent"]``); never user-facing.
+ORCHESTRATOR_AGENT_NAME = "sweave-orchestrator"
+SPECIALIST_AGENT_NAME = "sweave-specialist"
+
+# Generic specialist charter. Per-specialist flavor (backend /
+# frontend / reviewer / custom role prompts) is still delivered as
+# the session's one-off system message; this charter is the
+# opencode-side enforcement layer (identity + tool gating), rendered
+# once per project activation.
+SPECIALIST_AGENT_CHARTER = """You are a Sweave specialist. You implement delegated work inside your task worktree and commit it there.
+
+- Do the work yourself. You have no delegation tools: never attempt to defer, list, or escalate through any sweave surface. If you are blocked or need a human decision, state it clearly in your final summary.
+- Commit your work in your branch. Never merge into the base branch and never touch files outside your worktree.
+- End your turn with a concise summary of what changed plus test evidence."""
+
+
+def _sweave_agent_map() -> dict[str, Any]:
+    """Build the managed ``agent`` map for the project's opencode.json.
+
+    Source of truth for prompts is ``sweave/agents/*/config.yaml``
+    (via the loader): the orchestrator agent carries the full
+    orchestrator prompt, so the opencode-native agent and the
+    legacy one-off system message can never drift. Permissions come
+    from ``runtime/agent_permission.py``.
+    """
+    from sweave.agents.loader import load_seed_agents
+    from sweave.runtime.agent_permission import render_agent_permission_profile
+
+    seeds = load_seed_agents()
+    orch = seeds.get("orchestrator")
+    return {
+        ORCHESTRATOR_AGENT_NAME: {
+            "description": (orch.description if orch else "") or "Sweave orchestrator: decomposes work and delegates to specialists.",
+            "mode": "primary",
+            "prompt": (orch.prompt if orch else "") or "",
+            "permission": render_agent_permission_profile(is_orchestrator=True),
+            _MANAGED_KEY: _MANAGED_VALUE,
+        },
+        SPECIALIST_AGENT_NAME: {
+            "description": "Sweave specialist: implements delegated work in its worktree.",
+            "mode": "primary",
+            "prompt": SPECIALIST_AGENT_CHARTER,
+            "permission": render_agent_permission_profile(is_orchestrator=False),
+            _MANAGED_KEY: _MANAGED_VALUE,
+        },
     }
 
 
@@ -188,6 +246,24 @@ def ensure_mcp_config(
             env_token_var=token_env_var,
         )
         existing["mcp"] = mcp_block
+        # Managed opencode-native agents (same marker convention per
+        # agent name: present-without-marker = user-owned, left
+        # alone; otherwise refreshed from the YAML specs so prompt
+        # edits land on the next activation).
+        agent_block = existing.get("agent", {})
+        if not isinstance(agent_block, dict):
+            agent_block = {}
+        for name, rendered in _sweave_agent_map().items():
+            current = agent_block.get(name, {})
+            if current and not (isinstance(current, dict) and current.get(_MANAGED_KEY)):
+                logger.info(
+                    "ensure_mcp_config: project %s has a user-written 'agent.%s' block; skipping",
+                    project_dir,
+                    name,
+                )
+                continue
+            agent_block[name] = rendered
+        existing["agent"] = agent_block
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             _atomic_write_json(path, existing)

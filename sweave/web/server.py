@@ -254,9 +254,27 @@ async def lifespan(app: FastAPI):
         len(state.dynamic_agents),
     )
 
+    # Export the MCP token into the server's environment so the
+    # per-project opencode.json ``{env:SWEAVE_MCP_TOKEN}`` expansion
+    # always resolves: opencode serve inherits this process's env,
+    # and the opencode-spawned MCP server inherits the serve's. (An
+    # unset var expands to "" and the MCP server falls back to the
+    # home file -- which works, but a stale inherited value would
+    # 401 every tool call; the file is the source of truth, so the
+    # export overwrites.) Restored on shutdown so tests embedding
+    # the lifespan don't leak it.
+    from sweave.mcp import get_or_create_token
+
+    _prev_mcp_token = os.environ.get("SWEAVE_MCP_TOKEN")
+    os.environ["SWEAVE_MCP_TOKEN"] = get_or_create_token()
+
     try:
         yield
     finally:
+        if _prev_mcp_token is None:
+            os.environ.pop("SWEAVE_MCP_TOKEN", None)
+        else:
+            os.environ["SWEAVE_MCP_TOKEN"] = _prev_mcp_token
         # Close any open WS connections cleanly
         if state.event_bus is not None:
             for ws in list(state.event_bus._subscribers):  # noqa: SLF001

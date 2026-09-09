@@ -189,19 +189,16 @@ async def test_defer_submits_child_via_v2_tasks_with_parent_link(
     monkeypatch.setattr("sweave.mcp._http_post", fake_post)
 
     from sweave.mcp import _defer
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
 
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(
-            name="defer",
-            arguments={
-                "target": "backend",
-                "task": "Write a hello.py that prints OK",
-                "reason": "minimal reproducible task",
-                "caller_delegation_id": "del-parent-xyz",
-            },
-        ),
+    req = CallToolRequestParams(
+        name="defer",
+        arguments={
+            "target": "backend",
+            "task": "Write a hello.py that prints OK",
+            "reason": "minimal reproducible task",
+            "caller_delegation_id": "del-parent-xyz",
+        },
     )
     result = await _defer(ctx=None, params=req)
     assert result.is_error is False
@@ -235,18 +232,15 @@ async def test_defer_surfaces_rejections_as_instructions(monkeypatch):
     monkeypatch.setattr("sweave.mcp._http_post", fake_post)
 
     from sweave.mcp import _defer
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
 
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(
-            name="defer",
-            arguments={
-                "target": "backend",
-                "task": "x",
-                "caller_delegation_id": "del-parent-1",
-            },
-        ),
+    req = CallToolRequestParams(
+        name="defer",
+        arguments={
+            "target": "backend",
+            "task": "x",
+            "caller_delegation_id": "del-parent-1",
+        },
     )
     result = await _defer(ctx=None, params=req)
     assert result.is_error is True
@@ -263,13 +257,10 @@ async def test_defer_validates_required_arguments():
     args.
     """
     from sweave.mcp import _defer
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
 
-    def make_req(args: dict) -> CallToolRequest:
-        return CallToolRequest(
-            method="tools/call",
-            params=CallToolRequestParams(name="defer", arguments=args),
-        )
+    def make_req(args: dict) -> CallToolRequestParams:
+        return CallToolRequestParams(name="defer", arguments=args)
 
     # Missing target
     r = await _defer(
@@ -310,14 +301,11 @@ async def test_defer_unknown_target_message_surfaces_4xx(monkeypatch):
     monkeypatch.setattr("sweave.mcp._http_post", fake_post)
 
     from sweave.mcp import _defer
-    from mcp.types import CallToolRequest, CallToolRequestParams
+    from mcp.types import CallToolRequestParams
 
-    req = CallToolRequest(
-        method="tools/call",
-        params=CallToolRequestParams(
-            name="defer",
-            arguments={"target": "ghost", "task": "x", "caller_delegation_id": "p1"},
-        ),
+    req = CallToolRequestParams(
+        name="defer",
+        arguments={"target": "ghost", "task": "x", "caller_delegation_id": "p1"},
     )
     result = await _defer(ctx=None, params=req)
     assert result.is_error is True
@@ -336,11 +324,9 @@ async def test_defer_unknown_target_message_surfaces_4xx(monkeypatch):
 @pytest.mark.asyncio
 async def test_tools_list_exposes_both_tools():
     from sweave.mcp import _list_tools_handler
-    from mcp.types import ListToolsRequest
+    from mcp.types import PaginatedRequestParams
 
-    result = await _list_tools_handler(
-        ctx=None, params=ListToolsRequest(method="tools/list")
-    )
+    result = await _list_tools_handler(ctx=None, params=PaginatedRequestParams())
     # M1.9 step 3 added ask_human alongside the original two tools.
     # The expected set is the superset; future additions (R4+)
     # update this test, not the other way around.
@@ -366,17 +352,15 @@ async def test_tools_list_exposes_both_tools():
 @pytest.mark.asyncio
 async def test_mcp_server_stdio_round_trip(monkeypatch, tmp_path: Path):
     """Boot the stdio MCP server as a subprocess; the client drives
-    initialize + tools/list against a real uvicorn test app. Confirms
-    the wire format end-to-end without depending on opencode.
+    initialize + tools/list + tools/call against a real uvicorn test
+    app. Confirms the wire format end-to-end without depending on
+    opencode.
 
     SWEAVE_PORT points the MCP server at the uvicorn test port.
-    Token auth + tools/call round-trip are covered by the in-process
-    handler tests above; the wire-level smoke here is just
-    initialize + tools/list (the mcp SDK 2.1.1 has a known
-    client/server requestState mismatch on tools/call that we
-    sidestep; it doesn't affect the orchestrator's actual usage --
-    opencode is its own MCP client and uses its own protocol
-    implementation).
+    Regression pin for the 2026-09-09 -32602 incident: handlers used
+    to be registered against the full request models, so the runner
+    rejected every tools/call with "Invalid request parameters"
+    (tools/list only worked by accident of all-default fields).
     """
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -414,12 +398,22 @@ async def test_mcp_server_stdio_round_trip(monkeypatch, tmp_path: Path):
         orig_home = PathCls.home
         PathCls.home = classmethod(lambda cls: tmp_path)  # type: ignore[assignment]
         try:
+            # Production-faithful token seam: the lifespan exports
+            # the canonical token into the server env and opencode's
+            # ``{env:SWEAVE_MCP_TOKEN}`` expansion hands it to the
+            # MCP child. Mirror that here explicitly (the test env
+            # may carry a foreign SWEAVE_MCP_TOKEN from an outer
+            # lifespan export, which must not shadow the tmp token).
+            from sweave.mcp import get_or_create_token
+
+            tmp_token = get_or_create_token()
             params = StdioServerParameters(
                 command=sys.executable,
                 args=["-m", "sweave.mcp"],
                 env={
                     **os.environ.copy(),
                     "SWEAVE_PORT": str(port),
+                    "SWEAVE_MCP_TOKEN": tmp_token,
                     "HOME": str(tmp_path),
                     "USERPROFILE": str(tmp_path),
                 },
@@ -432,6 +426,24 @@ async def test_mcp_server_stdio_round_trip(monkeypatch, tmp_path: Path):
                     tool_names = {t.name for t in tools.tools}
                     # M1.9 step 3 added ask_human.
                     assert tool_names == {"list_specialists", "defer", "ask_human"}
+                    # tools/call over the wire (the -32602 pin): the
+                    # no-arg tool works with and without arguments.
+                    for arguments in (None, {}):
+                        result = await session.call_tool(
+                            "list_specialists", arguments=arguments
+                        )
+                        assert result.is_error is not True
+                        texts = [
+                            c.text
+                            for c in result.content
+                            if getattr(c, "type", "") == "text"
+                        ]
+                        assert texts, "list_specialists returned no text content"
+                        assert "backend" in texts[0]
+                    # Unknown tool names route to the dispatcher's
+                    # plain-text error, not a protocol error.
+                    unknown = await session.call_tool("nope", arguments={})
+                    assert unknown.is_error is True
         finally:
             PathCls.home = orig_home  # type: ignore[assignment]
     finally:

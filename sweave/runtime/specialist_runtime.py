@@ -10,7 +10,10 @@ M1.3 step 2. Per the plan:
   - if ``fresh=True`` or no stored session id -> ``POST /session`` and
     persist on the Specialist record
   - else ``GET /session/{id}`` to verify; 404 -> recreate + warn trace
-  - on session create, send the system prompt ONCE per session
+  - on session create, specialists get their one-off system prompt;
+    the orchestrator's charter lives on the managed
+    ``sweave-orchestrator`` agent instead (pinned per message, so no
+    one-off send)
 * Per-delegation model: build the v2 body ``{"model": {providerID,
   modelID}}`` from the Specialist's ModelRef (K-revised; probe 5b
   proved bare-name fallback 400s on non-default providers, so we
@@ -42,6 +45,10 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from sweave.harness.opencode import OpenCodeProcess
 from sweave.runtime.delegation_store import Delegation
+from sweave.runtime.mcp_config import (
+    ORCHESTRATOR_AGENT_NAME,
+    SPECIALIST_AGENT_NAME,
+)
 from sweave.runtime.serve_runner import ServeRunner, ServeRunnerRegistry
 from sweave.runtime.specialist_store import (
     ModelRef,
@@ -169,8 +176,13 @@ class SpecialistRuntime:
             new_id = data.get("id")
             if not new_id:
                 raise RuntimeError("opencode serve returned no session id")
-            # Send the system prompt once per session
-            if specialist.system_prompt:
+            # One-off system prompt, specialists only. The
+            # orchestrator's charter lives on the managed
+            # ``sweave-orchestrator`` agent (pinned per message), so
+            # sending it here too would duplicate it every session;
+            # specialists keep the one-off role prompt on top of the
+            # generic ``sweave-specialist`` charter.
+            if specialist.system_prompt and not specialist.is_orchestrator:
                 await process.send(_system_message(specialist.system_prompt))
             # Persist the session id (best-effort)
             _set(new_id)
@@ -211,7 +223,7 @@ class SpecialistRuntime:
             new_id = data.get("id")
             if not new_id:
                 raise RuntimeError("opencode serve returned no session id")
-            if specialist.system_prompt:
+            if specialist.system_prompt and not specialist.is_orchestrator:
                 await process.send(_system_message(specialist.system_prompt))
             _set(new_id)
             # R4.0: same propagation as the create path -- a recreate
@@ -336,6 +348,17 @@ class SpecialistRuntime:
             body: dict[str, Any] = {"parts": [{"type": "text", "text": full_message}]}
             if model_body is not None:
                 body["model"] = model_body
+            # Opencode-native agent pin (per-message ``agent``): the
+            # turn runs as the managed agent rendered into the
+            # project's opencode.json (custom prompt + per-role tool
+            # gating enforced by opencode itself). The orchestrator
+            # turns keep the sweave MCP tools; specialist turns
+            # cannot see them (``sweave_*: deny`` on the agent).
+            body["agent"] = (
+                ORCHESTRATOR_AGENT_NAME
+                if specialist.is_orchestrator
+                else SPECIALIST_AGENT_NAME
+            )
 
             # Send (the harness handles stream + terminal detection)
             result = await self._send_message(process, body, trace, on_chunk=on_chunk)
@@ -480,8 +503,13 @@ class SpecialistRuntime:
                 f"the id before _send_message is called."
             )
         try:
+            headers_fn = getattr(process, "_default_headers", None)
+            headers = headers_fn() if callable(headers_fn) else {}
             async with process._client.stream(
-                "POST", f"/session/{wire_session_id}/message", json=body
+                "POST",
+                f"/session/{wire_session_id}/message",
+                json=body,
+                headers=headers,
             ) as resp:
                 resp.raise_for_status()
                 async for chunk in resp.aiter_text():

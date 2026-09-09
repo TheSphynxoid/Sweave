@@ -81,6 +81,61 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    it (leave it alone). New fields for the sweave MCP entry go in `_sweave_mcp_entry`
    in `runtime/mcp_config.py` — the single source of truth. `M1.6_DISABLE_MCP_PLUMBING=1`
    is the test/CI kill switch.
+3. **MCP handlers register the *params* models, never the request models**
+   (2026-09-09: every `tools/call` failed with -32602 "Invalid request
+   parameters", so `defer` / `list_specialists` / `ask_human` NEVER worked
+   over the wire). The lowlevel runner validates the incoming `params`
+   member against the registered type: `CallToolRequest` has a required
+   `params` field, so `{"name": ...}` never validates. Register
+   `PaginatedRequestParams` for `tools/list` and `CallToolRequestParams`
+   for `tools/call`; the dispatcher reads `params.name` /
+   `params.arguments`. `tools/list` only worked by accident (all-default
+   fields). The stdio round-trip test (`test_mcp_server_stdio_round_trip`)
+   pins `tools/call` over the wire — never sidestep it again (the old
+   "SDK requestState mismatch" comment was this same bug misdiagnosed).
+4. **The lifespan exports `SWEAVE_MCP_TOKEN` into the server env**
+   (2026-09-09). The per-project opencode.json sets
+   `environment.SWEAVE_MCP_TOKEN = "{env:SWEAVE_MCP_TOKEN}"` (opencode
+   expands `{env:...}` in file config); the expansion source is the
+   serve's inherited env, so the server must export the canonical token
+   or the expansion is empty/stale and every tool 401s. The MCP server
+   itself prefers the env var and falls back to `~/.sweave/mcp_token`.
+   Tests that boot the lifespan must expect the export (it is restored
+   on shutdown); the stdio round-trip test passes the tmp token to the
+   child explicitly.
+5. **Tool gating lives on opencode-native agents, not in the MCP
+   block** (2026-09-09 full cutover). The managed `agent` map
+   (`sweave-orchestrator` / `sweave-specialist`) is rendered from
+   `sweave/agents/*/config.yaml` + `runtime/agent_permission.py` on
+   every project activation; `SpecialistRuntime` pins each turn via
+   `body["agent"]`. The orchestrator prompt's single source of truth
+   is the YAML (the legacy one-off system send is skipped for the
+   orchestrator; specialists keep it for role flavor). Serve-side
+   config discovery walks UP the directory tree (the `mcp list` CLI
+   does not), so worktree serves see the project file -- agent
+   permissions, not file placement, are the isolation boundary.
+
+## Windows console flashes + locale I/O
+
+1. **Every subprocess spawn goes through `sweave/platform.py`**
+   (2026-09-09: each chat turn flashed 2-3 CMD windows — the transcript
+   snapshotter's `git` calls). Console-subsystem children (`git.exe`,
+   `python.exe`, `opencode.exe`, `gh`, `docker`) flash a window unless
+   spawned with `CREATE_NO_WINDOW`. Use `run_no_window` /
+   `check_output_no_window` (sync) and `creationflags_no_window()` for
+   `asyncio.create_subprocess_exec`. Children opencode spawns itself
+   (the MCP server) can't take our flags: the opencode.json command
+   uses `pythonw_executable()` (`pythonw.exe`, windowless; stdio pipes
+   work identically).
+2. **JSON reads must be `encoding="utf-8"` wherever writes are**
+   (2026-09-09: a live assistant reply containing an emoji crashed
+   every lifespan `load()` on cp1252-locale systems with an uncaught
+   `UnicodeDecodeError` — the next server restart would not boot).
+   `atomic_write_json_sync` writes utf-8; `ProjectManager.load` read
+   with the locale default. Fixed + pinned by
+   `test_load_reads_utf8_session_content`; the load's except clauses
+   also catch `UnicodeDecodeError` so one bad file still can't poison
+   the boot.
 
 ## Delegation & Session schema
 

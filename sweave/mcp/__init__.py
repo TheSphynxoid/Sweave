@@ -136,6 +136,20 @@ async def _http_post(path: str, body: dict[str, Any], token: str) -> dict[str, A
         return r.json()
 
 
+async def _http_get(path: str, token: str) -> dict[str, Any]:
+    """GET sibling of :func:`_http_post` (same error mapping)."""
+    async with httpx.AsyncClient(base_url=_sweave_base_url(), timeout=30.0) as client:
+        r = await client.get(path, headers=_auth_header(token))
+        if r.status_code >= 400:
+            detail: Any
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise RuntimeError(f"{path} -> {r.status_code}: {detail}")
+        return r.json()
+
+
 def _result_text(text: str, *, is_error: bool = False) -> types.CallToolResult:
     """Build a CallToolResult from a plain-text payload. Errors stay
     plain text so the orchestrator's text-mode path can act on them
@@ -169,22 +183,18 @@ def _token_from_env_or_file() -> str:
 # details -- the orchestrator only needs to pick a target.
 
 
-async def _list_specialists(ctx: Any, params: types.CallToolRequest) -> types.CallToolResult:
+async def _list_specialists(
+    ctx: Any, params: types.CallToolRequestParams
+) -> types.CallToolResult:
     """List resolved specialists (one per line: "<name> -- <desc>").
 
-    Note: ``params`` is a ``CallToolRequest``; the tool name and
-    arguments live on ``params.params`` (a ``CallToolRequestParams``).
-    We don't read them here -- list_specialists takes no args.
+    Takes no arguments; ``params.arguments`` is ignored.
     """
     from sweave.web.state import AppState  # noqa: F401  (import-time cycle guard)
 
     token = _token_from_env_or_file()
     try:
-        data = await _http_post(
-            "/api/mcp/specialists",
-            {},
-            token,
-        )
+        data = await _http_get("/api/mcp/specialists", token)
     except Exception as e:
         logger.exception("list_specialists failed")
         return _result_text(f"error: {type(e).__name__}: {e}", is_error=True)
@@ -208,7 +218,7 @@ async def _list_specialists(ctx: Any, params: types.CallToolRequest) -> types.Ca
 # prompt contract in M1.6 step 3).
 
 
-async def _defer(ctx: Any, params: types.CallToolRequest) -> types.CallToolResult:
+async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
     """Hand ``task`` to specialist ``target`` and return a confirmation line.
 
     Arguments (per the orchestrator's tool contract):
@@ -226,10 +236,7 @@ async def _defer(ctx: Any, params: types.CallToolRequest) -> types.CallToolResul
       orchestrator can adjust (pick a different target, wait for a
       child to complete, etc.).
     """
-    # The wire shape is CallToolRequest -> .params (CallToolRequestParams)
-    # -> .arguments (dict). Pull both layers explicitly.
-    req_params = params.params
-    args = (req_params.arguments or {}) if req_params is not None else {}
+    args = params.arguments or {}
     target = args.get("target")
     task = args.get("task")
     reason = args.get("reason") or ""
@@ -292,7 +299,7 @@ async def _defer(ctx: Any, params: types.CallToolRequest) -> types.CallToolResul
 # ``defer``). The orchestrator's tool-call provides it.
 
 
-async def _ask_human(ctx: Any, params: types.CallToolRequest) -> types.CallToolResult:
+async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
     """Escalate a question to the human. Returns an escalation_id.
 
     Arguments (per the orchestrator's tool contract):
@@ -308,8 +315,7 @@ async def _ask_human(ctx: Any, params: types.CallToolRequest) -> types.CallToolR
     * rejection: ``"rejected: <reason>"`` with ``isError=True`` for
       missing fields / network failures.
     """
-    req_params = params.params
-    args = (req_params.arguments or {}) if req_params is not None else {}
+    args = params.arguments or {}
     question = args.get("question")
     options = args.get("options")
     caller_delegation_id = args.get("caller_delegation_id")
@@ -366,13 +372,27 @@ async def _ask_human(ctx: Any, params: types.CallToolRequest) -> types.CallToolR
 
 
 def build_server() -> Server:
+    # NOTE: handlers are registered against the *params* models, not
+    # the full request models. The runner validates the incoming
+    # ``params`` member against the registered type: registering
+    # ``CallToolRequest`` (whose ``params`` field is required) rejects
+    # every tools/call with -32602 "Invalid request parameters"
+    # (2026-09-09: list_specialists/defer/ask_human were all broken
+    # over the wire; tools/list only worked by accident of all-default
+    # fields). The params models are the SDK's documented contract.
     server = Server("sweave-mcp")
-    server.add_request_handler("tools/list", types.ListToolsRequest, _list_tools_handler)
-    server.add_request_handler("tools/call", types.CallToolRequest, _call_tool_dispatcher)
+    server.add_request_handler(
+        "tools/list", types.PaginatedRequestParams, _list_tools_handler
+    )
+    server.add_request_handler(
+        "tools/call", types.CallToolRequestParams, _call_tool_dispatcher
+    )
     return server
 
 
-async def _list_tools_handler(ctx: Any, params: types.ListToolsRequest) -> types.ListToolsResult:
+async def _list_tools_handler(
+    ctx: Any, params: types.PaginatedRequestParams
+) -> types.ListToolsResult:
     return types.ListToolsResult(
         tools=[
             types.Tool(
@@ -449,7 +469,9 @@ async def _list_tools_handler(ctx: Any, params: types.ListToolsRequest) -> types
 
 # Dispatcher: route by tool name (the server only registers one
 # request handler per JSON-RPC method, not per tool).
-async def _call_tool_dispatcher(ctx: Any, params: types.CallToolRequest) -> types.CallToolResult:
+async def _call_tool_dispatcher(
+    ctx: Any, params: types.CallToolRequestParams
+) -> types.CallToolResult:
     if params.name == "defer":
         return await _defer(ctx, params)
     if params.name == "list_specialists":

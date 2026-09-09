@@ -167,67 +167,66 @@ def test_worktree_align_non_git_dir_returns_no_integration_branch(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-def test_sweave_mcp_entry_sets_permission_task_deny():
-    """The orchestrator's opencode session sees the sweave MCP server
-    AND inherits a ``permission.task: deny`` rule (closes the native
-    opencode subagent bypass)."""
+def test_sweave_mcp_entry_has_cwd_and_no_permission_key():
+    """The ``mcp.sweave`` entry pins ``cwd`` to the Sweave package
+    root (``python -m sweave.mcp`` only resolves there; sweave runs
+    from source) and carries NO ``permission`` key: opencode strips
+    unknown keys inside MCP server entries
+    (``additionalProperties: false``), so permissions never took
+    effect there. Tool gating lives on the managed agents
+    (``agent.<name>.permission``)."""
     from sweave.runtime.mcp_config import _sweave_mcp_entry
 
     entry = _sweave_mcp_entry(token="{env:SWEAVE_MCP_TOKEN}", env_token_var="SWEAVE_MCP_TOKEN")
-    permissions = entry.get("permission") or {}
-    assert permissions.get("task") == "deny"
+    assert "permission" not in entry
+    from pathlib import Path
+
+    assert Path(entry["cwd"]).is_dir()
+    assert (Path(entry["cwd"]) / "sweave" / "mcp" / "__init__.py").exists()
 
 
 def test_specialist_agent_config_has_permission_task_deny():
-    """Specialist agent definitions (``sweave/agents/*/config.yaml``)
-    gain a ``permission.task: deny`` frontmatter block in the rendered
-    opencode config (closes the native subagent bypass for
-    specialists). The orchestrator record inherits the same deny
-    (orchestrator itself never spawns specialists directly -- it
-    always defers through MCP -- but the deny is the safety net)."""
+    """The orchestrator agent profile denies ``task`` (no native
+    subagent bypass) and the git-mutation bash patterns (the
+    orchestrator never commits to the user's checkout). Shape is the
+    opencode permission object: ``{pattern: action}`` mappings, not
+    lists."""
     from sweave.runtime.agent_permission import render_agent_permission_profile
 
     profile = render_agent_permission_profile(is_orchestrator=True)
     assert profile.get("task") == "deny"
-    # Orchestrator also denies git-mutation bash
     bash = profile.get("bash") or {}
-    denied = bash.get("*") or []
-    for pat in ("git commit", "git merge", "git push", "gh pr merge"):
-        assert any(pat in d for d in denied), (
-            f"orchestrator profile missing deny for {pat!r}"
-        )
+    for pat in ("git commit*", "git merge*", "git push*", "gh pr merge*"):
+        assert bash.get(pat) == "deny", f"orchestrator profile missing deny for {pat!r}"
 
 
 def test_specialist_profile_has_task_deny_but_no_git_bash_deny():
     """Specialists (non-orchestrator) get ``task: deny`` (no native
-    subagent bypass) but DO NOT get the git-bash deny -- they
-    commit freely in their disposable branches (per the commit-
-    authority map, ruling 2026-09-04)."""
+    subagent bypass) plus ``sweave_*: deny`` (no defer /
+    list_specialists / ask_human -- specialists do the work
+    themselves) but NO git-bash deny -- they commit freely in their
+    disposable branches (per the commit-authority map, ruling
+    2026-09-04)."""
     from sweave.runtime.agent_permission import render_agent_permission_profile
 
     profile = render_agent_permission_profile(is_orchestrator=False)
     assert profile.get("task") == "deny"
+    assert profile.get("sweave_*") == "deny"
     bash = profile.get("bash") or {}
-    # Specialists may run git commit / push / etc. in their branches
-    # -- the orchestrator is the only one denied.
-    denied_all = (bash.get("*") or []) + (bash.get("git:*") or [])
-    assert not any("git commit" in d for d in denied_all)
+    assert not any("git commit" in pat for pat in bash)
 
 
 def test_render_agent_permission_profile_shape():
     """The profile shape is the opencode per-agent permission block:
-    ``{"task": "deny", "bash": {"*": [...]}}``. Used by
-    ensure_mcp_config (the opencode.json writer) to merge
-    specialist-specific permission profiles."""
+    ``{"task": "deny", ...}`` with object (pattern -> action)
+    values. Used by the agent-map renderer in ``runtime/mcp_config``
+    (``agent.<name>.permission``)."""
     from sweave.runtime.agent_permission import render_agent_permission_profile
 
     p = render_agent_permission_profile(is_orchestrator=True)
-    # Keys are lowercase; bash rules are a list under the wildcard key.
-    assert "task" in p
-    assert "bash" in p
-    bash = p["bash"]
-    assert "*" in bash
-    assert isinstance(bash["*"], list)
+    assert p["task"] == "deny"
+    assert isinstance(p["bash"], dict)
+    assert all(action == "deny" for action in p["bash"].values())
 
 
 # ---------------------------------------------------------------------------

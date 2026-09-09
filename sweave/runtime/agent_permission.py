@@ -1,29 +1,32 @@
-"""Specialist permission profiles (M1.9 step 2 hardening).
+"""Opencode-native permission profiles for Sweave's two roles.
 
-The M1.9 hardening bundle closes two bypass paths:
+Two roles, two agents (rendered into the per-project opencode.json
+``agent`` map by ``runtime/mcp_config.py``; pinned per message by
+``SpecialistRuntime``):
 
-* **Native opencode subagent spawning.** Specialists' opencode
-  sessions default to allowing ``task:`` (the native subagent tool
-  inside opencode), which would let a specialist spawn a native
-  sub-subagent outside the DelegationManager's chain. Setting
-  ``permission.task: deny`` on the specialist agent's config
-  closes that bypass. The deferral path remains the only way to
-  spawn work (via MCP, with depth / loop / budget enforcement).
+* **sweave-orchestrator** -- the user-facing conversational
+  supervisor. Denies native subagent spawning (``task``) and
+  git-mutation bash on the user's checkout. Keeps the sweave MCP
+  tools (defer / list_specialists / ask_human): the orchestrator is
+  their only consumer.
+* **sweave-specialist** -- implementation workers in disposable
+  worktrees. Denies ``task`` (no native sub-subagents outside the
+  DelegationManager) and ``sweave_*`` (no defer / list_specialists /
+  ask_human: specialists do the work themselves; opencode matches
+  permission keys as wildcards against tool names, so ``sweave_*``
+  covers every tool of the ``sweave`` MCP server). No git deny:
+  specialists commit freely in their branches per the
+  commit-authority map (2026-09-04).
 
-* **Orchestrator git mutation.** The orchestrator is the user-facing
-  conversational supervisor; it must not commit / merge / push to
-  the user's checkout. The orchestrator's session config denies
-  ``bash: `` patterns matching ``git commit``, ``git merge``,
-  ``git push``, ``gh pr merge``. Specialists (per the commit-
-  authority map, 2026-09-04) commit freely in their disposable
-  branches; only the orchestrator is denied.
-
-The profile shape is the opencode per-agent permission block:
-
-    {"task": "deny", "bash": {"*": ["git commit*", ...]}}
-
-Used by ``runtime/mcp_config.py`` to merge specialist-specific
-permission profiles into the per-project opencode.json.
+Shape note: this is the opencode per-agent ``permission`` block
+(``{tool: action | {pattern: action}}``). An earlier revision
+emitted ``{"bash": {"*": [...]}}`` (a list value) nested inside the
+``mcp.sweave`` server entry -- doubly dead: the schema only allows
+action/object values, and unknown keys inside an MCP server entry
+are stripped (``additionalProperties: false``), so the M1.9 profile
+never took effect anywhere (confirmed against the live
+``GET /config`` 2026-09-09). Profiles now render here and are
+consumed as ``agent.<name>.permission``.
 """
 
 from __future__ import annotations
@@ -32,9 +35,9 @@ from typing import Any
 
 
 # The orchestrator's git-mutation deny list. Globs are matched by
-# opencode's permission system; the explicit list below covers every
-# git mutation the orchestrator must NOT perform on the user's
-# checkout.
+# opencode's permission system against the parsed command; the list
+# below covers every git mutation the orchestrator must NOT perform
+# on the user's checkout.
 ORCHESTRATOR_BASH_DENY: tuple[str, ...] = (
     "git commit*",
     "git merge*",
@@ -44,26 +47,26 @@ ORCHESTRATOR_BASH_DENY: tuple[str, ...] = (
     "git reset --hard*",
 )
 
+# MCP tool-name prefix for the sweave server. Opencode exposes MCP
+# tools as ``{server}_{tool}`` (verified: ``sweave_list_specialists``
+# in a live session's parts), so one wildcard gates the whole
+# sweave surface for sessions that must not see it.
+SWEAVE_MCP_TOOL_PATTERN = "sweave_*"
+
 
 def render_agent_permission_profile(*, is_orchestrator: bool) -> dict[str, Any]:
-    """Render the per-agent permission block for opencode.
-
-    Returns the permission profile as ``{"task": ..., "bash": ...}``.
-
-    Specialists (non-orchestrator):
-        ``{"task": "deny", "bash": {"*": []}}`` -- deny the native
-        subagent tool; no git deny (specialists commit freely in
-        their disposable branches per the commit-authority map).
+    """Render the opencode per-agent ``permission`` block.
 
     Orchestrator:
-        ``{"task": "deny", "bash": {"*": <ORCHESTRATOR_BASH_DENY>}}``
-        -- deny the native subagent tool AND the git-mutation bash
-        patterns (the orchestrator never commits to the user's
-        checkout; that's the user's job).
+        ``{"task": "deny", "bash": {"git commit*": "deny", ...}}`` --
+        no native subagents, no git mutation on the user's checkout.
+        File reads/writes stay at the default (allow): the
+        orchestrator keeps file access by user ruling 2026-09-09.
 
-    Used by ``runtime/mcp_config.py._sweave_mcp_entry`` to merge the
-    orchestrator's profile into the per-project opencode.json, and
-    by the future specialist-config renderer (R4 agent workbench).
+    Specialist:
+        ``{"task": "deny", "sweave_*": "deny"}`` -- no native
+        subagents, no sweave MCP tools. Git (incl. commit) stays
+        allowed: specialists commit in their disposable branches.
     """
     profile: dict[str, Any] = {
         # Native opencode subagent spawning is denied on every
@@ -71,8 +74,9 @@ def render_agent_permission_profile(*, is_orchestrator: bool) -> dict[str, Any]:
         # way to spawn work; the DelegationManager enforces depth /
         # loop / budget on it.
         "task": "deny",
-        "bash": {
-            "*": list(ORCHESTRATOR_BASH_DENY) if is_orchestrator else [],
-        },
     }
+    if is_orchestrator:
+        profile["bash"] = {pat: "deny" for pat in ORCHESTRATOR_BASH_DENY}
+    else:
+        profile[SWEAVE_MCP_TOOL_PATTERN] = "deny"
     return profile
