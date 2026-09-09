@@ -39,16 +39,13 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-09)
-- **486/486** in `pytest tests/` (source of truth for logic tests; +1
-  hermetic models-registry fallback test, +26 across the native-agents /
-  models-registry / platform / streaming-feedback strands; UI-only
-  transparency slice adds no pytest)
+- **496/496** in `pytest tests/` (source of truth for logic tests; +10
+  across the seed-shadow guard, prompt-template, and isolation
+  strands)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **81** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
-  picker + chat reducer + children tree + wsInvalidations; +18 from R4.2 chat
-   runtime; +3 real-Thread lab pins from R4.2 step 2-pre) **= 105 total
-   (2026-09-09 recount: +8 PathPicker + 11 ModelPicker + 3 runtime
-   mergeHistory + 2 streaming pins + 6 TurnDelegations = 111 total)**
+- **115** vitest unit tests in `sweave-web/` (81 base + 8 PathPicker
+  + 11 ModelPicker + 3 runtime mergeHistory + 2 streaming pins
+  + 6 TurnDelegations + 4 EditSpecialistDialog)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -591,11 +588,24 @@
   Fix: autouse `_isolate_project_manager_singleton` in
   `tests/conftest.py` (tmp-backed singleton, all three bindings) +
   `Path.home` added to the visibility file's env-only fixture + the
-  registry fallback test made fully hermetic (plants its own
-  opencode.json). Home cleaned (junk deleted, pointer back to
-  `Sweave`). **486 pytest, zero real-home growth per run.**
+  registry fallback test plants its own opencode.json. Home cleaned
+  (junk deleted, pointer back to `Sweave`). **486 pytest, zero real-home growth per run.**
   `run.py --check` already self-cleans (creates + deletes
   `test-agent-x`).
+- ✅ **Specialist management follow-ups (2026-09-09)** — four items
+  from the Agents-tab review: (a) **seed-shadow guard**: the session
+  saver skipped persisting seed-scope views, so the first delegation
+  to seed `backend-specialist` materialised a global shadow copy
+  hiding the seed (user's copy kept — it carries their model pick +
+  live session); (b) **`{{var}}` prompt templates**
+  (`sweave/runtime/prompt_template.py`): task/worktree/project/
+  delegation/model/today/branch/git_status/recent_commits rendered
+  per delegation, static prompts unchanged (one-off send), `${VAR}`
+  deliberately not expanded; (c) **Edit dialog** on project/global
+  cards (description/prompt/role; `PUT` already existed); (d) richer
+  seed descriptions (also the `list_specialists` routing signal).
+  **496 pytest (+10), 115 vitest (+4), 13/13 run.py --check, build
+  green.**
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

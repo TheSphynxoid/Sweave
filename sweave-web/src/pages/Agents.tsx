@@ -6,6 +6,7 @@ import {
   Users,
   Plus,
   Trash2,
+  Pencil,
   Bot,
   Cpu,
   Layers,
@@ -23,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ModelPicker } from "@/components/ModelPicker";
 import { CreateSpecialistDialog } from "@/components/CreateSpecialistDialog";
+import { EditSpecialistDialog } from "@/components/EditSpecialistDialog";
 
 const SCOPE_META: Record<
   string,
@@ -38,6 +40,7 @@ export function AgentsPage() {
   const { pushNotification } = useApp();
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<SpecialistSummary | null>(null);
 
   const { data: specialists = [], isLoading } = useQuery<SpecialistSummary[]>({
     queryKey: ["specialists"],
@@ -155,6 +158,7 @@ export function AgentsPage() {
                       modelOptions={modelOptions}
                       onModel={(m) => setModel(s, m)}
                       onDelete={() => remove(s)}
+                      onEdit={() => setEditTarget(s)}
                     />
                   ))}
                 </div>
@@ -165,6 +169,13 @@ export function AgentsPage() {
       )}
 
       <CreateSpecialistDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <EditSpecialistDialog
+        specialist={editTarget}
+        open={editTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditTarget(null);
+        }}
+      />
     </div>
   );
 }
@@ -174,11 +185,13 @@ function SpecialistCard({
   modelOptions,
   onModel,
   onDelete,
+  onEdit,
 }: {
   specialist: SpecialistSummary;
   modelOptions: string[];
   onModel: (model: string) => void;
   onDelete: () => void;
+  onEdit: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const locked = specialist.is_orchestrator || specialist.scope === "seed";
@@ -229,14 +242,24 @@ function SpecialistCard({
             Details
           </button>
           {!locked && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-destructive hover:text-destructive"
-              onClick={onDelete}
-            >
-              <Trash2 size={13} /> Delete
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7"
+                onClick={onEdit}
+              >
+                <Pencil size={13} /> Edit
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-destructive hover:text-destructive"
+                onClick={onDelete}
+              >
+                <Trash2 size={13} /> Delete
+              </Button>
+            </div>
           )}
         </div>
 

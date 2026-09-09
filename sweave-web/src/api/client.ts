@@ -195,6 +195,24 @@ class ApiClient {
     return r.data;
   }
 
+  /** Edit a project/global specialist (seeds + orchestrator are API-locked). */
+  async updateSpecialist(
+    name: string,
+    body: {
+      description?: string;
+      system_prompt?: string;
+      role_ref?: string | null;
+      harness?: string;
+    },
+    scope: "project" | "global" = "project",
+  ): Promise<SpecialistSummary> {
+    const r = await this.client.put<SpecialistSummary>(
+      `/specialists/${encodeURIComponent(name)}?scope=${scope}`,
+      body,
+    );
+    return r.data;
+  }
+
   async setSpecialistModel(
     name: string,
     model: string,
