@@ -41,13 +41,14 @@
 ### Test Results (All Passing - verified 2026-09-09)
 - **486/486** in `pytest tests/` (source of truth for logic tests; +1
   hermetic models-registry fallback test, +26 across the native-agents /
-  models-registry / platform / streaming-feedback strands)
+  models-registry / platform / streaming-feedback strands; UI-only
+  transparency slice adds no pytest)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
 - **81** vitest unit tests in `sweave-web/` (theme tokens + switcher + custom-color
   picker + chat reducer + children tree + wsInvalidations; +18 from R4.2 chat
    runtime; +3 real-Thread lab pins from R4.2 step 2-pre) **= 105 total
    (2026-09-09 recount: +8 PathPicker + 11 ModelPicker + 3 runtime
-   mergeHistory + 2 streaming pins)**
+   mergeHistory + 2 streaming pins + 6 TurnDelegations = 111 total)**
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -570,16 +571,17 @@
    Same protocol as M1.9's dogfood handoff: user daily-drives
    wave 1 on real work; the friction list becomes R4.4 / R4.2
    input. R2 skills interleave on demand (per R4 plan §5).
-- ▶ **Next: chat transparency + specialist forking (user-locked
-  rulings 2026-09-09, DESIGN.md §2.2 + §5 item 6)** — (a) inline
-  delegation cards in Chat for deferring turns (status + tool
-  timeline from existing WS/detail surfaces) + read-only specialist
-  drill-down drawer (follow-up via orchestrator); (b) `fork_specialist`
-  MCP tool (project scope, reuse-first, `forked_from` + reason on
-  trace) gated by `fork_policy: auto | confirm | disabled`
-  (session → project → global → `auto`). Uncommitted probe/tmp
-  scratch (`sweave-web/probe*.mjs`, `shots/`, `tmp-*/`) stays out
-  of version control.
+- ✅ **Inline delegation cards in Chat (2026-09-09)** — `TurnDelegations`
+  under every assistant message with a delegation id (live turn +
+  history): agent + status pill (LiveTree convention) + task snippet
+  per child (`GET /api/delegations?parent_task_id=`), WS-pulsed via
+  `delegation.status_changed`, expandable output summary, "Open full
+  detail" mounts the shared M1.9 `DetailView` modal. Null when
+  childless (childless turns byte-identical); fetch failures never
+  break the thread. 6 new vitest. **486 pytest, 111 vitest, 13/13
+  run.py --check, build green.** Still open: read-only specialist
+  drawer, `fork_specialist` MCP tool + `fork_policy`
+  (rulings in DESIGN.md §2.2 + §5 item 6).
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 
 ### M1.prep — done 2026-08-29

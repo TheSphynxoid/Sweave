@@ -50,6 +50,7 @@ import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
 import { useWS } from "@/context/WSProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
+import { TurnDelegations } from "./TurnDelegations";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 import { cn } from "@/utils/cn";
 
@@ -389,6 +390,8 @@ function AssistantMessage() {
           <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
           {isRunning && <span className="streaming-cursor" aria-hidden />}
         </div>
+
+        {custom.delegationId && <TurnDelegations parentDelegationId={custom.delegationId} />}
 
         <div className="mt-1.5 flex items-center justify-between gap-2">
           {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
