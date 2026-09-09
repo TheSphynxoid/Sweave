@@ -146,6 +146,12 @@ class ApiClient {
    * user message + the assistant reply (M1.7 step 2). Streaming
    * updates arrive via WS events (``chat.delta`` + ``message.added``);
    * the returned ``assistant`` is the authoritative final text.
+   *
+   * Timeout: a chat turn routinely exceeds the client's 30s default
+   * (LLM warmup + tool calls + synthesis can run minutes, bounded by
+   * the server's turn timeout). Aborting client-side leaves the turn
+   * running server-side with the UI flying blind, so this call gets
+   * the full turn budget.
    */
   async sendMessage(
     sessionId: string,
@@ -154,6 +160,7 @@ class ApiClient {
     const r = await this.client.post(
       `/sessions/${encodeURIComponent(sessionId)}/messages`,
       body,
+      { timeout: 900_000 },
     );
     return r.data;
   }
@@ -275,8 +282,19 @@ class ApiClient {
   }
 
   async getModels(): Promise<ModelsConfig> {
-    const r = await this.client.get<{ roles: ModelsConfig["roles"] }>("/models");
-    return { roles: r.data.roles };
+    const r = await this.client.get<ModelsConfig>("/models");
+    return r.data;
+  }
+
+  /** Set the global default model (orchestrator + unset specialists). */
+  async setDefaultModel(
+    model: string,
+  ): Promise<{ success: boolean; model: string; default: string }> {
+    const r = await this.client.post<{ success: boolean; model: string; default: string }>(
+      "/models",
+      { model },
+    );
+    return r.data;
   }
 
   async listHarnesses(): Promise<HarnessInfo[]> {

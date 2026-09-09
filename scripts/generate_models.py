@@ -2,10 +2,19 @@
 """
 Generate models.yaml from opencode's available models.
 
+Single global list grouped by provider (no per-role lists — every
+specialist picks from this one registry; the orchestrator uses the
+``default``).
+
 Usage:
-    python scripts/generate_models.py > models.yaml
+    python scripts/generate_models.py --write   # writes models.yaml (UTF-8, no BOM)
+    python scripts/generate_models.py           # prints to stdout
+
+NOTE: never redirect stdout to the file in PowerShell (``>`` writes
+UTF-16 LE with BOM, which breaks PyYAML). Always use ``--write``.
 """
 
+import json
 import subprocess
 import sys
 from collections import defaultdict
@@ -37,118 +46,80 @@ def get_opencode_models() -> dict[str, list[str]]:
     return models_by_provider
 
 
-def select_default(provider: str, models: list[str], role: str) -> str:
-    """Select a sensible default model for a role from available models."""
-    # Prefer free/cheap models for orchestrator, capable for others
-    preferences = {
-        "orchestrator": [
-            "nemotron-3-ultra-free",
-            "nemotron-3.5-lightning-free",
-            "deepseek-v4-flash",
-            "gemini-3.5-flash",
-            "glm-5.3-flash",
-            "mimo-v2.5-free",
-            "ling-3.0-flash-fin-free",
-        ],
-        "backend": [
-            "glm-5.3",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "glm-5.2",
-            "gpt-5",
-            "claude-sonnet-4",
-            "gemini-3.5-flash",
-        ],
-        "frontend": [
-            "hy3",
-            "hy4-preview",
-            "nemotron-3-ultra-free",
-            "deepseek-v4-flash",
-            "llama-3.3-70b-instruct",
-            "gpt-5",
-            "gemini-3.5-flash",
-        ],
-        "reviewer": [
-            "claude-sonnet-4",
-            "claude-sonnet-4.5",
-            "gpt-5",
-            "gpt-5-pro",
-            "llama-3.1-nemotron-70b-instruct",
-            "glm-5.3",
-            "deepseek-v4-pro",
-        ],
+def _quote_if_needed(s: str) -> str:
+    """Quote YAML strings that start with special characters."""
+    if s and s[0] in "@&*!>|'\"%{}[]:,?-#":
+        return f'"{s}"'
+    return s
+
+
+def _opencode_configured_model() -> str | None:
+    """The model from the user's opencode.json, if set.
+
+    Preferred as the registry ``default``: it is the model the user's
+    serve is actually configured to run, so chat works out of the box.
+    """
+    config_path = Path.home() / ".config" / "opencode" / "opencode.json"
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return None
+    model = config.get("model") if isinstance(config, dict) else None
+    return model if isinstance(model, str) and "/" in model else None
+
+
+def _pick_default(models_by_provider: dict[str, list[str]]) -> str | None:
+    """Pick the registry default: opencode.json model when it is in the
+    registry, else the first model of the preferred provider order."""
+    available = {
+        f"{provider}/{model}"
+        for provider, provider_models in models_by_provider.items()
+        for model in provider_models
     }
-
-    prefs = preferences.get(role, [])
-    for pref in prefs:
-        for model in models:
-            if pref in model:
-                return f"{provider}/{model}"
-    # Fallback: first model
-    return f"{provider}/{models[0]}" if models else ""
-
-
-def get_aliases(all_models: dict[str, list[str]], default: str, role: str) -> list[str]:
-    """Get aliases from ALL providers, excluding the default."""
-    aliases = []
-    for provider, models in all_models.items():
-        for model in models:
-            full = f"{provider}/{model}"
-            if full != default:
-                aliases.append(full)
-    return aliases
+    configured = _opencode_configured_model()
+    if configured and configured in available:
+        return configured
+    if configured:
+        # The serve knows this model even if the registry snapshot
+        # doesn't list it (custom provider) — still the best default.
+        return configured
+    for preferred in ("opencode", "ollama", "gmi", "openrouter"):
+        provider_models = models_by_provider.get(preferred)
+        if provider_models:
+            return f"{preferred}/{sorted(provider_models)[0]}"
+    for provider in sorted(models_by_provider):
+        provider_models = models_by_provider.get(provider)
+        if provider_models:
+            return f"{provider}/{sorted(provider_models)[0]}"
+    return None
 
 
 def main():
+    write = "--write" in sys.argv[1:]
     models_by_provider = get_opencode_models()
 
-    # Priority providers for each role (in order of preference for DEFAULT)
-    role_provider_priority = {
-        "orchestrator": ["opencode", "opencode-go", "nvidia", "cloudflare-workers-ai", "zai", "zai-coding-plan"],
-        "backend": ["opencode", "opencode-go", "gmicloud", "nvidia", "zai", "zai-coding-plan"],
-        "frontend": ["opencode", "opencode-go", "nvidia", "openrouter", "zai"],
-        "reviewer": ["opencode", "openrouter", "nvidia", "gmicloud", "zai"],
-    }
-
     output = ["models:"]
+    default = _pick_default(models_by_provider)
+    if default:
+        output.append(f"  default: {default}")
+    output.append("  providers:")
 
-    for role in ["orchestrator", "backend", "frontend", "reviewer"]:
-        default = None
-        used_provider = None
-
-        # Find default from priority providers
-        for provider in role_provider_priority[role]:
-            if provider in models_by_provider and models_by_provider[provider]:
-                default = select_default(provider, models_by_provider[provider], role)
-                if default:
-                    used_provider = provider
-                    break
-
-        if not default:
-            # Fallback to any available provider
-            for provider, models in models_by_provider.items():
-                if models:
-                    default = f"{provider}/{models[0]}"
-                    used_provider = provider
-                    break
-
-        if not default:
-            print(f"Warning: no models found for role {role}", file=sys.stderr)
+    for provider in sorted(models_by_provider.keys()):
+        models = sorted(models_by_provider[provider])
+        if not models:
             continue
+        output.append(f"    {provider}:")
+        for model in models:
+            output.append(f"      - {_quote_if_needed(model)}")
 
-        # Get aliases from ALL providers
-        aliases = get_aliases(models_by_provider, default, role)
-
-        output.append(f"  {role}:")
-        output.append(f"    default: {default}")
-        if aliases:
-            output.append(f"    aliases:")
-            for alias in aliases:
-                output.append(f"    - {alias}")
-        output.append(f"    provider: {used_provider}")
-        output.append(f"    description: {role.capitalize()} specialist")
-
-    print("\n".join(output))
+    text = "\n".join(output) + "\n"
+    if write:
+        # UTF-8 without BOM (PowerShell ``>`` would write UTF-16).
+        Path("models.yaml").write_text(text, encoding="utf-8")
+        print(f"wrote models.yaml (default: {default})")
+    else:
+        print(text, end="")
 
 
 if __name__ == "__main__":

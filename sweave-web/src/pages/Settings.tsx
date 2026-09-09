@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Settings as SettingsIcon, Palette, Folder, Cpu, SlidersHorizontal } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CustomColorEditor } from "@/components/CustomColorEditor";
+import { ModelPicker } from "@/components/ModelPicker";
 import { cn } from "@/utils/cn";
 import type { HarnessInfo, ModelsConfig } from "@/types";
 
@@ -234,7 +235,24 @@ function ProjectSettings() {
 }
 
 function ModelsSettings({ models }: { models?: ModelsConfig }) {
-  if (!models) {
+  const qc = useQueryClient();
+  const { pushNotification } = useApp();
+  const [saving, setSaving] = useState(false);
+
+  const setDefault = async (model: string) => {
+    setSaving(true);
+    try {
+      await api.setDefaultModel(model);
+      await qc.invalidateQueries({ queryKey: ["models"] });
+      pushNotification("success", `Default model set to ${model}.`);
+    } catch (err) {
+      pushNotification("error", `Failed to set default model: ${(err as Error).message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!models || !models.providers) {
     return (
       <div className="grid gap-3 sm:grid-cols-2" data-testid="models-loading">
         {Array.from({ length: 4 }).map((_, i) => (
@@ -250,34 +268,59 @@ function ModelsSettings({ models }: { models?: ModelsConfig }) {
       </div>
     );
   }
-  const roles = Object.entries(models.roles);
+  const providers = Object.entries(models.providers);
+  const allModels = (models.all_models ?? []).length
+    ? (models.all_models ?? [])
+    : providers.flatMap(([provider, modelList]) =>
+        modelList.map((m) => (m.includes("/") ? m : `${provider}/${m}`)),
+      );
   return (
+    <div className="space-y-3">
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">Default model</CardTitle>
+              <CardDescription>
+                Used by the orchestrator and any specialist without an explicit model.
+              </CardDescription>
+            </div>
+            {models.default && <Badge variant="secondary" className="font-mono text-[10px]">{models.default}</Badge>}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <ModelPicker
+            value={models.default ?? ""}
+            onValueChange={(m) => void setDefault(m)}
+            options={allModels}
+            placeholder="Select default model"
+            disabled={saving}
+            className="h-9 font-mono text-xs"
+            testId="model-picker-default"
+          />
+        </CardContent>
+      </Card>
     <div className="grid gap-3 sm:grid-cols-2">
-      {roles.map(([role, cfg]) => (
-        <Card key={role}>
+      {providers.map(([provider, modelList]) => (
+        <Card key={provider}>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm capitalize">{role}</CardTitle>
-              <Badge variant="secondary">{cfg.provider}</Badge>
-              </div>
+              <CardTitle className="text-sm">{provider}</CardTitle>
+              <Badge variant="secondary">{modelList.length} models</Badge>
+            </div>
           </CardHeader>
           <CardContent className="space-y-1.5 text-xs">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Default</span>
-              <span className="font-mono">{cfg.default}</span>
+            <div className="flex flex-wrap gap-1">
+              {modelList.map((model) => (
+                <Badge key={model} variant="outline" className="font-mono text-[10px]">
+                  {provider}/{model}
+                </Badge>
+              ))}
             </div>
-            {cfg.aliases.length > 0 && (
-              <div className="flex flex-wrap gap-1 pt-1">
-                {cfg.aliases.map((a) => (
-                  <Badge key={a} variant="outline" className="font-mono text-[10px]">
-                    {a}
-                  </Badge>
-                ))}
-              </div>
-            )}
           </CardContent>
         </Card>
       ))}
+    </div>
     </div>
   );
 }

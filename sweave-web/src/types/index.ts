@@ -226,7 +226,10 @@ export interface ModelConfig {
 }
 
 export interface ModelsConfig {
-  roles: Record<string, ModelConfig>;
+  providers: Record<string, string[]>;
+  all_models?: string[];
+  /** Global default (orchestrator + specialists without a model). */
+  default?: string | null;
 }
 
 export interface HarnessInfo {

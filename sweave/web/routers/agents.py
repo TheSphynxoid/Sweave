@@ -104,13 +104,13 @@ async def list_agents(state: AppState = Depends(get_state)):
     proj_dir = _active_project_dir(state)
     resolver = state.ensure_specialist_resolver()
 
-    # Built-in: one entry per models.yaml role excluding orchestrator.
+    # Built-in: one entry per known provider excluding orchestrator.
     # The orchestrator is the supervisor; the Agents tab is for the
     # routing pool (specialists the orchestrator delegates to).
     builtin: list[dict] = []
-    for role in config.models.roles:
-        if role == "orchestrator":
-            continue
+    # Use a fixed list of built-in role names for backward compatibility
+    builtin_roles = ["backend", "frontend", "reviewer"]
+    for role in builtin_roles:
         builtin.append({
             "name": role,
             "role": role,
@@ -167,9 +167,9 @@ async def list_agents(state: AppState = Depends(get_state)):
 async def create_agent(agent: AgentCreate, state: AppState = Depends(get_state)):
     if agent.name == ORCHESTRATOR_NAME:
         raise HTTPException(409, f"name '{ORCHESTRATOR_NAME}' is reserved for the orchestrator")
-    config = state.config_manager.get()
     # Reject built-in role names (the user uses /api/specialists for those)
-    if agent.role in config.models.roles and agent.role != "orchestrator":
+    builtin_roles = ["backend", "frontend", "reviewer"]
+    if agent.role in builtin_roles:
         raise HTTPException(400, f"Role '{agent.role}' is a built-in role")
     resolver = state.ensure_specialist_resolver()
     proj_dir = _active_project_dir(state)
@@ -234,8 +234,8 @@ async def get_agent(name: str, state: AppState = Depends(get_state)):
             "dynamic": True,
         }
     # Built-in role (model tier)
-    config = state.config_manager.get()
-    if name in config.models.roles and name != "orchestrator":
+    builtin_roles = ["backend", "frontend", "reviewer"]
+    if name in builtin_roles:
         return {
             "name": name,
             "role": name,
@@ -260,8 +260,8 @@ async def update_agent(
 ):
     if name == ORCHESTRATOR_NAME:
         raise HTTPException(409, f"name '{ORCHESTRATOR_NAME}' is reserved for the orchestrator")
-    config = state.config_manager.get()
-    if name in config.models.roles and name != "orchestrator":
+    builtin_roles = ["backend", "frontend", "reviewer"]
+    if name in builtin_roles:
         raise HTTPException(400, "Cannot update built-in agent")
     resolver = state.ensure_specialist_resolver()
     proj_dir = _active_project_dir(state)

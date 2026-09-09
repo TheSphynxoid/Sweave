@@ -105,35 +105,28 @@ def models(
 
 
 def _list_models():
-    """List current model configuration."""
+    """List current model configuration (single global registry)."""
     config = config_manager.get_models()
-    
+
     table = Table(title="Model Configuration")
-    table.add_column("Role", style="cyan")
-    table.add_column("Default Model", style="green")
-    table.add_column("Aliases", style="yellow")
-    table.add_column("Provider", style="blue")
-    
-    for role, role_config in config.roles.items():
-        table.add_row(
-            role,
-            role_config.default,
-            ", ".join(role_config.aliases) if role_config.aliases else "-",
-            role_config.provider,
-        )
-    
+    table.add_column("Provider", style="cyan")
+    table.add_column("Models", style="green")
+
+    for provider, provider_models in sorted(config.providers.items()):
+        table.add_row(provider, ", ".join(provider_models))
     console.print(table)
+    console.print(f"[green]Default: {config_manager.get_default_model()}[/green]")
 
 
 def _set_model(value: str):
-    """Set model for a role."""
-    if "=" not in value:
-        console.print("[red]Format: role=model[/red]")
+    """Set the global default model (accepts ``role=model`` or bare ``provider/model``)."""
+    model = value.split("=", 1)[1].strip() if "=" in value else value.strip()
+    try:
+        config_manager.set_default_model(model)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
         return
-    
-    role, model = value.split("=", 1)
-    config_manager.update_model(role.strip(), model.strip())
-    console.print(f"[green]Updated {role} -> {model}[/green]")
+    console.print(f"[green]Default model -> {model}[/green]")
 
 
 def _reset_models():
@@ -362,8 +355,8 @@ def doctor():
 
 def _check_opencode() -> bool:
     try:
-        import subprocess
-        result = subprocess.run(["opencode", "--version"], capture_output=True)
+        from sweave.platform import run_no_window
+        result = run_no_window(["opencode", "--version"], capture_output=True)
         return result.returncode == 0
     except Exception:
         return False
@@ -371,8 +364,8 @@ def _check_opencode() -> bool:
 
 def _check_git() -> bool:
     try:
-        import subprocess
-        result = subprocess.run(["git", "--version"], capture_output=True)
+        from sweave.platform import run_no_window
+        result = run_no_window(["git", "--version"], capture_output=True)
         return result.returncode == 0
     except Exception:
         return False
@@ -380,8 +373,8 @@ def _check_git() -> bool:
 
 def _check_gh() -> bool:
     try:
-        import subprocess
-        result = subprocess.run(["gh", "--version"], capture_output=True)
+        from sweave.platform import run_no_window
+        result = run_no_window(["gh", "--version"], capture_output=True)
         return result.returncode == 0
     except Exception:
         return False
@@ -389,8 +382,8 @@ def _check_gh() -> bool:
 
 def _check_docker() -> bool:
     try:
-        import subprocess
-        result = subprocess.run(["docker", "--version"], capture_output=True)
+        from sweave.platform import run_no_window
+        result = run_no_window(["docker", "--version"], capture_output=True)
         return result.returncode == 0
     except Exception:
         return False

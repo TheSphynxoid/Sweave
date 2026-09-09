@@ -14,7 +14,6 @@ router = APIRouter()
 
 
 class ModelUpdateRequest(BaseModel):
-    role: str
     model: str
 
 
@@ -33,23 +32,27 @@ async def get_config(state: AppState = Depends(get_state)):
 async def get_models(state: AppState = Depends(get_state)):
     models = state.config_manager.get_models()
     return {
-        "roles": {
-            role: {
-                "default": role_config.default,
-                "aliases": role_config.aliases,
-                "provider": role_config.provider,
-            }
-            for role, role_config in models.roles.items()
-        }
+        "providers": models.providers,
+        "all_models": state.config_manager.get_all_models(),
+        # The global default: the orchestrator's model and the
+        # fallback for specialists without an explicit current_model.
+        # Settable via POST /api/models (the Settings Models tab).
+        "default": state.config_manager.get_default_model(),
     }
 
 
 @router.post("/api/models")
 async def set_model(request: ModelUpdateRequest, state: AppState = Depends(get_state)):
-    state.config_manager.update_model(request.role, request.model)
-    payload = {"role": request.role, "model": request.model}
+    # Sets the GLOBAL default model (the orchestrator's model and the
+    # fallback for specialists without an explicit current_model).
+    # Per-specialist overrides live on /api/specialists/{name}/model.
+    try:
+        default = state.config_manager.set_default_model(request.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    payload = {"model": default}
     await state.publish("model_changed", payload)
-    return {"success": True, "role": request.role, "model": request.model}
+    return {"success": True, "model": default, "default": default}
 
 
 @router.get("/api/rules")
@@ -96,10 +99,10 @@ async def get_harnesses():
 
 @router.post("/api/models/regenerate")
 async def api_regenerate_models():
-    import subprocess
+    from sweave.platform import run_no_window
 
     try:
-        result = subprocess.run(
+        result = run_no_window(
             ["python", "scripts/generate_models.py"],
             capture_output=True,
             text=True,

@@ -56,19 +56,19 @@ class ModelAlias(BaseModel):
     description: str | None = None
 
 
-class ModelRoleConfig(BaseModel):
-    """Model configuration for a specific role."""
-    default: str
-    aliases: list[str] = Field(default_factory=list)
-    provider: str = "opencode"
-
-
 class ModelsConfig(BaseModel):
-    """Models configuration."""
+    """Models configuration.
+
+    Single global model list grouped by provider (no per-role lists).
+    ``default`` is the qualified ``provider/model`` used for the
+    orchestrator and any specialist without an explicit
+    ``current_model``. Persisted in models.yaml under ``models:``.
+    """
     registry_path: str = "models.yaml"
     rules_path: str = "rules.yaml"
     hot_reload: bool = True
-    roles: dict[str, ModelRoleConfig] = Field(default_factory=dict)
+    providers: dict[str, list[str]] = Field(default_factory=dict)
+    default: str | None = None
 
 
 class RoutingRule(BaseModel):
@@ -120,7 +120,7 @@ class SweaveConfig(BaseSettings):
     @classmethod
     def from_yaml(cls, path: Path) -> SweaveConfig:
         import yaml
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return cls(**data)
 

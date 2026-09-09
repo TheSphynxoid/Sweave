@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from sweave.platform import creationflags_no_window
+
 
 @dataclass
 class HarnessInfo:
@@ -52,16 +54,23 @@ async def detect_opencode() -> HarnessInfo:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=creationflags_no_window(),
         )
         if result.returncode == 0:
             info.version = result.stdout.strip()
     except Exception:
         pass
     
-    # Get providers and models from OpenCode config
+    # Get providers and models from OpenCode config. ``models`` is
+    # the flat QUALIFIED list (provider/model) the pickers consume;
+    # ``providers`` is just the provider names.
     try:
         models = await get_opencode_models()
-        info.models = list(models.keys())  # provider names
+        info.models = [
+            f"{provider}/{model}"
+            for provider, provider_models in models.items()
+            for model in provider_models or []
+        ]
         info.providers = list(models.keys())
     except Exception:
         pass
@@ -92,6 +101,7 @@ async def detect_claude_code() -> HarnessInfo:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=creationflags_no_window(),
         )
         if result.returncode == 0:
             info.version = result.stdout.strip()
@@ -124,6 +134,7 @@ async def detect_codex() -> HarnessInfo:
             capture_output=True,
             text=True,
             timeout=10,
+            creationflags=creationflags_no_window(),
         )
         if result.returncode == 0:
             info.version = result.stdout.strip()

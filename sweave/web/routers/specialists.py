@@ -143,16 +143,26 @@ async def create_specialist(
     if body.scope not in ("project", "global"):
         raise HTTPException(400, f"scope must be 'project' or 'global' (got {body.scope!r})")
     # Defence in depth: API cannot create orchestrators.
-    rec = Specialist(
-        name=body.name,
-        scope=body.scope,
-        is_orchestrator=False,  # always false from the API
-        role_ref=body.role_ref,
-        description=body.description,
-        system_prompt=body.system_prompt,
-        harness=body.harness,
-        current_model=body.current_model,
-    )
+    # Name-shape violations are a 400 (bad input), not a 500: the
+    # Specialist constructor validates the name and raises ValueError.
+    try:
+        rec = Specialist(
+            name=body.name,
+            scope=body.scope,
+            is_orchestrator=False,  # always false from the API
+            role_ref=body.role_ref,
+            description=body.description,
+            system_prompt=body.system_prompt,
+            harness=body.harness,
+            current_model=body.current_model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if body.current_model is not None and "/" not in body.current_model:
+        raise HTTPException(
+            400,
+            f"current_model must be qualified as 'provider/model' (got {body.current_model!r})",
+        )
     proj_dir = _resolve_active_project_dir(state) if body.scope == "project" else None
     try:
         created = _resolver(state).create(rec, project_dir=proj_dir)
@@ -256,6 +266,15 @@ async def set_specialist_model(
     # PUT here only mutates persistent records; the seed view is read-only.
     if existing.scope == "seed":
         raise HTTPException(400, f"'{name}' is a seed view; edit the config.yaml")
+    # Reject bare provider names ("gmi") and other unqualified values:
+    # they parse to an incomplete ModelRef, silently drop the model
+    # override (wire None), and confuse the picker. The UI only offers
+    # qualified provider/model ids.
+    if "/" not in body.model:
+        raise HTTPException(
+            400,
+            f"model must be qualified as 'provider/model' (got {body.model!r})",
+        )
     existing.current_model = body.model
     try:
         resolver.update(existing, project_dir=proj_dir if existing.scope == "project" else None)

@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ModelPicker } from "@/components/ModelPicker";
 import type { HarnessInfo } from "@/types";
 
 export function CreateSpecialistDialog({
@@ -40,12 +41,20 @@ export function CreateSpecialistDialog({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [harness, setHarness] = useState("opencode");
   const [scope, setScope] = useState<"project" | "global">("project");
+  const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const { data: harnesses = [] } = useQuery<HarnessInfo[]>({
     queryKey: ["harnesses"],
     queryFn: () => api.listHarnesses(),
   });
+  const { data: models } = useQuery({
+    queryKey: ["models"],
+    queryFn: () => api.getModels(),
+  });
+  const modelOptions = (models?.all_models ?? []).length
+    ? (models?.all_models ?? [])
+    : harnesses.flatMap((h) => h.models);
 
   useEffect(() => {
     if (harnesses.length && !harnesses.find((h) => h.name === harness)) {
@@ -57,26 +66,33 @@ export function CreateSpecialistDialog({
     setName("");
     setDescription("");
     setSystemPrompt("");
+    setModel("");
   };
 
   const submit = async () => {
-    if (!name.trim()) {
+    // Names are lowercase alphanumeric + _- (the API 400s otherwise).
+    const cleanName = name.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+    if (!cleanName) {
       pushNotification("warning", "Specialist name is required.");
       return;
+    }
+    if (cleanName !== name.trim()) {
+      setName(cleanName);
     }
     setSubmitting(true);
     try {
       await api.createSpecialist(
         {
-          name: name.trim(),
+          name: cleanName,
           description: description.trim(),
           system_prompt: systemPrompt.trim(),
           harness,
+          ...(model ? { current_model: model } : {}),
         },
         scope,
       );
       await qc.invalidateQueries({ queryKey: ["specialists"] });
-      pushNotification("success", `Specialist "${name.trim()}" created.`);
+      pushNotification("success", `Specialist "${cleanName}" created.`);
       onOpenChange(false);
       reset();
     } catch (err) {
@@ -146,6 +162,17 @@ export function CreateSpecialistDialog({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Model (optional — global default applies when empty)</Label>
+            <ModelPicker
+              value={model}
+              onValueChange={setModel}
+              options={modelOptions}
+              placeholder="Global default"
+              className="h-9"
+              testId="model-picker-new-specialist"
+            />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="spec-prompt">System prompt</Label>

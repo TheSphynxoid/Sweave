@@ -207,18 +207,28 @@ def test_delete_orchestrator_409(client: TestClient, tmp_path: Path):
 def test_set_model(client: TestClient, tmp_path: Path):
     _create_project(client, tmp_path)
     client.post("/api/specialists", json={"name": "alpha", "scope": "project"})
-    r = client.put("/api/specialists/alpha/model", json={"model": "claude-3"})
+    r = client.put("/api/specialists/alpha/model", json={"model": "opencode/claude-3"})
     assert r.status_code == 200
     data = r.json()
-    assert data["current_model"] == "claude-3"
+    assert data["current_model"] == "opencode/claude-3"
     # GET reflects the change
     g = client.get("/api/specialists/alpha")
-    assert g.json()["current_model"] == "claude-3"
+    assert g.json()["current_model"] == "opencode/claude-3"
+
+
+def test_set_model_rejects_unqualified(client: TestClient, tmp_path: Path):
+    """Bare provider names ('gmi') and bare ids ('claude-3') are a 400:
+    they parse to an incomplete ModelRef and silently drop the override."""
+    _create_project(client, tmp_path)
+    client.post("/api/specialists", json={"name": "alpha", "scope": "project"})
+    for bad in ("claude-3", "gmi"):
+        r = client.put("/api/specialists/alpha/model", json={"model": bad})
+        assert r.status_code == 400
 
 
 def test_set_model_orchestrator_409(client: TestClient, tmp_path: Path):
     _create_project(client, tmp_path)
-    r = client.put("/api/specialists/orchestrator/model", json={"model": "claude-3"})
+    r = client.put("/api/specialists/orchestrator/model", json={"model": "opencode/claude-3"})
     assert r.status_code == 409
 
 
@@ -236,14 +246,14 @@ def test_set_model_publishes_model_changed_event(
 
     # Capture WebSocket events
     with client.websocket_connect("/ws") as ws:
-        r = client.put("/api/specialists/alpha/model", json={"model": "claude-3"})
+        r = client.put("/api/specialists/alpha/model", json={"model": "opencode/claude-3"})
         assert r.status_code == 200
         # The model.changed event should arrive promptly
         msg = ws.receive_text()
         event = json.loads(msg)
         assert event["event"] == "model.changed"
         assert event["data"]["name"] == "alpha"
-        assert event["data"]["model"] == "claude-3"
+        assert event["data"]["model"] == "opencode/claude-3"
         assert event["data"]["scope"] == "project"
 
 

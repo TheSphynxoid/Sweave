@@ -14,20 +14,14 @@ import {
 } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
-import type { HarnessInfo, SpecialistSummary } from "@/types";
+import type { HarnessInfo, ModelsConfig, SpecialistSummary } from "@/types";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ModelPicker } from "@/components/ModelPicker";
 import { CreateSpecialistDialog } from "@/components/CreateSpecialistDialog";
 
 const SCOPE_META: Record<
@@ -53,12 +47,20 @@ export function AgentsPage() {
     queryKey: ["harnesses"],
     queryFn: () => api.listHarnesses(),
   });
+  // The single global registry (models.yaml) is the source of truth
+  // every specialist picks from; the harness list (actually-configured
+  // models) is merged in as a fallback so the picker never goes empty.
+  const { data: models } = useQuery<ModelsConfig>({
+    queryKey: ["models"],
+    queryFn: () => api.getModels(),
+  });
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
+    (models?.all_models ?? []).forEach((m) => set.add(m));
     harnesses.forEach((h) => h.models.forEach((m) => set.add(m)));
     return Array.from(set).sort();
-  }, [harnesses]);
+  }, [harnesses, models]);
 
   const groups = useMemo(() => {
     const order = ["orchestrator", "project", "global", "seed"];
@@ -204,22 +206,14 @@ function SpecialistCard({
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground w-12 shrink-0">Model</span>
-          <Select
+          <ModelPicker
             value={specialist.current_model ?? ""}
             onValueChange={onModel}
+            options={modelOptions}
             disabled={locked}
-          >
-            <SelectTrigger className="h-8 text-xs flex-1">
-              <SelectValue placeholder="Select model" />
-            </SelectTrigger>
-            <SelectContent>
-              {modelOptions.map((m) => (
-                <SelectItem key={m} value={m} className="text-xs">
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            className="h-8 text-xs flex-1"
+            testId={`model-picker-${specialist.scope}-${specialist.name}`}
+          />
         </div>
 
         <div className="flex items-center justify-between pt-1">

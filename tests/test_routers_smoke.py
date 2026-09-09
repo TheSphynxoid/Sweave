@@ -81,7 +81,13 @@ def test_api_agents_list(client: TestClient):
 def test_api_models(client: TestClient):
     r = client.get("/api/models")
     assert r.status_code == 200
-    assert "roles" in r.json()
+    data = r.json()
+    assert "providers" in data
+    # Single global registry: qualified default present, all entries qualified.
+    assert "default" in data and "/" in data["default"]
+    assert "all_models" in data
+    assert all("/" in m for m in data["all_models"])
+    assert data["default"] in data["all_models"]
 
 
 def test_api_rules(client: TestClient):
