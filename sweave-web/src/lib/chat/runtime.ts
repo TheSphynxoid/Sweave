@@ -149,6 +149,15 @@ function textContent(text: string, streaming: boolean): ThreadMessageLike["conte
   ];
 }
 
+/**
+ * A message flagged ``metadata.superseded`` belongs to a turn the
+ * user rewound past (edit + resend / retry). Record, not deletion:
+ * the UI renders these collapsed and dimmed.
+ */
+export function isSuperseded(message: SessionMessage): boolean {
+  return (message.metadata ?? {}).superseded === true;
+}
+
 /** Project one entry; only user/assistant become thread bubbles. */
 export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
   const { message, streaming } = entry;
@@ -164,6 +173,7 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
       custom: {
         timestamp: message.timestamp ?? null,
         delegationId: entry.delegationId ?? delegationIdOf(message),
+        superseded: isSuperseded(message),
       },
     },
   };
@@ -338,6 +348,36 @@ export function applyMessageAdded(
     turn: "idle",
     activeDelegationId: null,
   };
+}
+
+/**
+ * Optimistic rerun (edit + resend / retry). Flags every entry after
+ * the target user message superseded and (for edits) swaps its
+ * content, then moves the turn to ``queued`` — the WS events for the
+ * new turn (status/delta/message.added) drive the rest, exactly like
+ * a fresh submit. Returns the SAME state object when the target is
+ * missing or not a persisted user message (the caller uses
+ * referential equality to decide whether to POST).
+ */
+export function applyRerun(
+  state: SweaveThreadState,
+  messageId: string,
+  content?: string,
+): SweaveThreadState {
+  const idx = state.entries.findIndex(
+    (e) => !e.streaming && !e.optimistic && e.message.id === messageId,
+  );
+  if (idx < 0 || state.entries[idx].message.role !== "user") return state;
+  const entries = state.entries.map((e, i) => {
+    if (i < idx) return e;
+    if (i === idx) {
+      if (content === undefined || content === e.message.content) return e;
+      return { ...e, message: { ...e.message, content } };
+    }
+    if (isSuperseded(e.message)) return e;
+    return { ...e, message: { ...e.message, metadata: { ...e.message.metadata, superseded: true } } };
+  });
+  return { ...state, entries, turn: "queued", activeDelegationId: null };
 }
 
 /**

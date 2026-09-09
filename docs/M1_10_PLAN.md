@@ -23,6 +23,11 @@ after the inline-cards slice landed (`00e014c`).
 
 ## Goal state
 
+(Landed separately 2026-09-09, ahead of this plan: edit + resend /
+retry via `POST /sessions/{id}/rerun`, superseded-not-deleted
+history, orchestrator rotation on edit. Full alternate-reply
+branches stay deferred.)
+
 1. **Read-only specialist drawer** — per-specialist delegation
    history (task → output, newest last, each expandable to full
    trace via the existing detail endpoint), header (name, model,

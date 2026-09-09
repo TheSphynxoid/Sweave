@@ -26,6 +26,7 @@ import type {
   ProjectSummary,
   SessionCreate,
   SessionDetail,
+  SessionMessage,
   SessionSummary,
   SpecialistCreate,
   SpecialistSummary,
@@ -155,10 +156,28 @@ class ApiClient {
    */
   async sendMessage(
     sessionId: string,
-    body: { role: "user" | "assistant" | "system" | "tool"; content: string },
-  ): Promise<{ success: boolean; message: { id: string; role: string; content: string; timestamp: string }; assistant?: { id: string; role: string; content: string; metadata?: Record<string, unknown> } | null }> {
+    body: { role: string; content: string },
+  ): Promise<{ success: boolean; assistant: SessionMessage }> {
     const r = await this.client.post(
       `/sessions/${encodeURIComponent(sessionId)}/messages`,
+      body,
+      { timeout: 900_000 },
+    );
+    return r.data;
+  }
+
+  /**
+   * Re-run the turn starting at a past user message. `content` set =
+   * edit + resend; omitted = retry. Later messages are flagged
+   * superseded server-side; an edit rotates the orchestrator
+   * session. Same long timeout as sendMessage.
+   */
+  async rerunTurn(
+    sessionId: string,
+    body: { from_message_id: string; content?: string },
+  ): Promise<{ success: boolean; assistant: SessionMessage }> {
+    const r = await this.client.post(
+      `/sessions/${encodeURIComponent(sessionId)}/rerun`,
       body,
       { timeout: 900_000 },
     );

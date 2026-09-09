@@ -11,10 +11,12 @@ import { describe, it, expect } from "vitest";
 import {
   applyDelta,
   applyMessageAdded,
+  applyRerun,
   applyStatusChanged,
   applySubmit,
   delegationIdOf,
   initialThreadState,
+  isSuperseded,
   mergeHistory,
   projectEntry,
   projectThread,
@@ -235,5 +237,57 @@ describe("mergeHistory: history reloads keep the in-flight turn", () => {
     const merged = mergeHistory(s, [userMessage("u1", "a"), assistantMessage("a1", "b")]);
     expect(merged.turn).toBe("idle");
     expect(merged.entries).toHaveLength(2);
+  });
+});
+
+describe("rerun: edit + resend / retry (supersede, don't delete)", () => {
+  function twoTurns(): SweaveThreadState {
+    return stateFromHistory([
+      userMessage("u1", "first q"),
+      assistantMessage("a1", "first a", "chat-1"),
+      userMessage("u2", "second q"),
+      assistantMessage("a2", "second a", "chat-2"),
+    ]);
+  }
+
+  it("retry flags later messages superseded and queues the turn", () => {
+    const s = applyRerun(twoTurns(), "u1");
+    expect(s.turn).toBe("queued");
+    expect(s.activeDelegationId).toBeNull();
+    const byId = Object.fromEntries(s.entries.map((e) => [e.message.id, e.message]));
+    expect(isSuperseded(byId["u1"])).toBe(false);
+    expect(byId["u1"].content).toBe("first q");
+    expect(isSuperseded(byId["a1"])).toBe(true);
+    expect(isSuperseded(byId["u2"])).toBe(true);
+    expect(isSuperseded(byId["a2"])).toBe(true);
+    // Record, not deletion: nothing removed.
+    expect(s.entries).toHaveLength(4);
+  });
+
+  it("edit swaps the content and flags the rest", () => {
+    const s = applyRerun(twoTurns(), "u2", "second q, edited");
+    const byId = Object.fromEntries(s.entries.map((e) => [e.message.id, e.message]));
+    expect(byId["u2"].content).toBe("second q, edited");
+    expect(isSuperseded(byId["u2"])).toBe(false);
+    expect(isSuperseded(byId["a2"])).toBe(true);
+    // Earlier turns untouched.
+    expect(isSuperseded(byId["u1"])).toBe(false);
+    expect(isSuperseded(byId["a1"])).toBe(false);
+  });
+
+  it("is a no-op (same ref) for missing or non-user targets", () => {
+    const s = twoTurns();
+    expect(applyRerun(s, "nope")).toBe(s);
+    expect(applyRerun(s, "a1")).toBe(s);
+  });
+
+  it("projects the superseded flag into metadata.custom", () => {
+    const s = applyRerun(twoTurns(), "u1");
+    const projected = projectThread(s);
+    const customOf = (id: string) =>
+      (projected.find((m) => m.id === id)?.metadata as { custom?: { superseded?: boolean } })
+        ?.custom;
+    expect(customOf("u1")?.superseded).toBe(false);
+    expect(customOf("a1")?.superseded).toBe(true);
   });
 });

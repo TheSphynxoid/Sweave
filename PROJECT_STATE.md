@@ -39,13 +39,13 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-09)
-- **496/496** in `pytest tests/` (source of truth for logic tests; +10
-  across the seed-shadow guard, prompt-template, and isolation
-  strands)
+- **501/501** in `pytest tests/` (source of truth for logic tests; +15
+  across the rerun endpoint, seed-shadow guard, prompt-template, and
+  isolation strands)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **115** vitest unit tests in `sweave-web/` (81 base + 8 PathPicker
+- **119** vitest unit tests in `sweave-web/` (81 base + 8 PathPicker
   + 11 ModelPicker + 3 runtime mergeHistory + 2 streaming pins
-  + 6 TurnDelegations + 4 EditSpecialistDialog)
+  + 6 TurnDelegations + 4 EditSpecialistDialog + 4 rerun)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -605,6 +605,20 @@
   cards (description/prompt/role; `PUT` already existed); (d) richer
   seed descriptions (also the `list_specialists` routing signal).
   **496 pytest (+10), 115 vitest (+4), 13/13 run.py --check, build
+  green.**
+- ✅ **Edit + resend / retry (2026-09-09)** — `POST
+  /api/sessions/{id}/rerun {from_message_id, content?}`: one endpoint
+  for both (content set = edit, omitted = retry). Later messages are
+  flagged `metadata.superseded` (record, not deletion — no schema
+  change) and rendered collapsed/dimmed with expand; child
+  delegations of superseded turns are never touched. Edit rotates
+  the orchestrator session binding (fresh engine session, trace
+  `rerun` audit); pure retry keeps it. UI: pencil on user messages
+  (idle only), retry in the last-reply action bar with a confirm
+  dialog when the turn spawned children (reruns may duplicate
+  work). Full forks (alternate-reply branches) deferred — the
+  superseded record is the data they would be built on.
+  **501 pytest (+5), 119 vitest (+4), 13/13 run.py --check, build
   green.**
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
 

@@ -273,7 +273,6 @@ class ChatLoop:
         user_content: str,
     ) -> dict[str, Any]:
         """Run one user turn end-to-end. Returns the assistant message dict.
-
         Steps (M1.7 step 2 + step 3):
         1. Acquire the per-session lock (serial queue).
         2. Persist the user message.
@@ -325,26 +324,107 @@ class ChatLoop:
                 if coalescer_box[0] is not None:
                     await coalescer_box[0].close_and_flush()
 
+    async def rerun_turn(
+        self,
+        *,
+        session_id: str,
+        from_message_id: str,
+        content: str | None = None,
+    ) -> dict[str, Any]:
+        """Re-run the turn starting at a past user message.
+
+        The target message must be role=user (`TypeError` otherwise;
+        unknown session/message is `ValueError`). Every message after
+        it is flagged ``metadata["superseded"] = True`` — record, not
+        deletion: child delegations of superseded turns stay exactly
+        as they were. When *content* differs it replaces the message
+        (edit); an edit also rotates the orchestrator session binding
+        (`orchestrator_session_id = None`) so the engine never sees
+        contradictory history, while a pure retry keeps the binding.
+        The turn then runs through the same body as a fresh turn, but
+        the existing user message is reused (no duplicate persist).
+
+        Returns the new assistant message dict.
+        """
+        lock = await self._lock_for(session_id)
+        async with lock:
+            session = self.project_manager.get_session(session_id)
+            if session is None:
+                raise ValueError(f"Session '{session_id}' not found")
+            idx = next(
+                (i for i, m in enumerate(session.messages) if m.id == from_message_id),
+                None,
+            )
+            if idx is None:
+                raise ValueError(
+                    f"Message '{from_message_id}' not found in session '{session_id}'"
+                )
+            target = session.messages[idx]
+            if target.role != "user":
+                raise TypeError(
+                    f"Can only rerun from a user message (got role '{target.role}')"
+                )
+            edited = content is not None and content != target.content
+            if edited:
+                target.content = content
+            superseded = 0
+            for later in session.messages[idx + 1:]:
+                later.metadata["superseded"] = True
+                superseded += 1
+            rotated = False
+            if edited:
+                session.orchestrator_session_id = None
+                rotated = True
+            self.project_manager.save_session(session)
+
+            coalescer_box: list = [None]
+            try:
+                return await self._run_turn_body(
+                    session_id=session_id,
+                    user_content=target.content,
+                    coalescer_box=coalescer_box,
+                    existing_user_msg=target,
+                    rerun_info={
+                        "from_message_id": from_message_id,
+                        "edited": edited,
+                        "session_rotated": rotated,
+                        "superseded_count": superseded,
+                    },
+                )
+            finally:
+                if coalescer_box[0] is not None:
+                    await coalescer_box[0].close_and_flush()
+
     async def _run_turn_body(
         self,
         *,
         session_id: str,
         user_content: str,
         coalescer_box: list,
+        # Rerun path: reuse an already-persisted user message instead
+        # of persisting a duplicate (the rerun endpoint owns the
+        # edit + supersede bookkeeping before calling us).
+        existing_user_msg: Any | None = None,
+        rerun_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-            # 1) Persist the user message
+            # 1) Persist the user message (fresh turns only; reruns
+            # reuse the existing row and must NOT re-emit it — the UI
+            # reconciles by id and a second add would duplicate).
             session = self.project_manager.get_session(session_id)
             if session is None:
                 raise ValueError(f"Session '{session_id}' not found")
-            user_msg = session.add_message(role="user", content=user_content)
-            self.project_manager.save_session(session)
-            await self._emit(
-                "message.added",
-                {
-                    "session_id": session_id,
-                    "message": user_msg.to_dict(),
-                },
-            )
+            if existing_user_msg is None:
+                user_msg = session.add_message(role="user", content=user_content)
+                self.project_manager.save_session(session)
+                await self._emit(
+                    "message.added",
+                    {
+                        "session_id": session_id,
+                        "message": user_msg.to_dict(),
+                    },
+                )
+            else:
+                user_msg = existing_user_msg
 
             project_dir = self.project_dir_resolver(session.project_name)
             specialist = await self._resolve_orchestrator_specialist(project_dir)
@@ -391,6 +471,8 @@ class ChatLoop:
             from sweave.runtime.trace_log import TraceLog
 
             trace = TraceLog(delegation_id=delegation.delegation_id)
+            if rerun_info is not None:
+                trace.append("rerun", dict(rerun_info))
 
             def _get_orch_id() -> str | None:
                 return session.orchestrator_session_id

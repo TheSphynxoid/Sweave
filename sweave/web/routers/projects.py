@@ -282,6 +282,39 @@ async def api_add_message(
     return {"success": True, "message": msg}
 
 
+class RerunRequest(BaseModel):
+    from_message_id: str
+    # New user content (edit). Omitted/null = pure retry of the same text.
+    content: Optional[str] = None
+
+
+@router.post("/api/sessions/{session_id}/rerun")
+async def api_rerun_turn(
+    session_id: str,
+    request: RerunRequest,
+    state: AppState = Depends(get_state),
+):
+    """Re-run the turn starting at a past user message (edit + resend /
+    retry). Later messages are flagged superseded (record, not
+    deletion); an edit rotates the orchestrator session binding while
+    a pure retry keeps it. Returns the new assistant message."""
+    if state.chat_loop is None:
+        raise HTTPException(500, "chat loop unavailable")
+    try:
+        assistant_msg = await state.chat_loop.rerun_turn(
+            session_id=session_id,
+            from_message_id=request.from_message_id,
+            content=request.content,
+        )
+        return {"success": True, "assistant": assistant_msg}
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except TypeError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"chat loop error: {e}") from e
+
+
 # ---------------------------------------------------------------------------
 # Memory bank listing (other memory endpoints live in routers/memory.py)
 # ---------------------------------------------------------------------------

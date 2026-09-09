@@ -41,6 +41,8 @@ import {
   Check,
   Copy,
   OctagonX,
+  Pencil,
+  RotateCcw,
   Sparkles,
   User,
 } from "lucide-react";
@@ -48,6 +50,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Avatar } from "@/components/assistant-ui/elements/avatar";
 import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
 import { useWS } from "@/context/WSProvider";
+import { api } from "@/api/client";
+import { useChatActions } from "@/lib/chat/actions";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
 import { TurnDelegations } from "./TurnDelegations";
@@ -338,6 +342,7 @@ function HistorySkeleton() {
 interface SweaveCustom {
   timestamp?: string | null;
   delegationId?: string | null;
+  superseded?: boolean;
 }
 
 function useMessageCustom(): SweaveCustom {
@@ -358,9 +363,27 @@ function formatTimestamp(ts: string | null | undefined): string | null {
 
 function AssistantMessage() {
   const custom = useMessageCustom();
+  const message = useAuiState((s) => s.message);
   const messageId = useAuiState((s) => s.message.id);
   const isRunning = useAuiState((s) => s.message.status?.type === "running");
   const time = formatTimestamp(custom.timestamp);
+
+  const body = (
+    <>
+      <div className="text-sm leading-relaxed">
+        <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
+        {isRunning && <span className="streaming-cursor" aria-hidden />}
+      </div>
+
+      {custom.delegationId && <TurnDelegations parentDelegationId={custom.delegationId} />}
+
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
+        <div className="flex-1" />
+        <AssistantActionBar />
+      </div>
+    </>
+  );
 
   return (
     <div
@@ -386,30 +409,94 @@ function AssistantMessage() {
           )}
         </div>
 
-        <div className="text-sm leading-relaxed">
-          <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
-          {isRunning && <span className="streaming-cursor" aria-hidden />}
-        </div>
-
-        {custom.delegationId && <TurnDelegations parentDelegationId={custom.delegationId} />}
-
-        <div className="mt-1.5 flex items-center justify-between gap-2">
-          {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
-          <div className="flex-1" />
-          <AssistantActionBar />
-        </div>
+        {custom.superseded ? (
+          <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
+            {body}
+          </SupersededBlock>
+        ) : (
+          body
+        )}
       </div>
     </div>
   );
 }
 
 /**
- * Copy + timestamp only (ruling 3: no disabled fake buttons; R4.3 adds the rest).
- * The Root unmounts itself on non-last messages and while the run is in
- * flight (hideWhenRunning + autohide="not-last"), so no hover CSS is needed.
+ * Collapsed shell for a superseded message (edit + resend / retry
+ * rewound past it). Record, not deletion: dimmed one-liner, click
+ * to expand the original content in place.
+ */
+function SupersededBlock({
+  label,
+  preview,
+  children,
+}: {
+  label: string;
+  preview: string;
+  children: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="opacity-60" data-testid="superseded-block">
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="flex max-w-full items-center gap-1.5 rounded-md border border-dashed border-border px-2 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        <span className="shrink-0 rounded bg-muted px-1 py-px font-medium">{label}</span>
+        <span className="truncate">{preview.slice(0, 80) || "—"}</span>
+      </button>
+      {expanded && <div className="mt-1.5 opacity-100">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * Copy + retry (both REAL affordances). The Root unmounts itself on
+ * non-last messages and while the run is in flight (hideWhenRunning
+ * + autohide="not-last"), so retry only ever targets the latest
+ * assistant reply of an idle thread — and no hover CSS is needed.
  */
 function AssistantActionBar() {
   const isCopied = useAuiState((s) => s.message.isCopied);
+  const messageId = useAuiState((s) => s.message.id);
+  const custom = useMessageCustom();
+  const messages = useAuiState((s) => s.thread.messages);
+  const actions = useChatActions();
+
+  const retry = async () => {
+    // The rerun target is the nearest preceding user message.
+    const idx = messages.findIndex((m) => m.id === messageId);
+    let userId: string | null = null;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        userId = messages[i].id;
+        break;
+      }
+    }
+    if (!userId || !actions) return;
+    // A rerun re-drives the orchestrator, which may defer AGAIN —
+    // confirm when the old turn is known to have spawned children.
+    if (custom.delegationId) {
+      try {
+        const kids = await api.listDelegations({ parent_task_id: custom.delegationId });
+        if (
+          kids.length > 0 &&
+          !window.confirm(
+            `This turn created ${kids.length} specialist task(s). ` +
+              `Retrying may duplicate that work (the old tasks stay on record). Retry anyway?`,
+          )
+        ) {
+          return;
+        }
+      } catch {
+        // The children check is advisory; a failed check proceeds.
+      }
+    }
+    actions.rerun(userId);
+  };
+
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
@@ -417,6 +504,15 @@ function AssistantActionBar() {
       className="flex items-center gap-0.5"
       data-testid="action-bar"
     >
+      <TooltipIconButton
+        tooltip="Retry turn"
+        variant="ghost"
+        size="sm"
+        className="h-7 w-7"
+        onClick={() => void retry()}
+      >
+        <RotateCcw size={13} />
+      </TooltipIconButton>
       <ActionBarPrimitive.Copy asChild>
         <TooltipIconButton
           tooltip={isCopied ? "Copied" : "Copy"}
@@ -448,21 +544,89 @@ function UserPlainText({
 
 function UserMessage() {
   const custom = useMessageCustom();
+  const message = useAuiState((s) => s.message);
   const messageId = useAuiState((s) => s.message.id);
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   const time = formatTimestamp(custom.timestamp);
+  const actions = useChatActions();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const startEdit = () => {
+    setDraft(threadTextOf(message));
+    setEditing(true);
+  };
+  const saveEdit = () => {
+    const text = draft.trim();
+    setEditing(false);
+    if (!text || !actions) return;
+    actions.rerun(messageId, text);
+  };
+
+  const bubble = editing ? (
+    <div className="w-full min-w-[16rem]">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        rows={3}
+        autoFocus
+        data-testid="user-message-edit-input"
+        className="w-full resize-y rounded-xl border border-ring bg-card px-3 py-2 text-sm text-foreground focus:outline-none"
+      />
+      <div className="mt-1 flex justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={saveEdit}
+          data-testid="user-message-edit-save"
+          className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Save &amp; resend
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div className="rounded-2xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-sm shadow-sm transition-shadow group-hover/message:shadow-md">
+      <MessagePrimitive.Parts components={{ Text: UserPlainText }} />
+    </div>
+  );
 
   return (
     <div
-      className="flex justify-end"
+      className="group/message flex justify-end"
       data-testid="user-message-row"
       data-message-id={messageId}
     >
       <div className="flex max-w-[75%] items-end gap-2">
         <div className="flex min-w-0 flex-col items-end gap-1">
-          <div className="rounded-2xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-sm shadow-sm transition-shadow group-hover/message:shadow-md">
-            <MessagePrimitive.Parts components={{ Text: UserPlainText }} />
+          {custom.superseded ? (
+            <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
+              {bubble}
+            </SupersededBlock>
+          ) : (
+            bubble
+          )}
+          <div className="flex items-center gap-1 pr-1">
+            {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
+            {!isRunning && !editing && actions && (
+              <button
+                type="button"
+                onClick={startEdit}
+                title="Edit and resend"
+                aria-label="Edit and resend"
+                data-testid="user-message-edit"
+                className="rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover/message:opacity-100"
+              >
+                <Pencil size={12} />
+              </button>
+            )}
           </div>
-          {time && <time className="pr-1 text-[11px] text-muted-foreground/70">{time}</time>}
         </div>
         <Avatar
           size="sm"

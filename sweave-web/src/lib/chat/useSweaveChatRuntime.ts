@@ -28,6 +28,7 @@ import type { SessionMessage } from "@/types";
 import {
   applyDelta,
   applyMessageAdded,
+  applyRerun,
   applyStatusChanged,
   applySubmit,
   initialThreadState,
@@ -121,6 +122,38 @@ export function useSweaveChatRuntime(sessionId: string | null) {
   const messages = useMemo(() => projectThread(state), [state]);
   const isRunning = state.turn === "running" || state.turn === "queued";
 
+  const rerun = useCallback(
+    async (messageId: string, content?: string) => {
+      if (!sessionId) return;
+      // Optimistic supersede first (referential check: applyRerun
+      // returns the same object when the target is missing, and we
+      // must not POST a turn the thread doesn't show).
+      let applied = false;
+      setState((s) => {
+        const next = applyRerun(s, messageId, content);
+        applied = next !== s;
+        return next;
+      });
+      if (!applied) return;
+      // The backend runs the turn; the WS events are authoritative
+      // for the thread view (the response's `assistant` is ignored).
+      try {
+        await api.rerunTurn(
+          sessionId,
+          content === undefined
+            ? { from_message_id: messageId }
+            : { from_message_id: messageId, content },
+        );
+      } catch {
+        // The backend persists an error assistant message on
+        // failure; the WS `message.added` surfaces it. A transport
+        // failure self-heals on the next history refetch
+        // (mergeHistory drops non-authoritative rows).
+      }
+    },
+    [sessionId],
+  );
+
   const onNew = useCallback(
     async (message: AppendMessage) => {
       if (!sessionId) return;
@@ -145,11 +178,14 @@ export function useSweaveChatRuntime(sessionId: string | null) {
     [sessionId],
   );
 
-  return useExternalStoreRuntime({
-    messages,
-    isRunning,
-    isSendDisabled: isRunning,
-    convertMessage: (m) => m,
-    onNew,
-  });
+  return {
+    runtime: useExternalStoreRuntime({
+      messages,
+      isRunning,
+      isSendDisabled: isRunning,
+      convertMessage: (m) => m,
+      onNew,
+    }),
+    rerun,
+  };
 }

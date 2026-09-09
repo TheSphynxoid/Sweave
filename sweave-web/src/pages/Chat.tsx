@@ -22,6 +22,7 @@ import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { useSweaveChatRuntime } from "@/lib/chat/useSweaveChatRuntime";
+import { ChatActionsContext } from "@/lib/chat/actions";
 import { SessionPicker } from "./chat/SessionPicker";
 import { Thread } from "@/components/thread/Thread";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import { cn } from "@/utils/cn";
 export function ChatPage() {
   const { activeProject, activeSession } = useApp();
   const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
-  const runtime = useSweaveChatRuntime(activeSession?.id ?? null);
+  const { runtime, rerun } = useSweaveChatRuntime(activeSession?.id ?? null);
 
   if (!activeProject) {
     return (
@@ -74,7 +75,9 @@ export function ChatPage() {
         <WsDot />
       </div>
       <AssistantRuntimeProvider runtime={runtime}>
-        <Thread />
+        <ChatActionsContext.Provider value={{ rerun }}>
+          <Thread />
+        </ChatActionsContext.Provider>
       </AssistantRuntimeProvider>
     </div>
   );
