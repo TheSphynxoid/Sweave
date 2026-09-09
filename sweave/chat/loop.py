@@ -451,6 +451,26 @@ class ChatLoop:
             def _on_chunk(text: str) -> None:
                 coalescer.push(text)
 
+            async def _finish(**kwargs: Any) -> dict[str, Any]:
+                """Persist the final message, closing the stream first.
+
+                The coalescer's final flush MUST precede the
+                authoritative ``message.added``: deltas are partial
+                snapshots and the persisted message replaces them.
+                Flushing after finalise (the old run_turn-finally-only
+                order) left a trailing ``chat.delta`` that the UI
+                rendered as a second, never-finalized streaming
+                bubble with the turn stuck in "running".
+                """
+                if coalescer_box[0] is not None:
+                    await coalescer_box[0].close_and_flush()
+                return await self._finalise_turn(
+                    session=session,
+                    session_id=session_id,
+                    user_msg=user_msg,
+                    **kwargs,
+                )
+
             first_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
@@ -492,10 +512,7 @@ class ChatLoop:
             if first_turn_text.startswith("[chat error:"):
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.
-                return await self._finalise_turn(
-                    session=session,
-                    session_id=session_id,
-                    user_msg=user_msg,
+                return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=first_turn_text,
                 )
@@ -508,10 +525,7 @@ class ChatLoop:
             if not children:
                 # Fast path: no deferrals -- the first turn's reply
                 # is the final answer.
-                return await self._finalise_turn(
-                    session=session,
-                    session_id=session_id,
-                    user_msg=user_msg,
+                return await _finish(
                     delegation_id=delegation.delegation_id,
                     assistant_text=first_turn_text,
                 )
@@ -551,18 +565,12 @@ class ChatLoop:
                 # error; the children are still visible via the
                 # Children tab, so the user can pick up the
                 # conversation.
-                return await self._finalise_turn(
-                    session=session,
-                    session_id=session_id,
-                    user_msg=user_msg,
+                return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=synthesis_turn_text,
                 )
 
-            return await self._finalise_turn(
-                session=session,
-                session_id=session_id,
-                user_msg=user_msg,
+            return await _finish(
                 delegation_id=delegation.delegation_id,
                 assistant_text=synthesis_turn_text,
             )

@@ -37,5 +37,23 @@ export function AssistantTextPart({ text, part, status }: AssistantTextPartProps
     const s = status as Record<string, unknown>;
     if (typeof s.text === "string") content = s.text;
   }
-  return <Markdown source={content ?? ""} />;
+  const source = content ?? "";
+  const running =
+    status?.type === "running" || (part as { status?: { type?: string } } | undefined)?.status?.type === "running";
+  if (running) {
+    // While streaming, render the raw text verbatim. Partial
+    // markdown (an unclosed fence, half a table) can render as
+    // visibly-empty or structurally-odd under react-markdown, which
+    // reads as "streaming but no text". Plain text is always
+    // incremental; the Markdown pass applies on completion.
+    return (
+      <div
+        data-testid="assistant-streaming-plain"
+        className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground"
+      >
+        {source}
+      </div>
+    );
+  }
+  return <Markdown source={source} />;
 }

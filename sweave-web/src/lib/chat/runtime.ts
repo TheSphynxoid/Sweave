@@ -75,6 +75,61 @@ export function stateFromHistory(messages: SessionMessage[]): SweaveThreadState 
   };
 }
 
+/**
+ * Merge a REST history reload into live state without dropping the
+ * in-flight turn.
+ *
+ * A React Query refetch mid-turn (window refocus, reconnect) used to
+ * replace the whole state via `stateFromHistory`, wiping the
+ * optimistic user message + the streaming assistant bubble: the
+ * thread flashed back to "waiting" and later deltas rebuilt a
+ * truncated bubble. Instead: authoritative entries come from
+ * history; optimistic/streaming entries survive unless history
+ * proves them settled (same user content persisted / streaming
+ * delegation already has its persisted assistant).
+ */
+export function mergeHistory(
+  prev: SweaveThreadState,
+  messages: SessionMessage[],
+): SweaveThreadState {
+  const historyUserContents = new Set(
+    messages.filter((m) => m.role === "user").map((m) => m.content),
+  );
+  const historyAssistantDelegations = new Set(
+    messages
+      .filter((m) => m.role === "assistant")
+      .map((m) => delegationIdOf(m))
+      .filter((id): id is string => id !== null),
+  );
+  const kept = prev.entries.filter((e) => {
+    if (e.optimistic) {
+      // The server persisted our optimistic text: the WS reconcile
+      // (or this history) covers it; drop the local copy.
+      if (e.message.role === "user" && historyUserContents.has(e.message.content)) {
+        return false;
+      }
+      return true;
+    }
+    if (e.streaming) {
+      // The persisted assistant for this delegation landed while we
+      // weren't looking: the bubble is settled, drop it.
+      if (e.delegationId && historyAssistantDelegations.has(e.delegationId)) {
+        return false;
+      }
+      return true;
+    }
+    return false;
+  });
+  return {
+    entries: [
+      ...messages.map((message) => ({ message, streaming: false })),
+      ...kept,
+    ],
+    turn: kept.length > 0 ? prev.turn : "idle",
+    activeDelegationId: kept.some((e) => e.streaming) ? prev.activeDelegationId : null,
+  };
+}
+
 /** Synthetic id prefix for optimistic user messages. */
 const OPTIMISTIC_PREFIX = "local-";
 
@@ -246,18 +301,25 @@ export function applyMessageAdded(
   }
 
   if (message.role === "user") {
-    const optimisticIdx = state.entries.findIndex(
+    // Replace ALL optimistic entries (defensive: a race could have
+    // created more than one before the UI disabled).
+    const entries = state.entries.map((e) =>
+      e.optimistic && e.message.id.startsWith(OPTIMISTIC_PREFIX)
+        ? { message, streaming: false }
+        : e,
+    );
+    // If no optimistic entry was found, append (id-dedupe above
+    // handles the case where stateFromHistory already added it).
+    const hadOptimistic = state.entries.some(
       (e) => e.optimistic && e.message.id.startsWith(OPTIMISTIC_PREFIX),
     );
-    if (optimisticIdx >= 0) {
-      const entries = state.entries.slice();
-      entries[optimisticIdx] = { message, streaming: false };
-      return { ...state, entries };
+    if (!hadOptimistic) {
+      return {
+        ...state,
+        entries: [...state.entries, { message, streaming: false }],
+      };
     }
-    return {
-      ...state,
-      entries: [...state.entries, { message, streaming: false }],
-    };
+    return { ...state, entries };
   }
 
   // assistant -> finalize

@@ -19,12 +19,14 @@
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { MessagesSquare } from "lucide-react";
 import { useApp } from "@/context/AppProvider";
+import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { useSweaveChatRuntime } from "@/lib/chat/useSweaveChatRuntime";
 import { SessionPicker } from "./chat/SessionPicker";
 import { Thread } from "@/components/thread/Thread";
 import { Button } from "@/components/ui/button";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
+import { cn } from "@/utils/cn";
 
 export function ChatPage() {
   const { activeProject, activeSession } = useApp();
@@ -69,10 +71,38 @@ export function ChatPage() {
         <div className="flex items-center gap-2 min-w-0">
           <SessionPicker />
         </div>
+        <WsDot />
       </div>
       <AssistantRuntimeProvider runtime={runtime}>
         <Thread />
       </AssistantRuntimeProvider>
     </div>
+  );
+}
+
+/**
+ * Connection dot for the chat header. Idle turns load history over
+ * REST, but deltas only flow over the socket — a visibly-down socket
+ * explains a turn that looks stuck before its first token.
+ */
+function WsDot() {
+  const { state } = useWS();
+  const open = state === "open";
+  return (
+    <span
+      data-testid="chat-ws-dot"
+      data-ws-state={state}
+      title={open ? "Live updates connected" : `Live updates ${state}`}
+      className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground"
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          open ? "bg-emerald-500" : "bg-amber-500 animate-pulse",
+        )}
+      />
+      {open ? "live" : state}
+    </span>
   );
 }

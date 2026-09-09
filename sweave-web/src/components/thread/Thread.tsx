@@ -33,6 +33,7 @@ import {
   useAuiState,
   useAui,
 } from "@assistant-ui/react";
+import { useEffect, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -46,6 +47,7 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Avatar } from "@/components/assistant-ui/elements/avatar";
 import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
+import { useWS } from "@/context/WSProvider";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
@@ -95,6 +97,7 @@ export function Thread() {
         </div>
 
         <ThreadPrimitive.ViewportFooter className="sticky bottom-0 mt-auto">
+          <TurnStatusBar />
           <ThreadPrimitive.ScrollToBottom asChild>
             <button
               type="button"
@@ -132,6 +135,129 @@ function PendingTurnIndicator() {
       />
       <div className="flex items-center py-2 text-sm">
         <TextShimmer className="text-muted-foreground">Thinking…</TextShimmer>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Turn status bar (waiting-vs-streaming feedback).
+//
+// Sits above the composer while a turn is in flight and always answers
+// three questions: what phase (thinking = no assistant text yet vs
+// streaming = deltas arriving), how long so far (ticking elapsed, the
+// liveness proof when the model warms up), and how much arrived (live
+// char count). The WS connection dot explains a stalled turn when the
+// socket is reconnecting (deltas can't arrive until it reopens).
+// ---------------------------------------------------------------------------
+
+function useTurnElapsed(isRunning: boolean): number {
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) {
+      setStartedAt(null);
+      return;
+    }
+    setStartedAt((prev) => prev ?? Date.now());
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, [isRunning]);
+  if (!isRunning || startedAt === null) return 0;
+  return Math.max(0, Math.floor((now - startedAt) / 1000));
+}
+
+function threadTextOf(message: unknown): string {
+  const content = (message as { content?: unknown } | null)?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(
+        (p): p is { type: string; text?: string } =>
+          !!p && typeof p === "object" && (p as { type?: unknown }).type === "text",
+      )
+      .map((p) => p.text ?? "")
+      .join("");
+  }
+  return "";
+}
+
+function threadCustomOf(message: unknown): SweaveCustom {
+  const metadata = (message as { metadata?: unknown } | null)?.metadata;
+  return (
+    ((metadata as { custom?: SweaveCustom } | undefined)?.custom ?? {}) as SweaveCustom
+  );
+}
+
+function TurnStatusBar() {
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const messages = useAuiState((s) => s.thread.messages);
+  // The dev lab renders Thread without a WSProvider; default to
+  // "open" there (no warning) instead of throwing.
+  let wsState = "open";
+  try {
+    wsState = useWS().state;
+  } catch {
+    wsState = "open";
+  }
+  const elapsed = useTurnElapsed(isRunning);
+  if (!isRunning) return null;
+
+  const last = messages.length ? messages[messages.length - 1] : undefined;
+  const lastStreaming =
+    last !== undefined &&
+    last.role === "assistant" &&
+    (last as { status?: { type?: string } }).status?.type === "running";
+  const chars = lastStreaming ? threadTextOf(last).length : 0;
+  const delegationId = last !== undefined ? threadCustomOf(last).delegationId : null;
+  const wsDown = wsState !== "open";
+
+  return (
+    <div className="px-4 pb-1" data-testid="turn-status-bar">
+      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-lg border border-border bg-card/90 px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+        <span
+          aria-hidden
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            lastStreaming ? "animate-pulse bg-primary" : "animate-pulse bg-amber-500",
+          )}
+        />
+        <span className="font-medium text-foreground">
+          {lastStreaming ? "Streaming" : "Thinking"}
+        </span>
+        {lastStreaming && (
+          <span className="tabular-nums">
+            {chars.toLocaleString()} chars
+          </span>
+        )}
+        <span className="tabular-nums">{elapsed}s</span>
+        {delegationId && (
+          <span
+            className="rounded border border-border bg-muted px-1.5 py-px font-mono text-[10px]"
+            title={`Chat turn delegation ${delegationId}`}
+          >
+            {delegationId.slice(0, 8)}
+          </span>
+        )}
+        <span className="flex-1" />
+        <span
+          title={wsDown ? `Live updates ${wsState} — deltas resume on reconnect` : "Live updates connected"}
+          className={cn(
+            "flex items-center gap-1",
+            wsDown ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground/70",
+          )}
+          data-testid="turn-status-ws"
+          data-ws-state={wsState}
+        >
+          <span
+            aria-hidden
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              wsDown ? "bg-amber-500" : "bg-emerald-500",
+            )}
+          />
+          {wsDown ? "reconnecting" : "live"}
+        </span>
       </div>
     </div>
   );

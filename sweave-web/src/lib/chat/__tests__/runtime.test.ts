@@ -15,6 +15,7 @@ import {
   applySubmit,
   delegationIdOf,
   initialThreadState,
+  mergeHistory,
   projectEntry,
   projectThread,
   stateFromHistory,
@@ -198,5 +199,41 @@ describe("delegationIdOf", () => {
   it("reads metadata.delegation_id when present", () => {
     expect(delegationIdOf(assistantMessage("a1", "x", "chat-42"))).toBe("chat-42");
     expect(delegationIdOf(assistantMessage("a1", "x"))).toBeNull();
+  });
+});
+
+describe("mergeHistory: history reloads keep the in-flight turn", () => {
+  it("preserves the optimistic user + streaming bubble across a refetch", () => {
+    let s = applySubmit(initialThreadState(), "hello");
+    s = applyStatusChanged(s, "chat-abc", "running");
+    s = applyDelta(s, "chat-abc", "partial");
+    // The server has persisted the user message; history carries it.
+    const merged = mergeHistory(s, [userMessage("real-1", "hello")]);
+    // Optimistic copy reconciled against the persisted user...
+    expect(merged.entries.some((e) => e.optimistic)).toBe(false);
+    // ...but the streaming bubble survives and the turn stays live.
+    expect(merged.turn).toBe("running");
+    expect(merged.activeDelegationId).toBe("chat-abc");
+    const bubble = merged.entries.find((e) => e.streaming);
+    expect(bubble?.message.content).toBe("partial");
+  });
+
+  it("drops a streaming bubble whose assistant already persisted", () => {
+    let s = applyDelta(initialThreadState(), "chat-abc", "partial");
+    // Refetch after the turn finalized without us seeing message.added.
+    const merged = mergeHistory(s, [
+      userMessage("u1", "hi"),
+      assistantMessage("a1", "full answer", "chat-abc"),
+    ]);
+    expect(merged.entries.some((e) => e.streaming)).toBe(false);
+    expect(merged.turn).toBe("idle");
+    expect(merged.activeDelegationId).toBeNull();
+  });
+
+  it("resets to idle when nothing is in flight", () => {
+    const s = stateFromHistory([userMessage("u1", "a")]);
+    const merged = mergeHistory(s, [userMessage("u1", "a"), assistantMessage("a1", "b")]);
+    expect(merged.turn).toBe("idle");
+    expect(merged.entries).toHaveLength(2);
   });
 });

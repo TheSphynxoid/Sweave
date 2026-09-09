@@ -91,6 +91,22 @@ describe("AssistantTextPart", () => {
     // react-markdown renders ** as <strong>hello</strong>.
     expect(screen.getByText("hello").tagName).toBe("STRONG");
   });
+
+  it("renders raw text while streaming (bit-by-bit visibility)", () => {
+    // A partial fence must stay visible mid-stream instead of
+    // rendering as an empty/odd Markdown structure.
+    render(
+      <AssistantTextPart
+        type="text"
+        text="```ts\nconst x = 1;\n// still streaming\n"
+        status={{ type: "running" }}
+      />,
+    );
+    const plain = screen.getByTestId("assistant-streaming-plain");
+    expect(plain.textContent).toContain("const x = 1");
+    // No Markdown pass while running (no <pre> wrapper, no copy btn).
+    expect(screen.queryByTestId("markdown-pre")).toBeNull();
+  });
 });
 
 describe("ChatLab (real-Thread visual test)", () => {
@@ -136,5 +152,16 @@ describe("ChatLab (real-Thread visual test)", () => {
     // (disabled-with-tooltip per the 2026-09-07 ruling).
     const stop = screen.getByTestId("chat-composer-stop");
     expect(stop.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("mid-stream: turn status bar names the phase with elapsed + live state", () => {
+    render(<ChatLab />);
+    fireEvent.click(screen.getByTestId("lab-btn-stream"));
+    const bar = screen.getByTestId("turn-status-bar");
+    // Phase label (Thinking before the first token, Streaming after)
+    // plus the ticking elapsed seconds that prove liveness.
+    expect(bar.textContent).toMatch(/Thinking|Streaming/);
+    expect(bar.textContent).toMatch(/\d+s/);
+    expect(screen.getByTestId("turn-status-ws")).toBeTruthy();
   });
 });

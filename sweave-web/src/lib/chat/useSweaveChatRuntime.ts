@@ -16,7 +16,7 @@
  *   4. WS `chat.delta` × N        -> append to the streaming bubble.
  *   5. WS `message.added` (assistant) -> finalize + turn idle.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   useExternalStoreRuntime,
@@ -31,6 +31,7 @@ import {
   applyStatusChanged,
   applySubmit,
   initialThreadState,
+  mergeHistory,
   projectThread,
   stateFromHistory,
   type SweaveThreadState,
@@ -47,6 +48,10 @@ export function extractAppendText(message: AppendMessage): string {
 export function useSweaveChatRuntime(sessionId: string | null) {
   const { subscribe } = useWS();
   const [state, setState] = useState<SweaveThreadState>(initialThreadState);
+  // Which session the local state belongs to. A session switch
+  // replaces (never merges): merging would leak the old session's
+  // in-flight bubble into the new thread.
+  const stateSessionRef = useRef<string | null>(null);
 
   // History load: on session switch, replace the state with the REST
   // history (authoritative).
@@ -58,8 +63,24 @@ export function useSweaveChatRuntime(sessionId: string | null) {
 
   useEffect(() => {
     if (sessionDetail) {
-      setState(stateFromHistory(sessionDetail.messages));
+      // Guard against a stale query for the previous session (key
+      // change refetches async): only fold history that belongs to
+      // the active session, and merge so a mid-turn refetch never
+      // wipes the optimistic/streaming entries.
+      if (sessionDetail.id !== sessionId) return;
+      if (stateSessionRef.current !== sessionId) {
+        stateSessionRef.current = sessionId;
+        setState(stateFromHistory(sessionDetail.messages));
+        return;
+      }
+      const messages = sessionDetail.messages;
+      setState((prev) =>
+        prev.entries.length === 0 && prev.turn === "idle"
+          ? stateFromHistory(messages)
+          : mergeHistory(prev, messages),
+      );
     } else if (sessionId === null) {
+      stateSessionRef.current = null;
       setState(initialThreadState());
     }
   }, [sessionDetail, sessionId]);
@@ -105,8 +126,13 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       if (!sessionId) return;
       const text = extractAppendText(message);
       if (!text.trim()) return;
-      // Optimistic user message, immediately visible.
-      setState((s) => applySubmit(s, text));
+      // Guard against double-submit: only applySubmit if turn is idle.
+      // The UI's isSendDisabled should prevent this, but React state
+      // updates are async so a rapid double-click/keypress can race.
+      setState((s) => {
+        if (s.turn !== "idle") return s;
+        return applySubmit(s, text);
+      });
       // The backend runs the turn; the WS events are authoritative
       // for the thread view (the response's `assistant` is ignored).
       try {

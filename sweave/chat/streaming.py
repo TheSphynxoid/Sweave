@@ -80,11 +80,23 @@ class ChatDeltaCoalescer:
         The producer (the chat loop's on_chunk callback) calls
         this with each text part as it leaves the harness. The
         background flush task drains the buffer and emits.
+
+        When the buffer crosses ``char_threshold`` the flush is
+        scheduled immediately (a task for :meth:`_flush_once`)
+        instead of waiting for the next timer tick -- the "hard
+        cap" that keeps a bursty stream visibly incremental.
         """
         if self._stopped or not text:
             return
         self._buffer.append(text)
         self._buffer_chars += len(text)
+        if self._buffer_chars >= self._char_threshold:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return  # no loop (tests / shutdown); the timer flushes
+            if not self._stopped:
+                loop.create_task(self._flush_once())
 
     async def _flush_loop(self) -> None:
         """Background consumer: flush the buffer on a timer.
