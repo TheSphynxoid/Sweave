@@ -25,7 +25,12 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 - `sweave/runtime/mcp_config.py`: managed top-level `{"external_directory": "allow"}` (`_ensure_top_level_permission`; user-owned blocks never overwritten, warned).
 - Tests: 3 runtime (info_error/incomplete/split-glue) + stall + splitter-contract updates + rotation (3) + permission policy (3) + tracking/reclaim (6) + quiet (3). Gate at write time: 564 pytest (2 pre-existing models-registry env failures), 159 vitest, build green.
 
-**Approval channel (verified in current opencode source; wire shape to pin in step 0):** bus `permission.asked` / `permission.replied` (`{id, sessionID, permission, patterns, tool{messageID, callID}}`); `Permission.list()`; reply `POST /api/session/{sid}/permission/{rid}/reply {reply: once|always|reject, message?}`; legacy v1 `POST /session/:id/permissions/:permissionID`. Caveats found live: pending-list GET returned `{"data":[]}` for a hung turn (v1/v2 store split per upstream #36835, or wrong route); `/event` SSE is live-fire only (no replay — subscribe-then-trigger in the probe).
+**Approval channel (PINNED live 2026-09-10, step-0 probe; see Execution summary 1):**
+- **Listing surface = the `/event` bus ONLY.** Bridge event `permission.asked` (subscribe BEFORE the turn — live-fire only, no replay): `{"id": "per_…", "sessionID": "ses_…", "permission": "external_directory", "patterns": ["C:\\Windows\\*"], "metadata": {"command": "…", "directories": ["…"], "patterns": ["…"]}, "always": ["C:\\Windows\\*"]}`. NONE of the pending-list GET routes (`/session/{sid}/permissions`, `…/permission`, `/api/*`, `/api/permission`) exist in 1.18.29 serve — they all return the SPA HTML catch-all (200 HTML!). The 2026-09-10 `{"data":[]}` report matches; the bus is the only surface.
+- **Reply**: `POST /session/{sid}/permissions/{rid}` body `{"response": "reject"}` / `{"response": "once"}` / (`"always"`) → 200 body `true`. Confirmations arrive on the bus as `permission.replied` `{sessionID, requestID, reply}`. (Key is `response`, NOT `reply`; other key → 400 `Missing key at ["response"]`.)
+- **Resume-after-once works**: tool executes; terminal content lands as a **NEW assistant message** (pre-pause assistant message completes with EMPTY text at the pause; post-resume message carries the content, completed-ts set) — session goes `session.idle` on the bus. The ORIGINAL `POST /session/{id}/message` stream does not re-deliver the terminal frame: ended-stream + `session.idle` on the bus is the completion signal to handle in step 2 (fetch `GET /session/{sid}/message` for the final text — route exists, returns the full message list with parts).
+- **Reject shape**: turn aborts; the assistant message persists with completed-ts and empty text (no loud tool error in the message list); `session.idle` on the bus. Treat reject as a failed turn.
+- Probe script committed: `scripts/m1_12_permission_wire_probe.py` (retrying scene loop — models are not tool-compliant every turn; defaults to a live provider model via `/config/providers`, overridable `M1_12_PROBE_MODEL`).
 
 ## Goal state
 
@@ -61,7 +66,7 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 
 ## Risks
 
-- **v1/v2 permission store split** (upstream #36835): pending created under one system may be invisible/unanswerable from the other. Mitigate in step 0: probe BOTH shapes; implement against whichever fires in serve mode; keep the other as fallback.
+- ~~**v1/v2 permission store split**~~ RESOLVED by step 0: the bus is the sole listing surface and the reply route fires in serve mode (see pinned shapes). No v1 fallback needed. Remaining: unknown routes return SPA HTML (must distinguish "route exists" from "200 HTML" wherever Sweave GETs opencode).
 - **Reply doesn't resume the hung tool** (serve bug class #36804: session stuck "busy" forever): mitigate with the existing stall-rotation (fresh session) as fallback — a replied-but-stuck turn still fails loud, never silent.
 - **Approval fatigue**: every unlisted outside path now interrupts. Mitigate: `always` persists patterns; roots list grows from the questions asked (log them; consider a "bless this root" shortcut as follow-up, not this slice).
 - **`always` persistence scope**: opencode stores approved patterns per project — a careless `always` widens silently. Mitigate: card labels `always` with its pattern list; audit event records the granted patterns.
