@@ -1,0 +1,31 @@
+{
+  "mcp": {
+    "sweave": {
+      "type": "local",
+      "command": [
+        "C:\\Python314\\python.exe",
+        "-m",
+        "sweave.mcp"
+      ],
+      "environment": {
+        "SWEAVE_MCP_TOKEN": "{env:SWEAVE_MCP_TOKEN}"
+      },
+      "enabled": true,
+      "timeout": 30000,
+      "permission": {
+        "task": "deny",
+        "bash": {
+          "*": [
+            "git commit*",
+            "git merge*",
+            "git push*",
+            "gh pr merge*",
+            "git rebase*",
+            "git reset --hard*"
+          ]
+        }
+      },
+      "_sweave_managed": true
+    }
+  }
+}
