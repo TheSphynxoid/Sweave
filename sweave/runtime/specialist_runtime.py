@@ -377,6 +377,25 @@ class SpecialistRuntime:
                 session_id_setter=session_id_setter,
             )
 
+            # M1.12 amendment 1: register (session → serve, worktree,
+            # delegation) with the in-band permission bridge so the
+            # hijack endpoint can resolve the serving serve + owning
+            # chat delegation when opencode raises a permission ask.
+            try:
+                from sweave.runtime import permission_bridge
+
+                permission_bridge.register_session(
+                    str(getattr(process, "_session_id", "") or ""),
+                    runner.base_url,
+                    worktree_path,
+                    delegation.delegation_id,
+                )
+            except Exception as reg_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: bridge session registration "
+                    "failed: %s", reg_err,
+                )
+
             # Per-delegation body: structured ModelRef when known.
             model_body = self._model_body(model_ref or specialist.model_ref)
 

@@ -188,6 +188,15 @@ class ServeRunner:
             return
         # Ensure worktree exists
         self.worktree_path.mkdir(parents=True, exist_ok=True)
+        # M1.12 amendment 1: inject the in-band permission bridge
+        # plugin via a sweave-owned OPENCODE_CONFIG_DIR (the plugin
+        # is visible ONLY to serves we spawn; standalone opencode in
+        # the project dir never loads it). Copies are idempotent.
+        import os as _os
+
+        from sweave.runtime.permission_bridge import ensure_permission_bridge
+
+        spawn_env = {**_os.environ, **ensure_permission_bridge()}
         cmd = [self._resolve_command(), "serve", *self.serve_args]
         self.log_path = Path(tempfile.gettempdir()) / (
             f"sweave-m1-3-{self.specialist_name}-{uuid.uuid4().hex[:8]}.log"
@@ -197,6 +206,7 @@ class ServeRunner:
             self.process = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(self.worktree_path),
+                env=spawn_env,
                 stdout=log_file,
                 stderr=asyncio.subprocess.STDOUT,
                 creationflags=creationflags_no_window(),

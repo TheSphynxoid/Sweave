@@ -11,6 +11,12 @@ Endpoints:
 * ``GET /api/mcp/specialists`` -- list resolved specialists (name +
   one-line description). The MCP ``list_specialists`` tool calls this.
 
+* ``POST /api/permission/hijack`` -- M1.12 amendment 1: the
+  sweave-permission plugin (inside the opencode serve) ferries
+  ``permission.asked`` here; scope-checked (auto-allow) or turned
+  into a blocking human question; the pinned reply is POSTed back
+  to the serve by sweave.
+
 The ``defer`` MCP tool calls the existing ``POST /api/v2/tasks``
 endpoint (no MCP-specific URL); the DelegationManager (M1.6 step 2)
 runs inside that handler. We don't shadow v2 here.
@@ -21,7 +27,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -94,3 +100,47 @@ def _resolver(state: AppState):  # type: ignore[no-untyped-def]
     if state.specialist_resolver is None:
         raise HTTPException(503, "specialist resolver not initialised")
     return state.specialist_resolver
+
+
+# ---------------------------------------------------------------------------
+# M1.12 amendment 1 (2026-09-10): in-band permission bridge
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/permission/hijack")
+async def permission_hijack(
+    payload: dict[str, Any] = Body(default={}),
+    state: AppState = Depends(get_state),
+    _token: None = Depends(_check_mcp_token),
+) -> dict[str, Any]:
+    """Resolve one opencode ``permission.asked`` (in-band bridge).
+
+    Called by the sweave-permission plugin ferrying the ask from the
+    serve process. The decision happens here and the pinned reply
+    (``POST {serve}/session/{sid}/permissions/{rid}``) is POSTed by
+    sweave before this returns:
+
+    * in scope (project dir / worktrees / ``~/.sweave`` / declared
+      roots) → auto-allow ``once``;
+    * out of scope → blocking human escalation (kind=permission,
+      no timeout, M1.11 ruling) → answer POSTed as
+      ``once``/``always``/``reject``.
+
+    Never raises for payload problems: the plugin is fire-and-forget
+    and unresolvable asks must fail LOUD on the sweave side (logged),
+    not 500 the plugin silently.
+    """
+    from sweave.projects import project_manager
+    from sweave.runtime.permission_bridge import resolve_hijack_request
+
+    if state.escalation_store is None:
+        return {"status": "error", "reason": "escalation store not wired"}
+    try:
+        return await resolve_hijack_request(
+            payload if isinstance(payload, dict) else {},
+            escalation_store=state.escalation_store,
+            project_manager=project_manager,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("permission_hijack: resolution failed: %s", e)
+        return {"status": "error", "reason": str(e)}
