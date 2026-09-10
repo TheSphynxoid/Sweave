@@ -129,14 +129,108 @@ describe("TurnDelegations", () => {
   it("expand reveals the output summary; failures show the error", async () => {
     listMock.mockResolvedValue([
       child({ delegation_id: "d-ok", status: "done", output: "All 12 tests pass." }),
-      child({ delegation_id: "d-bad", status: "failed", error: "turn_timeout_exceeded_900s" }),
     ]);
     renderTurn("chat-abc");
     const cards = await screen.findAllByTestId("turn-delegation-card");
     fireEvent.click(cards[0].querySelector("button")!);
     expect(screen.getByText("All 12 tests pass.")).toBeTruthy();
-    fireEvent.click(cards[1].querySelector("button")!);
-    expect(screen.getByText("turn_timeout_exceeded_900s")).toBeTruthy();
+  });
+
+  it("a non-timeout failure keeps the red failed treatment", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-broken",
+        status: "failed",
+        error: "harness exited code 1",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+    const pill = screen.getByTestId("status-pill-failed");
+    expect(pill.textContent).toBe("Failed");
+    expect(pill.className).toContain("rose");
+    expect(screen.getByText("harness exited code 1")).toBeTruthy();
+    expect(screen.queryByTestId("turn-delegation-timeout")).toBeNull();
+  });
+
+  it("a timed-out child renders the calm amber taxonomy, not the red failure", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-slow",
+        status: "failed",
+        error: "turn_timeout_exceeded_900s",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    const pill = screen.getByTestId("status-pill-timed-out");
+    expect(pill.textContent).toBe("⏱ Timed out (after 15 min)");
+    expect(pill.className).toContain("amber");
+    fireEvent.click(card.querySelector("button")!);
+    expect(screen.getByTestId("turn-delegation-timeout").textContent).toContain(
+      "ran out of its turn budget",
+    );
+    // "State at timeout": nothing persisted → say so explicitly.
+    expect(screen.getByText("No output was persisted before the timeout.")).toBeTruthy();
+    // The raw sentinel stays as an audit line.
+    expect(screen.getByTestId("turn-delegation-timeout-raw").textContent).toBe(
+      "turn_timeout_exceeded_900s",
+    );
+    expect(screen.queryByTestId("status-pill-failed")).toBeNull();
+  });
+
+  it("a timed-out child with partial output shows it as its state at timeout", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-slow2",
+        status: "failed",
+        error: "turn_timeout_exceeded_900s",
+        output: "Wrote orders.py and 3 of 5 tests before the cut.",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+    expect(screen.getByTestId("turn-delegation-timeout")).toBeTruthy();
+    expect(
+      screen.getByText("Wrote orders.py and 3 of 5 tests before the cut."),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText("No output was persisted before the timeout."),
+    ).toBeNull();
+  });
+
+  it("a completed card shows its elapsed runtime when timestamps exist", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-done",
+        status: "done",
+        output: "Shipped.",
+        started_at: "2026-09-09T10:00:00",
+        completed_at: "2026-09-09T10:07:30",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+    expect(screen.getByTestId("status-runtime").textContent).toBe("7 min");
+    expect(screen.getByTestId("turn-delegation-runtime").textContent).toContain("Ran for 7 min");
+  });
+
+  it("a completed card without timestamps shows no runtime", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-done2",
+        status: "done",
+        output: "Shipped.",
+        started_at: null,
+        completed_at: "2026-09-09T10:07:30",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    await screen.findByTestId("turn-delegation-card");
+    expect(screen.queryByTestId("status-runtime")).toBeNull();
   });
 
   it("flags cards needing input and opens the shared detail modal", async () => {

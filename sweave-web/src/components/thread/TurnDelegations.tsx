@@ -26,26 +26,9 @@ import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
 import { DetailView } from "@/pages/children/DetailView";
-import { cn } from "@/utils/cn";
-import type { Delegation, DelegationStatus } from "@/types";
-
-// Status pill twins LiveTree's STATUS_CLASS/STATUS_LABEL
-// (`pages/children/LiveTree.tsx` is canonical; keep in sync).
-const STATUS_CLASS: Record<DelegationStatus, string> = {
-  queued: "bg-muted text-muted-foreground",
-  running: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  review: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
-  done: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  failed: "bg-rose-500/15 text-rose-700 dark:text-rose-300",
-};
-
-const STATUS_LABEL: Record<DelegationStatus, string> = {
-  queued: "Queued",
-  running: "Running",
-  review: "Review",
-  done: "Done",
-  failed: "Failed",
-};
+import { StatusPill } from "@/components/delegation/StatusPill";
+import { isTimeoutDelegation, parseTurnTimeout, formatRuntime } from "@/lib/delegation/taxonomy";
+import type { Delegation } from "@/types";
 
 const TASK_SNIPPET_CHARS = 140;
 const OUTPUT_SNIPPET_CHARS = 600;
@@ -116,7 +99,12 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
     <div className="mt-2 space-y-1.5" data-testid="turn-delegations">
       {ordered.map((child) => {
         const expanded = expandedId === child.delegation_id;
-        const summary = child.status === "failed" ? child.error || "" : child.output || "";
+        const timedOut = isTimeoutDelegation(child);
+        const summary = child.status === "failed" && !timedOut ? child.error || "" : child.output || "";
+        const runtime =
+          child.status === "done"
+            ? formatRuntime(child.started_at, child.completed_at)
+            : null;
         return (
           <div
             key={child.delegation_id}
@@ -136,15 +124,12 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                 <ChevronRight size={13} className="shrink-0 text-muted-foreground" />
               )}
               <span className="font-medium text-foreground">{child.agent}</span>
-              <span
-                data-testid={`status-pill-${child.status}`}
-                className={cn(
-                  "rounded px-1.5 py-px text-[10px] font-medium",
-                  STATUS_CLASS[child.status],
-                )}
-              >
-                {STATUS_LABEL[child.status]}
-              </span>
+              <StatusPill
+                status={child.status}
+                error={child.error}
+                startedAt={child.started_at}
+                completedAt={child.completed_at}
+              />
               {child.needs_attention && (
                 <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
                   • needs input
@@ -159,13 +144,33 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                 {child.needs_attention && (
                   <ChildEscalationPreview delegationId={child.delegation_id} />
                 )}
-                {summary ? (
+                {timedOut && (
+                  <TimeoutNotice
+                    error={child.error}
+                    hasOutput={!!child.output.trim()}
+                  />
+                )}
+                {timedOut ? (
+                  child.output.trim() ? (
+                    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+                      {truncate(child.output, OUTPUT_SNIPPET_CHARS)}
+                    </p>
+                  ) : null
+                ) : summary ? (
                   <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
                     {truncate(summary, OUTPUT_SNIPPET_CHARS)}
                   </p>
                 ) : (
                   <p className="text-xs italic text-muted-foreground/70">
                     No output yet — the specialist is still working.
+                  </p>
+                )}
+                {runtime && (
+                  <p
+                    data-testid="turn-delegation-runtime"
+                    className="text-[10px] text-muted-foreground"
+                  >
+                    Ran for {runtime}.
                   </p>
                 )}
                 <button
@@ -186,8 +191,43 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
   );
 }
 
-/** Escalation preview inside an expanded child card (M1.11 audit). */
-function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
+/**
+ * Explanatory banner for a timed-out child card. Per the timeout
+ * ruling: calm amber copy, never the red-failure treatment. Shows
+ * the parsed budget and the "state at timeout" hint (partial output
+ * present / none persisted). The raw sentinel stays as a mono
+ * audit line.
+ */
+function TimeoutNotice({ error, hasOutput }: { error: string | null; hasOutput: boolean }) {
+  const timeout = parseTurnTimeout(error);
+  return (
+    <div
+      data-testid="turn-delegation-timeout"
+      className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+    >
+      <p>
+        The specialist ran out of its turn budget
+        {timeout?.seconds ? ` (${Math.round(timeout.seconds / 60)} min limit)` : ""}; partial
+        output may still be present.
+      </p>
+      {!hasOutput && (
+        <p className="text-[11px] text-amber-700/80 dark:text-amber-300/80">
+          No output was persisted before the timeout.
+        </p>
+      )}
+      {error && (
+        <code
+          data-testid="turn-delegation-timeout-raw"
+          className="mt-1 block font-mono text-[10px] text-muted-foreground"
+        >
+          {error}
+        </code>
+      )}
+    </div>
+  );
+}
+
+/** Escalation preview inside an expanded child card (M1.11 audit). */function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
   const [text, setText] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
