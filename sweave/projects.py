@@ -276,6 +276,15 @@ class Project:
     # ``worktree_base`` to a temp dir.
     worktree_base: str | None = None
 
+    # M1.12: user-declared permission roots (ruling 2026-09-10:
+    # human-declared only -- specialists never nominate). Outside-cwd
+    # paths under these roots resolve to "allow" in the rendered
+    # opencode permission block (in addition to the built-in roots:
+    # cwd subfolders, the project's worktrees, and ~/.sweave). Paths
+    # NOT under any root (and not the cwd) ask the human via the
+    # M1.12 blocking-question flow, never a silent allow.
+    permission_roots: list[str] = field(default_factory=list)
+
     def __post_init__(self):
         if not self.memory_bank:
             self.memory_bank = f"project-{self.name}"
@@ -293,6 +302,7 @@ class Project:
             "routing_rules": self.routing_rules,
             "agents": self.agents,
             "worktree_base": self.worktree_base,
+            "permission_roots": self.permission_roots,
         }
 
     @classmethod
@@ -311,6 +321,10 @@ class Project:
             # M1.9 step 2: legacy project files (pre-M1.9) have no
             # ``worktree_base`` field -- the global default wins.
             worktree_base=data.get("worktree_base"),
+            # M1.12: legacy project files (pre-M1.12) have no
+            # ``permission_roots`` -- the empty list is the legacy
+            # behaviour (default roots only).
+            permission_roots=list(data.get("permission_roots", [])),
         )
         return project
 

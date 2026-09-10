@@ -16,6 +16,15 @@ enforced by opencode itself -- specialists cannot see the sweave
 MCP tools even though the serve discovers the shared ``mcp.sweave``
 block via upward config resolution.
 
+A third managed piece is the top-level ``permission`` policy
+(``_ensure_top_level_permission``): in headless ``serve`` mode any
+check resolving to ``"ask"`` hangs forever, and
+``external_directory`` (outside-cwd access) defaults to ``ask`` --
+the orchestrator legitimately reads ``~/.sweave/*``, so it is set
+to ``"allow"``. This is deliberately NOT a blanket allow: danger
+gates stay in the per-agent profiles
+(``runtime/agent_permission.py``).
+
 This module writes that file **idempotently** with a versioned
 marker, so re-activation is a no-op and a user-edited config isn't
 clobbered on every activate. The marker is the key
@@ -119,6 +128,154 @@ def _sweave_package_root() -> Path:
 ORCHESTRATOR_AGENT_NAME = "sweave-orchestrator"
 SPECIALIST_AGENT_NAME = "sweave-specialist"
 
+# Headless hang classes closed at the top level (2026-09-10
+# stream-probe incident). In ``opencode serve`` there is no UI to
+# answer an approval prompt, so ANY permission check resolving to
+# ``"ask"`` waits forever: the tool sits at ``status=running``,
+# the session freezes, and nothing -- no part, no error -- ever
+# surfaces (two consecutive 5-minute ReadTimeouts on trivial
+# outside-cwd reads proved it).
+#
+# ``external_directory`` (fires when a path resolves outside the
+# session cwd) defaults to ``ask`` and is the one that bit us: the
+# orchestrator legitimately reads ``~/.sweave/*`` (global agents,
+# traces), so it must resolve deterministically.
+#
+# M1.12 (user rulings 2026-09-10):
+# * The blanket ``"allow"`` was a TRANSITION (ruling 3: it stays
+#   until the ask-handling flow works, then flips). The flip lives
+#   in ``EXTERNAL_DIRECTORY_CATCH_ALL`` -- one constant, step 4
+#   changes it to ``"ask"`` and Sweave's permission-question flow
+#   becomes the ask UI.
+# * Scoped render (:func:`render_external_directory`): the catch-all
+#   FIRST, then the specifics (opencode pattern matching is
+#   last-match-wins), then the built-in + user-declared roots as
+#   ``allow``.
+# * The danger gates stay in the per-agent ``bash``/``task``/
+#   ``question`` profiles in ``runtime/agent_permission.py``.
+# Deliberately NOT a blanket ``"*": "allow"``: every other class
+# keeps its default until one proves it hangs headless (then it
+# gets its own entry + comment, never a wildcard).
+EXTERNAL_DIRECTORY_CATCH_ALL = "allow"
+
+_BUILTIN_ROOT_MARKER = "~/.sweave"
+
+
+def _root_globs(project_dir: Path, permission_roots: Any) -> list[Path]:
+    """Expand the scoped-root list (built-ins + user-declared).
+
+    Built-ins (ruling 2): the project's worktree base (``.
+    worktrees/**`` under the project dir -- covers specialist
+    worktrees too) and the global ``~/.sweave`` (required ruling:
+    the hung reads were global ``agents.yaml``). User roots
+    (human-declared only) expand ``~`` and empty entries are
+    dropped with a warning; duplicates collapse.
+    """
+    roots: list[Path] = []
+    roots.append(Path(os.path.expanduser(_BUILTIN_ROOT_MARKER)))
+    roots.append(Path(project_dir) / ".worktrees")
+    seen: set[str] = set()
+    if isinstance(permission_roots, (list, tuple)):
+        for raw in permission_roots:
+            text = str(raw).strip()
+            if not text:
+                continue
+            expanded = Path(os.path.expanduser(text))
+            try:
+                resolved = expanded.resolve()
+            except OSError:
+                resolved = expanded
+            key = str(resolved).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(resolved)
+    return roots
+
+
+def render_external_directory(
+    project_dir: Path,
+    permission_roots: Any = None,
+) -> dict[str, Any]:
+    """Render the scoped ``external_directory`` permission map.
+
+    Opencode pattern matching is last-match-wins (upstream docs),
+    so the catch-all is FIRST and specifics AFTER it. ``cwd``
+    subfolders are implicitly allowed by opencode itself (the check
+    only fires outside the session cwd) -- every value here is
+    about the outside-cwd space.
+    """
+    pattern_map: dict[str, Any] = {"*": EXTERNAL_DIRECTORY_CATCH_ALL}
+    for root in _root_globs(project_dir, permission_roots):
+        glob = str(root).replace("\\", "/") + "/**"
+        pattern_map[glob] = "allow"
+    return pattern_map
+
+
+def _ensure_top_level_permission(
+    existing: dict[str, Any],
+    project_dir: Path,
+    permission_roots: Any = None,
+) -> bool:
+    """Merge the managed top-level ``permission`` policy.
+
+    Returns True iff the caller should persist (we changed
+    something). Ownership rules mirror the agent map: absent ->
+    write managed block; present-with-marker -> refresh our keys,
+    preserve user keys; present-without-marker (fully user-owned)
+    -> leave alone + warn (an ``ask`` default in there will hang
+    the headless serve; that warning is the most we can do without
+    overwriting someone's security config).
+    """
+    current = existing.get("permission", None)
+    if current is None:
+        existing["permission"] = {
+            **_sweave_managed_permission(project_dir, permission_roots),
+            _MANAGED_KEY: _MANAGED_VALUE,
+        }
+        return True
+    if not isinstance(current, dict):
+        logger.warning(
+            "ensure_mcp_config: top-level 'permission' has an unexpected "
+            "shape (%s); leaving it alone (an 'ask' default will hang "
+            "headless serves)",
+            type(current).__name__,
+        )
+        return False
+    if not current.get(_MANAGED_KEY):
+        if "external_directory" not in current:
+            logger.warning(
+                "ensure_mcp_config: user-owned top-level 'permission' has no "
+                "'external_directory' entry: the opencode default ('ask') "
+                "hangs headless serves forever on outside-cwd access. "
+                "Consider setting it explicitly."
+            )
+        return False
+    changed = any(
+        current.get(key) != value
+        for key, value in _sweave_managed_permission(
+            project_dir, permission_roots
+        ).items()
+    )
+    if changed:
+        for key, value in _sweave_managed_permission(
+            project_dir, permission_roots
+        ).items():
+            current[key] = value
+    return changed
+
+
+def _sweave_managed_permission(
+    project_dir: Path,
+    permission_roots: Any = None,
+) -> dict[str, Any]:
+    """The managed top-level ``permission`` block (minus marker)."""
+    return {
+        "external_directory": render_external_directory(
+            project_dir, permission_roots
+        ),
+    }
+
 # Generic specialist charter. Per-specialist flavor (backend /
 # frontend / reviewer / custom role prompts) is still delivered as
 # the session's one-off system message; this charter is the
@@ -199,6 +356,7 @@ def ensure_mcp_config(
     *,
     token_env_var: str = "SWEAVE_MCP_TOKEN",
     dry_run: bool | None = None,
+    permission_roots: Any = None,
 ) -> dict[str, Any]:
     """Idempotently write the per-project ``opencode.json`` with the
     sweave MCP server block. Returns the final merged config so the
@@ -214,6 +372,10 @@ def ensure_mcp_config(
     * ``dry_run`` -- if True, do not write; return the would-be
       config. If None, reads the ``M1.6_DISABLE_MCP_PLUMBING`` env
       var (the test/CI kill switch).
+    * ``permission_roots`` -- M1.12: user-declared outside-cwd
+      roots (human-declared only, ruling 2026-09-10). Fed into the
+      scoped ``external_directory`` render; ``None`` = built-in
+      roots only (cwd subfolders + worktrees + ``~/.sweave``).
 
     The function is **idempotent**: re-calling it with the same
     inputs produces the same file content. A user-edited config
@@ -246,6 +408,12 @@ def ensure_mcp_config(
             env_token_var=token_env_var,
         )
         existing["mcp"] = mcp_block
+        # Headless permission policy (never unhandled-ask): merged
+        # with the same ownership rules as the agent map (user-owned
+        # blocks are never overwritten; see
+        # _ensure_top_level_permission). The M1.12 scoped render
+        # needs the project dir for the worktree-root glob.
+        _ensure_top_level_permission(existing, project_dir, permission_roots)
         # Managed opencode-native agents (same marker convention per
         # agent name: present-without-marker = user-owned, left
         # alone; otherwise refreshed from the YAML specs so prompt

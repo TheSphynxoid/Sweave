@@ -25,6 +25,7 @@ from sweave.api.projects import (
     list_sessions,
     set_active_project,
     set_active_session,
+    update_permission_roots,
 )
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -65,6 +66,9 @@ class ProjectCreateRequest(BaseModel):
     # global config (set on the project record by the ProjectManager
     # when ``worktree_base`` is omitted; legacy behaviour preserved).
     worktree_base: Optional[str] = None
+    # M1.12: user-declared permission roots (human-declared only,
+    # ruling 2026-09-10). Omitted = empty (default roots only).
+    permission_roots: Optional[list[str]] = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -83,14 +87,15 @@ async def api_create_project(
     state: AppState = Depends(get_state),
 ):
     try:
-        project = await create_project(
-            ProjectCreate(
-                name=request.name,
-                path=request.path,
-                description=request.description,
-                worktree_base=request.worktree_base,
+            project = await create_project(
+                ProjectCreate(
+                    name=request.name,
+                    path=request.path,
+                    description=request.description,
+                    worktree_base=request.worktree_base,
+                    permission_roots=request.permission_roots,
+                )
             )
-        )
     except Exception as e:
         raise HTTPException(400, str(e))
     # R4.1: notify subscribers (the foundation nav refetches
@@ -128,6 +133,29 @@ async def api_set_active_project(name: str):
         return await set_active_project(name)
     except ValueError as e:
         raise HTTPException(404, str(e))
+
+
+class PermissionRootsRequest(BaseModel):
+    roots: list[str]
+
+
+@router.put("/api/projects/{name}/permission_roots")
+async def api_update_permission_roots(
+    name: str,
+    request: PermissionRootsRequest,
+    state: AppState = Depends(get_state),
+):
+    """Replace the project's user-declared permission roots (M1.12).
+    Human-declared only (ruling 2026-09-10); specialists never
+    nominate roots."""
+    try:
+        result = await update_permission_roots(name, request.roots)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    await state.publish(
+        "project.updated", {"name": name}
+    )
+    return result
 
 
 @router.delete("/api/projects/{name}")

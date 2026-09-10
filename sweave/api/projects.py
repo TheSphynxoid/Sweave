@@ -16,6 +16,8 @@ class ProjectCreate:
     description: str = ""
     # M1.9 step 2: per-project worktree_base override.
     worktree_base: str | None = None
+    # M1.12: user-declared permission roots (human-declared only).
+    permission_roots: list[str] | None = None
 
 
 @dataclass
@@ -53,6 +55,11 @@ async def create_project(request: ProjectCreate) -> dict:
         # defaults); ``None`` is the legacy behaviour.
         if request.worktree_base:
             project.worktree_base = request.worktree_base
+            project_manager.save_project(project)
+        # M1.12: user-declared permission roots (default None keeps
+        # the legacy empty-list behaviour).
+        if request.permission_roots:
+            project.permission_roots = list(request.permission_roots)
             project_manager.save_project(project)
         return project.to_dict()
     except ValueError as e:
@@ -110,7 +117,13 @@ async def set_active_project(name: str) -> dict:
 
         project = project_manager.get_project(name)
         if project is not None:
-            ensure_mcp_config(Path(project.path))
+            # M1.12: the project's user-declared permission roots
+            # feed the scoped ``external_directory`` render (plus the
+            # built-in roots: cwd subfolders, worktrees, ~/.sweave).
+            ensure_mcp_config(
+                Path(project.path),
+                permission_roots=list(project.permission_roots),
+            )
     except Exception:  # noqa: BLE001
         # Don't fail the activation on plumbing errors; the project
         # is still active and the orchestrator can still run (just
@@ -124,6 +137,33 @@ async def delete_project(name: str) -> dict:
     """Delete a project."""
     project_manager.delete_project(name)
     return {"success": True}
+
+
+async def update_permission_roots(name: str, roots: list[str]) -> dict:
+    """Replace the project's user-declared permission roots (M1.12).
+
+    Ruling 2026-09-10: human-declared only. After persisting, the
+    per-project opencode.json is re-rendered (best-effort) so the
+    next serve boot / activation sees the new scoped roots; already
+    running serves pick the change up on their next restart.
+    """
+    project = project_manager.get_project(name)
+    if project is None:
+        raise ValueError(f"Project '{name}' not found")
+    project.permission_roots = [str(r) for r in roots]
+    project_manager.save_project(project)
+    try:
+        from pathlib import Path
+
+        from sweave.runtime.mcp_config import ensure_mcp_config
+
+        ensure_mcp_config(
+            Path(project.path),
+            permission_roots=list(project.permission_roots),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return {"success": True, "permission_roots": project.permission_roots}
 
 
 async def create_session(request: SessionCreate) -> dict:

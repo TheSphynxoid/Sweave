@@ -71,14 +71,22 @@ def test_agent_permissions_split_mcp_and_git():
     agents = _sweave_agent_map()
     orch = agents["sweave-orchestrator"]
     spec = agents["sweave-specialist"]
-    # Orchestrator: no sweave_* deny (it owns the MCP tools), git
-    # mutation denied.
+    # Orchestrator: owns the MCP tools (no sweave denies), git
+    # mutation denied, native question denied (M1.11 Sweave Q&A).
     assert orch["permission"].get("task") == "deny"
+    assert orch["permission"].get("question") == "deny"
     assert "sweave_*" not in orch["permission"]
     assert orch["permission"]["bash"].get("git commit*") == "deny"
-    # Specialist: sweave MCP tools denied, git left allowed.
+    # Specialist: orchestration tools denied explicitly (escalate
+    # allowed by omission), git left allowed, native question
+    # denied (M1.11).
     assert spec["permission"].get("task") == "deny"
-    assert spec["permission"].get("sweave_*") == "deny"
+    assert spec["permission"].get("question") == "deny"
+    assert spec["permission"].get("sweave_defer") == "deny"
+    assert spec["permission"].get("sweave_list_specialists") == "deny"
+    assert spec["permission"].get("sweave_ask_human") == "deny"
+    assert "sweave_escalate" not in spec["permission"]
+    assert "sweave_*" not in spec["permission"]
     assert not any("git commit" in pat for pat in (spec["permission"].get("bash") or {}))
 
 
@@ -168,7 +176,7 @@ async def test_run_pins_agent_per_role(tmp_path: Path):
 
     seen: dict[str, Any] = {}
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body, trace, on_chunk=None, on_reasoning=None):
         seen.update(dict(body))
         return "ok"
 
@@ -238,3 +246,60 @@ async def test_system_send_skipped_for_orchestrator_only(tmp_path: Path):
         assert system_sends == ["SEED PROMPT"]
     finally:
         rt_mod.OpenCodeProcess.send = orig_fn  # type: ignore[assignment]
+
+def test_ensure_mcp_config_writes_managed_permission_policy(tmp_path: Path):
+    """The rendered opencode.json closes the headless hang class:
+    top-level external_directory resolves deterministically (M1.12
+    scoped render: catch-all first + built-in roots allow; catch-all
+    stays 'allow' during the transition until ask-handling works),
+    with the managed marker."""
+    import json
+    from sweave.runtime.mcp_config import ensure_mcp_config
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    config = ensure_mcp_config(project_dir)
+    on_disk = json.loads((project_dir / "opencode.json").read_text(encoding="utf-8"))
+    ed = on_disk["permission"]["external_directory"]
+    assert ed["*"] == "allow"
+    keys = list(ed.keys())
+    assert keys[0] == "*"
+    assert any(str(k).endswith("/.sweave/**") and ed[k] == "allow" for k in keys)
+    assert f"{(project_dir / '.worktrees').as_posix()}/**" in ed
+    assert on_disk["permission"]["_sweave_managed"] is True
+    assert config["permission"]["external_directory"]["*"] == "allow"
+
+
+def test_ensure_mcp_config_preserves_user_permission_block(tmp_path: Path):
+    """A user-owned top-level permission block is never overwritten --
+    at most a warning is logged (ownership beats hang-prevention)."""
+    import json
+    from sweave.runtime.mcp_config import ensure_mcp_config
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "opencode.json").write_text(
+        json.dumps({"permission": {"bash": "deny"}}), encoding="utf-8"
+    )
+    config = ensure_mcp_config(project_dir)
+    on_disk = json.loads((project_dir / "opencode.json").read_text(encoding="utf-8"))
+    assert on_disk["permission"] == {"bash": "deny"}
+    assert config["permission"] == {"bash": "deny"}
+
+
+def test_ensure_mcp_config_refreshes_managed_permission_keys(tmp_path: Path):
+    """Managed block: our keys refresh, user keys survive."""
+    import json
+    from sweave.runtime.mcp_config import ensure_mcp_config
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "opencode.json").write_text(
+        json.dumps({"permission": {"_sweave_managed": True, "bash": "deny"}}),
+        encoding="utf-8",
+    )
+    ensure_mcp_config(project_dir)
+    on_disk = json.loads((project_dir / "opencode.json").read_text(encoding="utf-8"))
+    ed = on_disk["permission"]["external_directory"]
+    assert isinstance(ed, dict) and ed["*"] == "allow"
+    assert on_disk["permission"]["bash"] == "deny"
