@@ -90,3 +90,25 @@ Status: **done** (2026-09-10). Live gate green (3 scenes, `opencode-go/glm-5.3-f
 6. **Step 4** — flip catch-all → ask; matcher semantics corrected from the binary (`findLast` last-match-wins confirmed; platform-separator + `dir/*` + `dir/**` root rules); live gate `scripts/m1_12_live_gate.py` GREEN with `opencode-go/glm-5.3-flash` (scene A: silent scoped-root pass; B: once → real content; C: reject → loud, tool bash error). Trailing suite: 579 pytest (+2 pre-existing env), 161 vitest, build green. Committed `6d9e8c2` + close-out.
 7. **Explicit non-goals kept**: no MCP read_external tool; doom_loop/other ask-defaults untouched; no sqlite scraping; no auto-answer (always only from explicit user choice, patterns persisted opencode-side and shown on the card).
 
+## Amendment 1 (user-locked 2026-09-10): in-band permission bridge via opencode plugin
+
+**Incident that forced the amendment.** Session `Sweave-20260910-071906-787887` (dogfood, 07:24 local): two consecutive chat turns died with `[chat error: orchestrator turn exceeded 900s timeout]`. The orchestrator, investigating the global-config-pollution question, touched `C:\Users\user\.config\opencode\*` → `external_directory` → `ask` → `permission.asked` (ids `per_089fe28a2001JFuGT8UYG6mLM5` at 07:25:30 and `per_08a0e10ea0015G5M7tz3jo9jUy` at 07:42:52, opencode.log UTC+1). The designed step-2/step-3 recovery (300s stall watchdog → `_resolve_pending_permission` → blocking human question) **never fired**: no `stalled` trace event, no escalation record (`GET /api/delegations/{id}/escalation` → 404), no `turn_timer_suspended`. Root cause: the ask→question bridge was placed out-of-band (Sweave's Python loop) and gated on a *silence* watchdog that either never trips (stream trickling defeats byte-silence) or races the ask-dance; either way, an ask = an unattended 900s death.
+
+**User ruling 2026-09-10 (this session):** we do not abandon ask-for-a-human, we do not add MCP file tools (the deferred `read_external` stays deferred), and we hijack the ask so a permission question always reaches the Sweave UI. Since omnigent runs headless with allow/deny policies and can't ask (their PR #1776 notes an ASK verdict in headless has no human), our harness *can* now ask — the bridge belongs inside the opencode process, not in Sweave's loop.
+
+**Change: preference order inverts.** The per-project rendered opencode.json now provisions a plugin at `.opencode/plugins/sweave-permission.ts` (project-level plugin dir; auto-loaded at serve startup, same render as opencode.json). The plugin subscribes `permission.asked` in-process and resolves the ask synchronously:
+
+1. POST `{base_url}/api/permission/hijack` (Sweave's own server, token-protected) with `{directory, sessionID, requestID, permission, patterns, metadata}`.
+2. Sweave scope-evaluates against the project record (cwd subtree, worktrees, `~/.sweave`, `Project.permission_roots`) — the project record becomes the single source of scope truth, replacing out-of-band pattern math in the render.
+3. In-scope → plugin replies `once` (in-scope reads should rarely reach the plugin because the scoped `external_directory` render still allow-silently-passes; the plugin is the safety net, not the gate).
+4. Out-of-scope → blocking human question, kind=permission, no timeout (M1.11 ruling) → the answer lands in the plugin → POST `response` to the pinned wire `POST /session/{sid}/permissions/{rid}`. `reject` surfaces as a tool error to the model (loud, recoverable), never a silent hang.
+5. The out-of-band ask-dance (stall watchdog → `_resolve_pending_permission`) is RETAINED as fallback for the plugin-absent / plugin-crashed case; it's no longer the primary path (noted flaw: the same failure mode above still gates it — repair follow-up if incidents recur).
+
+**Steps.**
+1. Plugin generator in `mcp_config.py` (template + ensure-on-render, `_sweave_managed` marker) + plugin SDK contract (packet content) → `permission.asked` subscribe → POST to sweave → POST pinned reply. Writes to the project dir next to opencode.json.
+2. Endpoint in `web/server.py`: `POST /api/permission/hijack` (mcp-token guarded) — resolve project by directory; create escalation (kind=permission, no timeout); map answer: allow → `once` (or `always` per user answer), skip → `reject`. Reuses EscalationStore (M1.11). Tests: mock-store mock/mock; scope logic unit tests; plugin render idempotence.
+3. Gates: pytest (>= 579 pass rate), `run.py --check`; vitest + build only if UI touched (it is NOT). Fallback: if live verification impossible on 1.18.29 pinned serve, plan a dedicated M1.12.5 step-5 live gate following `scripts/m1_12_live_gate.py` pattern (3 scenes).
+4. Docs: DESIGN §4 permission row amended (in-band bridge added); PROJECT_STATE + GOTCHAS out-of-band-bridge flakiness + incident record.
+
+**Status: amendment accepted (2026-09-10), execution following.** Step-1/2 code + tests land in this session; the step-4-class live gate (plugin-bridge scenes on the pinned 1.18.29 serve, mirroring `scripts/m1_12_live_gate.py`) is the closing gate before the status is bumped to done.
+
