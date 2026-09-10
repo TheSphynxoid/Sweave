@@ -1,5 +1,5 @@
 /**
- * Theme switcher (M1.9 Step 1).
+ * Theme switcher (M1.9 Step 1, extended with 20 presets).
  *
  * The active theme is a preset name + an optional custom-color
  * override. Both are persisted in localStorage so the user's
@@ -22,6 +22,7 @@ import {
   getPreset,
   listPresetNames,
   resolveTokens,
+  sanitizeCustomOverride,
   TokenMap,
   tokensToCssVariables,
 } from "./tokens";
@@ -35,6 +36,8 @@ export interface ActiveTheme {
 }
 
 export const THEME_DATA_ATTR = "data-theme";
+
+const DARK_CLASS = "dark";
 
 /** Default theme when nothing is persisted (or localStorage is blocked). */
 export function defaultActiveTheme(): ActiveTheme {
@@ -71,10 +74,7 @@ export function loadActiveTheme(): ActiveTheme {
   let custom: CustomOverride = {};
   if (customRaw) {
     try {
-      const parsed = JSON.parse(customRaw);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        custom = parsed as CustomOverride;
-      }
+      custom = sanitizeCustomOverride(JSON.parse(customRaw));
     } catch {
       // Bad JSON in storage -- fall back to empty override.
       custom = {};
@@ -100,13 +100,24 @@ export function resolveThemeTokens(theme: ActiveTheme): TokenMap {
  * `THEME_DATA_ATTR` constant; the variables match the Tailwind
  * config (1:1 with `TokenName`).
  *
+ * Also toggles the `dark` class + `color-scheme` on the root
+ * according to the preset's mode, so the Tailwind `dark:`
+ * variant, the agent-elements `.dark` overrides, and native
+ * form controls follow every dark preset -- not just the one
+ * literally named "dark".
+ *
  * Idempotent: safe to call repeatedly (e.g. on every state change).
  * Pure DOM side effect; no React.
  */
 export function applyThemeToDocument(theme: ActiveTheme): void {
   if (typeof document === "undefined") return;
+  const preset = getPreset(theme.preset);
   const root = document.documentElement;
   root.setAttribute(THEME_DATA_ATTR, theme.preset);
+  // `dark:` variant + `.dark` CSS hooks key off this class, so
+  // every dark-mode preset (dracula, nord, ...) gets dark styling.
+  root.classList.toggle(DARK_CLASS, preset.mode === "dark");
+  root.style.colorScheme = preset.mode;
   const merged = resolveThemeTokens(theme);
   const css = `:root[${THEME_DATA_ATTR}="${theme.preset}"] {\n${tokensToCssVariables(merged)}\n}`;
   // Inline the variables on the root so a refresh doesn't

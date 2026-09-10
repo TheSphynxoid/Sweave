@@ -57,15 +57,24 @@ def _orchestrator_specialist() -> Specialist:
     )
 
 
-def _build_chat_loop(*, pm: ProjectManager, send_responses: list[str] | None = None):
+def _build_chat_loop(
+    *,
+    pm: ProjectManager,
+    send_responses: list[str] | None = None,
+    reason_responses: list[str] | None = None,
+):
     """ChatLoop with a canned wire (copy of the M1.7 step-2 helper)."""
     from sweave.chat.loop import ChatLoop
 
     runners = ServeRunnerRegistry()
     runtime = SpecialistRuntime(runners=runners)
     responses = list(send_responses or ["ok"])
+    reasons = list(reason_responses or [])
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
+        if on_reasoning is not None:
+            for r in reasons:
+                on_reasoning(r)
         if on_chunk is not None:
             on_chunk(responses[0] if responses else "ok")
         if not responses:
@@ -241,3 +250,92 @@ async def test_rerun_route_shape_and_errors():
     with pytest.raises(HTTPException) as exc:
         await api_rerun_turn("s1", RerunRequest(from_message_id="u1"), SimpleNamespace(chat_loop=None))
     assert exc.value.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# Thinking capture: reasoning flows to the assistant message metadata.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_turn_persists_thinking_metadata(tmp_path: Path):
+    """Reasoning supplied via on_reasoning lands on the persisted
+    assistant message as metadata["thinking"] (the durable copy of
+    the live chat.thinking deltas)."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(
+        pm=pm, send_responses=["answer"], reason_responses=["hmm ", "ok, "]
+    )
+
+    result = await chat.run_turn(session_id=session.id, user_content="hi")
+    assert result["role"] == "assistant"
+    assert result["content"] == "answer"
+    assert result["metadata"]["thinking"] == "hmm ok, "
+
+    loaded = pm.get_session(session.id)
+    assistant = next(m for m in loaded.messages if m.role == "assistant")
+    assert assistant.metadata["thinking"] == "hmm ok, "
+    assert assistant.metadata["delegation_id"]
+
+
+@pytest.mark.asyncio
+async def test_no_thinking_key_without_reasoning(tmp_path: Path):
+    """Without reasoning parts the metadata carries no thinking key
+    (payloads stay small; the UI renders no Thinking block)."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["answer"])
+
+    result = await chat.run_turn(session_id=session.id, user_content="hi")
+    assert result["content"] == "answer"
+    assert "thinking" not in result["metadata"]
+
+STALL_TEXT = "[chat error: stalled after 300s without data (the turn may still be running server-side; retry starts a fresh session)]"
+AUTH_TEXT = "[chat error: APIError: Insufficient balance.]"
+
+
+@pytest.mark.asyncio
+async def test_stall_error_rotates_engine_session(tmp_path: Path):
+    """A silence-class first-turn failure rotates the orchestrator
+    session binding (the stalled turn may still be running
+    server-side and would poison a retry on the same binding).
+    Regression for the stream-probe cascade (two hung-tool
+    timeouts, then a third turn that got nothing on reuse)."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first ok", STALL_TEXT])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    assert pm.get_session(session.id).orchestrator_session_id
+    result = await chat.run_turn(session_id=session.id, user_content="hi again")
+    assert result["content"] == STALL_TEXT
+    assert pm.get_session(session.id).orchestrator_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_content_error_keeps_engine_session(tmp_path: Path):
+    """A content-class failure (auth/model rejection) leaves the
+    binding alone: the session is healthy, rotating would just burn
+    context."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first ok", AUTH_TEXT])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    binding = pm.get_session(session.id).orchestrator_session_id
+    assert binding
+    result = await chat.run_turn(session_id=session.id, user_content="hi again")
+    assert result["content"] == AUTH_TEXT
+    assert pm.get_session(session.id).orchestrator_session_id == binding
+
+
+def test_stale_session_error_markers():
+    from sweave.chat.loop import _is_stale_session_error
+
+    assert _is_stale_session_error(STALL_TEXT)
+    assert _is_stale_session_error("[chat error: orchestrator turn exceeded 900s timeout]")
+    assert _is_stale_session_error("[chat error: ReadTimeout: ]")
+    assert _is_stale_session_error("[chat error: opencode serve: incomplete turn (x)]")
+    assert not _is_stale_session_error(AUTH_TEXT)
+    assert not _is_stale_session_error("a fine answer")

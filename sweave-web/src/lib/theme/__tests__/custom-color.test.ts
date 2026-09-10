@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  ALL_TOKEN_NAMES,
   rgbTupleToHex,
   hexToRgbTuple,
   resolveThemeTokens,
@@ -59,13 +60,10 @@ describe("hexToRgbTuple", () => {
 });
 
 describe("CUSTOM_PICKER_TOKENS", () => {
-  it("lists 8 surface tokens (the most-visible UI roles)", () => {
-    expect(CUSTOM_PICKER_TOKENS.length).toBe(8);
-    // Sanity: the listed names are a subset of the TokenName union.
-    for (const token of CUSTOM_PICKER_TOKENS) {
-      expect(typeof token).toBe("string");
-      expect(token).toMatch(/^[a-z-]+$/);
-    }
+  it("lists every theme token (the full flexible surface)", () => {
+    expect([...CUSTOM_PICKER_TOKENS].sort()).toEqual(
+      [...ALL_TOKEN_NAMES].sort(),
+    );
   });
 });
 

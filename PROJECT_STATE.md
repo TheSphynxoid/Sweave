@@ -32,20 +32,22 @@
 - ✅ Topbar shows project name and session name (clickable for quick switching)
 - ✅ Sidebar toggle for collapsing
 - ✅ All modals work (project, session, agent, detail)
-- ✅ Theme system with 5 preset themes (dark, light, dracula, nord, catppuccin)
+- ✅ Theme system with 20 preset themes (6 light + 14 dark: light/dark/dracula/nord/catppuccin + tokyo-night/onedark/gruvbox-dark/monokai/rose-pine/everforest-dark/kanagawa/solarized-dark/github-dark/midnight + solarized-light/gruvbox-light/github-light/rose-pine-dawn/everforest-light) and a 37-token grouped custom-color editor
 - ✅ WebSocket real-time updates
-- ✅ Memory recall/reflect/retain operations
+- ⚠️ Memory recall/reflect/retain operations (R4.4 re-cut 2026-09-10: page exists but POSTs 422 and no backend is usable by default — backend + contract are the plan)
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-09)
-- **501/501** in `pytest tests/` (source of truth for logic tests; +15
-  across the rerun endpoint, seed-shadow guard, prompt-template, and
-  isolation strands)
+- **532/532** in `pytest tests/` (source of truth for logic tests;
+  includes 5 thinking-capture tests, 8 model-variant tests, 12
+  registry-sync tests, and 6 customs/metadata registry tests)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **119** vitest unit tests in `sweave-web/` (81 base + 8 PathPicker
-  + 11 ModelPicker + 3 runtime mergeHistory + 2 streaming pins
-  + 6 TurnDelegations + 4 EditSpecialistDialog + 4 rerun)
+- **148** vitest unit tests in `sweave-web/` (verified 2026-09-09;
+  includes 44 theme tests across tokens/switcher/custom-color for the
+  20-preset / 37-token expansion, 4 thinking tests for
+  chat.thinking accumulation + projection, 4 ModelPicker variant
+  badge tests, and 9 EffortSelect tests)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -558,16 +560,20 @@
    time was a brittle test coupling to the machine's generated default;
    fixed hermetically the same day — tmp registry without `default` —
    during the commit sweep `fb5f9fe`).
-- ▶ **R4.4 wave 2 spec** — Memory tab + Agents workbench (the
-  R4-workbench vision from the M1.2 era) + Settings panes
-  (models/routing/memory/catalog picker — old UI_PLAN items).
-  Three panes, sequenced (Memory → Agents workbench →
-  Settings) by the dogfood handoff. The pre-dogfood strawman
-  is in `docs/R4_4_PLAN.md` (the old R4.1 strawman renamed
-  2026-09-05 per the hub restructure); the dogfood re-cuts it.
-   Same protocol as M1.9's dogfood handoff: user daily-drives
-   wave 1 on real work; the friction list becomes R4.4 / R4.2
-   input. R2 skills interleave on demand (per R4 plan §5).
+- ▶ **R4.4 re-cut from reality (2026-09-10)** — supersedes the wave-2
+  strawman. Intervention recorded: wave-1 UI was judged a failure, so all
+  later UI was manually derived by the user, not executor-built from plans;
+  the dogfood gate is void (this re-cut IS the friction list). Live audit:
+  Memory/Agents/Settings pages exist, but memory is doubly broken (JSON-body
+  POSTs 422 in `routers/memory.py`; `hindsight_client` not installed so the
+  default backend raises; zero pytest/vitest coverage; Memory page lacks
+  reflect/health/WS). Rulings: local-first file backend default (hindsight
+  opt-in); hosted-embeddings opt-in with OpenRouter as policy owner
+  (`/endpoints/zdr` allowlist, `zdr:true + data_collection:deny`,
+  `allow_fallbacks:false`, unknown=locked; gated on embedding-coverage
+  probe); three retention badges; secret tag-and-vault; factory fails
+  closed. Plan of record: `docs/R4_4_PLAN.md` (re-cut; strawman preserved
+  for lineage). R2 skills interleave on demand (per R4 plan §5).
 - ✅ **Inline delegation cards in Chat (2026-09-09)** — `TurnDelegations`
   under every assistant message with a delegation id (live turn +
   history): agent + status pill (LiveTree convention) + task snippet
@@ -621,6 +627,7 @@
   **501 pytest (+5), 119 vitest (+4), 13/13 run.py --check, build
   green.**
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
+- ✅ **M1.11 Blocking Q&A replaces native question (2026-09-10)** per `docs/M1_11_PLAN.md`. Rulings: native `question` denied both roles; `ask_human` = blocking orchestrator→human question with NO timeout (ChatLoop holds the turn open until answered|skipped, then synthesises); skip = opencode-Esc with system-issued `window.confirm` + `POST …/skip {confirmed:true}` (409 unconfirmed); `escalate` = specialist→orchestrator non-blocking notice (only sweave tool specialists may call; explicit denies replace the `sweave_*` wildcard); Children = global audit log (kind badges Q/ESC + question previews + DetailView escalation section). Thread shows an inline Question card (options buttons + answer + Skip-confirm, WS-driven). Escalation records gain `kind`/`audience`/`skipped` + nullable deadline (legacy timeout records readable). **11 new pytest (`test_m1_11_question_replace.py`), 4 new vitest (`TurnQuestions`), 13/13 run.py --check, `npm run build` green.** Known pre-existing env failure (not this slice): models-registry default `openrouter/...` not in generated `all_models` (`test_default_is_qualified_and_in_registry`, `test_api_models`).
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`

@@ -4,7 +4,6 @@ description: Code review and quality (correctness, security, API-contract and cr
 
 executor:
   type: omnigent
-  model: "{{models.reviewer.default}}"
   config:
     harness: opencode
 

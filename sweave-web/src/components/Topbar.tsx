@@ -10,6 +10,7 @@ import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
+import { CopyIconButton } from "@/components/CopyId";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/utils/cn";
 
@@ -32,19 +33,24 @@ export function Topbar() {
   }, [wsState]);
 
   return (
-    <header className="h-14 flex items-center justify-between gap-4 border-b border-border bg-card/60 backdrop-blur px-4 shrink-0">
+    <header className="h-14 flex items-center justify-between gap-4 border-b border-border bg-topbar/60 text-topbar-foreground backdrop-blur px-4 shrink-0">
       <div className="flex items-center gap-1.5 min-w-0 text-sm">
         {activeProject ? (
           <>
             <span className="font-medium text-foreground truncate max-w-[28ch]">
               {activeProject.name}
             </span>
-            {activeSession && (
+              {activeSession && (
               <>
                 <ChevronRight size={14} className="text-muted-foreground shrink-0" />
                 <span className="font-medium text-foreground truncate max-w-[24ch]">
                   {activeSession.name}
                 </span>
+                <CopyIconButton
+                  id={activeSession.id}
+                  label="Session id"
+                  testId="topbar-copy-session-id"
+                />
               </>
             )}
           </>

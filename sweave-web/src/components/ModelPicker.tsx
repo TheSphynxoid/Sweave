@@ -40,6 +40,21 @@ export function splitModelId(id: string): { provider: string | null; model: stri
   return { provider: id.slice(0, slash), model: id.slice(slash + 1) };
 }
 
+/**
+ * Split an optional `+variant` suffix off a qualified model id
+ * (mirrors `parse_model_ref` on the backend: last `+`, single
+ * token tail). Variants select a reasoning-effort preset per turn
+ * (e.g. `.../inkling:free+low`); the picker renders the variant
+ * as a badge so suffixed entries read as what they are.
+ */
+export function splitModelVariant(id: string): { base: string; variant: string | null } {
+  const plus = id.lastIndexOf("+");
+  if (plus <= 0) return { base: id, variant: null };
+  const tail = id.slice(plus + 1);
+  if (!tail || tail.includes("/")) return { base: id, variant: null };
+  return { base: id.slice(0, plus), variant: tail };
+}
+
 export interface ModelPickerPanelProps {
   options: string[];
   value: string;
@@ -79,6 +94,10 @@ export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPick
       >
         {shown.map((m) => {
           const { provider, model } = splitModelId(m);
+          const { variant } = splitModelVariant(m);
+          // The model half may carry the +variant suffix; strip it
+          // for display (the badge below shows it instead).
+          const modelBase = variant ? model.slice(0, model.length - variant.length - 1) : model;
           const selected = m === value;
           return (
             <button
@@ -97,8 +116,13 @@ export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPick
               </span>
               <span className="truncate">
                 {provider && <span className="text-muted-foreground">{provider}/</span>}
-                {model}
+                {modelBase}
               </span>
+              {variant && (
+                <span className="ml-1.5 shrink-0 rounded bg-primary/15 px-1 py-px font-mono text-[10px] text-primary">
+                  {variant}
+                </span>
+              )}
             </button>
           );
         })}

@@ -15,7 +15,7 @@
  * the change local (the M1.8 no-rerender invariant + the plan's
  * "Children-tab live updates" -- same single-node patch pattern).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ChevronDown, Send, X, AlertCircle } from "lucide-react";
 import { api } from "@/api/client";
@@ -193,6 +193,27 @@ function AnswerInline({ delegationId }: { delegationId: string }) {
       pushNotification("error", `Answer failed: ${(err as Error).message}`);
     },
   });
+  const skip = useMutation({
+    mutationFn: () => api.skipEscalation(delegationId),
+    onSuccess: () => {
+      pushNotification("success", "Question skipped — agent proceeds with best judgment");
+      void qc.invalidateQueries({ queryKey: ["delegations"] });
+      void qc.invalidateQueries({ queryKey: ["escalation", delegationId] });
+    },
+    onError: (err) => {
+      pushNotification("error", `Skip failed: ${(err as Error).message}`);
+    },
+  });
+  const sendSkip = () => {
+    // System-issued confirm (not LLM text): the fat-finger guard.
+    if (
+      !window.confirm(
+        "Skip this question? The agent will proceed with its best judgment. This cannot be undone.",
+      )
+    )
+      return;
+    skip.mutate();
+  };
   if (!showInput) {
     return (
       <button
@@ -232,6 +253,16 @@ function AnswerInline({ delegationId }: { delegationId: string }) {
       </button>
       <button
         type="button"
+        onClick={sendSkip}
+        disabled={skip.isPending}
+        data-testid={`skip-${delegationId}`}
+        title="Skip — agent proceeds with best judgment (asks first)"
+        className="px-1.5 py-0.5 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground disabled:opacity-50"
+      >
+        Skip
+      </button>
+      <button
+        type="button"
         onClick={() => setShowInput(false)}
         aria-label="Cancel"
         className="p-1 text-muted-foreground"
@@ -268,17 +299,77 @@ function EscalationLane({
             <button
               type="button"
               onClick={() => onOpen(n.record.delegation_id)}
-              className="flex-1 min-w-0 text-left truncate"
+              className="flex-1 min-w-0 text-left"
             >
-              <span className="font-mono text-xs text-muted-foreground mr-2">
-                {n.record.delegation_id.slice(0, 8)}…
+              <span className="flex items-center gap-2">
+                <span className="font-mono text-xs text-muted-foreground">
+                  {n.record.delegation_id.slice(0, 8)}…
+                </span>
+                <KindBadge delegationId={n.record.delegation_id} />
               </span>
-              <span className="truncate">{n.record.task || "(empty)"}</span>
+              <span className="block truncate text-muted-foreground">
+                {n.record.task || "(empty)"}
+              </span>
+              <EscalationPreview delegationId={n.record.delegation_id} />
             </button>
             <AnswerInline delegationId={n.record.delegation_id} />
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+function KindBadge({ delegationId }: { delegationId: string }) {
+  const [kind, setKind] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rec = await api.getEscalation(delegationId);
+        if (!cancelled) setKind(rec?.kind ?? null);
+      } catch {
+        if (!cancelled) setKind(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [delegationId]);
+  if (!kind) return null;
+  return (
+    <span
+      data-testid={`kind-badge-${kind}`}
+      className="rounded bg-amber-500/20 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
+    >
+      {kind === "escalation" ? "ESC" : "Q"}
+    </span>
+  );
+}
+
+function EscalationPreview({ delegationId }: { delegationId: string }) {
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rec = await api.getEscalation(delegationId);
+        if (!cancelled) setText(rec ? rec.question : null);
+      } catch {
+        if (!cancelled) setText(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [delegationId]);
+  if (!text) return null;
+  return (
+    <span
+      data-testid="escalation-preview"
+      className="block truncate text-xs text-foreground/80"
+    >
+      {text.length > 120 ? `${text.slice(0, 120)}…` : text}
+    </span>
   );
 }

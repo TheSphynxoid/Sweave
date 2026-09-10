@@ -113,7 +113,7 @@ def _make_runtime(monkeypatch, tmp_path: Path):
     runtime = SpecialistRuntime(runners=runners)
     system_sends: list[str] = []
 
-    async def fake_send_message(self, body, trace, on_chunk=None):
+    async def fake_send_message(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         return "task-output"
 
     async def spy_send(self, message, on_chunk=None, trace=None, trace_reasoning=False):

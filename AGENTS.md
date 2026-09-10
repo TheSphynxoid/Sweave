@@ -140,7 +140,7 @@ amendments.
 | `sweave/memory/backends.py` | hindsight embedded/docker/cloud |
 | `sweave/runtime/` | delegation store (schema-versioned), JobRunner, SpecialistRuntime (sessions, per-turn prompts), ServeRunner (per-specialist serve), specialist store, escalation store, trace logs |
 | `sweave/chat/loop.py` | ChatLoop: chat-turn delegations, transcript composition (M1.7), synthesis, streaming coalescer |
-| `sweave/mcp/` | MCP server exposing `defer` + `list_specialists` + `ask_human` to the orchestrator's opencode session |
+| `sweave/mcp/` | MCP server exposing `defer` + `list_specialists` + `ask_human` (blocking Q) + `escalate` (specialist notice); native `question` denied on both managed agents |
 | `sweave/agents/*/config.yaml` | Omnigent-spec seed agents — LIVE via `sweave/agents/loader.py` (M0); FALLBACK_PROMPTS in tools/ for gaps |
 
 ## Gotchas — read before touching an area

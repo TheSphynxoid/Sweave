@@ -120,7 +120,7 @@ def _make_runtime_with_mock_send(tmp_path: Path):
     runtime = SpecialistRuntime(runners=runners)
     sent_calls: list[dict[str, Any]] = []
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         sent_calls.append({
             "model": body.get("model"),
             "parts_count": len(body.get("parts", [])),

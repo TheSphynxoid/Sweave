@@ -97,7 +97,7 @@ async def test_deltas_precede_authoritative_message(tmp_path: Path):
     """All chat.delta events come before the assistant message.added."""
     from sweave.projects import ProjectManager
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         for part in ["hello ", "world"]:
             if on_chunk is not None:
                 result = on_chunk(part)
@@ -132,7 +132,7 @@ async def test_error_turn_still_orders_delta_before_message(tmp_path: Path):
     """A turn that pushes a partial then fails still flushes first."""
     from sweave.projects import ProjectManager
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         if on_chunk is not None:
             result = on_chunk("partial ")
             if hasattr(result, "__await__"):

@@ -202,7 +202,7 @@ def _build_chat_loop(
 
     parts_list = list(parts or ["only-text"])
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         # Multi-part: emit each part via the on_chunk callback
         # if provided, then return the accumulated text
         accumulated = []

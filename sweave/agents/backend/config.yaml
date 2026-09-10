@@ -4,7 +4,6 @@ description: Backend engineering (APIs, databases, auth, server architecture, te
 
 executor:
   type: omnigent
-  model: "{{models.backend.default}}"
   config:
     harness: opencode
 

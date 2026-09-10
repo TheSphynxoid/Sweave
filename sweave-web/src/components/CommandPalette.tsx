@@ -155,8 +155,19 @@ export function CommandPalette() {
         )}
 
         <CommandSeparator />
-        <CommandGroup heading="Theme">
-          {PRESETS.map((preset) => (
+        <CommandGroup heading="Theme — Light">
+          {PRESETS.filter((p) => p.mode === "light").map((preset) => (
+            <CommandItem
+              key={preset.name}
+              onSelect={() => run(() => switchTheme(preset.name))}
+            >
+              <Palette />
+              <span>{preset.label}</span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+        <CommandGroup heading="Theme — Dark">
+          {PRESETS.filter((p) => p.mode === "dark").map((preset) => (
             <CommandItem
               key={preset.name}
               onSelect={() => run(() => switchTheme(preset.name))}

@@ -44,18 +44,29 @@ class ModelRef(TypedDict, total=False):
       multi-provider configs (warning fires once per session).
     * ``model_id`` — the model id within the provider (e.g.
       ``qwen3:8b``, ``MiniMaxAI/MiniMax-M3``, ``glm-5.3``).
+    * ``variant`` — optional opencode model variant (e.g. ``none``,
+      ``low``, ``medium``, ``high``, ``max``). Variants select a
+      reasoning-effort preset per model (the serve advertises them
+      per model on ``GET /config/providers``). Passed through to
+      ``body["model"]["variant"]`` when set; omitted otherwise so
+      the provider default applies. String form appends
+      ``+variant`` (``"provider/model+variant"``); the ``+`` is
+      chosen because model ids never contain it (unlike ``/``,
+      ``:`` and ``@``, which all occur in real ids).
     """
     provider: str
     model_id: str
+    variant: str
 
 
 def model_ref_to_wire(ref: ModelRef | None) -> "dict[str, str] | None":
     """Convert a :class:`ModelRef` to the v2 ``body["model"]`` shape.
 
-    Returns the structured ``{providerID, modelID}`` dict when both
-    fields are set (the v2 protocol's expected shape), or ``None``
-    when the ref is empty / incomplete (caller falls back to the
-    unqualified-name path or null).
+    Returns the structured ``{providerID, modelID[, variant]}`` dict
+    when provider + model_id are set (the v2 protocol's expected
+    shape; ``variant`` rides along when the ref carries one), or
+    ``None`` when the ref is empty / incomplete (caller falls back
+    to the unqualified-name path or null).
     """
     if ref is None:
         return None
@@ -63,7 +74,11 @@ def model_ref_to_wire(ref: ModelRef | None) -> "dict[str, str] | None":
     model_id = ref.get("model_id")
     if not provider or not model_id:
         return None
-    return {"providerID": provider, "modelID": model_id}
+    wire: dict[str, str] = {"providerID": provider, "modelID": model_id}
+    variant = ref.get("variant")
+    if variant:
+        wire["variant"] = variant
+    return wire
 
 
 @dataclass

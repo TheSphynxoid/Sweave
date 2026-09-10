@@ -98,13 +98,13 @@ def _build_chat_loop(
     runtime = SpecialistRuntime(runners=runners)
 
     if send_error is not None:
-        async def fake_send_error(self, body, trace, on_chunk=None):
+        async def fake_send_error(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
             raise send_error
         runtime._send_message = fake_send_error  # type: ignore[assignment]
     else:
         responses = list(send_responses or ["ok"])
 
-        async def fake_send(self, body, trace, on_chunk=None):
+        async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
             if send_delay:
                 await asyncio.sleep(send_delay)
             # M1.8: if a streaming callback is provided, push the

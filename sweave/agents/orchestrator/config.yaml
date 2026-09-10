@@ -4,7 +4,6 @@ description: Task orchestrator and coordinator
 
 executor:
   type: omnigent
-  model: "{{models.orchestrator.default}}"
   config:
     harness: opencode
 

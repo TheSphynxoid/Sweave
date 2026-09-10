@@ -187,7 +187,8 @@ def test_sweave_mcp_entry_has_cwd_and_no_permission_key():
 
 def test_specialist_agent_config_has_permission_task_deny():
     """The orchestrator agent profile denies ``task`` (no native
-    subagent bypass) and the git-mutation bash patterns (the
+    subagent bypass), ``question`` (M1.11: native tool replaced by
+    Sweave ask_human/escalate) and the git-mutation bash patterns (the
     orchestrator never commits to the user's checkout). Shape is the
     opencode permission object: ``{pattern: action}`` mappings, not
     lists."""
@@ -195,6 +196,7 @@ def test_specialist_agent_config_has_permission_task_deny():
 
     profile = render_agent_permission_profile(is_orchestrator=True)
     assert profile.get("task") == "deny"
+    assert profile.get("question") == "deny"
     bash = profile.get("bash") or {}
     for pat in ("git commit*", "git merge*", "git push*", "gh pr merge*"):
         assert bash.get(pat) == "deny", f"orchestrator profile missing deny for {pat!r}"
@@ -202,16 +204,23 @@ def test_specialist_agent_config_has_permission_task_deny():
 
 def test_specialist_profile_has_task_deny_but_no_git_bash_deny():
     """Specialists (non-orchestrator) get ``task: deny`` (no native
-    subagent bypass) plus ``sweave_*: deny`` (no defer /
-    list_specialists / ask_human -- specialists do the work
-    themselves) but NO git-bash deny -- they commit freely in their
-    disposable branches (per the commit-authority map, ruling
-    2026-09-04)."""
+    subagent bypass), ``question: deny`` (M1.11 native replacement)
+    plus explicit ``sweave_defer`` / ``sweave_list_specialists`` /
+    ``sweave_ask_human: deny`` (orchestration only — specialists do
+    the work themselves; ``sweave_escalate`` stays allowed so a
+    blocked specialist can reach the orchestrator) but NO git-bash
+    deny -- they commit freely in their disposable branches (per
+    the commit-authority map, ruling 2026-09-04)."""
     from sweave.runtime.agent_permission import render_agent_permission_profile
 
     profile = render_agent_permission_profile(is_orchestrator=False)
     assert profile.get("task") == "deny"
-    assert profile.get("sweave_*") == "deny"
+    assert profile.get("question") == "deny"
+    assert profile.get("sweave_defer") == "deny"
+    assert profile.get("sweave_list_specialists") == "deny"
+    assert profile.get("sweave_ask_human") == "deny"
+    assert "sweave_escalate" not in profile
+    assert "sweave_*" not in profile
     bash = profile.get("bash") or {}
     assert not any("git commit" in pat for pat in bash)
 

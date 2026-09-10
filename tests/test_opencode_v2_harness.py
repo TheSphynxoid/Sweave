@@ -43,34 +43,41 @@ def test_parse_provider_model_whitespace():
 
 def test_split_stream_two_objects():
     chunk = '{"a":1}{"b":2}'
-    assert _split_json_stream(chunk) == ['{"a":1}', '{"b":2}']
+    assert _split_json_stream(chunk) == (['{"a":1}', '{"b":2}'], '')
 
 
 def test_split_stream_nested_object():
     chunk = '{"info": {"role": "assistant", "time": {"created": 0, "completed": 1}, "finish": "stop"},"parts":[{"type":"text","text":"hi"}]}'
-    out = _split_json_stream(chunk)
+    out, carry = _split_json_stream(chunk)
     assert out == [chunk]
+    assert carry == ''
 
 
 def test_split_stream_string_with_brace():
     chunk = '{"text":"hello { world }"}'
-    out = _split_json_stream(chunk)
+    out, carry = _split_json_stream(chunk)
     assert out == [chunk]
+    assert carry == ''
 
 
 def test_split_stream_garbage_around():
     chunk = 'garbage{"x":1}more'
-    assert _split_json_stream(chunk) == ['{"x":1}']
+    assert _split_json_stream(chunk) == (['{"x":1}'], '')
 
 
 def test_split_stream_empty():
-    assert _split_json_stream("") == []
+    assert _split_json_stream("") == ([], '')
 
 
-def test_split_stream_partial_is_dropped():
-    # A trailing "{" without a close is dropped (no complete object)
-    chunk = '{"a":1}{"b"'
-    assert _split_json_stream(chunk) == ['{"a":1}']
+def test_split_stream_partial_carries_over():
+    # A trailing partial object is returned as carry, not dropped:
+    # feeding it back with the rest glues the object whole.
+    first, carry = _split_json_stream('{"a":1}{"b":2,"c":')
+    assert first == ['{"a":1}']
+    assert carry == '{"b":2,"c":'
+    second, carry2 = _split_json_stream('"x"}', carry)
+    assert second == ['{"b":2,"c":"x"}']
+    assert carry2 == ''
 
 
 # --- OpenCodeProcess: v2 send with mocked httpx ---------------------------

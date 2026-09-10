@@ -92,9 +92,20 @@ def models(
     list_: bool = typer.Option(False, "--list", "-l", help="List current models"),
     set_: str = typer.Option(None, "--set", "-s", help="Set model (format: role=model)"),
     reset: bool = typer.Option(False, "--reset", help="Reset to defaults"),
+    sync: bool = typer.Option(
+        False, "--sync", help="Regenerate models.yaml from the opencode serve (with variants)"
+    ),
+    sync_all: bool = typer.Option(
+        False, "--all", help="With --sync: include the full upstream universe (213 providers)"
+    ),
+    sync_variants: bool = typer.Option(
+        False, "--with-variants", help="With --sync: write +variant rows (default: base rows only, effort is a separate dropdown)"
+    ),
 ):
     """Manage model configuration."""
-    if list_:
+    if sync:
+        _sync_models(include_all_upstream=sync_all, include_variant_rows=sync_variants)
+    elif list_:
         _list_models()
     elif set_:
         _set_model(set_)
@@ -133,6 +144,59 @@ def _reset_models():
     """Reset models to defaults."""
     # Would regenerate from models.yaml
     console.print("[yellow]Reset not yet implemented[/yellow]")
+
+
+def _sync_models(include_all_upstream: bool = False, include_variant_rows: bool = False):
+    """Regenerate models.yaml from models.dev + a scratch opencode serve.
+
+    models.dev is the neutral base (model ids, effort-derived variant
+    rows, metadata sidecar); the serve overlay appends the local
+    layer (custom providers, serve-only models, extra variants).
+    Default scope is the registry's current providers plus anything
+    the serve reports (``--all`` dumps the full 213-provider
+    universe). Review with ``git diff``; restart the server after.
+    """
+    from pathlib import Path as _Path
+
+    from sweave.models_sync import sync_registry
+
+    config = config_manager.get()
+    registry_path = _Path(config.models.registry_path)
+    try:
+        report = sync_registry(
+            registry_path,
+            include_all_upstream=include_all_upstream,
+            include_variant_rows=include_variant_rows,
+            on_event=console.print,
+        )
+    except RuntimeError as e:
+        console.print(f"[red]sync failed: {e}[/red]")
+        return
+    console.print(
+        f"[green]synced {report['path']}: "
+        f"{report['providers']} providers, {report['models']} rows "
+        f"({report['variant_rows']} variant rows, {report['meta_entries']} meta entries, "
+        f"source={report['source']})[/green]"
+    )
+    console.print(f"+{report['added']} added, -{report['removed']} removed")
+    for provider, change in report["diff"].items():
+        if not change["added"] and not change["removed"]:
+            continue
+        console.print(f"  [cyan]{provider}[/cyan]: +{len(change['added'])} -{len(change['removed'])}")
+        for row in change["added"][:5]:
+            console.print(f"    + {row}")
+        if len(change["added"]) > 5:
+            console.print(f"    + ... ({len(change['added']) - 5} more)")
+        for row in change["removed"][:5]:
+            console.print(f"    - {row}")
+        if len(change["removed"]) > 5:
+            console.print(f"    - ... ({len(change['removed']) - 5} more)")
+    if not report["default_kept"]:
+        console.print(
+            f"[yellow]warning: previous default {report['default']!r} is gone "
+            f"from the new registry (kept on disk anyway)[/yellow]"
+        )
+    console.print("[yellow]restart the server to pick up the new registry[/yellow]")
 
 
 @app.command()

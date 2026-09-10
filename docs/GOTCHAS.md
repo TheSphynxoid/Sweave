@@ -23,6 +23,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
 4. Restart semantics: the SPA is served from disk (`sweave-web/dist`), so **Python
    changes need a server restart**; UI changes need `npm run build` + hard-reload
    (Ctrl+Shift+R).
+5. **Stopping/restarting the server used to orphan every opencode serve**
+   (2026-09-10: 13 stale serves, ~4.8GB, `serve --port 0` with cwd = project root).
+   Three stacked causes: nothing ever called `sweep_idle` / `shutdown_all` /
+   `sweep_orphan_serves` (all defined, zero callers); `stop_server.py` killed only
+   the python PID (no `/T`); and `find_orphan_serves` requires `.worktrees` in
+   cmdline/cwd, which project-root orchestrator serves never contain (plus psutil
+   was never installed, so it no-op'd anyway). Fix: PID tracking in
+   `~/.sweave/serves.json` + boot reclaim (dead-owner + port-probe verified) +
+   lifespan `shutdown_all` + 5-min idle sweeper + `taskkill /F /T` in
+   `stop_server.py`. Concurrent second servers are safe (live-owner entries are
+   skipped). Your own `opencode` TUI / `:4123` serve are never touched (only
+   tracked PIDs are ever killed).
 
 ## Opencode harness & wire protocol
 
@@ -47,6 +59,40 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `_parts_model_stream` helper (sets the terminal flag by default). Any new mock of
    the opencode v2 wire must include the terminal flag from the start or it hits the
    "no terminal flag set" error path.
+4. **`SpecialistRuntime._send_message` reads `info.error`, not just parts**
+   (2026-09-10 rerun incident). The runtime bypasses `OpenCodeProcess.send` and
+   parses the stream itself — it collected `text` parts only, so an upstream
+   rejection on a 200 stream (401 CreditsError after a model switch, zero text
+   parts) returned `""` as SUCCESS and the chat loop persisted an empty assistant
+   message (turn "did nothing"; the error was visible only in opencode's sqlite
+   `message.data.error`). `_send_message` now mirrors the harness: `info.error`
+   (any turn) → `[chat error: <name>: <message>]`, no-text + no-terminal →
+   incomplete-turn error. Ground truth for "what did the serve actually record"
+   is `~/.local/share/opencode/opencode.db` (`message.data.error`, `part` rows).
+5. **httpx `client.stream()` yields nothing under MockTransport with a manually
+   assigned `ByteStream`** (found while testing #4). To unit-test
+   `_send_message` parsing, fake the stream context manager directly (see
+   `_send_message_proc` in `tests/test_specialist_runtime.py`), not the transport.
+6. **Any permission resolving to `"ask"` hangs a headless serve forever**
+   (2026-09-10 stream-probe: two 5-min ReadTimeouts, then a third turn that
+   got nothing on the wedged session). The `bash` tool's
+   `external_directory` check fires on outside-cwd paths and defaults to
+   `ask`; with no UI to answer, the tool sits at `status=running` and
+   NOTHING surfaces (no part, no error -- the DB just shows a `start`
+   timestamp with no end). Fix is config, not timeouts: the rendered
+   per-project `opencode.json` carries a managed top-level
+   `{"external_directory": "allow"}` (`_ensure_top_level_permission`;
+   user-owned blocks are never overwritten, at most warned about).
+   Deliberately NOT `"*": "allow"` -- danger gates stay in the
+   per-agent profiles (`runtime/agent_permission.py`). Other
+   ask-defaults (`doom_loop`, ...) keep defaults until one proves it
+   hangs; each gets its own entry, never a wildcard.
+7. **TurnStatusBar hooks order**: every hook (and the pure message
+   reads feeding the quiet tracker) must sit above the
+   `if (!isRunning) return null` early return -- the bar mounts idle
+   and starts later, so anything below the return is a Rules-of-Hooks
+   violation that only explodes when a turn starts (caught by the
+   ChatLab stream tests, not by idle renders).
 
 ## Writing runtime tests
 
@@ -77,6 +123,15 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    banned for home-reading tests — the autouse patch wins and the
    planted files diverge (see `test_m1_9_step4_visibility.py`
    `home_dir`).
+
+3. **Stubs replacing ``SpecialistRuntime._send_message`` must accept
+   every optional callback** (2026-09-09: adding ``on_reasoning``
+   broke 23 tests across 10 files — every ``fake_send`` with the old
+   ``(self, body, trace, on_chunk=None)`` signature). The runtime
+   always passes both callbacks; a stub missing one turns every
+   turn into ``[chat error: TypeError...]``. When adding a callback
+   to ``_send_message``, update all ``fake_send*`` stubs in the
+   same change (grep ``async def fake_send`` under ``tests/``).
 
 ## MCP surface
 
@@ -131,6 +186,19 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    config discovery walks UP the directory tree (the `mcp list` CLI
    does not), so worktree serves see the project file -- agent
    permissions, not file placement, are the isolation boundary.
+6. **M1.11: blocking questions replace the native `question` tool;
+   specialists escalate via `escalate`, not `ask_human`** (2026-09-10).
+   Both managed agents deny `question` (the headless serve cannot
+   answer it and Sweave never intercepts it). Specialists deny
+   `sweave_defer` / `sweave_list_specialists` / `sweave_ask_human`
+   EXPLICITLY (never restore the `sweave_*` wildcard — it would
+   re-deny `sweave_escalate`, the only sweave tool specialists may
+   call). Questions have NO deadline (`deadline_at=None`); the
+   ChatLoop hold-open (`_wait_for_escalation`, unbounded poll) is
+   what keeps the turn running — NOT an MCP long-poll (the 30s MCP
+   timeout is irrelevant by design). Skip is `POST …/skip
+   {confirmed: true}` (409 when unconfirmed); the UI's
+   `window.confirm` is the system-issued guard, never LLM text.
 
 ## Windows console flashes + locale I/O
 
@@ -218,10 +286,27 @@ gotchas land here — grouped by branch, not appended as a numbered list.
      `tool-ui`, `agent-thought` return 404 (not valid registry names).
    - The CLI's `.npmrc allow-scripts=*` is ignored for project installs in npm 12; only
      the package.json field works. Don't waste time on a project `.npmrc`.
-   - After the pull, re-apply the `[data-theme="dark"]` selector to
-     `src/components/agent-elements/agent-ui.css` line 56 (`.dark {` → `.dark,[data-theme="dark"] {`)
-     — the CLI re-imports the file and drops it. `edit-tool` already ships its own
-     `[data-theme="dark"]` rules, so only the BashTool token block needs the patch.
+    - After the pull, check `src/components/agent-elements/agent-ui.css`:
+      pre-2026-09-09 it needed a `[data-theme="dark"]` selector next to
+      `.dark` (the CLI re-import drops it). Post-2026-09-09 the file no
+      longer carries per-theme color blocks at all — its `--an-*`
+      variables bridge to the theme tokens (`var(--color-*)`), and the
+      runtime toggles `.dark` for every dark-mode preset — so there is
+      nothing to re-apply; just don't reintroduce hardcoded per-theme
+      blocks. `edit-tool` already ships its own `[data-theme="dark"]`
+      rules, so only the BashTool token block needs the patch.
+
+3. **The global `*:focus-visible` outline beats Tailwind's
+   `focus:outline-none` on text fields** (2026-09-09). The rule in
+   `src/styles/animations.css` is unlayered, and unlayered author CSS
+   beats Tailwind v4's layered utilities regardless of specificity —
+   so the chat textarea rendered a 2px outline *inside* the composer
+   box despite `focus:outline-none`. Text-entry elements
+   (`textarea/input/select/[contenteditable]`) are now explicitly
+   opted out in the same file and carry their own affordance (the
+   composer box glows via `focus-within:`). Same trap as the deleted
+   universal margin/padding reset — keep global element rules out of
+   unlayered CSS unless they are meant to beat every utility.
 
 ## Opencode harness & wire protocol
 
@@ -329,6 +414,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    RGB-tuple. Pre-R4.1 step 1c the override was a hex string
    (``#rrggbb``); post-migration the override is ``<r> <g> <b>``.
    The localStorage round-trip tests reflect the new contract.
+3. **``dark:`` / ``.dark`` follow the preset mode, not the preset
+   name** (2026-09-09). ``applyThemeToDocument`` toggles the
+   ``dark`` class + ``color-scheme`` from ``preset.mode``, and
+   ``@custom-variant dark`` keys off ``.dark`` — so every dark
+   preset (dracula, nord, ...) gets dark styling. Never gate
+   dark-only CSS on ``[data-theme="dark"]`` (matches one preset).
+   The 18 extended tokens (status/chrome/chat/code/link/selection)
+   are mode-aware per preset; new presets go through
+   ``definePreset`` in ``tokens.ts`` (core 19 required, extended
+   fall back to card/muted derivations + mode generics), and new
+   ``--color-*`` utilities need a matching ``@theme`` default in
+   ``globals.css`` or Tailwind won't generate the class.
 
 ## Opencode serve CMD window stays open after a turn crash (R4.2, 2026-09-07)
 

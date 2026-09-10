@@ -33,11 +33,12 @@ import {
   useAuiState,
   useAui,
 } from "@assistant-ui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
   Bot,
+  Brain,
   Check,
   Copy,
   OctagonX,
@@ -55,6 +56,8 @@ import { useChatActions } from "@/lib/chat/actions";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
 import { TurnDelegations } from "./TurnDelegations";
+import { TurnQuestions } from "./TurnQuestions";
+import { CopyIdBadge } from "@/components/CopyId";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 import { cn } from "@/utils/cn";
 
@@ -172,6 +175,18 @@ function useTurnElapsed(isRunning: boolean): number {
   return Math.max(0, Math.floor((now - startedAt) / 1000));
 }
 
+/**
+ * Seconds since the turn last produced output. `elapsed` is the
+ * ticking turn age, `activeTick` the elapsed value when output last
+ * grew (see TurnStatusBar). A high quiet number with a low char
+ * count is the visible signature of a wedged turn (hung tool
+ * approval, dead serve) -- the case the backend stall watchdog
+ * fails fast on. Pure so it can be unit-tested.
+ */
+export function quietSeconds(elapsed: number, activeTick: number): number {
+  return Math.max(0, elapsed - activeTick);
+}
+
 function threadTextOf(message: unknown): string {
   const content = (message as { content?: unknown } | null)?.content;
   if (typeof content === "string") return content;
@@ -206,8 +221,12 @@ function TurnStatusBar() {
     wsState = "open";
   }
   const elapsed = useTurnElapsed(isRunning);
-  if (!isRunning) return null;
-
+  // Quiet tracking hooks MUST sit above the early return (Rules of
+  // Hooks): the bar mounts idle (isRunning false) and starts later.
+  // The pure message reads below are hook-free, so they can also
+  // live up here; the return-early then only guards the JSX.
+  const [activeTick, setActiveTick] = useState(0);
+  const lastChars = useRef(0);
   const last = messages.length ? messages[messages.length - 1] : undefined;
   const lastStreaming =
     last !== undefined &&
@@ -216,6 +235,25 @@ function TurnStatusBar() {
   const chars = lastStreaming ? threadTextOf(last).length : 0;
   const delegationId = last !== undefined ? threadCustomOf(last).delegationId : null;
   const wsDown = wsState !== "open";
+  // Quiet tracking: the elapsed tick at which output last grew. Any
+  // delta (streaming text or thinking) moves it; a turn that stops
+  // producing shows a growing "quiet Ns" next to the elapsed clock.
+  useEffect(() => {
+    if (elapsed < activeTick) {
+      // New turn (elapsed restarted): reset the baseline so the
+      // previous turn's char count can't pin quiet at zero.
+      lastChars.current = 0;
+      setActiveTick(0);
+      return;
+    }
+    if (chars > lastChars.current) {
+      lastChars.current = chars;
+      setActiveTick(elapsed);
+    }
+  });
+  if (!isRunning) return null;
+
+  const quiet = quietSeconds(elapsed, activeTick);
 
   return (
     <div className="px-4 pb-1" data-testid="turn-status-bar">
@@ -236,13 +274,21 @@ function TurnStatusBar() {
           </span>
         )}
         <span className="tabular-nums">{elapsed}s</span>
-        {delegationId && (
+        {quiet >= 10 && (
           <span
-            className="rounded border border-border bg-muted px-1.5 py-px font-mono text-[10px]"
-            title={`Chat turn delegation ${delegationId}`}
+            className="tabular-nums text-amber-600 dark:text-amber-400"
+            title="No output arrived in this long -- the turn may be wedged (the backend fails it after 5 silent minutes)"
+            data-testid="turn-status-quiet"
           >
-            {delegationId.slice(0, 8)}
+            quiet {quiet}s
           </span>
+        )}
+        {delegationId && (
+          <CopyIdBadge
+            id={delegationId}
+            label="Chat turn delegation"
+            testId="turn-status-delegation-id"
+          />
         )}
         <span className="flex-1" />
         <span
@@ -343,6 +389,8 @@ interface SweaveCustom {
   timestamp?: string | null;
   delegationId?: string | null;
   superseded?: boolean;
+  /** Live or persisted reasoning text (chat.thinking / metadata.thinking). */
+  thinking?: string | null;
 }
 
 function useMessageCustom(): SweaveCustom {
@@ -370,10 +418,15 @@ function AssistantMessage() {
 
   const body = (
     <>
+      {custom.thinking ? (
+        <ThinkingBlock thinking={custom.thinking} streaming={isRunning} />
+      ) : null}
       <div className="text-sm leading-relaxed">
         <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
         {isRunning && <span className="streaming-cursor" aria-hidden />}
       </div>
+
+      {custom.delegationId && <TurnQuestions delegationId={custom.delegationId} />}
 
       {custom.delegationId && <TurnDelegations parentDelegationId={custom.delegationId} />}
 
@@ -400,12 +453,11 @@ function AssistantMessage() {
         <div className="mb-1 flex items-center gap-2 text-xs">
           <span className="font-medium text-foreground">Assistant</span>
           {custom.delegationId && (
-            <span
-              className="rounded border border-border bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground"
-              title={`Chat turn delegation ${custom.delegationId}`}
-            >
-              {custom.delegationId.slice(0, 8)}
-            </span>
+            <CopyIdBadge
+              id={custom.delegationId}
+              label="Chat turn delegation"
+              testId="delegation-id-badge"
+            />
           )}
         </div>
 
@@ -449,6 +501,57 @@ function SupersededBlock({
       </button>
       {expanded && <div className="mt-1.5 opacity-100">{children}</div>}
     </div>
+  );
+}
+
+/**
+ * Thinking block (reasoning capture).
+ *
+ * While the turn streams, the block is expanded and live (the
+ * provider's reasoning increments arrive as chat.thinking events).
+ * Once finalized, it collapses into a <details> shell so the
+ * reasoning stays inspectable without dominating the bubble. The
+ * persisted copy rides on message metadata.thinking, so reloads
+ * keep it.
+ */
+function ThinkingBlock({
+  thinking,
+  streaming,
+}: {
+  thinking: string;
+  streaming: boolean;
+}) {
+  if (streaming) {
+    return (
+      <div
+        data-testid="thinking-block"
+        data-state="streaming"
+        className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
+      >
+        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          <Brain size={12} className="text-primary" />
+          <span>Thinking…</span>
+        </div>
+        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+          {thinking}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details
+      data-testid="thinking-block"
+      data-state="done"
+      className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5"
+    >
+      <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+        <Brain size={12} className="text-primary" />
+        <span>Thinking</span>
+      </summary>
+      <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+        {thinking}
+      </div>
+    </details>
   );
 }
 
@@ -650,7 +753,7 @@ function Composer() {
   return (
     <div className="px-4 pb-4">
       <ComposerPrimitive.Root
-        className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-lg focus-within:border-ring/60"
+        className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-lg transition-[border-color,box-shadow] focus-within:border-primary/70 focus-within:ring-2 focus-within:ring-ring/30"
         data-testid="chat-composer"
       >
         <ComposerPrimitive.Input

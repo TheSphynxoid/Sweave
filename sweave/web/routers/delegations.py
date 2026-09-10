@@ -77,21 +77,38 @@ class SubAgentRunFinish(BaseModel):
 
 
 class EscalateRequest(BaseModel):
-    """M1.9 step 3: ask_human escalation request.
+    """M1.9 step 3 (+ M1.11 kinds): ask_human / escalate request.
 
-    * ``question`` -- the question for the human (required).
+    * ``question`` -- the question (or escalation message) for the
+      human / orchestrator (required).
     * ``options`` -- optional list of choices; when present the UI
       renders buttons, when absent a free-form text input.
+    * ``kind`` -- ``question`` (orchestrator -> human, blocking) or
+      ``escalation`` (specialist -> orchestrator, notice).
+    * ``audience`` -- ``human`` | ``orchestrator`` (mirrors kind).
     """
 
     question: str
     options: list[str] | None = None
+    kind: str = "question"
+    audience: str = "human"
 
 
 class AnswerRequest(BaseModel):
     """M1.9 step 3: the human's answer to an open escalation."""
 
     response: str
+
+
+class SkipRequest(BaseModel):
+    """M1.11: explicit human skip (opencode-Esc equivalent).
+
+    ``confirmed`` must be true — the UI's system-issued "are you
+    sure?" dialog sets it. Unconfirmed skips are rejected (409)
+    so a fat-finger tap cannot silently drop a blocking question.
+    """
+
+    confirmed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -369,17 +386,19 @@ async def escalate_delegation(
     request: "EscalateRequest",
     state: AppState = Depends(get_state),
 ):
-    """M1.9 step 3: ``ask_human`` escalation.
+    """M1.9 step 3 (+ M1.11 kinds): ``ask_human`` / ``escalate``.
 
     Persists the escalation (one JSON file per asking delegation;
     survives server restarts), publishes
     ``specialist.escalated`` on the WS bus, and flips the asking
-    delegation's ``needs_attention`` flag. The Children tab patches
-    the escalation lane in place (M1.8 no-rerender invariant).
+    delegation's ``needs_attention`` flag. The Children audit
+    surfaces it; blocking ``question`` records hold the chat turn
+    open in ChatLoop until answered or skipped (no deadline).
 
-    The MCP server calls this endpoint via the ``ask_human`` tool;
-    the timeout default is 15 minutes, configurable. The answer
-    path is ``POST /api/delegations/{id}/answer {response}``.
+    The MCP server calls this endpoint via ``ask_human`` (kind=
+    question, audience=human) and ``escalate`` (kind=escalation,
+    audience=orchestrator). The skip path is
+    ``POST /api/delegations/{id}/skip {confirmed: true}``.
     """
     if state.escalation_store is None:
         raise HTTPException(503, "EscalationStore not initialised")
@@ -399,6 +418,8 @@ async def escalate_delegation(
         delegation_id=delegation_id,
         question=request.question,
         options=request.options,
+        kind=request.kind or "question",
+        audience=request.audience or "human",
     )
     # Flip the asking delegation's needs_attention flag. Best-effort:
     # the persistence is the EscalationStore; the flag is the
@@ -428,10 +449,9 @@ async def answer_delegation(
     """M1.9 step 3: record the human's answer to an escalation.
 
     Returns the updated escalation (status=answered, response=<text>).
-    When the timeout elapses without an answer, the escalation is
-    auto-resolved with status=timeout and "no answer received" is
-    recorded as the response -- the asking session proceeds with
-    best judgment rather than hanging.
+    Legacy timeout records (status=timeout, "no answer received")
+    stay readable; new questions wait until answered or explicitly
+    skipped (``POST …/skip``) rather than timing out.
     """
     if state.escalation_store is None:
         raise HTTPException(503, "EscalationStore not initialised")
@@ -453,15 +473,52 @@ async def answer_delegation(
     return rec
 
 
+@router.post("/api/delegations/{delegation_id}/skip")
+async def skip_delegation(
+    delegation_id: str,
+    request: "SkipRequest",
+    state: AppState = Depends(get_state),
+):
+    """M1.11: explicit human skip of a blocking question.
+
+    The opencode-Esc equivalent. ``confirmed`` must be true — the
+    UI's system-issued "are you sure?" dialog sets it before
+    calling. Unconfirmed calls are rejected (409) so a fat-finger
+    tap cannot silently drop the question. Resolves with
+    ``status=skipped`` and clears ``needs_attention``; the waiting
+    turn proceeds with best judgment.
+    """
+    if state.escalation_store is None:
+        raise HTTPException(503, "EscalationStore not initialised")
+    if not request.confirmed:
+        raise HTTPException(
+            409, "skip requires confirmed=true (system confirm dialog)"
+        )
+    rec = await state.escalation_store.skip(delegation_id=delegation_id)
+    if rec is None:
+        raise HTTPException(
+            404, f"escalation for delegation '{delegation_id}' not found"
+        )
+    for store in _all_stores(state):
+        if store.get(delegation_id) is not None:
+            try:
+                await store.update(delegation_id, needs_attention=False)
+            except Exception:
+                pass
+            break
+    return rec
+
+
 @router.get("/api/delegations/{delegation_id}/escalation")
 async def get_escalation(
     delegation_id: str,
     state: AppState = Depends(get_state),
 ):
-    """M1.9 step 3: read the current escalation for a delegation.
+    """M1.9 step 3 (+ M1.11 kinds): read the current escalation.
 
-    Returns the full escalation record (question, options, status,
-    response, deadline) or 404 if no escalation exists.
+    Returns the full escalation record (question, options, kind,
+    audience, status, response, deadline — ``deadline_at`` is null
+    for no-timeout questions) or 404 if none exists.
     """
     if state.escalation_store is None:
         raise HTTPException(503, "EscalationStore not initialised")

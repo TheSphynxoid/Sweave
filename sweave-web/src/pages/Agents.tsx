@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { ModelPicker } from "@/components/ModelPicker";
+import { ModelWithEffort } from "@/components/EffortSelect";
 import { CreateSpecialistDialog } from "@/components/CreateSpecialistDialog";
 import { EditSpecialistDialog } from "@/components/EditSpecialistDialog";
 
@@ -156,6 +156,7 @@ export function AgentsPage() {
                       key={`${s.scope}-${s.name}`}
                       specialist={s}
                       modelOptions={modelOptions}
+                      variantsMap={models?.variants ?? {}}
                       onModel={(m) => setModel(s, m)}
                       onDelete={() => remove(s)}
                       onEdit={() => setEditTarget(s)}
@@ -183,12 +184,14 @@ export function AgentsPage() {
 function SpecialistCard({
   specialist,
   modelOptions,
+  variantsMap,
   onModel,
   onDelete,
   onEdit,
 }: {
   specialist: SpecialistSummary;
   modelOptions: string[];
+  variantsMap: Record<string, string[]>;
   onModel: (model: string) => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -219,10 +222,11 @@ function SpecialistCard({
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground w-12 shrink-0">Model</span>
-          <ModelPicker
+          <ModelWithEffort
             value={specialist.current_model ?? ""}
             onValueChange={onModel}
             options={modelOptions}
+            variantsMap={variantsMap}
             disabled={locked}
             className="h-8 text-xs flex-1"
             testId={`model-picker-${specialist.scope}-${specialist.name}`}

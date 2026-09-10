@@ -67,6 +67,14 @@ class ConfigManager:
             )
         else:
             self._models_config = ModelsConfig()
+
+        # Customs layer (models.custom.yaml, hand-maintained): entries
+        # neither models.dev nor the serve knows — local-only models,
+        # extra variant rows, project-specific additions. Additive and
+        # never overwritten by `sweave models sync`.
+        customs_default = self._merge_custom_registry(models_path)
+        if customs_default:
+            self._models_config.default = customs_default
         
         # Load routing config
         rules_path = Path(self._config.models.rules_path)
@@ -94,17 +102,78 @@ class ConfigManager:
         if self._models_config is None:
             self.load()
         return self._models_config
+
+    def _merge_custom_registry(self, models_path: Path) -> str | None:
+        """Merge models.custom.yaml into the loaded registry (additive).
+
+        Returns a default override when the customs file sets one,
+        else None. Missing/invalid customs file -> no-op (never fail
+        startup over the optional layer).
+        """
+        from sweave.models_sync import CUSTOMS_FILENAME, merge_custom_rows
+
+        customs_path = models_path.parent / CUSTOMS_FILENAME
+        if not customs_path.exists():
+            return None
+        try:
+            with open(customs_path, encoding="utf-8") as f:
+                customs_data = yaml.safe_load(f) or {}
+        except Exception:
+            return None
+        customs_models = customs_data.get("models") or customs_data
+        if not isinstance(customs_models, dict):
+            return None
+        merged = merge_custom_rows(
+            dict(self._models_config.providers), customs_models
+        )
+        self._models_config.providers = merged
+        default = customs_models.get("default")
+        return default if isinstance(default, str) and default else None
+
+    def get_model_meta(self, qualified_id: str | None = None) -> dict:
+        """Return metadata for a qualified model id (or the whole map).
+
+        Reads the models.meta.json sidecar written by `sweave models
+        sync` (variants, reasoning options, limits, modalities, cost).
+        Absent sidecar -> {} (utilities must treat metadata as
+        best-effort, never load-bearing).
+        """
+        import json
+
+        from sweave.models_sync import META_FILENAME
+
+        sidecar: dict = {}
+        try:
+            registry_path = Path(
+                self._config.models.registry_path if self._config else "models.yaml"
+            )
+            meta_path = registry_path.parent / META_FILENAME
+            if meta_path.exists():
+                with open(meta_path, encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    sidecar = loaded
+        except Exception:
+            sidecar = {}
+        if qualified_id is None:
+            return sidecar
+        entry = sidecar.get(qualified_id)
+        return entry if isinstance(entry, dict) else {}
     
     @staticmethod
     def _qualify(provider: str, model: str) -> str:
         """Return the qualified ``provider/model`` form.
 
-        Registry entries are bare model ids (e.g. ``qwen3:8b`` or
-        ``@cf/...``); entries that already carry their provider prefix
-        are returned unchanged (defensive: never double-qualify).
+        Always prefixes: registry rows are BARE model ids, even when
+        a bare id itself starts with ``provider/`` (nvidia and
+        openrouter list models like ``nvidia/active-speaker`` /
+        ``openrouter/auto`` — those prefixes are part of the model
+        id, and the qualified form is the doubled
+        ``nvidia/nvidia/active-speaker``). The old defensive
+        passthrough (skip when the row "already" starts with the
+        provider) silently produced single-prefixed ids whose wire
+        modelID no longer matched the serve's model key.
         """
-        if "/" in model and model.split("/", 1)[0] == provider:
-            return model
         return f"{provider}/{model}"
 
     def get_all_models(self) -> list[str]:
@@ -156,7 +225,7 @@ class ConfigManager:
         all_models = self.get_all_models()
         available = set(all_models)
         configured_default = self.get_models().default
-        if configured_default and configured_default in available:
+        if configured_default and self._is_selectable_model(configured_default, available):
             return configured_default
         opencode_model = self._opencode_configured_model()
         if opencode_model:
@@ -167,20 +236,66 @@ class ConfigManager:
                     return model
         return all_models[0] if all_models else "deepseek-flash"
 
+    def _is_selectable_model(self, model: str, available: set[str]) -> bool:
+        """Mirror of :meth:`set_default_model` validation for reads.
+
+        The stored default may carry a ``+variant`` suffix the
+        registry no longer lists as a row (variants are a dropdown
+        dimension, not registry entries); accept it when the base
+        is registered and the variant is advertised (or unknown to
+        the metadata sidecar).
+        """
+        from sweave.runtime.specialist_store import parse_model_ref
+
+        if model in available:
+            return True
+        ref = parse_model_ref(model)
+        if not ref or not ref.get("provider") or not ref.get("model_id"):
+            return False
+        base = f"{ref['provider']}/{ref['model_id']}"
+        if base not in available:
+            return False
+        variant = ref.get("variant")
+        if not variant:
+            return True
+        known = self.get_model_meta(base).get("variants") or []
+        return not known or variant in known
+
     def set_default_model(self, model: str) -> str:
         """Persist a new default model to models.yaml.
 
-        The model must be qualified (``provider/model``) and present
-        in the registry — otherwise the next chat turn would 500 in
-        the opencode serve. Raises ``ValueError`` on violation (the
-        router maps this to a 400).
+        Accepts qualified ``provider/model`` ids and
+        ``provider/model+variant`` effort selections (the effort
+        dropdown builds these; the registry lists base rows). A
+        variant must be advertised for its model when the metadata
+        sidecar knows the model — otherwise the next chat turn
+        would 500 in the opencode serve. Raises ``ValueError`` on
+        violation (the router maps this to a 400).
         """
+        from sweave.runtime.specialist_store import parse_model_ref
+
         if "/" not in model:
             raise ValueError(
                 f"model must be qualified as 'provider/model' (got {model!r})"
             )
-        if model not in set(self.get_all_models()):
-            raise ValueError(f"unknown model {model!r} (not in models.yaml registry)")
+        available = set(self.get_all_models())
+        if model in available:
+            resolved_variant: str | None = None
+        else:
+            ref = parse_model_ref(model)
+            if not ref or not ref.get("provider") or not ref.get("model_id"):
+                raise ValueError(f"unknown model {model!r} (not in models.yaml registry)")
+            base = f"{ref['provider']}/{ref['model_id']}"
+            if base not in available:
+                raise ValueError(f"unknown model {model!r} (not in models.yaml registry)")
+            resolved_variant = ref.get("variant")
+            if resolved_variant:
+                known = self.get_model_meta(base).get("variants") or []
+                if known and resolved_variant not in known:
+                    raise ValueError(
+                        f"unknown variant {resolved_variant!r} for {base} "
+                        f"(advertised: {', '.join(known)})"
+                    )
         models = self.get_models()
         models.default = model
         if self._config is not None:

@@ -88,6 +88,13 @@ def test_api_models(client: TestClient):
     assert "all_models" in data
     assert all("/" in m for m in data["all_models"])
     assert data["default"] in data["all_models"]
+    # Effort dropdown contract: variants map present; every key is a
+    # qualified id from all_models and every value a non-empty list.
+    assert "variants" in data and isinstance(data["variants"], dict)
+    all_set = set(data["all_models"])
+    for qualified_id, names in data["variants"].items():
+        assert qualified_id in all_set
+        assert isinstance(names, list) and names
 
 
 def test_api_rules(client: TestClient):

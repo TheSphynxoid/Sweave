@@ -92,7 +92,7 @@ function mdComponents() {
         {...props}
         target="_blank"
         rel="noreferrer noopener"
-        className="text-primary underline underline-offset-2"
+        className="text-link underline underline-offset-2"
       />
     ),
     blockquote: (props: BlockquoteHTMLAttributes<HTMLQuoteElement>) => (
@@ -116,7 +116,7 @@ function mdComponents() {
         <pre
           {...props}
           data-testid="markdown-pre"
-          className="overflow-x-auto rounded-md bg-zinc-950 text-zinc-100 text-xs p-3 leading-relaxed"
+          className="overflow-x-auto rounded-md bg-code text-code-foreground text-xs p-3 leading-relaxed"
         />
       </div>
     ),
@@ -151,7 +151,7 @@ function CopyCodeButton() {
       onClick={onClick}
       aria-label={copied ? "Copied" : "Copy code"}
       data-testid="markdown-copy-code"
-      className="absolute top-2 right-2 p-1 rounded bg-zinc-800 text-zinc-100 opacity-0 group-hover/code:opacity-100 focus:opacity-100 transition-opacity"
+      className="absolute top-2 right-2 p-1 rounded bg-code text-code-foreground border border-border opacity-0 group-hover/code:opacity-100 focus:opacity-100 transition-opacity"
     >
       {copied ? <Check size={12} /> : <Copy size={12} />}
     </button>

@@ -19,7 +19,11 @@ def main():
     try:
         if sys.platform == "win32":
             import subprocess
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], check=False)
+            # /T kills the whole process tree: the server's opencode
+            # serves (and their MCP children) must not survive the
+            # server -- orphaned serves were a 4GB leak (2026-09-10:
+            # 13 stale serves across restarts).
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], check=False)
         else:
             os.kill(pid, signal.SIGTERM)
             # Wait for graceful shutdown

@@ -327,11 +327,12 @@ async def test_tools_list_exposes_both_tools():
     from mcp.types import PaginatedRequestParams
 
     result = await _list_tools_handler(ctx=None, params=PaginatedRequestParams())
-    # M1.9 step 3 added ask_human alongside the original two tools.
+    # M1.9 step 3 added ask_human alongside the original two tools;
+    # M1.11 adds escalate (specialist -> orchestrator notice).
     # The expected set is the superset; future additions (R4+)
     # update this test, not the other way around.
     names = {t.name for t in result.tools}
-    assert names == {"list_specialists", "defer", "ask_human"}
+    assert names == {"list_specialists", "defer", "ask_human", "escalate"}
     # The defer schema requires caller_delegation_id (orchestrator
     # contract; nothing about the chain link is optional).
     defer_tool = next(t for t in result.tools if t.name == "defer")
@@ -424,8 +425,8 @@ async def test_mcp_server_stdio_round_trip(monkeypatch, tmp_path: Path):
                     assert init.server_info.name == "sweave-mcp"
                     tools = await session.list_tools()
                     tool_names = {t.name for t in tools.tools}
-                    # M1.9 step 3 added ask_human.
-                    assert tool_names == {"list_specialists", "defer", "ask_human"}
+                    # M1.9 step 3 added ask_human; M1.11 adds escalate.
+                    assert tool_names == {"list_specialists", "defer", "ask_human", "escalate"}
                     # tools/call over the wire (the -32602 pin): the
                     # no-arg tool works with and without arguments.
                     for arguments in (None, {}):

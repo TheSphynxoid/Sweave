@@ -176,7 +176,7 @@ async def test_run_pins_agent_per_role(tmp_path: Path):
 
     seen: dict[str, Any] = {}
 
-    async def fake_send(self, body, trace, on_chunk=None, on_reasoning=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         seen.update(dict(body))
         return "ok"
 

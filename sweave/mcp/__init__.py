@@ -1,7 +1,6 @@
-"""Sweave MCP server (M1.6 step 1).
+"""Sweave MCP server (M1.6 step 1; M1.11 roles).
 
-A stdio MCP server that exposes two tools to the orchestrator's
-opencode session:
+A stdio MCP server that exposes tools to the opencode sessions:
 
 * ``defer(target, task, reason?)`` -- hand work to a named specialist
   via ``POST /api/v2/tasks`` (parent_task_id = caller's delegation;
@@ -12,6 +11,17 @@ opencode session:
 * ``list_specialists()`` -- return the resolved specialist names with
   a one-line description (no secrets). Helps the orchestrator pick
   the right target without guessing.
+
+* ``ask_human(question, options?, caller_delegation_id)`` --
+  orchestrator -> human BLOCKING question (M1.11: replaces the
+  native ``question`` tool, denied on both managed agents). No
+  deadline; the ChatLoop holds the turn open until answered or
+  skipped (skip guarded by a system confirm).
+
+* ``escalate(message, caller_delegation_id)`` -- specialist ->
+  orchestrator non-blocking notice (M1.11: the only sweave tool
+  specialists may call). The specialist turn continues; the
+  record waits in the global audit log.
 
 **Auth**: localhost-only HTTP to the running Sweave server, plus a
 shared token in the ``X-Sweave-MCP-Token`` header. The token is
@@ -277,22 +287,20 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     return _result_text(f"queued: {delegation_id} (target={target})", is_error=False)
 
 
-# Tool: ask_human (M1.9 step 3)
+# Tool: ask_human (M1.9 step 3; M1.11 blocking question)
 #
-# Sibling of defer. A specialist that needs a human decision (auth
-# strategy, schema migration, anything a LLM can't safely pick on
-# its own) escalates instead of guessing. The escalation is
-# persisted; the WS bus publishes ``specialist.escalated``; the
-# Children tab surfaces it in the needs-attention lane. The
-# ``escalation_id`` is returned as the tool result so the asking
-# session (if it chooses to wait) can correlate the eventual answer.
+# Orchestrator -> human blocking question. Replaces the native
+# opencode ``question`` tool (denied on both managed agents via
+# ``runtime/agent_permission.py`` — the headless serve cannot
+# answer it and Sweave never intercepts it).
 #
-# The asking delegation is flagged ``needs_attention=True``; the
-# answer path (``POST /api/delegations/{id}/answer``) clears the
-# flag. If the timeout elapses without an answer, the escalation
-# is auto-resolved with status=timeout and "no answer received"
-# is recorded as the response -- the LLM proceeds with best
-# judgment rather than hanging.
+# Semantics: the MCP call itself returns immediately with
+# ``escalated: <id> (no deadline — waits for answer)``; the
+# ChatLoop holds the chat turn open (no assistant message
+# persisted) until the escalation resolves to ``answered`` or
+# ``skipped``, then runs synthesis with the outcome injected. No
+# timeout by user ruling 2026-09-10. Skip is the opencode-Esc
+# equivalent, guarded by a system-issued confirm in the UI.
 #
 # Why explicit caller_delegation_id: the opencode MCP context
 # doesn't carry an opaque sweave-delegation id (same reason as
@@ -300,7 +308,7 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
 
 
 async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
-    """Escalate a question to the human. Returns an escalation_id.
+    """Ask the human a blocking question. The turn waits for an answer.
 
     Arguments (per the orchestrator's tool contract):
     * ``question`` (str, required): the question for the human.
@@ -310,8 +318,9 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
       delegation's id; the escalation is keyed to it.
 
     Returns plain text:
-    * success: ``"escalated: <escalation_id> (deadline=<iso>)"`` so
-      the asking session can correlate the eventual answer.
+    * success: ``"escalated: <escalation_id> (no deadline — waits for answer)"``
+      The ChatLoop holds the turn open; the synthesis turn carries
+      the human's answer (or the skip note).
     * rejection: ``"rejected: <reason>"`` with ``isError=True`` for
       missing fields / network failures.
     """
@@ -343,6 +352,8 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     body: dict[str, Any] = {
         "question": question,
         "caller_delegation_id": caller_delegation_id,
+        "kind": "question",
+        "audience": "human",
     }
     if options:
         body["options"] = list(options)
@@ -359,9 +370,75 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
         return _result_text(f"error: {msg}", is_error=True)
 
     escalation_id = data.get("escalation_id", "?")
-    deadline_at = data.get("deadline_at", "?")
     return _result_text(
-        f"escalated: {escalation_id} (deadline={deadline_at})",
+        f"escalated: {escalation_id} (no deadline — waits for answer; "
+        "the turn holds until answered or skipped)",
+        is_error=False,
+    )
+
+
+# Tool: escalate (M1.11)
+#
+# Specialist -> orchestrator non-blocking notice. A blocked
+# specialist (missing context, conflicting instructions, needs a
+# re-plan) reports up instead of guessing or failing silently.
+# The specialist's own turn finishes normally; the record stays
+# pending in the global audit log (Children tab) with
+# ``needs_attention`` until a human acknowledges it, and the
+# orchestrator sees it via the child's flag on the next synthesis.
+#
+# Permission: the only sweave MCP tool specialists may call
+# (``agent_permission.py`` denies defer/list/ask_human explicitly
+# and allows this one by omission).
+
+
+async def _escalate(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
+    """Escalate a notice to the orchestrator (non-blocking).
+
+    Arguments:
+    * ``message`` (str, required): what is blocked + what is needed.
+    * ``caller_delegation_id`` (str, required): the escalating
+      delegation's id; the escalation is keyed to it.
+
+    Returns ``"escalated: <escalation_id> (to orchestrator)"`` on
+    success; ``"rejected: <reason>"`` with ``isError=True``
+    otherwise.
+    """
+    args = params.arguments or {}
+    message = args.get("message")
+    caller_delegation_id = args.get("caller_delegation_id")
+
+    if not isinstance(message, str) or not message.strip():
+        return _result_text(
+            "rejected: 'message' is required and must be a non-empty string",
+            is_error=True,
+        )
+    if not isinstance(caller_delegation_id, str) or not caller_delegation_id.strip():
+        return _result_text(
+            "rejected: 'caller_delegation_id' is required "
+            "(the escalating delegation's id; set it in the tool call)",
+            is_error=True,
+        )
+
+    body: dict[str, Any] = {
+        "question": message.strip(),
+        "caller_delegation_id": caller_delegation_id.strip(),
+        "kind": "escalation",
+        "audience": "orchestrator",
+    }
+    token = _token_from_env_or_file()
+    try:
+        data = await _http_post(
+            f"/api/delegations/{caller_delegation_id.strip()}/escalate",
+            body,
+            token,
+        )
+    except Exception as e:
+        return _result_text(f"error: {e}", is_error=True)
+    escalation_id = data.get("escalation_id", "?")
+    return _result_text(
+        f"escalated: {escalation_id} (to orchestrator; "
+        "your turn continues — state the block in your summary too)",
         is_error=False,
     )
 
@@ -431,13 +508,13 @@ async def _list_tools_handler(
             types.Tool(
                 name="ask_human",
                 description=(
-                    "Escalate a question to the human (auth strategy, "
-                    "schema migration, anything a LLM shouldn't pick on its "
-                    "own). Returns an escalation_id; the Children tab surfaces "
-                    "the question in the needs-attention lane. The answer "
-                    "path is POST /api/delegations/{id}/answer; the timeout "
-                    "(default 15 min) returns 'no answer received' so the "
-                    "LLM proceeds with best judgment."
+                    "Ask the human a blocking question (replaces the "
+                    "native question tool, which is denied). No "
+                    "deadline: the turn holds until answered or "
+                    "skipped (skip is guarded by a system confirm). "
+                    "The answer path is POST /api/delegations/{id}/answer; "
+                    "skip is POST /api/delegations/{id}/skip. The "
+                    "synthesis turn carries the outcome."
                 ),
                 inputSchema={
                     "type": "object",
@@ -463,6 +540,31 @@ async def _list_tools_handler(
                     "required": ["question", "caller_delegation_id"],
                 },
             ),
+            types.Tool(
+                name="escalate",
+                description=(
+                    "Escalate a notice to the orchestrator "
+                    "(specialist -> orchestrator, non-blocking). Use "
+                    "when blocked or needing a re-plan; your turn "
+                    "continues and you should still state the block "
+                    "in your summary. The notice lands in the global "
+                    "audit log with needs-attention until acknowledged."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": "What is blocked + what is needed.",
+                        },
+                        "caller_delegation_id": {
+                            "type": "string",
+                            "description": "The escalating delegation's id; the escalation is keyed to it.",
+                        },
+                    },
+                    "required": ["message", "caller_delegation_id"],
+                },
+            ),
         ]
     )
 
@@ -478,6 +580,8 @@ async def _call_tool_dispatcher(
         return await _list_specialists(ctx, params)
     if params.name == "ask_human":
         return await _ask_human(ctx, params)
+    if params.name == "escalate":
+        return await _escalate(ctx, params)
     return _result_text(f"unknown tool: {params.name}", is_error=True)
 
 

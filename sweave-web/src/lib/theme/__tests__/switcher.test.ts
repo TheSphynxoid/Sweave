@@ -76,6 +76,8 @@ describe("resolveThemeTokens", () => {
 describe("applyThemeToDocument", () => {
   beforeEach(() => {
     document.documentElement.removeAttribute(THEME_DATA_ATTR);
+    document.documentElement.classList.remove("dark");
+    document.documentElement.style.colorScheme = "";
     const el = document.getElementById("sweave-theme-vars");
     if (el) el.remove();
   });
@@ -110,5 +112,37 @@ describe("applyThemeToDocument", () => {
     expect(el1).toBe(el2); // same element
     expect(after).not.toBe(before);
     expect(after).toContain("--color-primary: rgb(255 0 255);");
+  });
+
+  it("toggles the dark class + color-scheme per preset mode", () => {
+    applyThemeToDocument({ preset: "dracula", custom: {} });
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+    applyThemeToDocument({ preset: "github-light", custom: {} });
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.style.colorScheme).toBe("light");
+  });
+
+  it("emits the extended tokens (sidebar, status, chat, code)", () => {
+    applyThemeToDocument({ preset: "midnight", custom: {} });
+    const el = document.getElementById("sweave-theme-vars") as HTMLStyleElement | null;
+    const text = el?.textContent ?? "";
+    for (const key of ["sidebar", "success", "warning", "info", "user-message", "code", "link", "selection"] as const) {
+      expect(text).toContain(`--color-${key}: rgb(`);
+    }
+  });
+});
+
+describe("loadActiveTheme sanitization", () => {
+  it("drops unknown custom keys persisted by older builds", () => {
+    window.localStorage.setItem("sweave.theme.preset", "dark");
+    window.localStorage.setItem(
+      "sweave.theme.custom",
+      JSON.stringify({ primary: "1 2 3", "no-such-token": "9 9 9" }),
+    );
+    expect(loadActiveTheme()).toEqual({
+      preset: "dark",
+      custom: { primary: "1 2 3" },
+    });
   });
 });

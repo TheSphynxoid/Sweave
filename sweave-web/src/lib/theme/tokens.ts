@@ -1,11 +1,11 @@
 /**
- * Sweave design tokens (M1.9 Step 1).
+ * Sweave design tokens.
  *
- * Source of truth for all UI colors, spacing, and radius. Tailwind
- * config references these tokens; component code never hardcodes
- * values. Custom-color support (the v1 parity goal) extends the
- * active preset with a partial override -- the override never
- * removes tokens, only replaces them.
+ * Source of truth for all UI colors. Tailwind config references
+ * these tokens; component code never hardcodes values.
+ * Custom-color support extends the active preset with a partial
+ * override -- the override never removes tokens, only replaces
+ * them.
  *
  * Colors are stored as RGB tuples (e.g. ``"255 255 255"``) so
  * the runtime CSS can wrap them in ``rgb(var(--color-...))``.
@@ -14,13 +14,27 @@
  * (1:1) so the Tailwind config doesn't need a translation
  * table.
  *
+ * Token families:
+ *   core (19)     -- the original shadcn-style surface roles.
+ *                     Every preset defines these explicitly.
+ *   extended (18) -- status (success/warning/info), chrome
+ *                     (sidebar/topbar), chat bubbles, code,
+ *                     links, selection. Presets override the
+ *                     ones that give them character; anything
+ *                     left out falls back to a mode-aware
+ *                     derivation from the core map (see
+ *                     ``definePreset``), so every ``TokenMap``
+ *                     is still complete.
+ *
  * The exported ``RESOLVE_TOKENS`` merges a preset + custom
  * override; the merged map is what
  * ``applyThemeToDocument`` writes to the CSS variables on
  * ``:root[data-theme=...]``.
  */
 
-export type TokenName =
+export type ThemeMode = "dark" | "light";
+
+export type CoreTokenName =
   | "background"
   | "foreground"
   | "muted"
@@ -41,24 +55,281 @@ export type TokenName =
   | "ring"
   | "input";
 
+export type ExtendedTokenName =
+  | "success"
+  | "success-foreground"
+  | "warning"
+  | "warning-foreground"
+  | "info"
+  | "info-foreground"
+  | "sidebar"
+  | "sidebar-foreground"
+  | "topbar"
+  | "topbar-foreground"
+  | "user-message"
+  | "user-message-foreground"
+  | "assistant-message"
+  | "assistant-message-foreground"
+  | "code"
+  | "code-foreground"
+  | "link"
+  | "selection";
+
+export type TokenName = CoreTokenName | ExtendedTokenName;
+
 /** A complete token map. Every TokenName must be present. */
 export type TokenMap = Readonly<Record<TokenName, string>>;
 
 export interface PresetTokens {
   readonly name: string;
   readonly label: string;
+  readonly mode: ThemeMode;
+  readonly description: string;
   readonly tokens: TokenMap;
 }
 
 /** Custom-color override: partial TokenMap, merged on top of the active preset. */
 export type CustomOverride = Readonly<Partial<TokenMap>>;
 
-/** All five v1 presets (dark/light/dracula/nord/catppuccin) + their labels. */
-export const PRESETS: readonly PresetTokens[] = [
+/** Every token name, core first then extended. */
+export const ALL_TOKEN_NAMES: readonly TokenName[] = [
+  "background",
+  "foreground",
+  "muted",
+  "muted-foreground",
+  "border",
+  "primary",
+  "primary-foreground",
+  "secondary",
+  "secondary-foreground",
+  "destructive",
+  "destructive-foreground",
+  "accent",
+  "accent-foreground",
+  "card",
+  "card-foreground",
+  "popover",
+  "popover-foreground",
+  "ring",
+  "input",
+  "success",
+  "success-foreground",
+  "warning",
+  "warning-foreground",
+  "info",
+  "info-foreground",
+  "sidebar",
+  "sidebar-foreground",
+  "topbar",
+  "topbar-foreground",
+  "user-message",
+  "user-message-foreground",
+  "assistant-message",
+  "assistant-message-foreground",
+  "code",
+  "code-foreground",
+  "link",
+  "selection",
+] as const;
+
+const ALL_TOKEN_SET: ReadonlySet<string> = new Set(ALL_TOKEN_NAMES);
+
+export function isTokenName(name: string): name is TokenName {
+  return ALL_TOKEN_SET.has(name);
+}
+
+/**
+ * Editor grouping for the customize panel. The groups are the
+ * source of truth for ``CustomColorEditor`` section order; every
+ * TokenName appears in exactly one group.
+ */
+export interface TokenGroup {
+  readonly id: string;
+  readonly label: string;
+  readonly tokens: readonly TokenName[];
+}
+
+export const TOKEN_GROUPS: readonly TokenGroup[] = [
   {
+    id: "base",
+    label: "Base",
+    tokens: ["background", "foreground", "border", "ring", "input", "selection"],
+  },
+  {
+    id: "brand",
+    label: "Brand",
+    tokens: [
+      "primary",
+      "primary-foreground",
+      "secondary",
+      "secondary-foreground",
+      "accent",
+      "accent-foreground",
+      "link",
+    ],
+  },
+  {
+    id: "surfaces",
+    label: "Surfaces",
+    tokens: [
+      "card",
+      "card-foreground",
+      "popover",
+      "popover-foreground",
+      "muted",
+      "muted-foreground",
+      "sidebar",
+      "sidebar-foreground",
+      "topbar",
+      "topbar-foreground",
+    ],
+  },
+  {
+    id: "status",
+    label: "Status",
+    tokens: [
+      "success",
+      "success-foreground",
+      "warning",
+      "warning-foreground",
+      "info",
+      "info-foreground",
+      "destructive",
+      "destructive-foreground",
+    ],
+  },
+  {
+    id: "chat-code",
+    label: "Chat & code",
+    tokens: [
+      "user-message",
+      "user-message-foreground",
+      "assistant-message",
+      "assistant-message-foreground",
+      "code",
+      "code-foreground",
+    ],
+  },
+] as const;
+
+export const TOKEN_LABELS: Record<TokenName, string> = {
+  background: "Background",
+  foreground: "Foreground",
+  muted: "Muted",
+  "muted-foreground": "Muted fg",
+  border: "Border",
+  primary: "Primary",
+  "primary-foreground": "Primary fg",
+  secondary: "Secondary",
+  "secondary-foreground": "Secondary fg",
+  destructive: "Destructive",
+  "destructive-foreground": "Destructive fg",
+  accent: "Accent",
+  "accent-foreground": "Accent fg",
+  card: "Card",
+  "card-foreground": "Card fg",
+  popover: "Popover",
+  "popover-foreground": "Popover fg",
+  ring: "Ring",
+  input: "Input",
+  success: "Success",
+  "success-foreground": "Success fg",
+  warning: "Warning",
+  "warning-foreground": "Warning fg",
+  info: "Info",
+  "info-foreground": "Info fg",
+  sidebar: "Sidebar",
+  "sidebar-foreground": "Sidebar fg",
+  topbar: "Topbar",
+  "topbar-foreground": "Topbar fg",
+  "user-message": "User message",
+  "user-message-foreground": "User msg fg",
+  "assistant-message": "Assistant msg",
+  "assistant-message-foreground": "Assist msg fg",
+  code: "Code bg",
+  "code-foreground": "Code fg",
+  link: "Link",
+  selection: "Selection",
+};
+
+/** Drop unknown keys / non-string values from a persisted override. */
+export function sanitizeCustomOverride(raw: unknown): CustomOverride {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (isTokenName(key) && typeof value === "string" && value.trim().length > 0) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Preset builder
+// ---------------------------------------------------------------------------
+
+interface PresetInput<N extends string> {
+  readonly name: N;
+  readonly label: string;
+  readonly mode: ThemeMode;
+  readonly description: string;
+  readonly core: Record<CoreTokenName, string>;
+  readonly extend?: Partial<Record<ExtendedTokenName, string>>;
+}
+
+/**
+ * Build a complete preset from its 19 core tokens + optional
+ * extended overrides. Anything not overridden derives from the
+ * core map (chrome bubbles reuse card/muted roles) or from a
+ * mode-aware generic (status hues that read on dark vs light).
+ */
+function definePreset<N extends string>(
+  input: PresetInput<N>,
+): PresetTokens & { readonly name: N } {
+  const { core, extend = {}, mode } = input;
+  const dark = mode === "dark";
+  const derived: Record<ExtendedTokenName, string> = {
+    success: dark ? "52 211 153" : "22 163 74",
+    "success-foreground": dark ? "15 23 42" : "255 255 255",
+    warning: dark ? "251 191 36" : "217 119 6",
+    "warning-foreground": dark ? "15 23 42" : "255 255 255",
+    info: dark ? "56 189 248" : "2 132 199",
+    "info-foreground": dark ? "15 23 42" : "255 255 255",
+    sidebar: core.card,
+    "sidebar-foreground": core["card-foreground"],
+    topbar: core.card,
+    "topbar-foreground": core["card-foreground"],
+    "user-message": core.muted,
+    "user-message-foreground": core.foreground,
+    "assistant-message": core.card,
+    "assistant-message-foreground": core["card-foreground"],
+    code: dark ? "10 10 10" : "24 24 27",
+    "code-foreground": dark ? "212 212 216" : "244 244 245",
+    link: core.primary,
+    selection: dark ? core.muted : "191 219 254",
+  };
+  const tokens = { ...core, ...derived, ...extend } as TokenMap;
+  return {
+    name: input.name,
+    label: input.label,
+    mode,
+    description: input.description,
+    tokens,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Presets (20): the 5 originals + 15 community-palette additions.
+// ---------------------------------------------------------------------------
+
+/** All twenty presets (light/dark + community palettes) + their labels. */
+export const PRESETS = [
+  definePreset({
     name: "light",
     label: "Light",
-    tokens: {
+    mode: "light",
+    description: "Clean default light theme.",
+    core: {
       background: "255 255 255",
       foreground: "15 23 42",
       muted: "241 245 249",
@@ -79,11 +350,16 @@ export const PRESETS: readonly PresetTokens[] = [
       ring: "139 92 246",
       input: "226 232 240",
     },
-  },
-  {
+    extend: {
+      link: "139 92 246",
+    },
+  }),
+  definePreset({
     name: "dark",
     label: "Dark",
-    tokens: {
+    mode: "dark",
+    description: "Default slate dark theme.",
+    core: {
       background: "15 23 42",
       foreground: "248 250 252",
       muted: "30 41 59",
@@ -104,11 +380,16 @@ export const PRESETS: readonly PresetTokens[] = [
       ring: "167 139 250",
       input: "30 41 59",
     },
-  },
-  {
+    extend: {
+      selection: "71 85 105",
+    },
+  }),
+  definePreset({
     name: "dracula",
     label: "Dracula",
-    tokens: {
+    mode: "dark",
+    description: "The classic Dracula palette: purple haze over dark slate.",
+    core: {
       background: "40 42 54",
       foreground: "248 248 242",
       muted: "68 71 90",
@@ -129,11 +410,25 @@ export const PRESETS: readonly PresetTokens[] = [
       ring: "189 147 249",
       input: "68 71 90",
     },
-  },
-  {
+    extend: {
+      success: "80 250 123",
+      "success-foreground": "40 42 54",
+      warning: "241 250 140",
+      "warning-foreground": "40 42 54",
+      info: "139 233 253",
+      "info-foreground": "40 42 54",
+      code: "33 34 44",
+      "code-foreground": "248 248 242",
+      link: "139 233 253",
+      selection: "68 71 90",
+    },
+  }),
+  definePreset({
     name: "nord",
     label: "Nord",
-    tokens: {
+    mode: "dark",
+    description: "Arctic, north-bluish calm.",
+    core: {
       background: "46 52 64",
       foreground: "236 239 244",
       muted: "59 66 82",
@@ -154,11 +449,25 @@ export const PRESETS: readonly PresetTokens[] = [
       ring: "136 192 208",
       input: "59 66 82",
     },
-  },
-  {
+    extend: {
+      success: "163 190 140",
+      "success-foreground": "46 52 64",
+      warning: "235 203 139",
+      "warning-foreground": "46 52 64",
+      info: "129 161 193",
+      "info-foreground": "46 52 64",
+      code: "36 41 51",
+      "code-foreground": "236 239 244",
+      link: "136 192 208",
+      selection: "76 86 106",
+    },
+  }),
+  definePreset({
     name: "catppuccin",
     label: "Catppuccin",
-    tokens: {
+    mode: "dark",
+    description: "Catppuccin Mocha: cozy pastel dark.",
+    core: {
       background: "30 30 46",
       foreground: "205 214 244",
       muted: "49 50 68",
@@ -179,7 +488,616 @@ export const PRESETS: readonly PresetTokens[] = [
       ring: "203 166 247",
       input: "69 71 90",
     },
-  },
+    extend: {
+      success: "166 227 161",
+      "success-foreground": "30 30 46",
+      warning: "249 226 175",
+      "warning-foreground": "30 30 46",
+      info: "137 220 235",
+      "info-foreground": "30 30 46",
+      code: "24 24 37",
+      "code-foreground": "205 214 244",
+      link: "137 180 250",
+      selection: "88 91 112",
+    },
+  }),
+  definePreset({
+    name: "tokyo-night",
+    label: "Tokyo Night",
+    mode: "dark",
+    description: "Neon night city: electric blue on deep indigo.",
+    core: {
+      background: "26 27 38",
+      foreground: "192 202 245",
+      muted: "36 40 59",
+      "muted-foreground": "89 95 119",
+      border: "36 40 59",
+      primary: "122 162 247",
+      "primary-foreground": "26 27 38",
+      secondary: "36 40 59",
+      "secondary-foreground": "192 202 245",
+      destructive: "247 118 142",
+      "destructive-foreground": "26 27 38",
+      accent: "36 40 59",
+      "accent-foreground": "192 202 245",
+      card: "31 35 53",
+      "card-foreground": "192 202 245",
+      popover: "31 35 53",
+      "popover-foreground": "192 202 245",
+      ring: "122 162 247",
+      input: "36 40 59",
+    },
+    extend: {
+      success: "158 206 106",
+      "success-foreground": "26 27 38",
+      warning: "224 175 104",
+      "warning-foreground": "26 27 38",
+      info: "125 207 255",
+      "info-foreground": "26 27 38",
+      sidebar: "22 22 30",
+      "sidebar-foreground": "192 202 245",
+      "user-message": "36 40 59",
+      "user-message-foreground": "192 202 245",
+      code: "22 22 30",
+      "code-foreground": "192 202 245",
+      link: "125 207 255",
+      selection: "40 52 87",
+    },
+  }),
+  definePreset({
+    name: "onedark",
+    label: "One Dark",
+    mode: "dark",
+    description: "Atom's beloved blue-grey dark with bright accents.",
+    core: {
+      background: "40 44 52",
+      foreground: "171 178 191",
+      muted: "44 49 58",
+      "muted-foreground": "92 99 112",
+      border: "44 49 58",
+      primary: "97 175 239",
+      "primary-foreground": "40 44 52",
+      secondary: "44 49 58",
+      "secondary-foreground": "171 178 191",
+      destructive: "224 108 117",
+      "destructive-foreground": "40 44 52",
+      accent: "44 49 58",
+      "accent-foreground": "171 178 191",
+      card: "40 44 52",
+      "card-foreground": "171 178 191",
+      popover: "40 44 52",
+      "popover-foreground": "171 178 191",
+      ring: "97 175 239",
+      input: "44 49 58",
+    },
+    extend: {
+      success: "152 195 121",
+      "success-foreground": "40 44 52",
+      warning: "229 192 123",
+      "warning-foreground": "40 44 52",
+      info: "86 182 194",
+      "info-foreground": "40 44 52",
+      code: "33 37 43",
+      "code-foreground": "171 178 191",
+      link: "97 175 239",
+      selection: "62 68 81",
+    },
+  }),
+  definePreset({
+    name: "gruvbox-dark",
+    label: "Gruvbox Dark",
+    mode: "dark",
+    description: "Retro-groove warm contrast, easy on the eyes.",
+    core: {
+      background: "40 40 40",
+      foreground: "235 219 178",
+      muted: "60 56 54",
+      "muted-foreground": "146 131 116",
+      border: "60 56 54",
+      primary: "250 189 47",
+      "primary-foreground": "40 40 40",
+      secondary: "60 56 54",
+      "secondary-foreground": "235 219 178",
+      destructive: "251 73 52",
+      "destructive-foreground": "40 40 40",
+      accent: "60 56 54",
+      "accent-foreground": "235 219 178",
+      card: "40 40 40",
+      "card-foreground": "235 219 178",
+      popover: "40 40 40",
+      "popover-foreground": "235 219 178",
+      ring: "250 189 47",
+      input: "60 56 54",
+    },
+    extend: {
+      success: "184 187 38",
+      "success-foreground": "40 40 40",
+      warning: "254 128 25",
+      "warning-foreground": "40 40 40",
+      info: "131 165 152",
+      "info-foreground": "40 40 40",
+      code: "29 32 33",
+      "code-foreground": "235 219 178",
+      link: "131 165 152",
+      selection: "80 73 69",
+    },
+  }),
+  definePreset({
+    name: "monokai",
+    label: "Monokai",
+    mode: "dark",
+    description: "High-voltage pink, green and orange on graphite.",
+    core: {
+      background: "39 40 34",
+      foreground: "248 248 242",
+      muted: "62 61 50",
+      "muted-foreground": "117 113 94",
+      border: "62 61 50",
+      primary: "166 226 46",
+      "primary-foreground": "39 40 34",
+      secondary: "62 61 50",
+      "secondary-foreground": "248 248 242",
+      destructive: "249 38 114",
+      "destructive-foreground": "248 248 242",
+      accent: "62 61 50",
+      "accent-foreground": "248 248 242",
+      card: "39 40 34",
+      "card-foreground": "248 248 242",
+      popover: "39 40 34",
+      "popover-foreground": "248 248 242",
+      ring: "166 226 46",
+      input: "62 61 50",
+    },
+    extend: {
+      success: "166 226 46",
+      "success-foreground": "39 40 34",
+      warning: "253 151 31",
+      "warning-foreground": "39 40 34",
+      info: "102 217 239",
+      "info-foreground": "39 40 34",
+      code: "30 31 28",
+      "code-foreground": "248 248 242",
+      link: "102 217 239",
+      selection: "73 72 62",
+    },
+  }),
+  definePreset({
+    name: "rose-pine",
+    label: "Rosé Pine",
+    mode: "dark",
+    description: "Rosé Pine main: muted rose and iris on deep plum.",
+    core: {
+      background: "25 23 36",
+      foreground: "224 222 244",
+      muted: "31 29 46",
+      "muted-foreground": "110 106 134",
+      border: "38 35 58",
+      primary: "196 167 231",
+      "primary-foreground": "25 23 36",
+      secondary: "31 29 46",
+      "secondary-foreground": "224 222 244",
+      destructive: "235 111 146",
+      "destructive-foreground": "25 23 36",
+      accent: "31 29 46",
+      "accent-foreground": "224 222 244",
+      card: "25 23 36",
+      "card-foreground": "224 222 244",
+      popover: "25 23 36",
+      "popover-foreground": "224 222 244",
+      ring: "196 167 231",
+      input: "38 35 58",
+    },
+    extend: {
+      success: "156 207 216",
+      "success-foreground": "25 23 36",
+      warning: "246 193 119",
+      "warning-foreground": "25 23 36",
+      info: "156 207 216",
+      "info-foreground": "25 23 36",
+      sidebar: "31 29 46",
+      "sidebar-foreground": "224 222 244",
+      code: "31 29 46",
+      "code-foreground": "224 222 244",
+      link: "156 207 216",
+      selection: "64 61 82",
+    },
+  }),
+  definePreset({
+    name: "everforest-dark",
+    label: "Everforest",
+    mode: "dark",
+    description: "Everforest dark: soft greens in a misty forest.",
+    core: {
+      background: "45 53 59",
+      foreground: "211 198 170",
+      muted: "52 63 68",
+      "muted-foreground": "127 137 125",
+      border: "52 63 68",
+      primary: "167 192 128",
+      "primary-foreground": "45 53 59",
+      secondary: "52 63 68",
+      "secondary-foreground": "211 198 170",
+      destructive: "230 126 128",
+      "destructive-foreground": "45 53 59",
+      accent: "52 63 68",
+      "accent-foreground": "211 198 170",
+      card: "45 53 59",
+      "card-foreground": "211 198 170",
+      popover: "45 53 59",
+      "popover-foreground": "211 198 170",
+      ring: "167 192 128",
+      input: "52 63 68",
+    },
+    extend: {
+      success: "167 192 128",
+      "success-foreground": "45 53 59",
+      warning: "219 188 127",
+      "warning-foreground": "45 53 59",
+      info: "127 187 179",
+      "info-foreground": "45 53 59",
+      code: "35 42 46",
+      "code-foreground": "211 198 170",
+      link: "127 187 179",
+      selection: "61 72 77",
+    },
+  }),
+  definePreset({
+    name: "kanagawa",
+    label: "Kanagawa",
+    mode: "dark",
+    description: "Kanagawa wave: ink blues with dragon-fire accents.",
+    core: {
+      background: "31 31 40",
+      foreground: "220 215 186",
+      muted: "42 42 55",
+      "muted-foreground": "114 113 105",
+      border: "42 42 55",
+      primary: "126 156 216",
+      "primary-foreground": "31 31 40",
+      secondary: "42 42 55",
+      "secondary-foreground": "220 215 186",
+      destructive: "228 104 118",
+      "destructive-foreground": "31 31 40",
+      accent: "42 42 55",
+      "accent-foreground": "220 215 186",
+      card: "31 31 40",
+      "card-foreground": "220 215 186",
+      popover: "31 31 40",
+      "popover-foreground": "220 215 186",
+      ring: "126 156 216",
+      input: "42 42 55",
+    },
+    extend: {
+      success: "152 187 108",
+      "success-foreground": "31 31 40",
+      warning: "255 158 59",
+      "warning-foreground": "31 31 40",
+      info: "127 180 202",
+      "info-foreground": "31 31 40",
+      sidebar: "22 22 29",
+      "sidebar-foreground": "220 215 186",
+      code: "22 22 29",
+      "code-foreground": "220 215 186",
+      link: "127 180 202",
+      selection: "45 79 103",
+    },
+  }),
+  definePreset({
+    name: "solarized-dark",
+    label: "Solarized Dark",
+    mode: "dark",
+    description: "Precision teal dark with selective yellow accents.",
+    core: {
+      background: "0 43 54",
+      foreground: "131 148 150",
+      muted: "7 54 66",
+      "muted-foreground": "88 110 117",
+      border: "7 54 66",
+      primary: "38 139 210",
+      "primary-foreground": "253 246 227",
+      secondary: "7 54 66",
+      "secondary-foreground": "131 148 150",
+      destructive: "220 50 47",
+      "destructive-foreground": "253 246 227",
+      accent: "7 54 66",
+      "accent-foreground": "131 148 150",
+      card: "0 43 54",
+      "card-foreground": "131 148 150",
+      popover: "0 43 54",
+      "popover-foreground": "131 148 150",
+      ring: "38 139 210",
+      input: "7 54 66",
+    },
+    extend: {
+      success: "133 153 0",
+      "success-foreground": "253 246 227",
+      warning: "181 137 0",
+      "warning-foreground": "253 246 227",
+      info: "42 161 152",
+      "info-foreground": "0 43 54",
+      code: "7 54 66",
+      "code-foreground": "131 148 150",
+      link: "38 139 210",
+      selection: "7 54 66",
+    },
+  }),
+  definePreset({
+    name: "github-dark",
+    label: "GitHub Dark",
+    mode: "dark",
+    description: "Familiar GitHub dimmed dark with blue highlights.",
+    core: {
+      background: "13 17 23",
+      foreground: "230 237 243",
+      muted: "22 27 34",
+      "muted-foreground": "125 133 144",
+      border: "48 54 61",
+      primary: "68 147 248",
+      "primary-foreground": "255 255 255",
+      secondary: "22 27 34",
+      "secondary-foreground": "230 237 243",
+      destructive: "248 81 73",
+      "destructive-foreground": "13 17 23",
+      accent: "22 27 34",
+      "accent-foreground": "230 237 243",
+      card: "22 27 34",
+      "card-foreground": "230 237 243",
+      popover: "22 27 34",
+      "popover-foreground": "230 237 243",
+      ring: "68 147 248",
+      input: "48 54 61",
+    },
+    extend: {
+      success: "63 185 80",
+      "success-foreground": "13 17 23",
+      warning: "210 153 34",
+      "warning-foreground": "13 17 23",
+      info: "88 166 255",
+      "info-foreground": "13 17 23",
+      sidebar: "13 17 23",
+      "sidebar-foreground": "230 237 243",
+      code: "22 27 34",
+      "code-foreground": "230 237 243",
+      link: "68 147 248",
+      selection: "31 111 235",
+    },
+  }),
+  definePreset({
+    name: "midnight",
+    label: "Midnight",
+    mode: "dark",
+    description: "Original deep-navy night with cool blue glow.",
+    core: {
+      background: "10 15 30",
+      foreground: "219 228 255",
+      muted: "19 26 48",
+      "muted-foreground": "139 148 179",
+      border: "19 26 48",
+      primary: "110 168 254",
+      "primary-foreground": "10 15 30",
+      secondary: "19 26 48",
+      "secondary-foreground": "219 228 255",
+      destructive: "255 107 107",
+      "destructive-foreground": "10 15 30",
+      accent: "19 26 48",
+      "accent-foreground": "219 228 255",
+      card: "19 26 48",
+      "card-foreground": "219 228 255",
+      popover: "19 26 48",
+      "popover-foreground": "219 228 255",
+      ring: "110 168 254",
+      input: "19 26 48",
+    },
+    extend: {
+      success: "81 207 102",
+      "success-foreground": "10 15 30",
+      warning: "252 196 25",
+      "warning-foreground": "10 15 30",
+      info: "102 217 232",
+      "info-foreground": "10 15 30",
+      sidebar: "6 10 23",
+      "sidebar-foreground": "219 228 255",
+      code: "6 10 23",
+      "code-foreground": "219 228 255",
+      link: "110 168 254",
+      selection: "30 44 85",
+    },
+  }),
+  definePreset({
+    name: "solarized-light",
+    label: "Solarized Light",
+    mode: "light",
+    description: "Warm paper light with the classic solarized accents.",
+    core: {
+      background: "253 246 227",
+      foreground: "101 123 131",
+      muted: "238 232 213",
+      "muted-foreground": "147 161 161",
+      border: "238 232 213",
+      primary: "38 139 210",
+      "primary-foreground": "253 246 227",
+      secondary: "238 232 213",
+      "secondary-foreground": "101 123 131",
+      destructive: "220 50 47",
+      "destructive-foreground": "253 246 227",
+      accent: "238 232 213",
+      "accent-foreground": "101 123 131",
+      card: "253 246 227",
+      "card-foreground": "101 123 131",
+      popover: "253 246 227",
+      "popover-foreground": "101 123 131",
+      ring: "38 139 210",
+      input: "238 232 213",
+    },
+    extend: {
+      success: "133 153 0",
+      "success-foreground": "253 246 227",
+      warning: "181 137 0",
+      "warning-foreground": "253 246 227",
+      info: "42 161 152",
+      "info-foreground": "253 246 227",
+      code: "0 43 54",
+      "code-foreground": "131 148 150",
+      link: "38 139 210",
+      selection: "220 208 176",
+    },
+  }),
+  definePreset({
+    name: "gruvbox-light",
+    label: "Gruvbox Light",
+    mode: "light",
+    description: "Warm parchment light with earthy retro accents.",
+    core: {
+      background: "251 241 199",
+      foreground: "60 56 54",
+      muted: "235 219 178",
+      "muted-foreground": "146 131 116",
+      border: "235 219 178",
+      primary: "175 58 3",
+      "primary-foreground": "251 241 199",
+      secondary: "235 219 178",
+      "secondary-foreground": "60 56 54",
+      destructive: "157 0 6",
+      "destructive-foreground": "251 241 199",
+      accent: "235 219 178",
+      "accent-foreground": "60 56 54",
+      card: "251 241 199",
+      "card-foreground": "60 56 54",
+      popover: "251 241 199",
+      "popover-foreground": "60 56 54",
+      ring: "175 58 3",
+      input: "235 219 178",
+    },
+    extend: {
+      success: "121 116 14",
+      "success-foreground": "251 241 199",
+      warning: "181 118 20",
+      "warning-foreground": "251 241 199",
+      info: "7 102 120",
+      "info-foreground": "251 241 199",
+      code: "60 56 54",
+      "code-foreground": "235 219 178",
+      link: "7 102 120",
+      selection: "213 196 161",
+    },
+  }),
+  definePreset({
+    name: "github-light",
+    label: "GitHub Light",
+    mode: "light",
+    description: "Crisp GitHub light with familiar blue links.",
+    core: {
+      background: "255 255 255",
+      foreground: "31 35 40",
+      muted: "246 248 250",
+      "muted-foreground": "89 99 110",
+      border: "209 217 224",
+      primary: "9 105 218",
+      "primary-foreground": "255 255 255",
+      secondary: "246 248 250",
+      "secondary-foreground": "31 35 40",
+      destructive: "209 36 47",
+      "destructive-foreground": "255 255 255",
+      accent: "246 248 250",
+      "accent-foreground": "31 35 40",
+      card: "255 255 255",
+      "card-foreground": "31 35 40",
+      popover: "255 255 255",
+      "popover-foreground": "31 35 40",
+      ring: "9 105 218",
+      input: "209 217 224",
+    },
+    extend: {
+      success: "26 127 55",
+      "success-foreground": "255 255 255",
+      warning: "154 103 0",
+      "warning-foreground": "255 255 255",
+      info: "9 105 218",
+      "info-foreground": "255 255 255",
+      code: "246 248 250",
+      "code-foreground": "31 35 40",
+      link: "9 105 218",
+      selection: "182 227 255",
+    },
+  }),
+  definePreset({
+    name: "rose-pine-dawn",
+    label: "Rosé Dawn",
+    mode: "light",
+    description: "Rosé Pine dawn: soft rose morning light.",
+    core: {
+      background: "250 244 237",
+      foreground: "87 82 121",
+      muted: "242 233 225",
+      "muted-foreground": "121 117 147",
+      border: "223 218 217",
+      primary: "144 122 169",
+      "primary-foreground": "250 244 237",
+      secondary: "242 233 225",
+      "secondary-foreground": "87 82 121",
+      destructive: "180 99 122",
+      "destructive-foreground": "250 244 237",
+      accent: "242 233 225",
+      "accent-foreground": "87 82 121",
+      card: "250 244 237",
+      "card-foreground": "87 82 121",
+      popover: "250 244 237",
+      "popover-foreground": "87 82 121",
+      ring: "144 122 169",
+      input: "223 218 217",
+    },
+    extend: {
+      success: "40 105 131",
+      "success-foreground": "250 244 237",
+      warning: "234 157 52",
+      "warning-foreground": "87 82 121",
+      info: "86 148 159",
+      "info-foreground": "250 244 237",
+      code: "242 233 225",
+      "code-foreground": "87 82 121",
+      link: "144 122 169",
+      selection: "223 218 217",
+    },
+  }),
+  definePreset({
+    name: "everforest-light",
+    label: "Everforest Light",
+    mode: "light",
+    description: "Everforest light: warm paper with mossy greens.",
+    core: {
+      background: "247 243 232",
+      foreground: "92 106 114",
+      muted: "237 229 211",
+      "muted-foreground": "147 159 145",
+      border: "237 229 211",
+      primary: "141 161 1",
+      "primary-foreground": "247 243 232",
+      secondary: "237 229 211",
+      "secondary-foreground": "92 106 114",
+      destructive: "248 85 82",
+      "destructive-foreground": "247 243 232",
+      accent: "237 229 211",
+      "accent-foreground": "92 106 114",
+      card: "247 243 232",
+      "card-foreground": "92 106 114",
+      popover: "247 243 232",
+      "popover-foreground": "92 106 114",
+      ring: "141 161 1",
+      input: "237 229 211",
+    },
+    extend: {
+      success: "106 134 0",
+      "success-foreground": "247 243 232",
+      warning: "223 160 0",
+      "warning-foreground": "92 106 114",
+      info: "58 148 197",
+      "info-foreground": "247 243 232",
+      code: "45 53 59",
+      "code-foreground": "211 198 170",
+      link: "58 148 197",
+      selection: "224 213 187",
+    },
+  }),
 ] as const;
 
 export const DEFAULT_PRESET_NAME = "dark" as const;
@@ -195,6 +1113,14 @@ export function getPreset(name: string): PresetTokens {
 
 export function listPresetNames(): PresetName[] {
   return PRESETS.map((p) => p.name as PresetName);
+}
+
+export function presetsByMode(mode: ThemeMode): (PresetTokens & { readonly name: PresetName })[] {
+  return PRESETS.filter((p) => p.mode === mode);
+}
+
+export function getPresetMode(name: string): ThemeMode {
+  return getPreset(name).mode;
 }
 
 /**

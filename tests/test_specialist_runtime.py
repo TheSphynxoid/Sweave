@@ -786,3 +786,192 @@ async def test_different_keys_run_in_parallel(tmp_path: Path):
 # (imports used by the parallel-timing test above)
 import asyncio
 import time
+
+# ---------------------------------------------------------------------------
+# info.error surfacing (2026-09-10 rerun incident)
+# ---------------------------------------------------------------------------
+
+
+def _send_message_proc(tmp_path: Path, *chunks: str) -> tuple[Any, TraceLog]:
+    """Mock process whose /message stream replays the given chunks.
+
+    Note: httpx 0.28+ MockTransport does not deliver a manually
+    assigned ByteStream through ``client.stream()`` (aiter_text
+    yields nothing), so we fake the stream CM directly. This still
+    exercises the real ``_send_message`` parsing/branching -- the
+    layer the incident bit through.
+    """
+
+    class _FakeStreamClient:
+        def stream(self, method: str, url: str, **kwargs: Any) -> Any:
+            class _Resp:
+                async def __aenter__(self) -> _Resp:
+                    return self
+
+                async def __aexit__(self, *args: Any) -> bool:
+                    return False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                async def aiter_text(self) -> Any:
+                    for c in chunks:
+                        yield c
+
+            return _Resp()
+
+    proc = MockOpenCodeProcess(client=_FakeStreamClient(), session_id="ses_errtest")
+    return proc, TraceLog("d-errtest", base_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_send_message_surfaces_info_error(tmp_path: Path):
+    """A 200 stream carrying info.error (e.g. 401 CreditsError) with zero
+    text parts must come back as a "[chat error:" failure, never "".
+
+    Regression: two rerun turns hit an upstream 401, the runtime
+    returned "", and the chat loop persisted empty assistant messages
+    (turns that "did nothing"; the error was only in opencode.db).
+    """
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    proc, trace = _send_message_proc(
+        tmp_path,
+        json.dumps({
+            "info": {
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+                "error": {
+                    "name": "APIError",
+                    "data": {"message": "Insufficient balance.", "statusCode": 401},
+                },
+            },
+            "parts": [],
+        }),
+    )
+    out = await runtime._send_message(
+        proc, {"parts": [{"type": "text", "text": "hi"}]}, trace
+    )
+    assert out == "[chat error: APIError: Insufficient balance.]"
+    events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
+    assert "info_error" in events
+    assert "output_text" not in events
+
+
+@pytest.mark.asyncio
+async def test_send_message_flags_terminal_less_stream(tmp_path: Path):
+    """A stream that ends with no text parts and no terminal flag is an
+    incomplete turn, not an empty answer."""
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    proc, trace = _send_message_proc(
+        tmp_path,
+        json.dumps({
+            "info": {"role": "assistant", "time": {"created": 1}},
+            "parts": [{"type": "reasoning", "text": "hmm"}],
+        }),
+    )
+    out = await runtime._send_message(
+        proc, {"parts": [{"type": "text", "text": "hi"}]}, trace
+    )
+    assert out.startswith("[chat error: opencode serve: incomplete turn")
+    events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
+    assert "incomplete_turn" in events
+
+
+@pytest.mark.asyncio
+async def test_send_message_terminal_empty_text_still_success(tmp_path: Path):
+    """A terminal turn with no text (e.g. tool-only) keeps the old
+    success contract -- only error and unterminated streams change."""
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    proc, trace = _send_message_proc(
+        tmp_path,
+        json.dumps({
+            "info": {"role": "assistant", "time": {"created": 1, "completed": 2}, "finish": "stop"},
+            "parts": [],
+        }),
+    )
+    out = await runtime._send_message(
+        proc, {"parts": [{"type": "text", "text": "hi"}]}, trace
+    )
+    assert out == ""
+
+@pytest.mark.asyncio
+async def test_send_message_stalls_on_wire_silence(tmp_path: Path):
+    """No bytes for stall_seconds -> truthful stall error (never a
+    bare ReadTimeout, never an empty success). Regression for the
+    stream-probe hangs (hung tool approval, zero bytes, 300s of
+    nothing, then a cryptic ReadTimeout)."""
+    import asyncio as _asyncio
+
+    class _HangingClient:
+        def stream(self, method: str, url: str, **kwargs: Any) -> Any:
+            class _Resp:
+                async def __aenter__(self) -> Any:
+                    return self
+
+                async def __aexit__(self, *args: Any) -> bool:
+                    return False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                async def aiter_text(self) -> Any:
+                    await _asyncio.sleep(10.0)
+                    yield "{}"
+                    return
+
+            return _Resp()
+
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    proc = MockOpenCodeProcess(client=_HangingClient(), session_id="ses_stalltest")
+    trace = TraceLog("d-stalltest", base_dir=tmp_path)
+    out = await runtime._send_message(
+        proc, {"parts": [{"type": "text", "text": "hi"}]}, trace,
+        stall_seconds=0.2,
+    )
+    assert out.startswith("[chat error: stalled after ")
+    assert "without data" in out
+    events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
+    assert "stalled" in events
+    assert "output_text" not in events
+
+
+@pytest.mark.asyncio
+async def test_send_message_glues_split_objects(tmp_path: Path):
+    """A wire object split across chunks is glued via carry (was:
+    silently dropped, losing the object)."""
+    import json as _json
+
+    seen: list[str] = []
+
+    class _SplitClient:
+        def stream(self, method: str, url: str, **kwargs: Any) -> Any:
+            full = _json.dumps({
+                "info": {"role": "assistant", "time": {"created": 1, "completed": 2}, "finish": "stop"},
+                "parts": [{"type": "text", "text": "glued!"}],
+            })
+            half = len(full) // 2
+
+            class _Resp:
+                async def __aenter__(self) -> Any:
+                    return self
+
+                async def __aexit__(self, *args: Any) -> bool:
+                    return False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                async def aiter_text(self) -> Any:
+                    yield full[:half]
+                    yield full[half:]
+
+            return _Resp()
+
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    proc = MockOpenCodeProcess(client=_SplitClient(), session_id="ses_splittest")
+    trace = TraceLog("d-splittest", base_dir=tmp_path)
+    out = await runtime._send_message(
+        proc, {"parts": [{"type": "text", "text": "hi"}]}, trace
+    )
+    assert out == "glued!"

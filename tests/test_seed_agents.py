@@ -22,8 +22,11 @@ def test_each_role_has_required_fields():
         assert len(d.prompt) > 100, f"{role} prompt too short ({len(d.prompt)} chars)"
         assert d.harness == "opencode", f"{role} harness {d.harness!r}"
         assert "hindsight_recall" in d.tools, f"{role} missing hindsight_recall"
-        assert d.model_template and "{{" in d.model_template, (
-            f"{role} model_template {d.model_template!r}"
+        # Seeds do NOT pin a model (models.yaml is a catalog; users pick in
+        # the UI, per-role defaults were ruled out). model_template must be
+        # None — a non-None value here means a broken template snuck back in.
+        assert d.model_template is None, (
+            f"{role} unexpectedly pins model_template {d.model_template!r}"
         )
 
 

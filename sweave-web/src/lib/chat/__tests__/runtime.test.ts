@@ -6,6 +6,10 @@
  * (idle → queued → running → idle), optimistic-reconcile, and
  * id-dedupe. The mapping is a view projection of our WS stream +
  * REST history into assistant-ui's ``ThreadMessageLike`` shape.
+ *
+ * Thinking capture: ``chat.thinking`` increments accumulate on the
+ * streaming bubble (creating it when thinking precedes text) and
+ * the persisted ``metadata.thinking`` copy survives finalize.
  */
 import { describe, it, expect } from "vitest";
 import {
@@ -14,6 +18,7 @@ import {
   applyRerun,
   applyStatusChanged,
   applySubmit,
+  applyThinking,
   delegationIdOf,
   initialThreadState,
   isSuperseded,
@@ -237,6 +242,60 @@ describe("mergeHistory: history reloads keep the in-flight turn", () => {
     const merged = mergeHistory(s, [userMessage("u1", "a"), assistantMessage("a1", "b")]);
     expect(merged.turn).toBe("idle");
     expect(merged.entries).toHaveLength(2);
+  });
+});
+
+describe("thinking: chat.thinking accumulates on the bubble", () => {
+  it("creates the bubble when thinking precedes the first delta", () => {
+    let s = applyThinking(initialThreadState(), "chat-abc", "Let me consider");
+    expect(s.turn).toBe("running");
+    expect(s.activeDelegationId).toBe("chat-abc");
+    expect(s.entries).toHaveLength(1);
+    expect(s.entries[0].streaming).toBe(true);
+    expect(s.entries[0].message.content).toBe("");
+    expect(s.entries[0].thinking).toBe("Let me consider");
+
+    // Text deltas then land on the same bubble, thinking intact.
+    s = applyDelta(s, "chat-abc", "Hello");
+    expect(s.entries).toHaveLength(1);
+    expect(s.entries[0].message.content).toBe("Hello");
+    expect(s.entries[0].thinking).toBe("Let me consider");
+
+    s = applyThinking(s, "chat-abc", "…more");
+    expect(s.entries[0].thinking).toBe("Let me consider…more");
+  });
+
+  it("projects live thinking into metadata.custom", () => {
+    let s = applyThinking(initialThreadState(), "chat-abc", "hmm");
+    const projected = projectThread(s);
+    expect(projected).toHaveLength(1);
+    const custom = projected[0].metadata as { custom?: { thinking?: string | null } };
+    expect(custom.custom?.thinking).toBe("hmm");
+  });
+
+  it("finalize replaces the bubble but keeps persisted thinking", () => {
+    let s = applyThinking(initialThreadState(), "chat-abc", "live thought");
+    s = applyDelta(s, "chat-abc", "partial");
+    const persisted = {
+      ...assistantMessage("a1", "full answer", "chat-abc"),
+      metadata: { delegation_id: "chat-abc", thinking: "full thought" },
+    };
+    s = applyMessageAdded(s, persisted);
+    expect(s.turn).toBe("idle");
+    expect(s.entries.filter((e) => e.streaming)).toHaveLength(0);
+    const projected = projectThread(s);
+    const custom = projected.find((m) => m.id === "a1")?.metadata as {
+      custom?: { thinking?: string | null };
+    };
+    expect(custom.custom?.thinking).toBe("full thought");
+  });
+
+  it("projects no thinking (null) when neither live nor persisted exists", () => {
+    const projected = projectThread(
+      stateFromHistory([assistantMessage("a1", "plain", "chat-1")]),
+    );
+    const custom = projected[0].metadata as { custom?: { thinking?: string | null } };
+    expect(custom.custom?.thinking).toBeNull();
   });
 });
 

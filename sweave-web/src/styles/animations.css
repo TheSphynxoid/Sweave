@@ -69,6 +69,21 @@
   outline-offset: 2px;
 }
 
+/* Text-entry fields opt OUT of the global focus outline: they
+ * carry their own focus affordance (the composer box glows via
+ * focus-within; inputs use their focus ring), so the global
+ * outline would render a second, ugly box inside the field's
+ * own container. This rule is unlayered + later + more specific
+ * than `*`, so it wins over the rule above regardless of
+ * Tailwind v4's layered utilities (unlayered beats layered —
+ * same reason the preflight reset had to stay out of this file). */
+textarea:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[contenteditable]:focus-visible {
+  outline: none;
+}
+
 /* Scrollbar utilities */
 .scrollbar-thin {
   scrollbar-width: thin;

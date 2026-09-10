@@ -99,6 +99,7 @@ export function SessionTree() {
               <li key={s.id} className="group relative">
                 <button
                   type="button"
+                  title={s.id}
                   onClick={async () => {
                     if (s.id === activeSession?.id) return;
                     try {

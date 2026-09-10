@@ -172,10 +172,26 @@ async def lifespan(app: FastAPI):
     # ServeRunner + session lifecycle + ModelRef routing + worktree
     # preamble). The legacy delegate_tool path remains available when
     # specialist_runtime is None (e.g. tests that stub it out).
-    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.serve_runner import (
+        IDLE_SWEEP_INTERVAL_SECONDS,
+        ServeRunnerRegistry,
+        reclaim_tracked_serves,
+    )
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
-    serve_registry = ServeRunnerRegistry(event_bus=state.event_bus)
+    serve_tracking = Path.home() / ".sweave" / "serves.json"
+    serve_registry = ServeRunnerRegistry(
+        event_bus=state.event_bus, tracking_path=serve_tracking
+    )
+    # Reclaim serves orphaned by a previous server run (crash /
+    # force-stop) before this registry spawns anything. Entries owned
+    # by a still-live server are left alone.
+    reclaimed = reclaim_tracked_serves(serve_tracking)
+    if reclaimed:
+        logger.info(
+            "Reclaimed %d orphaned opencode serve(s) from a previous run: %s",
+            len(reclaimed), [e.get("pid") for e in reclaimed],
+        )
     specialist_runtime = SpecialistRuntime(
         runners=serve_registry,
         event_bus=state.event_bus,
@@ -233,19 +249,25 @@ async def lifespan(app: FastAPI):
 
     state.delegation_manager = DelegationManager.from_config(config_manager.get())
 
-    # M1.9 step 3: build the EscalationStore for ask_human. The store
+    # M1.9 step 3 (+ M1.11 no-timeout questions): build the
+    # EscalationStore for ask_human / escalate. The store
     # bridges its callable emitter to the WSEventBus so escalation events
-    # fan out to every connected WS client (the Children tab patches
-    # the escalation lane in place). Persistence is per-delegation
+    # fan out to every connected WS client (the Children audit +
+    # inline Question card patch in place). Persistence is per-delegation
     # JSON files under ``~/.sweave/escalations/`` (the same dir the
-    # store module computes from its base_dir arg).
+    # store module computes from its base_dir arg). timeout None =
+    # questions wait indefinitely until answered or skipped.
     from sweave.runtime.escalation import EscalationStore
 
     state.escalation_store = EscalationStore(
         base_dir=Path.home() / ".sweave",
-        timeout_seconds=15 * 60,
+        timeout_seconds=None,
         event_bus=state.event_bus,
     )
+    # M1.11: the chat turn holds open on blocking questions, so the
+    # loop needs the store (constructed above, after the loop).
+    if state.chat_loop is not None:
+        state.chat_loop.escalation_store = state.escalation_store
 
     app.state.app_state = state
     logger.info(
@@ -268,9 +290,44 @@ async def lifespan(app: FastAPI):
     _prev_mcp_token = os.environ.get("SWEAVE_MCP_TOKEN")
     os.environ["SWEAVE_MCP_TOKEN"] = get_or_create_token()
 
+    # Periodic idle-TTL enforcement for opencode serves (the 30-min TTL
+    # otherwise never fires -- nothing called sweep_idle before).
+    import asyncio
+
+    async def _idle_serve_sweeper() -> None:
+        while True:
+            await asyncio.sleep(IDLE_SWEEP_INTERVAL_SECONDS)
+            try:
+                evicted = await serve_registry.sweep_idle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as sweep_err:  # noqa: BLE001
+                logger.warning("idle serve sweep failed: %s", sweep_err)
+                continue
+            if evicted:
+                logger.info(
+                    "Idle-swept %d opencode serve(s): %s",
+                    len(evicted), [r.specialist_name for r in evicted],
+                )
+
+    _sweeper_task = asyncio.create_task(_idle_serve_sweeper())
+
     try:
         yield
     finally:
+        _sweeper_task.cancel()
+        try:
+            await _sweeper_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as sweep_err:  # noqa: BLE001
+            logger.warning("idle sweeper shutdown failed: %s", sweep_err)
+        # Tear down every serve we spawned so a stop/restart doesn't
+        # orphan them (the tracking file ends empty on a clean exit).
+        try:
+            await serve_registry.shutdown_all()
+        except Exception as shutdown_err:  # noqa: BLE001
+            logger.warning("serve shutdown_all failed: %s", shutdown_err)
         if _prev_mcp_token is None:
             os.environ.pop("SWEAVE_MCP_TOKEN", None)
         else:

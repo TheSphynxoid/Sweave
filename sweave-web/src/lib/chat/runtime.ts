@@ -20,11 +20,16 @@
  *   1. `message.added` (user)      — the optimistic user message is
  *                                   confirmed by this persisted copy.
  *   2. `delegation.status_changed` (running)
- *   3. `chat.delta` × N            — streaming deltas, keyed by
+ *   3. `chat.thinking` × N         — reasoning increments, keyed by
+ *                                   `delegation_id` (only when the
+ *                                   provider exposes reasoning parts).
+ *   4. `chat.delta` × N            — streaming deltas, keyed by
  *                                   `delegation_id`.
- *   4. `delegation.status_changed` (done | failed)
- *   5. `message.added` (assistant) — `metadata.delegation_id` is the
- *                                   join key; this replaces the bubble.
+ *   5. `delegation.status_changed` (done | failed)
+ *   6. `message.added` (assistant) — `metadata.delegation_id` is the
+ *                                   join key; `metadata.thinking`
+ *                                   carries the full reasoning text;
+ *                                   this replaces the bubble.
  *
  * This module is PURE (no React). The React hook in step 1b wraps it in
  * `useExternalStoreRuntime`. All functions are side-effect free and the
@@ -54,6 +59,8 @@ export interface ChatEntry {
   delegationId?: string;
   /** True for a locally-optimistic user message (not yet confirmed by the server). */
   optimistic?: boolean;
+  /** Live-accumulated reasoning text for the in-flight bubble (chat.thinking). */
+  thinking?: string;
 }
 
 export interface SweaveThreadState {
@@ -162,6 +169,13 @@ export function isSuperseded(message: SessionMessage): boolean {
 export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
   const { message, streaming } = entry;
   if (message.role !== "user" && message.role !== "assistant") return null;
+  // Thinking: live accumulation wins while streaming; otherwise the
+  // persisted copy from message metadata (the backend stores the
+  // full reasoning text as metadata.thinking on finalize).
+  const persistedThinking = message.metadata?.thinking;
+  const thinking =
+    entry.thinking ??
+    (typeof persistedThinking === "string" && persistedThinking ? persistedThinking : null);
   // assistant-ui expects content as Part[] for all messages; the
   // sanctioned metadata bag is `metadata.custom` (surfaced to the UI
   // components via the message state; R4.2 step 2-pre).
@@ -174,6 +188,7 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
         timestamp: message.timestamp ?? null,
         delegationId: entry.delegationId ?? delegationIdOf(message),
         superseded: isSuperseded(message),
+        thinking,
       },
     },
   };
@@ -273,6 +288,53 @@ export function applyDelta(
     entries: [
       ...state.entries,
       { message: bubble, streaming: true, delegationId },
+    ],
+    turn: "running",
+    activeDelegationId: delegationId,
+  };
+}
+
+/**
+ * Apply a ``chat.thinking`` event. Appends ``text`` to the streaming
+ * bubble's reasoning, keyed by ``delegationId`` — creating the bubble
+ * (with empty content) when thinking precedes the first text delta.
+ * Also flips the turn to ``running`` + records the active delegation,
+ * same fallback contract as ``applyDelta``.
+ */
+export function applyThinking(
+  state: SweaveThreadState,
+  delegationId: string,
+  text: string,
+): SweaveThreadState {
+  const existing = state.entries.find(
+    (e) => e.streaming && e.delegationId === delegationId,
+  );
+  if (existing) {
+    const entries = state.entries.map((e) =>
+      e.delegationId === delegationId && e.streaming
+        ? { ...e, thinking: (e.thinking ?? "") + text }
+        : e,
+    );
+    return { ...state, entries, turn: "running", activeDelegationId: delegationId };
+  }
+
+  // Thinking before any text: create the streaming bubble early so
+  // the Thinking block paints during the reasoning phase.
+  const bubble: SessionMessage = {
+    id: `stream-${delegationId}`,
+    role: "assistant",
+    content: "",
+    timestamp: new Date().toISOString(),
+    agent: "orchestrator",
+    tool_name: null,
+    tool_result: null,
+    metadata: { delegation_id: delegationId },
+  };
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      { message: bubble, streaming: true, delegationId, thinking: text },
     ],
     turn: "running",
     activeDelegationId: delegationId,

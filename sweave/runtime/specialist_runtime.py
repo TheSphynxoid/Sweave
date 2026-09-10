@@ -1,3 +1,4 @@
+
 """SpecialistRuntime: orchestrates one delegation through a ServeRunner.
 
 M1.3 step 2. Per the plan:
@@ -43,6 +44,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+import httpx
+
 from sweave.harness.opencode import OpenCodeProcess
 from sweave.runtime.delegation_store import Delegation
 from sweave.runtime.prompt_template import (
@@ -67,6 +70,14 @@ if TYPE_CHECKING:
     from sweave.web.events import WSEventBus
 
 logger = logging.getLogger(__name__)
+
+
+# Stall watchdog default (seconds of wire silence before a turn is
+# declared stalled). Bounds silence, not the turn: streaming turns
+# keep the full turn_timeout; silent ones fail here first with a
+# truthful message. 300s reproduces the old httpx trip-point, but
+# now the failure names the symptom instead of "ReadTimeout".
+STALL_TIMEOUT_SECONDS = 300.0
 
 
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
@@ -108,9 +119,16 @@ class SpecialistRuntime:
         *,
         runners: ServeRunnerRegistry,
         event_bus: "WSEventBus | None" = None,
+        escalation_store: Any = None,
     ) -> None:
         self.runners = runners
         self.event_bus = event_bus
+        # M1.12: EscalationStore for permission questions. When a
+        # stalled turn has a pending opencode permission (bus
+        # signal), the runtime converts it into a blocking human
+        # question (kind="permission", no timeout) and posts the
+        # answer back to the serve. Wire-only (no sqlite).
+        self.escalation_store = escalation_store
 
     async def _emit(self, event: str, data: dict[str, Any]) -> None:
         if self.event_bus is not None:
@@ -297,6 +315,12 @@ class SpecialistRuntime:
         # coalesced chat.delta events while the orchestrator
         # replies.
         on_chunk: "Callable[[str], Any] | None" = None,
+        # Thinking capture: optional callback invoked with each
+        # ``reasoning`` part as it leaves the opencode stream.
+        # The chat loop forwards these as ``chat.thinking`` WS
+        # events so the UI can render a live Thinking block.
+        # Reasoning never pollutes the returned text output.
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> str:
         """Run one delegation. Returns the agent's text output.
         
@@ -421,7 +445,17 @@ class SpecialistRuntime:
             )
 
             # Send (the harness handles stream + terminal detection)
-            result = await self._send_message(process, body, trace, on_chunk=on_chunk)
+            # M1.12: the delegation id rides along so the permission
+            # ask-flow can create the blocking question record under
+            # the same key the chat loop polls.
+            result = await self._send_message(
+                process,
+                body,
+                trace,
+                on_chunk=on_chunk,
+                on_reasoning=on_reasoning,
+                delegation_id=delegation.delegation_id,
+            )
             # Record which model was actually used for this delegation
             # (M1.4+M1.5 step 1: surface the resolved ModelRef on the
             # trace so observers can audit what ran; useful for
@@ -522,6 +556,9 @@ class SpecialistRuntime:
         body: dict[str, Any],
         trace: TraceLog,
         on_chunk: "Callable[[str], Any] | None" = None,
+        on_reasoning: "Callable[[str], Any] | None" = None,
+        stall_seconds: float | None = None,
+        delegation_id: str | None = None,
     ) -> str:
         """Send one message and return the agent's text output.
 
@@ -537,7 +574,23 @@ class SpecialistRuntime:
         **incremental** text (a part of the assistant reply), not the
         full accumulated output -- the runtime owns the coalescing +
         WS publish, the harness only delivers the parts.
+
+        Thinking capture: ``on_reasoning`` mirrors ``on_chunk`` for
+        ``reasoning`` parts (extended-thinking models). Reasoning is
+        traced (``reasoning`` events, like the harness's
+        ``trace_reasoning`` path but always on here) and forwarded;
+        it is never mixed into the returned text output.
+
+        Stall watchdog: ``stall_seconds`` (default
+        ``STALL_TIMEOUT_SECONDS``) bounds *silence*, not the turn: any
+        received bytes reset the clock, so a slow-but-streaming turn
+        keeps its full budget while a wedged one (hung tool approval,
+        dead serve) fails fast with a truthful message instead of
+        riding out ``turn_timeout`` -- or losing the race to httpx
+        with a bare ``ReadTimeout``.
         """
+        if stall_seconds is None:
+            stall_seconds = STALL_TIMEOUT_SECONDS
         from sweave.harness.base import Message
 
         message = Message(type="user", content=str(body.get("parts", [{}])[0].get("text", "")))
@@ -546,6 +599,20 @@ class SpecialistRuntime:
         # which doesn't carry our structured ModelRef. The runtime owns
         # the model field (M1.3 K-revised); the harness just delivers.
         text_parts: list[str] = []
+        # Thinking capture: reasoning parts accumulate here for
+        # the trace; the live forwarding goes to on_reasoning.
+        reasoning_parts: list[str] = []
+        # M1.9 terminal + error tracking (mirrors
+        # OpenCodeProcess.send): the v2 wire reports failures via
+        # info.error on an otherwise-200 stream. Without this, an
+        # upstream rejection (e.g. 401 CreditsError) arrives with
+        # zero text parts and we returned "" as a SUCCESS -- the
+        # chat loop persisted an empty assistant message and the UI
+        # showed a turn that "did nothing" (2026-09-10 rerun
+        # incident: two empty done turns, error visible only in
+        # opencode's own sqlite db).
+        saw_terminal = False
+        info_error: str | None = None
         # R4.0: defensive assertion -- _ensure_session always sets
         # process._session_id to a serve-issued ``ses_*`` id before we
         # get here. If we ever reach the wire with a placeholder
@@ -572,16 +639,53 @@ class SpecialistRuntime:
                 headers=headers,
             ) as resp:
                 resp.raise_for_status()
-                async for chunk in resp.aiter_text():
+                # Stall watchdog: ANY bytes reset the clock, so a slow
+                # but streaming turn keeps its full budget while a
+                # silent one fails fast with a truthful message (no
+                # more riding out turn_timeout in the dark, and no
+                # more cryptic ReadTimeout when httpx wins the race).
+                stream_iter = resp.aiter_text().__aiter__()
+                carry = ""
+                stalled = False
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            stream_iter.__anext__(), timeout=stall_seconds
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except asyncio.TimeoutError:
+                        stalled = True
+                        break
                     if not chunk:
                         continue
-                    for piece in _split_json_stream(chunk):
+                    pieces, carry = _split_json_stream(chunk, carry)
+                    for piece in pieces:
                         try:
                             obj = __import__("json").loads(piece)
                         except __import__("json").JSONDecodeError:
                             continue
                         if not isinstance(obj, dict):
                             continue
+                        info = obj.get("info")
+                        info = info if isinstance(info, dict) else {}
+                        # info.error is the canonical v2 error
+                        # surface -- read it whenever present, not
+                        # only on terminal turns, so a rejected turn
+                        # can never pass as empty success.
+                        err_obj = info.get("error")
+                        if err_obj and info_error is None:
+                            from sweave.harness.opencode import (
+                                _format_info_error as _fmt_info_error,
+                            )
+
+                            info_error = _fmt_info_error(err_obj)
+                        time_obj = info.get("time") or {}
+                        if (
+                            time_obj.get("completed") is not None
+                            and info.get("finish")
+                        ):
+                            saw_terminal = True
                         for part in obj.get("parts", []) or []:
                             if isinstance(part, dict) and part.get("type") == "text":
                                 text = part.get("text", "")
@@ -603,6 +707,33 @@ class SpecialistRuntime:
                                         # + continue.
                                         logger.warning(
                                             "SpecialistRuntime: on_chunk "
+                                            "callback raised: %s", cb_err
+                                        )
+                            elif isinstance(part, dict) and part.get("type") == "reasoning":
+                                # Thinking capture: trace every
+                                # reasoning part (the turn's audit
+                                # trail, mirroring the harness's
+                                # trace_reasoning events) and forward
+                                # the incremental text to
+                                # on_reasoning. Reasoning never lands
+                                # in text_parts / the returned output.
+                                rtext = part.get("text", "")
+                                reasoning_parts.append(rtext)
+                                try:
+                                    trace.append("reasoning", {"text": rtext})
+                                except Exception as trace_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SpecialistRuntime: reasoning "
+                                        "trace failed: %s", trace_err
+                                    )
+                                if on_reasoning is not None:
+                                    try:
+                                        result = on_reasoning(rtext)
+                                        if hasattr(result, "__await__"):
+                                            await result
+                                    except Exception as cb_err:  # noqa: BLE001
+                                        logger.warning(
+                                            "SpecialistRuntime: on_reasoning "
                                             "callback raised: %s", cb_err
                                         )
                             # M1.9: the dead ``type: "error"`` part
@@ -636,8 +767,256 @@ class SpecialistRuntime:
                 _tb.format_exc(),
             )
             return f"[chat error: {type(e).__name__}: {e}]"
-        trace.append("output_text", {"chunks": len(text_parts), "length": sum(len(t) for t in text_parts)})
+        if stalled:
+            # Wire silence for stall_seconds (hung tool approval,
+            # dead serve, wedged upstream): not an answer, even with
+            # partial text -- persisting a fragment as success would
+            # be worse than failing. The "stalled after" marker tells
+            # the chat loop to rotate the engine session (a stalled
+            # turn may still be running server-side and would poison
+            # a retry on the same binding).
+            got = sum(len(t) for t in text_parts)
+            try:
+                trace.append(
+                    "stalled",
+                    {"stall_seconds": stall_seconds, "partial_chars": got},
+                )
+            except Exception as trace_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: stalled "
+                    "trace failed: %s", trace_err
+                )
+            # M1.12: a stalled turn is often a permission ask the
+            # headless serve cannot answer. When the permission
+            # machinery is wired, convert the pending ask into a
+            # blocking human question and resume the turn (rulings:
+            # route to the human for BOTH roles; no timeout):
+            if self.escalation_store is not None and delegation_id:
+                base_url = getattr(process, "base_url", "") or ""
+                if base_url:
+                    resolved = await self._resolve_pending_permission(
+                        base_url=base_url,
+                        session_id=wire_session_id,
+                        delegation_id=delegation_id,
+                        trace=trace,
+                    )
+                    if resolved is not None:
+                        return resolved
+            return (
+                f"[chat error: stalled after {stall_seconds:.0f}s without "
+                f"data (the turn may still be running server-side; retry "
+                f"starts a fresh session)]"
+            )
+        if info_error:
+            # Upstream rejection carried on a 200 stream (401
+            # CreditsError, ProviderAuthError, ...). Surface it with
+            # the same "[chat error:" prefix the chat loop checks,
+            # so the turn fails visibly instead of persisting "".
+            try:
+                trace.append("info_error", {"error": info_error})
+            except Exception as trace_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: info_error "
+                    "trace failed: %s", trace_err
+                )
+            return f"[chat error: {info_error}]"
+        if not text_parts and not saw_terminal:
+            # Stream ended with no text and no terminal flag --
+            # mid-stream cut or empty response, never an answer.
+            try:
+                trace.append("incomplete_turn", {"chunks": 0, "length": 0})
+            except Exception as trace_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: incomplete_turn "
+                    "trace failed: %s", trace_err
+                )
+            return (
+                "[chat error: opencode serve: incomplete turn "
+                "(stream ended without info.time.completed + "
+                "info.finish; mid-stream or empty response?)]"
+            )
+        trace.append("output_text", {"chunks": len(text_parts), "length": sum(len(t) for t in text_parts), "reasoning_chunks": len(reasoning_parts), "reasoning_length": sum(len(t) for t in reasoning_parts)})
         return "".join(text_parts)
+
+
+    async def _resolve_pending_permission(
+        self,
+        *,
+        base_url: str,
+        session_id: str,
+        delegation_id: str,
+        trace: TraceLog,
+    ) -> str | None:
+        """Convert a pending opencode permission into a blocking human
+        question and resume the turn (M1.12 step 2).
+
+        Called from the ``stalled`` branch of ``_send_message`` ONLY
+        when a watcher reports a pending ask for this engine session.
+        Returns None when nothing answerable was found (caller falls
+        back to the plain stall error); otherwise the recovered turn
+        text — or a ``[chat error: ...]`` string when the human
+        denied / the post-reply turn produced no content (loud
+        failure, never silent).
+
+        Wire facts (step-0 pinned, 1.18.29):
+        * pending signal = bus ``permission.asked`` (no GET route
+          exists — candidate routes return the SPA HTML catch-all);
+        * reply = POST /session/{sid}/permissions/{rid}
+          ``{"response": "once"|"always"|"reject"}`` -> 200 ``true``;
+        * post-reply completion = bus ``session.idle``; the final
+          text is fetched with GET /session/{sid}/message (the
+          original message stream does not re-deliver terminal).
+        """
+        from sweave.runtime.permission_watch import (
+            fetch_messages,
+            final_assistant_text,
+            get_permission_watcher,
+            reply_permission_request,
+        )
+
+        watcher = get_permission_watcher(base_url)
+        pending = watcher.pending_for(session_id)
+        if not pending:
+            return None
+        rec = pending[0]
+        request_id = rec["id"]
+        permission = rec["permission"]
+        patterns = rec.get("patterns") or []
+        command = str((rec.get("metadata") or {}).get("command", ""))
+
+        summary = (
+            f"opencode asks {permission} for {patterns}"
+            + (f" (command: {command})" if command else "")
+        )
+        # Blocking human question — no timeout (M1.11 ruling extends
+        # to permission prompts; specialist prompts route to the
+        # human too). Answered -> grant ("always" wording -> always),
+        # skipped -> deny.
+        try:
+            await self.escalation_store.create(
+                delegation_id=delegation_id,
+                question=(
+                    f"Permission required: {summary}. Answer 'allow once'"
+                    f" / 'always allow' / 'deny' (or skip = deny)."
+                ),
+                options=["allow once", "always allow", "deny"],
+                kind="permission",
+                audience="human",
+                timeout_seconds=None,
+                metadata={
+                    "requestID": request_id,
+                    "sessionID": session_id,
+                    "permission": permission,
+                    "patterns": patterns,
+                    "command": command,
+                },
+            )
+        except Exception as esc_err:  # noqa: BLE001
+            logger.warning(
+                "SpecialistRuntime: permission escalation create "
+                "failed: %s", esc_err,
+            )
+            return None
+        # Wait for the human resolution — unbounded by user ruling.
+        esc: dict[str, Any] = {}
+        while True:
+            await asyncio.sleep(0.5)
+            try:
+                esc = (
+                    await self.escalation_store.get(
+                        delegation_id=delegation_id
+                    )
+                ) or {}
+            except Exception:  # noqa: BLE001
+                esc = {}
+            if esc.get("status") != "pending":
+                break
+        status = str(esc.get("status", ""))
+        response_text = str(esc.get("response", "") or "").strip()
+        response_value = "reject"
+        if status == "answered":
+            low = response_text.lower()
+            if "always" in low:
+                response_value = "always"
+            elif "deny" in low or "reject" in low or low == "no":
+                response_value = "reject"
+            else:
+                response_value = "once"
+        else:  # skipped / timeout => deny
+            response_value = "reject"
+        try:
+            trace.append(
+                "permission_answered",
+                {
+                    "request_id": request_id,
+                    "status": status,
+                    "reply": response_value,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        idle_baseline = watcher.idle_snapshot(session_id)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                code = await reply_permission_request(
+                    client, base_url, session_id, request_id, response_value
+                )
+        except Exception as reply_err:  # noqa: BLE001
+            logger.warning(
+                "SpecialistRuntime: permission reply POST failed: %s",
+                reply_err,
+            )
+            return (
+                f"[chat error: permission reply failed "
+                f"({response_value}): {type(reply_err).__name__}]"
+            )
+        if code != 200:
+            return f"[chat error: permission reply rejected (HTTP {code})]"
+        if response_value == "reject":
+            return f"[chat error: permission denied: {summary}]"
+        # Allowed: wait for the resumed turn to finish, then recover
+        # the final text from the message list (the original stream
+        # does not re-deliver terminal).
+        completed = await watcher.wait_idle(session_id, idle_baseline)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                messages = await fetch_messages(client, base_url, session_id)
+        except Exception as fetch_err:  # noqa: BLE001
+            logger.warning(
+                "SpecialistRuntime: post-permission message fetch "
+                "failed: %s", fetch_err,
+            )
+            return (
+                f"[chat error: stalled after permission allow "
+                f"(fetch failed: {type(fetch_err).__name__})]"
+            )
+        recovered = final_assistant_text(messages)
+        if not completed:
+            try:
+                trace.append(
+                    "permission_resume_timeout",
+                    {"request_id": request_id},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return (
+                "[chat error: opencode serve: incomplete turn "
+                "(permission allowed but the resumed turn never "
+                "signalled completion; mid-stream or empty response?)]"
+            )
+        if not recovered:
+            return (
+                "[chat error: opencode serve: incomplete turn "
+                "(permission allowed, turn completed with no text)]"
+            )
+        try:
+            trace.append(
+                "permission_recovered",
+                {"request_id": request_id, "chars": len(recovered)},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return recovered
 
 
 def _system_message(content: str) -> "Message":
@@ -647,15 +1026,20 @@ def _system_message(content: str) -> "Message":
     return Message(type="system", content=content)
 
 
-def _split_json_stream(chunk: str) -> list[str]:
+def _split_json_stream(
+    chunk: str, carry: str = ""
+) -> tuple[list[str], str]:
     """Same helper as in sweave/harness/opencode.py — split a chunk on
-    the closing brace of the outermost JSON object."""
+    the closing brace of the outermost JSON object. Returns
+    ``(complete_pieces, leftover)``; feed ``leftover`` back as
+    ``carry`` so objects split across chunks are glued, not dropped."""
     pieces: list[str] = []
+    text = carry + chunk
     depth = 0
     start = -1
     in_string = False
     escape = False
-    for i, ch in enumerate(chunk):
+    for i, ch in enumerate(text):
         if in_string:
             if escape:
                 escape = False
@@ -674,6 +1058,7 @@ def _split_json_stream(chunk: str) -> list[str]:
         elif ch == "}":
             depth -= 1
             if depth == 0 and start >= 0:
-                pieces.append(chunk[start : i + 1])
+                pieces.append(text[start : i + 1])
                 start = -1
-    return pieces
+    leftover = text[start:] if (start >= 0 and depth > 0) else ""
+    return pieces, leftover

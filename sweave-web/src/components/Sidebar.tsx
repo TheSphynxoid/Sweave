@@ -111,7 +111,7 @@ export function Sidebar() {
     <aside
       data-testid="sidebar"
       className={cn(
-        "flex min-h-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-in-out",
+        "flex min-h-0 flex-col overflow-hidden border-r border-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 ease-in-out",
         open ? "w-64" : "w-[4.5rem]",
       )}
     >

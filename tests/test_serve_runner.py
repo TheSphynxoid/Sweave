@@ -25,6 +25,7 @@ from sweave.runtime.serve_runner import (
     ServeRunner,
     ServeRunnerRegistry,
     find_orphan_serves,
+    reclaim_tracked_serves,
     sweep_orphan_serves,
 )
 
@@ -483,3 +484,117 @@ def test_runner_key_resolves_worktree_to_absolute(tmp_path: Path):
 
 def test_runner_key_distinguishes_specialist():
     assert ServeRunner("a", Path("/x")).key != ServeRunner("b", Path("/x")).key
+
+# ---------------------------------------------------------------------------
+# Serve PID tracking + boot reclaim (2026-09-10 orphan leak: 13 stale
+# serves, ~4GB, across server restarts -- nothing ever called
+# sweep_idle/shutdown_all/sweep_orphan_serves, and the .worktrees
+# heuristic could never match project-root serves)
+# ---------------------------------------------------------------------------
+
+
+def _tracked_entry(pid: int, **overrides: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "pid": pid,
+        "port": 40000 + (pid % 10000),
+        "key": ["orchestrator", "C:\\proj"],
+        "owner_pid": 11111,
+        "started_at": 0.0,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_registry_tracks_started_runner_to_file(tmp_path: Path):
+    reg = ServeRunnerRegistry(tracking_path=tmp_path / "serves.json")
+    runner = ServeRunner(specialist_name="orchestrator", worktree_path=tmp_path / "wt")
+    runner.process = _FakeSubprocess(port=9999)
+    runner.port = 9999
+    reg._on_runner_lifecycle("started", runner)
+    import json
+
+    payload = json.loads((tmp_path / "serves.json").read_text(encoding="utf-8"))
+    assert len(payload["serves"]) == 1
+    assert payload["serves"][0]["pid"] == 12345
+    assert payload["serves"][0]["port"] == 9999
+    assert payload["serves"][0]["owner_pid"] == os.getpid()
+
+
+def test_registry_untracks_stopped_runner(tmp_path: Path):
+    import json
+
+    reg = ServeRunnerRegistry(tracking_path=tmp_path / "serves.json")
+    runner = ServeRunner(specialist_name="orchestrator", worktree_path=tmp_path / "wt")
+    runner.process = _FakeSubprocess(port=9999)
+    runner.port = 9999
+    reg._on_runner_lifecycle("started", runner)
+    runner.process = None  # shutdown() clears before/after the callback
+    reg._on_runner_lifecycle("stopped", runner)
+    payload = json.loads((tmp_path / "serves.json").read_text(encoding="utf-8"))
+    assert payload["serves"] == []
+
+
+def test_registry_no_tracking_file_by_default(tmp_path: Path):
+    """tracking_path=None (tests) performs no file I/O at all."""
+    reg = ServeRunnerRegistry()
+    runner = ServeRunner(specialist_name="orchestrator", worktree_path=tmp_path / "wt")
+    runner.process = _FakeSubprocess(port=9999)
+    runner.port = 9999
+    reg._on_runner_lifecycle("started", runner)  # must not raise
+    assert not (tmp_path / "serves.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_all_clears_tracking_file(tmp_path: Path):
+    import json
+
+    reg = ServeRunnerRegistry(tracking_path=tmp_path / "serves.json")
+    runner = ServeRunner(
+        specialist_name="orchestrator",
+        worktree_path=tmp_path / "wt",
+        tracker=reg._on_runner_lifecycle,
+    )
+    runner.process = _FakeSubprocess(port=9999)
+    runner.port = 9999
+    runner.base_url = "http://127.0.0.1:9999"
+    reg._runners[runner.key] = runner
+    reg._on_runner_lifecycle("started", runner)
+    await reg.shutdown_all()
+    assert reg._runners == {}
+    payload = json.loads((tmp_path / "serves.json").read_text(encoding="utf-8"))
+    assert payload["serves"] == []
+
+
+def test_reclaim_missing_file_returns_empty(tmp_path: Path):
+    assert reclaim_tracked_serves(tmp_path / "nope.json") == []
+
+
+def test_reclaim_kills_only_dead_owner_verified_serves(tmp_path: Path):
+    import json
+
+    path = tmp_path / "serves.json"
+    live_owner, dead_owner = 424242, 11111
+    stale_verified = _tracked_entry(5001, owner_pid=dead_owner, port=45111)
+    owned_live = _tracked_entry(5002, owner_pid=live_owner, port=45222)
+    recycled_pid = _tracked_entry(5003, owner_pid=dead_owner, port=45333)
+    already_dead = _tracked_entry(5004, owner_pid=dead_owner, port=45444)
+    path.write_text(json.dumps({"serves": [
+        stale_verified, owned_live, recycled_pid, already_dead,
+    ]}), encoding="utf-8")
+
+    alive = {live_owner, 5001, 5002, 5003}  # 5004 + dead owner 11111 gone
+    probed = {45111, 45222}  # 45333 answers nothing (PID recycled)
+    killed: list[int] = []
+
+    out = reclaim_tracked_serves(
+        path,
+        _is_alive=lambda pid: pid in alive,
+        _probe=lambda port: port in probed,
+        _kill=lambda pid: killed.append(pid),
+    )
+    assert [e["pid"] for e in out] == [5001]
+    assert killed == [5001]
+    survivors = json.loads(path.read_text(encoding="utf-8"))["serves"]
+    # Live-owner entry survives; failed-kill would too. Everything
+    # else is pruned (killed, dead, or recycled PID left untouched).
+    assert [e["pid"] for e in survivors] == [5002]

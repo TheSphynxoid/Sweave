@@ -74,6 +74,7 @@ export function DetailView({ delegationId, onClose }: DetailViewProps) {
           )}
           {data && (
             <>
+              <EscalationSection delegationId={delegationId} />
               <ComposedPromptSection
                 data-testid="composed-prompt"
                 composed={data.composed_prompt}
@@ -92,6 +93,42 @@ export function DetailView({ delegationId, onClose }: DetailViewProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+function EscalationSection({ delegationId }: { delegationId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["escalation", delegationId],
+    queryFn: () => api.getEscalation(delegationId),
+  });
+  if (isLoading) {
+    return (
+      <section>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Escalation
+        </h3>
+        <p className="text-xs text-muted-foreground">Loading…</p>
+      </section>
+    );
+  }
+  if (!data) return null;
+  return (
+    <section data-testid="escalation-section">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+        Escalation — {data.kind} → {data.audience} · {data.status}
+      </h3>
+      <p className="text-xs whitespace-pre-wrap break-words">{data.question}</p>
+      {data.options && data.options.length > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Options: {data.options.join(" · ")}
+        </p>
+      )}
+      <p className="mt-1 text-xs text-muted-foreground">
+        {data.status === "pending"
+          ? "Waiting — no deadline. Answer or skip below; the asking turn holds."
+          : `Response: ${data.response ?? "(none)"}`}
+      </p>
+    </section>
   );
 }
 

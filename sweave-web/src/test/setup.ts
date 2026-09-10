@@ -27,6 +27,8 @@ afterEach(() => {
   // Remove any theme <style> element we appended.
   const el = document.getElementById("sweave-theme-vars");
   if (el) el.remove();
-  // Reset the data attribute on :root.
+  // Reset the data attribute + dark class on :root.
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.classList.remove("dark");
+  document.documentElement.style.colorScheme = "";
 });

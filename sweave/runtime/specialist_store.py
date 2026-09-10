@@ -103,22 +103,51 @@ def parse_model_ref(raw: "str | dict | None") -> ModelRef | None:
     """Coerce a string-or-dict to a :class:`ModelRef`.
 
     * ``None`` or ``""`` -> ``None``
-    * ``{"provider": "...", "model_id": "..."}`` -> returned (fields
-      optional via TypedDict(total=False); unknown keys stripped)
-    * ``"provider/model_id"`` -> split on first ``/``
+    * ``{"provider": "...", "model_id": "...", "variant"?}`` ->
+      returned (fields optional via TypedDict(total=False); unknown
+      keys stripped, ``variant`` preserved)
+    * ``"provider/model_id[+variant]"`` -> split on first ``/``,
+      then an optional ``+variant`` suffix off the model part
+      (``"openrouter/x/y:free+low"`` -> provider ``openrouter``,
+      model ``x/y:free``, variant ``low``). The suffix must be
+      non-empty and variant names never contain ``/``.
     * ``"model_id"`` (no slash) -> ``{"provider": None, "model_id": raw}``
       (legacy v1 path; warning fires at routing time)
     """
     if raw is None or raw == "":
         return None
     if isinstance(raw, dict):
-        return ModelRef(provider=raw.get("provider"), model_id=raw.get("model_id"))
+        ref = ModelRef(provider=raw.get("provider"), model_id=raw.get("model_id"))
+        if raw.get("variant"):
+            ref["variant"] = raw["variant"]
+        return ref
     if "/" in raw:
-        provider, _, model_id = raw.partition("/")
+        provider, _, rest = raw.partition("/")
+        model_id, variant = _split_variant(rest)
         return ModelRef(
-            provider=provider.strip() or None, model_id=model_id.strip() or None
+            provider=provider.strip() or None,
+            model_id=model_id.strip() or None,
+            **({"variant": variant} if variant else {}),
         )
-    return ModelRef(provider=None, model_id=raw)
+    model_id, variant = _split_variant(raw)
+    ref = ModelRef(provider=None, model_id=model_id)
+    if variant:
+        ref["variant"] = variant
+    return ref
+
+
+def _split_variant(model_part: str) -> "tuple[str, str | None]":
+    """Split an optional ``+variant`` suffix off a model id part.
+
+    Splits on the LAST ``+``; the suffix is a variant only when
+    non-empty and free of ``/`` (variant names are single tokens
+    like ``low``/``high``/``max``/``none``). Otherwise the whole
+    part is the model id (a ``+`` inside a model id survives).
+    """
+    head, sep, tail = model_part.rpartition("+")
+    if sep and tail and "/" not in tail:
+        return head, tail
+    return model_part, None
 
 
 def _parse_stored_model(raw: "str | None") -> ModelRef | None:
@@ -126,12 +155,13 @@ def _parse_stored_model(raw: "str | None") -> ModelRef | None:
 
     Three shapes are valid on disk:
     * ``None`` / ``""`` -> ``None``
-    * a JSON-encoded ``{"provider": "...", "model_id": "..."}``
-      (the v2 / K-revised way; written by
-      :meth:`Specialist.set_model_ref`)
-    * a bare string (the v1 way) -> ``ModelRef(provider=None,
-      model_id=<bare string>)`` -- the legacy path; the harness
-      emits a warning when this lands on a non-default provider.
+    * a JSON-encoded ``{"provider": "...", "model_id": "...",
+      "variant"?}`` (the v2 / K-revised way; written by
+      :meth:`Specialist.set_model_ref`; ``variant`` round-trips)
+    * a bare string (the v1 way, optionally with a ``+variant``
+      suffix) -> ``ModelRef(provider=None, model_id=<bare string>)``
+      -- the legacy path; the harness emits a warning when this
+      lands on a non-default provider.
     """
     if raw is None or raw == "":
         return None
@@ -144,9 +174,7 @@ def _parse_stored_model(raw: "str | None") -> ModelRef | None:
             return ModelRef(provider=None, model_id=raw)
         if not isinstance(obj, dict):
             return ModelRef(provider=None, model_id=raw)
-        return ModelRef(
-            provider=obj.get("provider"), model_id=obj.get("model_id")
-        )
+        return parse_model_ref(obj)
     return parse_model_ref(raw)
 
 

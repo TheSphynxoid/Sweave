@@ -31,11 +31,14 @@ bus dependency in the constructor. The event bus is optional
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -44,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from sweave.platform import creationflags_no_window
+from sweave.runtime.locking import atomic_write_json_sync
 
 if TYPE_CHECKING:
     from sweave.harness.opencode import OpenCodeHarness, OpenCodeProcess
@@ -53,6 +57,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IDLE_TTL_SECONDS = 30 * 60  # 30 minutes per the plan
 DEFAULT_START_TIMEOUT = 30.0
+DEFAULT_TRACKING_FILENAME = "serves.json"
+IDLE_SWEEP_INTERVAL_SECONDS = 5 * 60  # lifespan sweeper cadence
+
+
+async def _tree_kill(pid: int) -> None:
+    """Force-kill *pid* with its child tree (MCP servers the serve spawned).
+
+    Windows first (``taskkill /F /T``); POSIX falls back to SIGKILL
+    (serves are spawned without a process group, so no pgid kill).
+    Never raises -- callers already handle the wedged-process case.
+    """
+    try:
+        if sys.platform == "win32":
+            proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except Exception as kill_err:  # noqa: BLE001
+        logger.warning("tree-kill failed for pid=%d: %s", pid, kill_err)
 
 
 @dataclass
@@ -77,6 +104,10 @@ class ServeRunner:
     idle_ttl_seconds: float = DEFAULT_IDLE_TTL_SECONDS
     start_timeout: float = DEFAULT_START_TIMEOUT
     event_bus: Any = None  # WSEventBus | None; typed as Any to avoid the import cycle
+    # Lifecycle tracker, set by ServeRunnerRegistry: called with
+    # ("started" | "stopped", self) so the registry can persist the
+    # serve PID for boot-time reclaim of previous-run orphans.
+    tracker: Any = None
     # State
     process: Optional["asyncio.subprocess.Process"] = None
     port: Optional[int] = None
@@ -187,6 +218,14 @@ class ServeRunner:
             self.specialist_name, self.worktree_path, self.process.pid,
             self.port, self.log_path,
         )
+        if self.tracker is not None:
+            try:
+                self.tracker("started", self)
+            except Exception as track_err:  # noqa: BLE001
+                logger.warning(
+                    "ServeRunner tracker failed for %s: %s",
+                    self.specialist_name, track_err,
+                )
         if self.event_bus is not None:
             await self.event_bus.publish(
                 "serve.started",
@@ -264,7 +303,13 @@ class ServeRunner:
             )
 
     async def shutdown(self) -> None:
-        """Terminate the subprocess; close the log file; clear state."""
+        """Terminate the subprocess; close the log file; clear state.
+
+        Escalation is tree-aware on Windows (``taskkill /F /T``): the
+        serve spawns MCP-server children that must not be orphaned
+        alongside it. POSIX keeps terminate → SIGKILL (serves are
+        spawned without a process group, so no pgid kill).
+        """
         if self.process is None:
             return
         pid = self.process.pid
@@ -273,7 +318,7 @@ class ServeRunner:
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                self.process.kill()
+                await _tree_kill(pid)
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=2.0)
                 except asyncio.TimeoutError:
@@ -285,6 +330,14 @@ class ServeRunner:
             self.port = None
             self.base_url = None
             self.sessions.clear()
+            if self.tracker is not None:
+                try:
+                    self.tracker("stopped", self)
+                except Exception as track_err:  # noqa: BLE001
+                    logger.warning(
+                        "ServeRunner tracker failed for %s: %s",
+                        self.specialist_name, track_err,
+                    )
         log_file = getattr(self, "_log_file", None)
         if log_file is not None:
             try:
@@ -312,7 +365,7 @@ class ServeRunner:
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=2.0)
             except asyncio.TimeoutError:
-                self.process.kill()
+                await _tree_kill(self.process.pid)
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=1.0)
                 except asyncio.TimeoutError:
@@ -322,6 +375,14 @@ class ServeRunner:
         self.process = None
         self.port = None
         self.base_url = None
+        if self.tracker is not None:
+            try:
+                self.tracker("stopped", self)
+            except Exception as track_err:  # noqa: BLE001
+                logger.warning(
+                    "ServeRunner tracker failed for %s: %s",
+                    self.specialist_name, track_err,
+                )
         log_file = getattr(self, "_log_file", None)
         if log_file is not None:
             try:
@@ -342,10 +403,15 @@ class ServeRunnerRegistry:
     across server restarts; on restart every runner is rebuilt.
     """
 
-    def __init__(self, event_bus: Any = None) -> None:
+    def __init__(self, event_bus: Any = None, tracking_path: Path | None = None) -> None:
         self._runners: dict[tuple[str, str], ServeRunner] = {}
         self._lock = asyncio.Lock()
         self.event_bus = event_bus
+        # PID tracking file (production: ~/.sweave/serves.json; None in
+        # tests = in-memory only). Lets the NEXT server boot reclaim
+        # serves orphaned by a crash / force-stop of this run.
+        self.tracking_path = tracking_path
+        self._tracked: dict[int, dict[str, Any]] = {}
 
     def get(self, key: tuple[str, str]) -> Optional[ServeRunner]:
         return self._runners.get(key)
@@ -378,6 +444,7 @@ class ServeRunnerRegistry:
                 specialist_name=specialist_name,
                 worktree_path=worktree_path,
                 event_bus=self.event_bus,
+                tracker=self._on_runner_lifecycle,
                 **kwargs,
             )
             self._runners[key] = runner
@@ -401,14 +468,192 @@ class ServeRunnerRegistry:
                 evicted.append(runner)
         for runner in evicted:
             await runner.shutdown()
+            self._untrack_key(runner.key)
             self._runners.pop(runner.key, None)
+        if evicted:
+            self._save_tracked()
         return evicted
 
     async def shutdown_all(self) -> None:
         """Tear down every runner (used at server shutdown)."""
         for runner in list(self._runners.values()):
             await runner.shutdown()
+            self._untrack_key(runner.key)
         self._runners.clear()
+        self._save_tracked()
+
+    # -- serve PID tracking (boot reclaim of previous-run orphans) --
+
+    def _on_runner_lifecycle(self, event: str, runner: ServeRunner) -> None:
+        """Registry-side tracker callback wired into every runner."""
+        if event == "started":
+            proc = runner.process
+            pid = getattr(proc, "pid", None) if proc is not None else None
+            if pid is None:
+                return  # mock mode / sentinel: nothing to reclaim later
+            self._tracked[int(pid)] = {
+                "pid": int(pid),
+                "port": runner.port,
+                "key": list(runner.key),
+                "owner_pid": os.getpid(),
+                "started_at": time.time(),
+            }
+        else:  # "stopped"
+            self._untrack_key(runner.key)
+        self._save_tracked()
+
+    def _untrack_key(self, key: tuple[str, str]) -> None:
+        self._tracked = {
+            pid: entry
+            for pid, entry in self._tracked.items()
+            if entry.get("key") != [key[0], key[1]]
+        }
+
+    def _save_tracked(self) -> None:
+        if self.tracking_path is None:
+            return
+        try:
+            atomic_write_json_sync(
+                self.tracking_path, {"serves": list(self._tracked.values())}
+            )
+        except Exception as save_err:  # noqa: BLE001
+            logger.warning(
+                "serve PID tracking save failed (%s): %s",
+                self.tracking_path, save_err,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Boot reclaim: kill serves orphaned by a previous server run
+# ---------------------------------------------------------------------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort "does this pid exist" without psutil."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return f'"{pid}"' in (out.stdout or "")
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _serve_probe(port: Any) -> bool:
+    """Does an opencode serve answer on *port*? (PID-reuse guard: we only
+    kill a stale pid if its recorded port still serves the v2 API.)"""
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError):
+        return False
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port_int}/session", timeout=3
+        ) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _kill_pid(pids: int) -> None:
+    """Force-kill *pid* with its child tree. Raises on failure."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pids)],
+            capture_output=True, timeout=30, check=True,
+        )
+    else:
+        os.kill(pids, signal.SIGTERM)
+        time.sleep(1.0)
+        try:
+            os.kill(pids, 0)
+        except OSError:
+            return
+        os.kill(pids, signal.SIGKILL)
+
+
+def reclaim_tracked_serves(
+    tracking_path: Path | None = None,
+    *,
+    _is_alive: Callable[..., bool] | None = None,
+    _probe: Callable[..., bool] | None = None,
+    _kill: Callable[..., None] | None = None,
+) -> list[dict[str, Any]]:
+    """Kill serves orphaned by a previous server run.
+
+    Reads the PID tracking file (written by ServeRunnerRegistry as it
+    starts/stops serves). Entries whose owner server is still alive
+    belong to a concurrent live server and are left alone (and kept in
+    the rewritten file). Entries with a dead owner are verified --
+    pid alive AND recorded port answers the serve API (defeats PID
+    reuse) -- then killed. Dead pids are pruned silently.
+
+    stdlib only (no psutil): aliveness via tasklist / kill(pid, 0),
+    identity via the recorded port's ``GET /session``. The ``_is_alive``,
+    ``_probe`` and ``_kill`` kwargs are test seams.
+
+    Returns the list of killed entries. Safe to call at every boot
+    before the new registry spawns anything.
+    """
+    path = Path(tracking_path) if tracking_path is not None else (
+        Path.home() / ".sweave" / DEFAULT_TRACKING_FILENAME
+    )
+    is_alive = _is_alive or _pid_alive
+    probe = _probe or _serve_probe
+    kill = _kill or _kill_pid
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = payload.get("serves") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        return []
+    killed: list[dict[str, Any]] = []
+    survivors: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("pid")
+        try:
+            pid_int = int(pid)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        owner = entry.get("owner_pid")
+        try:
+            owner_int = int(owner) if owner is not None else None
+        except (TypeError, ValueError):
+            owner_int = None
+        if owner_int is not None and owner_int != os.getpid() and is_alive(owner_int):
+            survivors.append(entry)  # a live server still owns it
+            continue
+        if not is_alive(pid_int):
+            continue  # already gone; prune silently
+        if not probe(entry.get("port")):
+            # PID recycled by something that isn't our serve -- never
+            # kill on pid alone. Leave it out of the file (the entry
+            # is stale) but don't touch the process.
+            logger.warning(
+                "reclaim: pid=%d not serving on port=%s; leaving it alone",
+                pid_int, entry.get("port"),
+            )
+            continue
+        try:
+            kill(pid_int)
+            killed.append(entry)
+        except Exception as kill_err:  # noqa: BLE001
+            logger.warning("reclaim: kill failed for pid=%d: %s", pid_int, kill_err)
+            survivors.append(entry)
+    try:
+        atomic_write_json_sync(path, {"serves": survivors})
+    except Exception as save_err:  # noqa: BLE001
+        logger.warning("reclaim: tracking rewrite failed (%s): %s", path, save_err)
+    return killed
 
 
 # ---------------------------------------------------------------------------

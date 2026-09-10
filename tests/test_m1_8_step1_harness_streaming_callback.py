@@ -213,7 +213,7 @@ def _build_runtime_with_mock_send(chunks: list[str] | None = None):
     runtime = SpecialistRuntime(runners=runners)
     _chunks = list(chunks or ["final-text"])
 
-    async def fake_send(process, body, trace, on_chunk=None):
+    async def fake_send(process, body, trace, on_chunk=None, on_reasoning=None, **kwargs):
         for chunk in _chunks:
             if on_chunk is not None:
                 result = on_chunk(chunk)

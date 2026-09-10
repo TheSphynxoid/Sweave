@@ -13,6 +13,7 @@ import {
   ModelPickerPanel,
   filterModelOptions,
   splitModelId,
+  splitModelVariant,
 } from "@/components/ModelPicker";
 
 const OPTIONS = [
@@ -52,6 +53,44 @@ describe("splitModelId", () => {
 
   it("leaves bare ids whole", () => {
     expect(splitModelId("gmi")).toEqual({ provider: null, model: "gmi" });
+  });
+});
+
+describe("splitModelVariant", () => {
+  it("splits a +variant suffix", () => {
+    expect(splitModelVariant("openrouter/thinkingmachines/inkling:free+low")).toEqual({
+      base: "openrouter/thinkingmachines/inkling:free",
+      variant: "low",
+    });
+  });
+
+  it("returns null variant when there is none", () => {
+    expect(splitModelVariant("ollama/qwen3:8b")).toEqual({
+      base: "ollama/qwen3:8b",
+      variant: null,
+    });
+  });
+
+  it("ignores a + whose tail contains / (part of the model id)", () => {
+    expect(splitModelVariant("prov/a+b/c")).toEqual({
+      base: "prov/a+b/c",
+      variant: null,
+    });
+  });
+
+  it("renders the variant as a badge, stripped from the model text", () => {
+    render(
+      <ModelPickerPanel
+        options={["openrouter/thinkingmachines/inkling:free+low"]}
+        value=""
+        onSelect={vi.fn()}
+        testId="model-picker"
+      />,
+    );
+    const option = screen.getByTestId("model-picker-list").querySelector('[role="option"]');
+    expect(option?.textContent).toContain("low");
+    // The raw +suffix is not shown inline (the badge shows it).
+    expect(option?.textContent).not.toContain("+low");
   });
 });
 

@@ -82,7 +82,7 @@ def _make_runtime_with_capture(tmp_path: Path):
     runtime = SpecialistRuntime(runners=runners)
     captured: list[dict[str, Any]] = []
 
-    async def fake_send(self, body, trace, on_chunk=None):
+    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
         captured.append({"model": body.get("model")})
         return "ok"
 

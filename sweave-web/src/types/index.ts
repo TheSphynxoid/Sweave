@@ -210,9 +210,11 @@ export interface EscalationRecord {
   delegation_id: string;
   question: string;
   options: string[] | null;
-  status: "pending" | "answered" | "timeout";
+  kind: "question" | "escalation";
+  audience: "human" | "orchestrator";
+  status: "pending" | "answered" | "skipped" | "timeout";
   created_at: string;
-  deadline_at: string;
+  deadline_at: string | null;
   answered_at: string | null;
   response: string | null;
 }
@@ -230,6 +232,8 @@ export interface ModelsConfig {
   all_models?: string[];
   /** Global default (orchestrator + specialists without a model). */
   default?: string | null;
+  /** Reasoning-effort variants per qualified model id (effort dropdown). */
+  variants?: Record<string, string[]>;
 }
 
 export interface HarnessInfo {

@@ -5,18 +5,23 @@ Two roles, two agents (rendered into the per-project opencode.json
 ``SpecialistRuntime``):
 
 * **sweave-orchestrator** -- the user-facing conversational
-  supervisor. Denies native subagent spawning (``task``) and
-  git-mutation bash on the user's checkout. Keeps the sweave MCP
-  tools (defer / list_specialists / ask_human): the orchestrator is
-  their only consumer.
+  supervisor. Denies native subagent spawning (``task``), the native
+  ``question`` tool (M1.11: Sweave owns the Q&A surface via the
+  ``ask_human`` MCP tool; the native tool would stall the headless
+  serve with no Sweave interception), and git-mutation bash on the
+  user's checkout. Keeps the sweave MCP tools (defer /
+  list_specialists / ask_human / escalate): the orchestrator is
+  their primary consumer.
 * **sweave-specialist** -- implementation workers in disposable
   worktrees. Denies ``task`` (no native sub-subagents outside the
-  DelegationManager) and ``sweave_*`` (no defer / list_specialists /
-  ask_human: specialists do the work themselves; opencode matches
-  permission keys as wildcards against tool names, so ``sweave_*``
-  covers every tool of the ``sweave`` MCP server). No git deny:
-  specialists commit freely in their branches per the
-  commit-authority map (2026-09-04).
+  DelegationManager), ``question`` (same M1.11 replacement), and
+  ``sweave_defer`` / ``sweave_list_specialists`` /
+  ``sweave_ask_human`` (no orchestration tools: specialists do the
+  work themselves). Explicit per-tool denies (NOT the ``sweave_*``
+  wildcard) so ``sweave_escalate`` stays allowed: a blocked
+  specialist escalates to the orchestrator instead of failing
+  silently. No git deny: specialists commit freely in their
+  branches per the commit-authority map (2026-09-04).
 
 Shape note: this is the opencode per-agent ``permission`` block
 (``{tool: action | {pattern: action}}``). An earlier revision
@@ -49,24 +54,47 @@ ORCHESTRATOR_BASH_DENY: tuple[str, ...] = (
 
 # MCP tool-name prefix for the sweave server. Opencode exposes MCP
 # tools as ``{server}_{tool}`` (verified: ``sweave_list_specialists``
-# in a live session's parts), so one wildcard gates the whole
-# sweave surface for sessions that must not see it.
+# in a live session's parts). M1.11: specialists deny the
+# orchestration tools explicitly (not via wildcard) so
+# ``sweave_escalate`` stays allowed. Kept for backward-compat
+# imports; new code should use the explicit deny sets below.
 SWEAVE_MCP_TOOL_PATTERN = "sweave_*"
+
+# Native opencode tools Sweave replaces. ``question`` is denied on
+# both roles (M1.11): the headless serve has no UI to answer it and
+# Sweave never intercepts it, so it would stall/drop the turn. The
+# Sweave-owned replacements are ``ask_human`` (blocking human
+# question) and ``escalate`` (specialist -> orchestrator notice).
+NATIVE_QUESTION_TOOL = "question"
+
+# Specialist-explicit denies (M1.11). Replaces the old ``sweave_*``
+# wildcard: defer / list / ask_human stay denied (orchestration
+# only), escalate stays allowed (blocked specialists must reach
+# the orchestrator).
+SPECIALIST_SWEAVE_DENIES: tuple[str, ...] = (
+    "sweave_defer",
+    "sweave_list_specialists",
+    "sweave_ask_human",
+)
 
 
 def render_agent_permission_profile(*, is_orchestrator: bool) -> dict[str, Any]:
     """Render the opencode per-agent ``permission`` block.
 
     Orchestrator:
-        ``{"task": "deny", "bash": {"git commit*": "deny", ...}}`` --
-        no native subagents, no git mutation on the user's checkout.
+        ``{"task": "deny", "question": "deny", "bash": {"git commit*": "deny", ...}}`` --
+        no native subagents, no native question tool (M1.11 Sweave
+        replacement), no git mutation on the user's checkout.
         File reads/writes stay at the default (allow): the
         orchestrator keeps file access by user ruling 2026-09-09.
 
     Specialist:
-        ``{"task": "deny", "sweave_*": "deny"}`` -- no native
-        subagents, no sweave MCP tools. Git (incl. commit) stays
-        allowed: specialists commit in their disposable branches.
+        ``{"task": "deny", "question": "deny", "sweave_defer": "deny",
+        "sweave_list_specialists": "deny", "sweave_ask_human": "deny"}`` --
+        no native subagents, no native question, no orchestration
+        tools. ``sweave_escalate`` stays allowed (specialist ->
+        orchestrator notice). Git (incl. commit) stays allowed:
+        specialists commit in their disposable branches.
     """
     profile: dict[str, Any] = {
         # Native opencode subagent spawning is denied on every
@@ -74,9 +102,15 @@ def render_agent_permission_profile(*, is_orchestrator: bool) -> dict[str, Any]:
         # way to spawn work; the DelegationManager enforces depth /
         # loop / budget on it.
         "task": "deny",
+        # M1.11: native question tool replaced by Sweave Q&A
+        # (ask_human blocking question + escalate notice). The
+        # headless serve cannot answer it and Sweave never
+        # intercepts it.
+        NATIVE_QUESTION_TOOL: "deny",
     }
     if is_orchestrator:
         profile["bash"] = {pat: "deny" for pat in ORCHESTRATOR_BASH_DENY}
     else:
-        profile[SWEAVE_MCP_TOOL_PATTERN] = "deny"
+        for tool_name in SPECIALIST_SWEAVE_DENIES:
+            profile[tool_name] = "deny"
     return profile

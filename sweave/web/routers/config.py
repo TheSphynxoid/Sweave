@@ -31,9 +31,21 @@ async def get_config(state: AppState = Depends(get_state)):
 @router.get("/api/models")
 async def get_models(state: AppState = Depends(get_state)):
     models = state.config_manager.get_models()
+    # Reasoning-effort variants per qualified model id, for the
+    # effort dropdown (models without variants get no dropdown).
+    # Sourced from the models.meta.json sidecar; best-effort.
+    variants: dict[str, list[str]] = {}
+    try:
+        for qualified_id, entry in state.config_manager.get_model_meta().items():
+            names = entry.get("variants") if isinstance(entry, dict) else None
+            if names:
+                variants[qualified_id] = list(names)
+    except Exception:
+        variants = {}
     return {
         "providers": models.providers,
         "all_models": state.config_manager.get_all_models(),
+        "variants": variants,
         # The global default: the orchestrator's model and the
         # fallback for specialists without an explicit current_model.
         # Settable via POST /api/models (the Settings Models tab).

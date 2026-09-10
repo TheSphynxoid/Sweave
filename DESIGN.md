@@ -30,10 +30,13 @@ Sweave is two funnels between the human and the machinery:
 1. **Input funnel** (M1.7): one chat thread. The human states intent; the
    orchestrator decomposes and defers. No opencode instances, no session
    switching visible to the user.
-2. **Output funnel** (M1.6 gating + M1.7 synthesis + M1.9 surfacing `ask_human`):
+2. **Output funnel** (M1.6 gating + M1.7 synthesis + M1.9 surfacing + M1.11 blocking Q&A):
    one promotion queue carrying results, reviews, questions, and escalations to
-   the human. Specialists get an `ask_human` tool (MCP, sibling of defer) so a
-   stuck or uncertain agent escalates instead of failing silently.
+   the human. The orchestrator asks blocking questions via the `ask_human` MCP
+   tool (no timeout; the turn holds until answered or system-confirmed skip);
+   specialists escalate to the orchestrator via the `escalate` MCP tool
+   (non-blocking notice in the global audit log). The native opencode
+   `question` tool is denied on both managed agents.
 
 The funnels multiplex *decisions*, not *work*: with coordination unified, N
 specialists run in parallel at zero extra human attention (the view zooms across
@@ -68,7 +71,7 @@ Manifest  JSON self-report attached to a Delegation (files touched, intent,
 Resolution queue  async queue consumed by the Resolution Skill (conflict mediator:
             resolve / re-queue / escalate-human); keeps the orchestrator a router,
             not a chokepoint
-Memory    hindsight-backed banks: global / project-{name} / session-{id}
+Memory    banks: global / project-{name} / session-{id} (local-first backend default per R4.4 re-cut; hindsight opt-in)
 Router    TEMPORARY hard-edge fallback: pattern → recommended (specialist, model).
           Primary routing authority is the orchestrator LLM via `defer` tool calls
           (M1.6/M1.7); the rule-router guarantees a result when the orchestrator is
@@ -176,10 +179,11 @@ The memory layer decomposes into three independently configurable parts; users p
 per part in config.yaml + Settings:
 1. **Embedder** — where vectors come from: Workers AI (`@cf/baai/*`), Ollama (local,
    free, private), OpenAI, or a custom endpoint.
-2. **Vector store** — where they live: hindsight embedded (default: local-first,
-   private), **Cloudflare Vectorize** (free tier is sufficient: 30M queried + 5M stored
-   dims/mo; REST via httpx, zero new deps; `namespace` == our bank hierarchy), Qdrant /
-   sqlite-vec later. Hindsight docker/cloud remain as whole-stack alternatives.
+2. **Vector store** — where they live: local file backend (default as of R4.4
+   re-cut 2026-09-10: zero-infra naive recall; sqlite-vec later), hindsight
+   embedded/docker/cloud as opt-in whole-stack alternatives,
+   **Cloudflare Vectorize** (free tier sufficient; REST via httpx; `namespace`
+   == bank hierarchy) opt-in. Hindsight docker/cloud remain as whole-stack alternatives.
 3. **Logic layer** — extraction/reflect/compaction: hindsight-style, rule-based v1,
    mem0-inspired single-pass ADD-only extraction + Zep-style temporal validity later (R6).
 Trade-off recorded: cloud stores are not local-first (privacy + latency) and are
@@ -201,7 +205,7 @@ eventually consistent — local embedded stays the default; Vectorize is opt-in.
 │   RuleRouter      pattern→agent/model   ✅ (llm fallback ⚠️)│
 │   DelegateTaskTool worktree+spec+spawn  ✅                  │
 │   WorktreeManager git wt + PR (gh/REST) ✅                  │
-│   MemoryTool      recall/retain/reflect ✅ (hindsight)     │
+│   MemoryTool      recall/retain/reflect ⚠️ (R4.4 re-cut 2026-09-10: tool exists but `POST /api/memory/*` 422s on JSON bodies and no backend is usable by default — contract fix + local-first backend + coverage are the plan; chat degrades to empty memory sections meanwhile)     │
 │   ProjectManager  projects/sessions/msgs✅ (JSON store)     │
 ├─────────────────────────────────────────────────────────────┤
 │ Harness layer (sweave/harness)                              │
@@ -231,20 +235,20 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | `/ws` realtime | ✅ | `webspaces` dep; WSEventBus + unified vocabulary landed in M1.prep; legacy event names preserved |
 | OpenCode spawn path | ✅ | M1.0 + M1.3 + M1.4+M1.5 — exe resolution + log-file port discovery + v2 API (`/session`, `parts` body, per-message model, chunked-stream read); SpecialistRuntime wraps one opencode serve per (specialist, worktree) with idle TTL; model path uses structured ModelRef (K-revised) so multi-provider configs (ollama, gmi/gmicloud, zai, opencode default) all route correctly; **M1.4+M1.5 step 1** promotes `ModelRef` + `model_ref_to_wire` into `harness/base.py` (the contract type) and `Message` gains `model: ModelRef \| None` (per-message beats spawn-time) |
 | `sweave doctor`, `models`, `rules`, `route` | ✅ | `models --reset` ⚠️ stub |
-| Web UI (sweave-web, R4 wave 1) | ✅ | R4 step 4 (2026-09-05) — Vite + React 18 + TS + Tailwind + Zustand + React Query. Wave 1: design system (5 v1 presets + custom-color override, localStorage-persisted), chat with streaming (chat.delta + message.added events; M1.8 no-rerender invariant carried through to React), session picker + composer (closing the M1.9 funnel leak), children live tree (WS-pulsed, depth-indented, escalation lane at the top, promote + answer inline), delegation detail view (composed prompt + tool timeline + tokens + status timeline). Backend serves `sweave-web/dist` (the SPA catch-all + `/assets` + `/favicon.svg`); `SWEAVE_UI_VANILLA=1` forces the v1 fallback. Vitest unit suite (40 tests) + Playwright e2e suite (`sweave-web/e2e/`). v1 vanilla UI retired (git history preserves). |
-| Web UI foundation nav (R4.1) | ✅ | R4.1 (2026-09-06) — the project→session tree navigation backbone: `ProjectSwitcher` (dropdown of all projects) + `SessionTree` (always-visible per-project session list with active highlight + inline create-session form) wired into the Sidebar; AppProvider subscribes to the 5 new WS events (`project.created` / `project.deleted` / `session.created` / `session.deleted` / `active_session.changed`) and invalidates the smallest scope of React Query keys (mapping in `src/context/wsInvalidations.ts`, 9 vitest pin the contract). Custom-color editor: 8-token picker (background/foreground/primary/primary-fg/border/muted/muted-fg/accent) + 'Reset to preset' button, mounted in the ThemeSwitcher dropdown. Scaffold-first: designed stubs for `/delegations/:id` (R4.3), `/memory`, `/agents`, `/settings` (R4.4) with the 'Pending R4.X' badge — honest scaffolds, not fake UI. **Stack upgrade**: React 19.2.8 + Tailwind 4.3.3 (CSS-first `@theme`; tokens carry full `rgb()` values so v4 utilities resolve without arbitrary-value wrappers). 60 vitest, 458 pytest (was 452; +6 from `test_r4_1_ws_events.py`), 13/13 `run.py --check`, `npm run build` green. R4.2/R4.3 adopt assistant-ui runtime + agent-elements-derived cards (per §8). |
+| Web UI (sweave-web, R4 wave 1) | ✅ | R4 step 4 (2026-09-05) — Vite + React 18 + TS + Tailwind + Zustand + React Query. Wave 1: design system (5 v1 presets + custom-color override, localStorage-persisted — expanded 2026-09-09 to 20 presets across light/dark modes + 37 themeable tokens in 5 groups with per-group reset; see the theme-system note under R4.1), chat with streaming (chat.delta + message.added events; M1.8 no-rerender invariant carried through to React), session picker + composer (closing the M1.9 funnel leak), children live tree (WS-pulsed, depth-indented, escalation lane at the top, promote + answer inline), delegation detail view (composed prompt + tool timeline + tokens + status timeline). Backend serves `sweave-web/dist` (the SPA catch-all + `/assets` + `/favicon.svg`); `SWEAVE_UI_VANILLA=1` forces the v1 fallback. Vitest unit suite (40 tests) + Playwright e2e suite (`sweave-web/e2e/`). v1 vanilla UI retired (git history preserves). |
+| Web UI foundation nav (R4.1) | ✅ | R4.1 (2026-09-06) — the project→session tree navigation backbone: `ProjectSwitcher` (dropdown of all projects) + `SessionTree` (always-visible per-project session list with active highlight + inline create-session form) wired into the Sidebar; AppProvider subscribes to the 5 new WS events (`project.created` / `project.deleted` / `session.created` / `session.deleted` / `active_session.changed`) and invalidates the smallest scope of React Query keys (mapping in `src/context/wsInvalidations.ts`, 9 vitest pin the contract). Custom-color editor: 8-token picker (background/foreground/primary/primary-fg/border/muted/muted-fg/accent) + 'Reset to preset' button, mounted in the ThemeSwitcher dropdown (expanded 2026-09-09: all 37 tokens in 5 groups — Base/Brand/Surfaces/Status/Chat-&-code — with search filter, per-group reset, and override badges; presets carry a light/dark mode + description and the switcher/Settings/command-palette pickers group by mode). Scaffold-first: designed stubs for `/delegations/:id` (R4.3), `/memory`, `/agents`, `/settings` (R4.4) with the 'Pending R4.X' badge — honest scaffolds, not fake UI. **Stack upgrade**: React 19.2.8 + Tailwind 4.3.3 (CSS-first `@theme`; tokens carry full `rgb()` values so v4 utilities resolve without arbitrary-value wrappers). 60 vitest, 458 pytest (was 452; +6 from `test_r4_1_ws_events.py`), 13/13 `run.py --check`, `npm run build` green. R4.2/R4.3 adopt assistant-ui runtime + agent-elements-derived cards (per §8). |
 | **Server split into routers/** | ✅ | M1.prep — no import-time singletons, FastAPI lifespan owns AppState |
 | **Atomic JSON + per-project locks** | ✅ | M1.prep — `runtime/locking.py`; ProjectManager routes all writes through |
 | **JobRunner + Delegation store** | ✅ | M1.prep — `runtime/job_runner.py`; `POST /api/v2/tasks` returns `{delegation_id, status}` |
-| **SpecialistRuntime (per-specialist ServeRunner + session reuse)** | ✅ | M1.3 — `runtime/specialist_runtime.py` orchestrates one delegation: resolves a ServeRunner (lazy start per (specialist, worktree)), ensures a session (create, recreate on 404, or reuse), sends a single message with structured ModelRef in `body["model"]`. M1.3 step 4 wires a per-turn timeout (default 15 min) and routes success to `review` (M1.4 promotes to `done`). Orphan sweep in `serve_runner.find_orphan_serves` cleans up stale processes on server boot |
+| **SpecialistRuntime (per-specialist ServeRunner + session reuse)** | ✅ | M1.3 — `runtime/specialist_runtime.py` orchestrates one delegation: resolves a ServeRunner (lazy start per (specialist, worktree)), ensures a session (create, recreate on 404, or reuse), sends a single message with structured ModelRef in `body["model"]`. M1.3 step 4 wires a per-turn timeout (default 15 min) and routes success to `review` (M1.4 promotes to `done`). Serve lifecycle (2026-09-10 leak fix): `ServeRunnerRegistry` tracks serve PIDs in `~/.sweave/serves.json`; lifespan reclaims previous-run orphans at boot (dead-owner + port-probe verified), tears everything down via `shutdown_all` (tree-kill on Windows so MCP children die too), and sweeps idle runners every 5 min (the 30-min TTL); `stop_server.py` tree-kills (`/T`). `find_orphan_serves` remains as an un-wired heuristic helper only (its `.worktrees` match can never see project-root serves; psutil was never installed) |
 | **Per-delegation trace log (JSONL)** | ✅ | M1.prep — `~/.sweave/traces/{id}.jsonl` |
 | **Parts-model trace capture** | ✅ | M1.9 — `sweave/harness/opencode.py` stream reader captures tool parts (pending → running → completed | error keyed by callID), `step-start`/`step-finish` (→ `step.boundary` events with reason / cost / tokens{input, output, reasoning, cache.{read, write}}), per-turn `tokens_used` audit anchor. Terminal detection: turn complete iff `info.time.completed` AND `info.finish` are set (replaces the per-chunk "parts + role==assistant" heuristic). Reasoning parts default OFF (`trace_reasoning=True` flag enables them). Dead `type:"error"` part branch removed; errors come from `info.error`. |
 | **Delegation detail view (web)** | ✅ | M1.9 — `sweave/web/detail_view.py` projects the trace JSONL into composed-prompt / tool-timeline / tokens / status-timeline sections (the same data the UI detail view patches in place + the `sweave log` CLI prints). `GET /api/delegations/{id}/detail` endpoint. |
 | **Visibility CLI (sweave log/watch/tail)** | ✅ | M1.9 — `sweave log <id>` (pretty-render trace), `sweave tail <id>` (follow a running turn; `sweave/cli/tail.py:follow_trace` async generator with file-rotation handling), `sweave watch` (live tree; polls `/api/delegations` on the running server). |
-| **ask_human MCP tool (escalations)** | ✅ | M1.9 — `sweave/mcp/__init__.py` `ask_human(question, options?, caller_delegation_id?)` (sibling of `defer`; same auth + wire surface). The asking delegation is flagged `needs_attention` (Delegation schema v5); `sweave/runtime/escalation.py:EscalationStore` is the persistence + event surface. WS events: `specialist.escalated` + `specialist.escalation_resolved`. Endpoints: `POST /api/delegations/{id}/escalate`, `/answer`, `GET /api/delegations/{id}/escalation`. Timeout (15 min default; configurable) records "no answer received" as the placeholder response so the LLM proceeds with best judgment. |
+| **ask_human MCP tool (blocking questions) + escalate (specialist notice)** | ✅ | M1.9 → M1.11 — `sweave/mcp/__init__.py` `ask_human(question, options?, caller_delegation_id?)` (orchestrator→human BLOCKING question; replaces the native `question` tool, denied on both managed agents) + `escalate(message, caller_delegation_id)` (specialist→orchestrator non-blocking notice; the only sweave tool specialists may call). Records carry `kind` (question\|escalation) + `audience` (human\|orchestrator); `status` adds `skipped` (explicit system-confirmed skip via `POST /api/delegations/{id}/skip {confirmed: true}`, 409 when unconfirmed). No deadline (M1.11 ruling); `deadline_at` null; legacy `timeout` records stay readable, `force_timeout` is a manual/test seam. Store: `sweave/runtime/escalation.py:EscalationStore`. WS: `specialist.escalated` + `specialist.escalation_resolved{status}`. Endpoints: `POST …/escalate`, `/answer`, `/skip`, `GET …/escalation`. ChatLoop holds the turn open (no assistant persisted) until answered\|skipped, then synthesises with the outcome; thread shows an inline Question card, Children audit shows kind badges + previews. |
 | **Per-project worktree_base** | ✅ | M1.9 — `Project.worktree_base` field overrides the global `config.git.worktree_base` for that project. `sweave/runtime/worktree_base.py:resolve_worktree_base` is the seam. Scratch-project convention: the dev repo (cwd) is never its own live-gate target. Plumbed through `POST /api/projects` (worktree_base in the request body). |
 | **WorktreeManager.align()** | ✅ | M1.9 — primitive: rebase/merge the worktree branch onto the integration branch's current state. Returns `{"rebased", "skipped_dirty", "no_integration_branch", "noop"}`. **Dirty-skip rule** (commit-authority map, 2026-09-04): never stash-dance a working agent; a dirty worktree is skipped, not autostashed. R2's full protocol (drift budget, conflict resolution, shared-context freshness) lands later. |
-| **Specialist permission profile** | ✅ | M1.9 (corrected 2026-09-09) — `sweave/runtime/agent_permission.py:render_agent_permission_profile(is_orchestrator=...)`. Orchestrator = `task: deny` + git bash deny (`commit*` / `merge*` / `push*` / `rebase*` / `reset --hard*` / `gh pr merge*` as `{pattern: deny}` mappings). Specialist = `task: deny` + `sweave_*: deny` (no sweave MCP tools; git stays allowed so specialists commit in their branches). Correction: the M1.9 profile was nested inside the `mcp.sweave` server entry (stripped by the schema) with a list value (invalid shape) — it never took effect anywhere. Profiles now render as `agent.<name>.permission` on the managed native agents (next row). |
+| **Specialist permission profile** | ✅ | M1.9 (corrected 2026-09-09; M1.11 roles) — `sweave/runtime/agent_permission.py:render_agent_permission_profile(is_orchestrator=...)`. Orchestrator = `task: deny` + `question: deny` (native Q&A replaced by Sweave tools) + git bash deny (`commit*` / `merge*` / `push*` / `rebase*` / `reset --hard*` / `gh pr merge*` as `{pattern: deny}` mappings). Specialist = `task: deny` + `question: deny` + explicit `sweave_defer` / `sweave_list_specialists` / `sweave_ask_human: deny` (orchestration only; `sweave_escalate` stays allowed so blocked specialists reach the orchestrator); git stays allowed so specialists commit in their branches. Correction: the M1.9 profile was nested inside the `mcp.sweave` server entry (stripped by the schema) with a list value (invalid shape) — it never took effect anywhere. Profiles now render as `agent.<name>.permission` on the managed native agents (next row). |
 | **Specialist store + /api/specialists CRUD** | ✅ | M1.2 — `runtime/specialist_store.py` (global `~/.sweave/agents.yaml` + per-project `{project}/.sweave/agents.json`); resolution project→global→seed; `is_orchestrator` flag for the per-project singleton; model precedence chain at submit; `PUT /api/specialists/{name}/model` emits `model.changed {name, model, scope}`; `specialist.created/updated/deleted` events; override log at `{project}/.sweave/override_log.jsonl` (global fallback `~/.sweave/override_log.jsonl`) |
 | **/api/agents bridge + render fix** | ✅ | M1.2 — returns `{builtin, global, dynamic}` arrays (the M1.prep dicts were the root cause of the empty Agents tab); description-overwrite bug fixed; routes writes through the specialist store; orchestrator name 409 on create/delete |
 | **Delegation v2 schema + per-project persistence** | ✅ | M1.1 — schema_version=2 (worktree, branch, pr_url, parent_task_id, manifest); per-project `{project}/.sweave/delegations.json` via `PerProjectDelegationStores`; v1→v2 migration in `from_dict` |
@@ -655,16 +659,97 @@ Gates: 459/459 pytest, 81/81 vitest, `npm run build` green, headless-
 Edge screenshot gates (`npm run ui:shot` + `sweave-web/scripts/
 ui-chat-probe.mjs`) over the real backend.
 
-### R4.4 — sweave-web wave 2: Memory + Agents workbench + Settings (planned 2026-09-05)
+Thinking capture (2026-09-09, outside the plan steps): reasoning
+parts now flow end-to-end — `SpecialistRuntime._send_message` takes
+`on_reasoning`, the chat loop publishes coalesced `chat.thinking` WS
+events (same envelope as `chat.delta`) plus persists the full text
+as assistant-message `metadata.thinking`, and the thread renders a
+live-then-collapsible Thinking block (`metadata.custom.thinking`).
+Proven live that the default path (`openrouter/thinkingmachines/
+inkling:free` via `opencode serve`) emits a single end-of-turn SSE
+object with no reasoning parts — so "wait then full text" on that
+path is an upstream granularity limit, not an integration fault,
+and the Thinking block stays empty there. It paints whenever the
+provider exposes reasoning parts. Mock support:
+`SWEAVE_MOCK_OPENCODE_REASONING=1` prepends a reasoning part.
 
-Three panes (Memory → Agents workbench → Settings), sequenced by
-the dogfood handoff: the user drives wave 1 for ~3 sessions; the
-friction list becomes the wave-2 / R4.2 input. The pre-dogfood
-strawman is in `docs/R4_4_PLAN.md` (the old R4.1 strawman
-renamed 2026-09-05 per the R4 hub restructure); the dogfood re-
-cuts it. R4.4 ships behind a wave-1 gate (the chat thread is the
-primary surface; the three new panes are read-mostly). R2 skills
-interleave on demand (per R4 plan §5).
+Model variants / thinking levels (2026-09-09): opencode models
+advertise reasoning-effort variants per model (`GET
+/config/providers`: inkling `none/minimal/low/medium/high/max`,
+GPT `none/low/medium/high/xhigh`, ...). Sweave was sending only
+`{providerID, modelID}`, so thinking ran at provider default with
+no visibility. `ModelRef` now carries an optional `variant`,
+written per-message to `body["model"]["variant"]` (the serve
+schema accepts it; agent configs accept it too). String form is
+`provider/model+variant` (`+` because model ids already contain
+`/`, `:`, `@`). Live-verified on `inkling:free`: no variant ~
+6.9s hidden thinking, `+none` ~2.0s, `+low` ~2.1s — and explicit
+variants make the serve emit `reasoning` parts, so the Thinking
+block paints. `models.yaml` lists `inkling:free+none`/`+low` as
+pickable entries (badge in the ModelPicker); the default is
+unchanged. Static agent-level thinking options in the managed
+`opencode.json` were deliberately skipped — per-message variants
+cover the need with no new schema.
+
+Registry generation (2026-09-09): `sweave models sync` regenerates
+`models.yaml` in layers — models.dev base (neutral upstream: ids +
+effort-derived variant rows) + serve overlay (custom providers,
+serve-only models, extra variants the serve invents that upstream
+never declares; verified 87% exact parity, all mismatches in the
+serve-knows-more direction) + hand-maintained `models.custom.yaml`
+merged at load (never overwritten). Full expansion (10 providers,
+1726 rows, 1062 variant rows); `--all` dumps the 213-provider
+universe instead of the curated scope. A `models.meta.json`
+sidecar carries per-id variants/reasoning_options/limits/
+modalities/cost for future utilities (session budgets, prices).
+Deterministic (re-syncs are no-op diffs); refuses to write an
+empty registry (a shape mismatch once gutted the file; restored
+from git). Review with `git diff`; restart the server afterwards
+(the registry is read at startup).
+
+Effort dropdown (2026-09-09): variants are NOT registry rows —
+the registry lists base models once and `GET /api/models` serves
+a `variants` map (from the sidecar) alongside. Every model surface
+(Settings default, specialist create, specialist card) uses the
+`ModelWithEffort` control: model picker + effort dropdown that
+appears only when the selected model advertises variants; the
+stored value stays the combined `model+variant` string (parse/wire
+unchanged). `set_default_model` accepts suffixed values when the
+base is registered and the variant is advertised (or unknown to
+the sidecar). Fixed alongside: `_qualify` always prefixes, so
+bare ids that start with their provider name (`nvidia/...`,
+`openrouter/auto`) produce wire modelIDs matching the serve's
+model keys (the old skip-if-prefixed rule silently broke those
+44 rows). ACP verdict (same day):
+`opencode acp` speaks v1 JSON-RPC over stdio, but this build
+emits no `agent_message_chunk`/`agent_thought_chunk` updates at
+all (only `available_commands_update` + terminal `usage_update`,
+69s turn, null prompt result) — strictly worse than the serve
+API for live UX today. No ACP harness; revisit when opencode
+implements session/update streaming.
+
+### R4.4 — Memory + Agents workbench + Settings (re-cut 2026-09-10 from shipped reality)
+
+Intervention note (user-locked): wave-1 UI was judged a failure; all later UI
+was manually derived by the user, not executor-built from plans. The 2026-09-05
+pre-dogfood strawman is superseded (preserved in `docs/R4_4_PLAN.md` lineage
+section); the dogfood gate is void — this re-cut IS the friction list.
+
+Reality audit (live-verified): Memory/Agents/Settings pages exist, but memory
+is doubly broken — `POST /api/memory/*` with JSON bodies 422s (scalar query
+params in `routers/memory.py` vs JSON client), and `hindsight_client` is not
+installed (default `hindsight/embedded_slim` unusable; chat degrades to empty
+sections). Zero pytest/vitest coverage of recall/retain/reflect; Memory page
+has no reflect tab, health, or WS.
+
+Rulings 2026-09-10: local-first file backend default (hindsight opt-in);
+hosted-embeddings opt-in with OpenRouter as policy owner (allowlist fetched
+from `/endpoints/zdr`, per-request `zdr:true + data_collection:deny`,
+`allow_fallbacks:false`, unknown=locked); three retention badges (ZDR /
+abuse-retain-disclosed / trains-or-unknown-locked); secret tag-and-vault
+(detect → OS-store → pin-local → at-rest encryption); factory fails closed.
+Steps in `docs/R4_4_PLAN.md` (contract fix → local backend → pane
+conformance → hosted opt-in → secrets → docs).
 
 ### R5 — Packaging
 - `pipx install sweave`, versioned releases, first public README pass.
@@ -730,7 +815,7 @@ runtimes). Every adoption gets recorded here.
 ### Adopt now
 | Need | Library | Why | Where |
 |---|---|---|---|
-| Orphan process sweep | `psutil` | find/kill process trees by cmdline reliably on Windows | M1.3 |
+| Orphan process sweep | stdlib only (`tasklist`/`taskkill`, `os.kill`, port probe) | PID-file tracking (`~/.sweave/serves.json`) + boot reclaim replaced the `psutil` plan — `psutil` was recorded here at M1.3 but never added to `pyproject.toml` nor installed, and the heuristic it served could never match project-root serves | 2026-09-10 |
 | Chain cost budgets | `tiktoken` | token counting for per-chain budget enforcement (approximate for non-OpenAI BPE — fine for budgets) | M1.6 |
 | 3-way merge simulation | `merge3` | diff3 merge without touching git — resolution-queue payload + Stage-0 overlap checks | R2 |
 | Harness tests w/o live opencode | `respx` | httpx mocking; test spawn/send logic deterministically | M1 tests |

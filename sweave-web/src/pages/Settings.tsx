@@ -6,8 +6,9 @@ import { Settings as SettingsIcon, Palette, Folder, Cpu, SlidersHorizontal } fro
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
 import {
-  PRESETS,
+  presetsByMode,
   type PresetName,
+  type ThemeMode,
   loadActiveTheme,
   saveActiveTheme,
   applyThemeToDocument,
@@ -20,7 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CustomColorEditor } from "@/components/CustomColorEditor";
-import { ModelPicker } from "@/components/ModelPicker";
+import { ModelWithEffort } from "@/components/EffortSelect";
 import { cn } from "@/utils/cn";
 import type { HarnessInfo, ModelsConfig } from "@/types";
 
@@ -112,42 +113,55 @@ function AppearanceSettings() {
           <CardTitle className="text-sm">Theme preset</CardTitle>
           <CardDescription>Pick a base palette. Custom overrides apply on top.</CardDescription>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-2">
-          {PRESETS.map((preset) => {
-            const primary = `rgb(${preset.tokens.primary})`;
-            const bg = `rgb(${preset.tokens.background})`;
-            const fg = `rgb(${preset.tokens.foreground})`;
-            const isActive = theme.preset === preset.name;
-            return (
-              <button
-                key={preset.name}
-                type="button"
-                onClick={() => choose(preset.name)}
-                className={cn(
-                  "flex items-center gap-2 rounded-lg border p-3 text-left transition-colors",
-                  isActive ? "border-primary ring-1 ring-primary" : "hover:bg-muted",
-                )}
-              >
-                <span
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-xs font-semibold"
-                  style={{ background: primary, color: `rgb(${preset.tokens["primary-foreground"]})` }}
-                >
-                  A
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium">{preset.label}</span>
-                  <span
-                    className="mt-1 flex gap-1"
-                    aria-hidden
-                  >
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: bg, border: "1px solid rgba(127,127,127,0.3)" }} />
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: fg }} />
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: primary }} />
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+        <CardContent className="space-y-4">
+          {(["light", "dark"] as const).map((mode: ThemeMode) => (
+            <div key={mode} className="space-y-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {mode === "light" ? "Light" : "Dark"} · {presetsByMode(mode).length}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {presetsByMode(mode).map((preset) => {
+                  const primary = `rgb(${preset.tokens.primary})`;
+                  const bg = `rgb(${preset.tokens.background})`;
+                  const accent = `rgb(${preset.tokens.accent})`;
+                  const success = `rgb(${preset.tokens.success})`;
+                  const isActive = theme.preset === preset.name;
+                  return (
+                    <button
+                      key={preset.name}
+                      type="button"
+                      onClick={() => choose(preset.name)}
+                      data-testid={`settings-preset-${preset.name}`}
+                      title={preset.description}
+                      className={cn(
+                        "flex items-center gap-2 rounded-lg border p-3 text-left transition-colors",
+                        isActive ? "border-primary ring-1 ring-primary" : "hover:bg-muted",
+                      )}
+                    >
+                      <span
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-xs font-semibold"
+                        style={{ background: primary, color: `rgb(${preset.tokens["primary-foreground"]})` }}
+                      >
+                        A
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">{preset.label}</span>
+                        <span
+                          className="mt-1 flex gap-1"
+                          aria-hidden
+                        >
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: bg, border: "1px solid rgba(127,127,127,0.3)" }} />
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: primary }} />
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: accent, border: "1px solid rgba(127,127,127,0.3)" }} />
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ background: success }} />
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
 
@@ -289,10 +303,11 @@ function ModelsSettings({ models }: { models?: ModelsConfig }) {
           </div>
         </CardHeader>
         <CardContent>
-          <ModelPicker
+          <ModelWithEffort
             value={models.default ?? ""}
             onValueChange={(m) => void setDefault(m)}
             options={allModels}
+            variantsMap={models.variants ?? {}}
             placeholder="Select default model"
             disabled={saving}
             className="h-9 font-mono text-xs"

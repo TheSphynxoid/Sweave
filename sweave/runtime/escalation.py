@@ -1,27 +1,40 @@
-"""Escalation store (M1.9 step 3).
+"""Escalation store (M1.9 step 3; M1.11 roles + no-timeout questions).
 
-A specialist that's stuck or uncertain calls ``ask_human(question,
-options?)`` via MCP. The MCP server escalates the asking delegation:
+Two record kinds (M1.11):
+
+* ``question`` (audience ``human``): orchestrator -> human blocking
+  question via the ``ask_human`` MCP tool. No deadline — the asking
+  turn (ChatLoop) waits indefinitely until ``answered`` or
+  ``skipped``. Skip is the opencode-Esc equivalent, guarded by a
+  system-issued confirm (the UI dialog, not LLM text).
+* ``escalation`` (audience ``orchestrator``): specialist ->
+  orchestrator non-blocking notice via the ``escalate`` MCP tool.
+  The specialist finishes its turn; the record stays pending in the
+  global audit log until a human acknowledges/answers it.
+
+The MCP server escalates the asking delegation:
 
 * The escalation is persisted (one JSON file per asking delegation;
   survives server restarts).
 * The store publishes ``specialist.escalated`` with the question,
-  options, delegation_id, escalation_id, and a deadline timestamp
-  via its callback hooks (the AppState bridges those to WSEventBus).
+  options, delegation_id, escalation_id, kind, audience, and a
+  deadline timestamp (``None`` for no-timeout questions) via its
+  callback hooks (the AppState bridges those to WSEventBus).
 * The asking delegation's ``needs_attention`` flag is set (the
-  Children tab's escalation lane surfaces it inline).
+  Children audit lane surfaces it inline).
 
 The answer path is ``POST /api/delegations/{id}/answer {response}``
-(or the future-facing answer UI). The handler:
+(and ``POST /api/delegations/{id}/skip {confirmed: true}`` for the
+explicit skip). The handler:
 
 * Records the response on the escalation.
 * Publishes ``specialist.escalation_resolved``.
 * Clears the asking delegation's ``needs_attention`` flag.
 
-If the timeout elapses without an answer, the escalation is auto-
-resolved with status=timeout and a "no answer received" string is
-returned to the asking session so the LLM can proceed with best
-judgment rather than hanging.
+Legacy timeout records (``status=timeout``, ``response="no answer
+received"``) are still readable; new questions are created without
+a deadline so the LLM proceeds only on an explicit human answer or
+skip rather than a timer.
 
 Persistence: ``<base_dir>/escalations/{delegation_id}.json``. Same
 shape as ``trace_log``: small JSON files keyed by delegation_id,
@@ -45,9 +58,13 @@ from typing import Any, Awaitable, Callable, Optional, Union
 logger = logging.getLogger(__name__)
 
 
-# Default timeout (matches the chat turn timeout scale; the plan: 15
-# minutes, configurable). Lower in tests via the constructor.
-DEFAULT_ESCALATION_TIMEOUT_SECONDS = 15 * 60
+# Default timeout (M1.9 legacy: 15 minutes). M1.11: questions have
+# NO timeout by user ruling — ``None`` means "wait indefinitely".
+# The constructor accepts ``float | None``; ``None`` (the new
+# default) creates records with ``deadline_at=None``. A numeric
+# value preserves the old deadline behaviour for callers that
+# still want it (tests, manual timeouts).
+DEFAULT_ESCALATION_TIMEOUT_SECONDS: float | None = None
 
 
 # An emitter is either:
@@ -103,12 +120,14 @@ class EscalationStore:
         self,
         *,
         base_dir: Path,
-        timeout_seconds: float = DEFAULT_ESCALATION_TIMEOUT_SECONDS,
+        timeout_seconds: float | None = DEFAULT_ESCALATION_TIMEOUT_SECONDS,
         event_bus: EventEmitter = None,
     ) -> None:
         self.base_dir = Path(base_dir) / "escalations"
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.timeout_seconds = float(timeout_seconds)
+        self.timeout_seconds = (
+            float(timeout_seconds) if timeout_seconds is not None else None
+        )
         self._records: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         # Process-local file lock for the sync load path.
@@ -171,29 +190,59 @@ class EscalationStore:
         delegation_id: str,
         question: str,
         options: list[str] | None = None,
+        kind: str = "question",
+        audience: str = "human",
+        timeout_seconds: float | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist a new escalation. Returns the escalation record.
+
+        ``kind`` is ``question`` (orchestrator -> human, blocking)
+        or ``escalation`` (specialist -> orchestrator, notice).
+        ``audience`` mirrors it (``human`` | ``orchestrator``).
+        ``timeout_seconds`` overrides the store default for this
+        record only; ``None`` (default) means no deadline — the
+        record waits until answered or skipped (M1.11 ruling).
+        ``metadata`` (M1.12) carries structured detail (e.g. the
+        opencode permission request id + patterns for
+        ``kind="permission"`` records); optional, persisted
+        additively (records load key-tolerantly, no schema bump —
+        escalation records are not Delegations).
 
         Side effects:
         * Sets the asking delegation's ``needs_attention`` flag via
           the WSEventBus (``delegation.needs_attention``).
         * Publishes ``specialist.escalated`` with the question +
-          options + delegation_id + escalation_id + deadline.
+          options + delegation_id + escalation_id + kind +
+          audience + deadline (``None`` when no timeout).
         """
         escalation_id = f"esc-{uuid.uuid4().hex[:10]}"
         now = _now()
-        deadline = now + timedelta(seconds=self.timeout_seconds)
+        # Per-record override wins; otherwise the store default;
+        # None throughout means no deadline (M1.11 questions).
+        effective_timeout = (
+            timeout_seconds if timeout_seconds is not None
+            else self.timeout_seconds
+        )
+        deadline = (
+            now + timedelta(seconds=effective_timeout)
+            if effective_timeout is not None
+            else None
+        )
         rec: dict[str, Any] = {
             "escalation_id": escalation_id,
             "delegation_id": delegation_id,
             "question": question,
             "options": list(options) if options else None,
+            "kind": kind,
+            "audience": audience,
             "status": "pending",
             "created_at": now.isoformat(),
-            "deadline_at": deadline.isoformat(),
+            "deadline_at": deadline.isoformat() if deadline else None,
             "answered_at": None,
             "response": None,
-            "escalation_timeout_seconds": self.timeout_seconds,
+            "escalation_timeout_seconds": effective_timeout,
+            "metadata": metadata if isinstance(metadata, dict) else None,
         }
         async with self._lock:
             self._records[delegation_id] = rec
@@ -205,7 +254,10 @@ class EscalationStore:
                 "delegation_id": delegation_id,
                 "question": question,
                 "options": list(options) if options else None,
+                "kind": kind,
+                "audience": audience,
                 "deadline_at": rec["deadline_at"],
+                "metadata": rec.get("metadata"),
             },
         )
         return dict(rec)
@@ -250,8 +302,10 @@ class EscalationStore:
         return dict(rec)
 
     async def force_timeout(self, *, delegation_id: str) -> dict[str, Any] | None:
-        """Mark the escalation as timed out (test seam + a manual
-        path; production uses the background sweep)."""
+        """Mark the escalation as timed out (manual path + test seam).
+
+        M1.11: questions no longer auto-time-out; this stays for
+        legacy records and callers that opted into a deadline."""
         async with self._lock:
             rec = self._records.get(delegation_id)
             if rec is None:
@@ -275,7 +329,47 @@ class EscalationStore:
 
     async def get(self, *, delegation_id: str) -> dict[str, Any] | None:
         rec = self._records.get(delegation_id)
-        return dict(rec) if rec is not None else None
+        if rec is None:
+            return None
+        # Backward compat: pre-M1.11 records lack kind/audience.
+        out = dict(rec)
+        out.setdefault("kind", "question")
+        out.setdefault("audience", "human")
+        return out
+
+    async def skip(
+        self,
+        *,
+        delegation_id: str,
+    ) -> dict[str, Any] | None:
+        """Record an explicit human skip (the opencode-Esc equivalent).
+
+        The UI guards this with a system-issued "are you sure?"
+        confirm before calling; the store itself just needs the
+        pending record. Emits ``specialist.escalation_resolved``
+        with ``status=skipped`` so waiters unblock and the audit
+        lane clears. Returns the updated record or None.
+        """
+        async with self._lock:
+            rec = self._records.get(delegation_id)
+            if rec is None:
+                return None
+            if rec["status"] != "pending":
+                return dict(rec)
+            rec["status"] = "skipped"
+            rec["response"] = "skipped by user — proceed with best judgment"
+            rec["answered_at"] = _now_iso()
+            await self._persist(delegation_id)
+        await self._emit(
+            "specialist.escalation_resolved",
+            {
+                "escalation_id": rec["escalation_id"],
+                "delegation_id": delegation_id,
+                "status": "skipped",
+                "response": rec["response"],
+            },
+        )
+        return dict(rec)
 
     async def list_open(self) -> list[dict[str, Any]]:
         """Every pending escalation. The Children tab's escalation

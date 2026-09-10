@@ -43,7 +43,9 @@ def _parse_provider_model(model: str) -> tuple[str | None, str | None]:
     return provider, model_id
 
 
-def _split_json_stream(chunk: str) -> list[str]:
+def _split_json_stream(
+    chunk: str, carry: str = ""
+) -> tuple[list[str], str]:
     """Split a chunk from a v2 message stream into individual JSON objects.
 
     The v2 endpoint emits one JSON object per write; with httpx's text
@@ -52,13 +54,19 @@ def _split_json_stream(chunk: str) -> list[str]:
     for the flat part-list shape the v2 endpoint uses. A more robust
     parser (incremental JSON, e.g. ijson) can replace this when we
     encounter nested events.
+
+    Returns ``(complete_pieces, leftover)``: an object split across
+    TCP chunks leaves its partial text in ``leftover`` -- feed it back
+    as ``carry`` on the next chunk. (Pre-buffering, a trailing partial
+    was silently discarded, losing whatever object it belonged to.)
     """
+    text = carry + chunk
     pieces: list[str] = []
     depth = 0
     start = -1
     in_string = False
     escape = False
-    for i, ch in enumerate(chunk):
+    for i, ch in enumerate(text):
         if in_string:
             if escape:
                 escape = False
@@ -77,9 +85,10 @@ def _split_json_stream(chunk: str) -> list[str]:
         elif ch == "}":
             depth -= 1
             if depth == 0 and start >= 0:
-                pieces.append(chunk[start : i + 1])
+                pieces.append(text[start : i + 1])
                 start = -1
-    return pieces
+    leftover = text[start:] if (start >= 0 and depth > 0) else ""
+    return pieces, leftover
 
 
 def _format_info_error(err_obj: Any) -> str:
@@ -185,9 +194,15 @@ class OpenCodeProcess:
         self.base_url = base_url
         self._session_id = session_id
         self.pid = process.pid
-        # 300s default per-request timeout; streaming responses for long
-        # LLM calls can take a while. Override via spec.env if needed.
-        self._client = httpx.AsyncClient(base_url=base_url, timeout=300.0)
+        # Per-request timeout deliberately ABOVE the turn timeout
+        # (JobRunner/ChatLoop default 900s): the asyncio.wait_for around
+        # the turn must fire first so failures surface with the clear
+        # "turn_timeout_exceeded_900s" / "orchestrator turn exceeded 900s"
+        # message. At 300s the httpx ReadTimeout won the race and users
+        # got the cryptic "[chat error: ReadTimeout: ]" instead
+        # (2026-09-10: 4 consecutive 300s zero-byte stalls on a wedged
+        # free-tier model). Override via spec.env if needed.
+        self._client = httpx.AsyncClient(base_url=base_url, timeout=1000.0)
         self._session_created = False
 
     @property
@@ -341,10 +356,12 @@ class OpenCodeProcess:
                     headers=self._default_headers(),
                 ) as response:
                     response.raise_for_status()
+                    carry = ""
                     async for chunk in response.aiter_text():
                         if not chunk:
                             continue
-                        for piece in _split_json_stream(chunk):
+                        pieces, carry = _split_json_stream(chunk, carry)
+                        for piece in pieces:
                             try:
                                 obj = json.loads(piece)
                             except json.JSONDecodeError:
@@ -821,6 +838,16 @@ captures the real failure.
                             "text": f"ACK from mock opencode for {spec.name}: {last_word}",
                         }],
                     }
+                    # Thinking-capture tests:
+                    # SWEAVE_MOCK_OPENCODE_REASONING=1 prepends a
+                    # reasoning part (extended-thinking models emit
+                    # these before their text). Gated by env so the
+                    # default mock wire stays text-only.
+                    if os.environ.get("SWEAVE_MOCK_OPENCODE_REASONING") == "1":
+                        body["parts"].insert(0, {
+                            "type": "reasoning",
+                            "text": f"mock thinking for {spec.name}",
+                        })
                     return _StubStreamResponse([_json.dumps(body)])
                 raise AssertionError(f"unexpected STREAM {method} {url}")
 

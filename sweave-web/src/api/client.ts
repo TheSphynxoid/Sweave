@@ -311,6 +311,21 @@ class ApiClient {
     return r.data;
   }
 
+  /**
+   * M1.11 explicit skip (opencode-Esc equivalent). The caller must
+   * have shown the system-issued "are you sure?" confirm first;
+   * the server rejects unconfirmed skips (409).
+   */
+  async skipEscalation(
+    delegationId: string,
+  ): Promise<EscalationRecord> {
+    const r = await this.client.post<EscalationRecord>(
+      `/delegations/${encodeURIComponent(delegationId)}/skip`,
+      { confirmed: true },
+    );
+    return r.data;
+  }
+
   // ---- Config / models / harnesses / worktrees ----
 
   async getConfig(): Promise<unknown> {

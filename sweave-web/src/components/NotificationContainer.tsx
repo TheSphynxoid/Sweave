@@ -12,23 +12,23 @@ import { X, CheckCircle2, AlertTriangle, XCircle, Info } from "lucide-react";
 const KIND_STYLE = {
   info: {
     icon: Info,
-    className: "border-sky-500/30 bg-sky-500/10 text-sky-200",
-    iconClass: "text-sky-400",
+    className: "border-info/30 bg-info/10 text-info",
+    iconClass: "text-info",
   },
   success: {
     icon: CheckCircle2,
-    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-200",
-    iconClass: "text-emerald-400",
+    className: "border-success/30 bg-success/10 text-success",
+    iconClass: "text-success",
   },
   warning: {
     icon: AlertTriangle,
-    className: "border-amber-500/30 bg-amber-500/10 text-amber-200",
-    iconClass: "text-amber-400",
+    className: "border-warning/30 bg-warning/10 text-warning",
+    iconClass: "text-warning",
   },
   error: {
     icon: XCircle,
-    className: "border-rose-500/30 bg-rose-500/10 text-rose-200",
-    iconClass: "text-rose-400",
+    className: "border-destructive/30 bg-destructive/10 text-destructive",
+    iconClass: "text-destructive",
   },
 } as const;
 

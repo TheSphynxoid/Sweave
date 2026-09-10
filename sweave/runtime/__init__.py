@@ -28,9 +28,11 @@ from sweave.runtime.override_log import (
 from sweave.runtime.serve_runner import (
     DEFAULT_IDLE_TTL_SECONDS,
     DEFAULT_START_TIMEOUT,
+    IDLE_SWEEP_INTERVAL_SECONDS,
     ServeRunner,
     ServeRunnerRegistry,
     find_orphan_serves,
+    reclaim_tracked_serves,
     sweep_orphan_serves,
 )
 from sweave.runtime.specialist_runtime import SpecialistRuntime
@@ -85,8 +87,10 @@ __all__ = [
     "ServeRunnerRegistry",
     "DEFAULT_IDLE_TTL_SECONDS",
     "DEFAULT_START_TIMEOUT",
+    "IDLE_SWEEP_INTERVAL_SECONDS",
     "find_orphan_serves",
     "sweep_orphan_serves",
+    "reclaim_tracked_serves",
     # M1.3 step 2
     "SpecialistRuntime",
 ]

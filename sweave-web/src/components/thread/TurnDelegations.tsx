@@ -156,6 +156,9 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
             </button>
             {expanded && (
               <div className="space-y-2 border-t border-border px-2.5 py-2">
+                {child.needs_attention && (
+                  <ChildEscalationPreview delegationId={child.delegation_id} />
+                )}
                 {summary ? (
                   <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
                     {truncate(summary, OUTPUT_SNIPPET_CHARS)}
@@ -180,5 +183,40 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
       })}
       {detailId && <DetailView delegationId={detailId} onClose={() => setDetailId(null)} />}
     </div>
+  );
+}
+
+/** Escalation preview inside an expanded child card (M1.11 audit). */
+function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rec = await api.getEscalation(delegationId);
+        if (!cancelled) {
+          setText(
+            rec
+              ? `${rec.kind === "escalation" ? "Escalation" : "Question"} (${rec.status}): ${rec.question}`
+              : null,
+          );
+        }
+      } catch {
+        if (!cancelled) setText(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [delegationId]);
+  if (!text) return null;
+  return (
+    <p
+      data-testid="turn-delegation-escalation"
+      className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+    >
+      {text.length > 280 ? `${text.slice(0, 280)}…` : text} — answer in the
+      Children audit log.
+    </p>
   );
 }

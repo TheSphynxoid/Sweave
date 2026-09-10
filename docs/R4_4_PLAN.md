@@ -1,114 +1,148 @@
-# R4.1 — sweave-web wave 2: Memory + Agents workbench + Settings (spec)
+# R4.4 — Memory + Agents workbench + Settings (re-cut from reality, 2026-09-10)
 
-Status: planned (wave 1 shipped 2026-09-05; this is the dogfood-driven
-follow-up). Est. ~2 sessions for the three panes + the friction
-list to become the next round of input. The plan is a living
-document -- it gets re-cut from the wave-1 dogfood friction list
-once the user has driven wave 1 on real work.
+Status: **re-cut planned** (supersedes the 2026-09-05 pre-dogfood strawman below;
+the strawman is preserved at the bottom for lineage).
 
-## Rulings (locked 2026-09-05, wave 1 review)
+## Intervention note (user-locked 2026-09-10 — read first)
 
-- **Three panes, in this order**: Memory → Agents workbench → Settings.
-  The order is the dogfood handoff: Memory surfaces the orchestrator's
-  recall/reflect/retain loop (the cheapest pane; the user can hit it
-  daily); Agents workbench is the largest; Settings is the last (the
-  catalog picker + routing editor is the most config-heavy; the user
-  reaches for it only when the chat surface needs a different model).
-- **All three panes land under the wave-1 nav** (Sidebar). The
-  Sidebar's current "Chat" + "Children" stays at the top; the new
-  panes slot in under a section header (matches the v1 pattern).
-  The funnel-leak close-out from M1.9 / R4 step 4 means the chat
-  thread is the primary surface; the three new panes are read-mostly.
-- **Wave 2 ships behind a wave-1 gate**: the user must have driven
-  wave 1 on real work for at least 3 distinct sessions before wave 2
-  lands. The wave-2 spec gets re-cut from the friction list at that
-  point. The spec below is the **pre-dogfood strawman** -- it
-  identifies the surfaces; the dogfood determines which bits ship
-  first.
+The wave-1 web UI was judged a failure by the user. All subsequent UI work was
+**manually derived by the user under their own judgement, not built by executors
+from plans**. Consequences for this plan:
 
-## Step 1 — Memory pane ~0.6
+- The R4_4 strawman (three panes behind a wave-1 dogfood gate) never described
+  reality: the Memory / Agents / Settings pages already exist in
+  `sweave-web/src/pages/` (shipped via manual derivation), while the backend
+  they sit on does not work (see audit). Plans below are cut from the shipped
+  UI + verified backend behavior, not from the strawman.
+- The wave-1 dogfood gate is void: the user has driven the UI directly and the
+  friction verdict is already in (this re-cut IS the friction list).
+- Executor duty narrows to backend + conformance: make the shipped pages work,
+  cover them with tests, and record deltas. No UI redesign from plans without
+  an explicit user ruling per pane.
 
-- Read-only pane listing the active memory banks (global /
-  project-X / session-Y from the AppProvider's bank list).
-- Three columns: recall (search), reflect (synthesise a
-  reflection), retain (store a memory). Each column is a form +
-  result list.
-- WS-pulsed: a `memory.changed` event refreshes the active bank's
-  recent list.
-- The pane is a M1.2-era parity feature: the v1 vanilla UI had
-  these three forms; wave 1 dropped them. The dogfood will say
-  whether the user wants the chat to own these (it could; the
-  M1.7 transcript system already does memory + git-diff + synthesis)
-  or whether the pane is the right home.
+## Reality audit (verified 2026-09-10 against code + live server)
 
-## Step 2 — Agents workbench ~0.8
+**Shipped UI (manual):**
 
-- Two-pane layout: left = specialists grouped by scope (project /
-  global / seed), right = specialist detail. The right pane shows
-  the specialist's model + system prompt + tools + session_id (M1.2
-  v1 parity with the M1.3 session-reuse fields surfaced).
-- Idle/running status pill per specialist (M1.3 plumbing; today the
-  status is only visible in the WS event stream, not surfaced).
-- Inline model switch on idle specialists: a combobox that calls
-  `PUT /api/specialists/{name}/model` (M1.2 step 3).
-- ▶ Run → child: a "run task" affordance that creates a delegation
-  for the selected specialist. The R4-workbench vision from the
-  M1.2 era; dogfood determines whether the chat surface already
-  covers the use case (it does, via the orchestrator's defer
-  tool) and the workbench is a backstop.
+- `Memory.tsx`: bank cards (global / project / session) with Recall + Retain
+  tabs; header text also promises reflect, but there is **no reflect tab**,
+  no `reflectMemory` client method (`api/client.ts:357` has banks/recall/
+  retain only), no `memory.changed` WS event, results render as raw JSON.
+- `Agents.tsx`: specialist cards by scope + edit dialog + model switch
+  (commits `b1072ce`, `57907bc`).
+- `Settings.tsx`: model/routing surfaces (registry work `b5073aa`).
 
-## Step 3 — Settings pane ~0.4
+**Backend (verified live 2026-09-10, TestClient):**
 
-- Three sub-panes: Models, Routing, Catalog.
-- Models: list + edit the four roles' default model (M1.2
-  step 3 surface; M1.5 model-at-request-time is read-only here).
-- Routing: list the current rules.yaml rules + add/remove. M1.2
-  step 3 / v1 parity; the v1 vanilla UI had this affordance.
-- Catalog: a model picker. The old UI_PLAN's "model catalog"
-  lands here. Backed by the opencode `models` command output
-  (`GET /api/harnesses` already exposes the providers; the
-  catalog is a flattened view of those + the v1 presets).
-- All three are admin surfaces; no streaming; no WS subscription.
+1. `POST /api/memory/recall|retain|reflect` with a JSON body → **422**
+   (`sweave/web/routers/memory.py:18` declares scalar query params;
+   the UI posts JSON bodies). The Memory page's Recall/Retain buttons
+   cannot succeed as wired.
+2. `hindsight_client` is not installed here, and no hindsight server runs;
+   correctly-shaped calls raise `RuntimeError` (`backends.py:116`). The
+   default config (`config.yaml: memory.backend=hindsight/embedded_slim`)
+   is therefore unusable out of the box; chat degrades silently to empty
+   memory sections (`transcript.py:378` try/except — by design, but it
+   means memory contributes nothing anywhere).
+3. Zero coverage: no pytest touches recall/retain/reflect; no vitest
+   touches the Memory page (only transcript timestamps + seed tool
+   names are pinned).
 
-## Step 4 — Wave 2 cutover + dogfood handoff docs ~0.3
+## Rulings (user-locked 2026-09-10)
 
-- R4.1 status flipped to done in `DESIGN.md` + `PROJECT_STATE.md`
-  + `docs/R4_1_PLAN.md` execution summary.
-- The dogfood handoff log: every friction entry from the wave-1
-  daily-driver window becomes a row in a new `docs/R4_2_PLAN.md`
-  backlog (the same protocol as M1.9 → R4).
+1. **Local-first default.** A file-backed backend (naive recall now,
+   sqlite-vec path per R7 later) becomes the default; hindsight turns
+   opt-in. Memory must work with zero infra.
+2. **Hosted embeddings opt-in** (answers the "no local hosting" need).
+   Policy ownership sits with OpenRouter: the allowlist is fetched from
+   `GET https://openrouter.ai/api/v1/endpoints/zdr` (auto-updated) and
+   pinned at sync time; per-request enforcement is `provider: {zdr: true,
+   data_collection: "deny"}` with `allow_fallbacks: false` (fail closed —
+   an outage errors instead of silently routing to a retaining endpoint).
+   Unknown/absent = locked (mirrors OpenRouter's own conservative stance).
+   The consent names OpenRouter as policy owner and states policies may
+   change. Gated on a probe confirming embedding-endpoint coverage of the
+   ZDR list.
+3. **Retention badges, three states:** verified-ZDR / retain-for-abuse
+   (allowed-with-disclosure, distinct badge) / trains-or-unknown (locked).
+   Abuse-scanning retention is not a blocker; training use is.
+4. **Secret tag-and-vault.** Local detect (regex + entropy; LLM classifier
+   second layer) → redact-and-vault (secret value to the OS credential
+   store, tag like `[SECRET:aws_prod#1]` in memory text) → tagged entries
+   pinned local-only (excluded from hosted batches) → at-rest encryption
+   for the local store. (Encrypt-then-embed is impossible: ciphertext has
+   no semantics to search; hence redact at the boundary, not after.)
+5. **Factory fails closed** (`MemoryFactory.create`): hosted embeddings
+   require allowlisted provider + persisted consent; the UI cannot
+   silently exfiltrate by bug.
+
+## Steps
+
+1. **Contract fix + first tests** (~0.5 session). Pydantic body models for
+   recall/retain/reflect (JSON bodies, matching the UI client); keep query-
+   param compat only if a consumer needs it (none known — verify by grep).
+   Add `reflectMemory` client method + reflect tab. Gate: endpoint tests
+   (recall/retain/reflect round-trip incl. 422-shape regression) + Memory
+   page vitest (render/tabs/answer paths) + `run.py --check`.
+2. **Local-first backend** (~1 session). File-backed `MemoryBackend`
+   (per-bank JSONL under `~/.sweave/memory/`; naive keyword retrieval;
+   `ts` stamps per the M1.7 contract); default `backend: local`
+   (hindsight opt-in via existing modes); health endpoint surfaced in the
+   Memory pane header. Gate: backend unit tests + factory tests (fail-
+   closed hosted path) + live page check (retain → recall round-trip).
+3. **Memory pane v1 conformance** (~0.5 session). Reflect tab, health
+   indicator, human-readable results (not raw JSON), empty/error states.
+   Gate: vitest + build.
+4. **Hosted-embeddings opt-in** (~1 session, gated on ZDR probe).
+   Retention map fetched from `/endpoints/zdr` at sync time (+ date);
+   consent dialog naming OpenRouter as policy owner; factory enforcement;
+   badge per provider from the same map (single source of truth).
+   Pre-step probe: ZDR-list embedding coverage + NIM embedder minimum
+   requirements. Gate: probe report + consent/allowlist tests.
+5. **Secret tag-and-vault** (~1 session, after step 2). Detect → vault →
+   pin-local → at-rest encryption. Gate: redaction tests (known shapes +
+   entropy), pin-local tests (tagged entries never in hosted batches),
+   round-trip test (retain secret → recall returns tag, value resolves
+   locally only).
+6. **Docs + close-out** (~0.5 session). DESIGN §4/R4.4 + §2.3, PROJECT_STATE,
+   GOTCHAS (contract-shape + fail-closed + tag patterns); full gates.
 
 ## Explicit non-goals
 
-- TUI. Mobile-first. i18n. Parallel-turn UI (the chat is serial per
-  session per the M1.7 ruling; the workbench is read-mostly). SSE
-  live-follow rendering of specialist streams (the detail view
-  covers it; the workbench is a backstop). Fanout / cross-review
-  (R2). The agent-loop overhaul (R6).
+- Changing the shipped page layouts (user-owned; deltas only by ruling).
+- Bank-level locality scoping (e.g. session banks always local) — sensible,
+  follow-up on evidence.
+- Hindsight removal (stays opt-in; `setup_hindsight.py` + doctor check stay).
+- R6 encoder heads / compaction cadence (unchanged roadmap).
+- Custom-engine memory API (the composer already abstracts the backend;
+  engine-agnostic by construction).
 
 ## Risks
 
-- **Memory pane**: the chat surface already does recall + reflect
-  via the M1.7 transcript composer; the pane duplicates that. The
-  dogfood determines which surface owns it. If chat wins, the pane
-  becomes a read-only inspector.
-- **Agents workbench**: the M1.2 spec was a v1-era parity feature;
-  R4 plan §2 scopes the chat to the daily-driver workflow. If the
-  chat covers the use case (it likely does, via the orchestrator's
-  defer), the workbench is a backstop and Step 2 ships as a
-  minimal read-only pane.
-- **Settings pane**: model catalog staleness. The opencode
-  `models` command output changes with the opencode install; the
-  catalog refreshes on every pane open (no cache).
-- **Scope creep**: the three panes are tempting; flag-day-gate them
-  against the dogfood friction list. Wave 1 closed every M1.9
-  funnel leak; wave 2 is a different conversation.
+- **Scope creep into a vault product.** The OS credential store call is one
+  function; a built-in vault UI is explicitly out. If the OS store proves
+  awkward on any platform, fall back to encrypted local file (at-rest key
+  from OS store) — same boundary, less surface.
+- **ZDR list gaps for embeddings.** If the probe shows embeddings uncovered,
+  step 4 blocks on manual curation (source + date per provider) rather than
+  shipping on an assumption — in the dangerous direction, never.
+- **Detection false negatives.** Regexes miss novel formats; that is why the
+  LLM classifier is layer two and tagged-pin is default-deny for hosted
+  batches (untagged-but-sensitive is still exposed — documented, not solved).
 
-## Amendment from wave 1 (locked 2026-09-05)
+---
 
-The wave-1 plan called for wave 1 to ship "Memory / Agents
-workbench / Settings" as future backlog. The amendment is: the
-backlog is now sequenced (Memory → Agents workbench → Settings)
-rather than parallel, and the dogfood handoff protocol (Step 4)
-is what makes the sequencing real -- the user drives wave 1 for
-~3 sessions, and the friction list becomes the wave-2/R4.2 input.
+## Superseded strawman (2026-09-05, preserved for lineage)
+
+> Three panes, sequenced Memory → Agents workbench → Settings behind a
+> wave-1 dogfood gate (~3 sessions of daily driving); pre-dogfood spec
+> identifying surfaces while dogfood determines ship order. Steps as
+> originally written: read-only Memory pane (recall/reflect/retain forms +
+> `memory.changed` WS), Agents workbench (scope groups, status pills, model
+> switch, run-task affordance), Settings (Models/Routing/Catalog), cutover +
+> dogfood-handoff docs. Non-goals: TUI, mobile, i18n, parallel-turn UI,
+> specialist stream-follow, fanout/cross-review, agent-loop overhaul. Risks
+> as originally noted (pane/chat ownership duplication, workbench-as-backstop,
+> catalog staleness, scope creep). The gate never fired — the user derived
+> the UI manually instead — and the backend audit above replaces the
+> strawman's assumptions.

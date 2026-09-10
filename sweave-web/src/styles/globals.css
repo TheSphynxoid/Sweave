@@ -21,7 +21,11 @@
 @import './animations.css';
 @import "../components/agent-elements/agent-ui.css";
 
-@custom-variant dark (&:is([data-theme="dark"] *));
+@custom-variant dark (&:is(.dark *));
+
+/* The `dark` class is toggled by `applyThemeToDocument` for every
+ * dark-mode preset (not just the one named "dark"), so `dark:`
+ * utilities and `.dark` CSS hooks follow all dark themes. */
 
 @theme {
   --color-background: rgb(15 23 42);
@@ -43,6 +47,24 @@
   --color-popover-foreground: rgb(248 250 252);
   --color-ring: rgb(167 139 250);
   --color-input: rgb(30 41 59);
+  --color-success: rgb(52 211 153);
+  --color-success-foreground: rgb(15 23 42);
+  --color-warning: rgb(251 191 36);
+  --color-warning-foreground: rgb(15 23 42);
+  --color-info: rgb(56 189 248);
+  --color-info-foreground: rgb(15 23 42);
+  --color-sidebar: rgb(30 41 59);
+  --color-sidebar-foreground: rgb(248 250 252);
+  --color-topbar: rgb(30 41 59);
+  --color-topbar-foreground: rgb(248 250 252);
+  --color-user-message: rgb(30 41 59);
+  --color-user-message-foreground: rgb(248 250 252);
+  --color-assistant-message: rgb(30 41 59);
+  --color-assistant-message-foreground: rgb(248 250 252);
+  --color-code: rgb(10 10 10);
+  --color-code-foreground: rgb(212 212 216);
+  --color-link: rgb(167 139 250);
+  --color-selection: rgb(71 85 105);
 
   /* The static \3c style> element the runtime writes to starts
    * with a copy of the dark preset (the @theme defaults); the
@@ -73,10 +95,28 @@
   --color-popover-foreground: rgb(15 23 42);
   --color-ring: rgb(139 92 246);
   --color-input: rgb(226 232 240);
+  --color-success: rgb(22 163 74);
+  --color-success-foreground: rgb(255 255 255);
+  --color-warning: rgb(217 119 6);
+  --color-warning-foreground: rgb(255 255 255);
+  --color-info: rgb(2 132 199);
+  --color-info-foreground: rgb(255 255 255);
+  --color-sidebar: rgb(255 255 255);
+  --color-sidebar-foreground: rgb(15 23 42);
+  --color-topbar: rgb(255 255 255);
+  --color-topbar-foreground: rgb(15 23 42);
+  --color-user-message: rgb(241 245 249);
+  --color-user-message-foreground: rgb(15 23 42);
+  --color-assistant-message: rgb(255 255 255);
+  --color-assistant-message-foreground: rgb(15 23 42);
+  --color-code: rgb(24 24 27);
+  --color-code-foreground: rgb(244 244 245);
+  --color-link: rgb(139 92 246);
+  --color-selection: rgb(191 219 254);
 }
 
-/* Other presets (dracula / nord / catppuccin) are applied at
- * runtime by applyThemeToDocument -- see src/lib/theme/switcher.ts.
+/* Other presets are applied at runtime by
+ * applyThemeToDocument -- see src/lib/theme/switcher.ts.
  * The @theme defaults + :root[data-theme=light] cover the
  * non-JS first paint; the runtime injection replaces them
  * per active preset.
@@ -99,6 +139,9 @@ body {
    * rgb() wrapper. */
   background-color: var(--color-background);
   color: var(--color-foreground);
+  /* First paint before the runtime theme hydrates is the dark
+   * preset; the runtime sets the accurate scheme per preset. */
+  color-scheme: dark;
 }
 
 /* Subtle "agent" ambience: a faint primary-tinted glow in the
@@ -113,7 +156,7 @@ body {
 }
 
 ::selection {
-  background: color-mix(in oklch, var(--color-primary) 30%, transparent);
+  background: var(--color-selection);
 }
 
 a {

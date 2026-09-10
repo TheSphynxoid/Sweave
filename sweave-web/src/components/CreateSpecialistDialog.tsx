@@ -24,8 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ModelPicker } from "@/components/ModelPicker";
-import type { HarnessInfo } from "@/types";
+import { ModelWithEffort } from "@/components/EffortSelect";import type { HarnessInfo } from "@/types";
 
 export function CreateSpecialistDialog({
   open,
@@ -165,10 +164,11 @@ export function CreateSpecialistDialog({
           </div>
           <div className="space-y-1.5">
             <Label>Model (optional — global default applies when empty)</Label>
-            <ModelPicker
+            <ModelWithEffort
               value={model}
               onValueChange={setModel}
               options={modelOptions}
+              variantsMap={models?.variants ?? {}}
               placeholder="Global default"
               className="h-9"
               testId="model-picker-new-specialist"

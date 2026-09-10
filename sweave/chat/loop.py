@@ -47,6 +47,28 @@ from sweave.runtime.specialist_store import Specialist
 logger = logging.getLogger(__name__)
 
 
+# Silence-class turn failures: the engine session may still be busy
+# server-side (a stalled turn keeps running after we stop waiting),
+# so retrying on the same binding replays the wedge (2026-09-10
+# stream-probe: two hung-tool timeouts, then a third turn that got
+# literally nothing on the reused session). A first-turn error
+# containing one of these markers rotates the orchestrator session
+# binding (fresh engine session, like edits already do). Content
+# errors (auth/model rejections, validation) are NOT here: the
+# session is healthy, and rotating would just burn context.
+STALE_SESSION_ERROR_MARKERS: tuple[str, ...] = (
+    "stalled after",  # stall watchdog (_send_message)
+    "turn exceeded",  # turn_timeout in _run_orchestrator_turn
+    "ReadTimeout",  # httpx gave up first (shouldn't win anymore)
+    "incomplete turn",  # stream ended without a terminal flag
+)
+
+
+def _is_stale_session_error(error_text: str) -> bool:
+    """True iff a ``[chat error: ...]`` text is silence-class."""
+    return any(m in error_text for m in STALE_SESSION_ERROR_MARKERS)
+
+
 class ChatLoop:
     """The orchestrator chat loop, one per server.
 
@@ -82,6 +104,11 @@ class ChatLoop:
         # snapshots the UI uses for incremental rendering.
         stream_coalesce_ms: int = 100,
         stream_char_threshold: int = 64,
+        # M1.11: escalation store for blocking questions. When the
+        # orchestrator calls ask_human during its turn, the MCP call
+        # returns immediately but the turn stays open (no assistant
+        # persisted) until answered | skipped. None = legacy path.
+        escalation_store: Any = None,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -113,6 +140,8 @@ class ChatLoop:
         # M1.8 streaming knobs
         self.stream_coalesce_ms = stream_coalesce_ms
         self.stream_char_threshold = stream_char_threshold
+        # M1.11 blocking questions
+        self.escalation_store = escalation_store
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -224,6 +253,59 @@ class ChatLoop:
                 )
             await asyncio.sleep(poll_interval)
 
+    async def _wait_for_escalation(self, delegation_id: str) -> dict | None:
+        """Wait until the delegation's escalation resolves, no deadline.
+
+        M1.11 blocking questions (user ruling: no timeout). Returns
+        the resolved record (status answered | skipped | timeout) or
+        None when no escalation store is wired or no escalation was
+        ever created for this delegation. Polls the store directly
+        (the WS events drive the UI; the turn drives off the record).
+
+        The LLM streaming turns stay bounded by ``turn_timeout``;
+        this wait is separate and unbounded by design — the turn
+        holds with no assistant persisted until the human answers
+        or explicitly skips (system-confirmed in the UI).
+        """
+        store = self.escalation_store
+        if store is None:
+            return None
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if rec is None:
+            return None
+        if rec.get("status") != "pending":
+            return rec
+        poll_interval = 0.5
+        while True:
+            await asyncio.sleep(poll_interval)
+            try:
+                rec = await store.get(delegation_id=delegation_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if rec is None:
+                return None
+            if rec.get("status") != "pending":
+                return rec
+
+    @staticmethod
+    def _escalation_note(rec: dict) -> str:
+        """One-block synthesis note for a resolved escalation."""
+        q = str(rec.get("question", "")).strip()
+        status = str(rec.get("status", ""))
+        resp = str(rec.get("response", "") or "").strip()
+        kind = str(rec.get("kind", "question"))
+        if status == "answered":
+            return f"Human answer ({kind}): Q: {q} A: {resp or '(empty)'}"
+        if status == "skipped":
+            return (
+                f"Human skipped the question ({kind}): Q: {q} — "
+                "proceed with best judgment."
+            )
+        return f"Human Q&A ({kind}) resolved as {status}: Q: {q} A: {resp}"
+
     async def _resolve_model(self) -> str | None:
         """Resolve the orchestrator's model via the precedence chain.
 
@@ -314,15 +396,19 @@ class ChatLoop:
             # chat Delegation record), but the lock acquisition
             # + body are a single try/finally block.
             coalescer_box: list = [None]
+            thinking_box: list = [None]
             try:
                 return await self._run_turn_body(
                     session_id=session_id,
                     user_content=user_content,
                     coalescer_box=coalescer_box,
+                    thinking_box=thinking_box,
                 )
             finally:
                 if coalescer_box[0] is not None:
                     await coalescer_box[0].close_and_flush()
+                if thinking_box[0] is not None:
+                    await thinking_box[0].close_and_flush()
 
     async def rerun_turn(
         self,
@@ -378,11 +464,13 @@ class ChatLoop:
             self.project_manager.save_session(session)
 
             coalescer_box: list = [None]
+            thinking_box: list = [None]
             try:
                 return await self._run_turn_body(
                     session_id=session_id,
                     user_content=target.content,
                     coalescer_box=coalescer_box,
+                    thinking_box=thinking_box,
                     existing_user_msg=target,
                     rerun_info={
                         "from_message_id": from_message_id,
@@ -394,6 +482,8 @@ class ChatLoop:
             finally:
                 if coalescer_box[0] is not None:
                     await coalescer_box[0].close_and_flush()
+                if thinking_box[0] is not None:
+                    await thinking_box[0].close_and_flush()
 
     async def _run_turn_body(
         self,
@@ -401,6 +491,7 @@ class ChatLoop:
         session_id: str,
         user_content: str,
         coalescer_box: list,
+        thinking_box: list,
         # Rerun path: reuse an already-persisted user message instead
         # of persisting a duplicate (the rerun endpoint owns the
         # edit + supersede bookkeeping before calling us).
@@ -533,6 +624,39 @@ class ChatLoop:
             def _on_chunk(text: str) -> None:
                 coalescer.push(text)
 
+            # Thinking capture: a second coalescer over the
+            # runtime's on_reasoning callback emits chat.thinking
+            # events (same shape as chat.delta) so the UI can
+            # render a live Thinking block. A plain accumulator
+            # keeps the full text for the persisted message
+            # metadata; only providers that emit reasoning parts
+            # produce any events here.
+            thinking_parts: list[str] = []
+
+            def _make_thinking_coalescer() -> ChatDeltaCoalescer:
+                async def _emit_thinking(text: str) -> None:
+                    await self._emit(
+                        "chat.thinking",
+                        {
+                            "session_id": session_id,
+                            "delegation_id": delegation.delegation_id,
+                            "text": text,
+                        },
+                    )
+                return ChatDeltaCoalescer(
+                    emit=_emit_thinking,
+                    flush_interval_ms=self.stream_coalesce_ms,
+                    char_threshold=self.stream_char_threshold,
+                )
+
+            thinking_coalescer = _make_thinking_coalescer()
+            thinking_coalescer.start()
+            thinking_box[0] = thinking_coalescer
+
+            def _on_reasoning(text: str) -> None:
+                thinking_parts.append(text)
+                thinking_coalescer.push(text)
+
             async def _finish(**kwargs: Any) -> dict[str, Any]:
                 """Persist the final message, closing the stream first.
 
@@ -546,10 +670,14 @@ class ChatLoop:
                 """
                 if coalescer_box[0] is not None:
                     await coalescer_box[0].close_and_flush()
+                if thinking_box[0] is not None:
+                    await thinking_box[0].close_and_flush()
+                thinking_text = "".join(thinking_parts)
                 return await self._finalise_turn(
                     session=session,
                     session_id=session_id,
                     user_msg=user_msg,
+                    thinking_text=thinking_text or None,
                     **kwargs,
                 )
 
@@ -563,6 +691,7 @@ class ChatLoop:
                 session_id_getter=_get_orch_id,
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
+                on_reasoning=_on_reasoning,
             )
 
             # Update the Session's "what's new" anchors for the
@@ -594,27 +723,62 @@ class ChatLoop:
             if first_turn_text.startswith("[chat error:"):
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.
+                if _is_stale_session_error(first_turn_text):
+                    # The engine session may still be busy with the
+                    # dead turn server-side: rotate the binding so the
+                    # NEXT turn (and any user retry) starts fresh
+                    # instead of queueing behind the wedge. Same
+                    # mechanism as edit-rotation, same audit shape as
+                    # rerun (trace event, no schema change).
+                    session.orchestrator_session_id = None
+                    self.project_manager.save_session(session)
+                    trace.append(
+                        "session_rotated_after_stall",
+                        {"delegation_id": delegation.delegation_id},
+                    )
                 return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=first_turn_text,
                 )
 
-            # 5) Scan for children the orchestrator spawned via defer
+            # 5) Blocking-question gate (M1.11). ask_human returns
+            # immediately at the MCP layer, but the chat turn stays
+            # open (no assistant persisted) until the human answers
+            # or explicitly skips. No deadline by user ruling.
+            escalation_note: str | None = None
+            esc_rec = await self._wait_for_escalation(delegation.delegation_id)
+            if esc_rec is not None and esc_rec.get("status") in {
+                "answered",
+                "skipped",
+                "timeout",
+            }:
+                trace.append(
+                    "escalation_resolved",
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "status": esc_rec.get("status"),
+                        "kind": esc_rec.get("kind", "question"),
+                    },
+                )
+                escalation_note = self._escalation_note(esc_rec)
+
+            # 6) Scan for children the orchestrator spawned via defer
             children = [
                 r for r in store.list()
                 if r.parent_task_id == delegation.delegation_id
             ]
-            if not children:
-                # Fast path: no deferrals -- the first turn's reply
-                # is the final answer.
+            if not children and escalation_note is None:
+                # Fast path: no deferrals and no blocking question --
+                # the first turn's reply is the final answer.
                 return await _finish(
                     delegation_id=delegation.delegation_id,
                     assistant_text=first_turn_text,
                 )
 
-            # 6) Children exist: wait for them, then run a synthesis
-            # turn. ``_wait_for_children`` is bounded by turn_timeout
-            # so a stuck child can't wedge the chat.
+            # 7) Children and/or blocking question: wait for children,
+            # then run a synthesis turn carrying both. Child waits
+            # stay bounded by turn_timeout; the question wait above
+            # is unbounded (M1.11).
             children = await self._wait_for_children(
                 store, delegation.delegation_id
             )
@@ -628,19 +792,51 @@ class ChatLoop:
                 project_dir=project_dir,
                 children=children,
             )
+            # M1.11: append resolved Q&A + child escalation notices
+            # to the synthesis body (server-built, not LLM-composed).
+            extra_sections: list[str] = []
+            if escalation_note is not None:
+                extra_sections.append(escalation_note)
+            if self.escalation_store is not None and children:
+                for child in children:
+                    try:
+                        child_esc = await self.escalation_store.get(
+                            delegation_id=child.delegation_id
+                        )
+                    except Exception:  # noqa: BLE001
+                        child_esc = None
+                    if child_esc is not None and child_esc.get("status") in {
+                        "pending",
+                        "answered",
+                        "skipped",
+                        "timeout",
+                    }:
+                        extra_sections.append(
+                            f"Child {child.agent} escalation "
+                            f"({child_esc.get('kind', 'escalation')}/"
+                            f"{child_esc.get('status')}): "
+                            f"Q: {str(child_esc.get('question', '')).strip()} "
+                            f"A: {str(child_esc.get('response', '') or '').strip() or '(pending)'}"
+                        )
+            synthesis_body = composed_synth.to_body()
+            if extra_sections:
+                synthesis_body += "\n\nHuman Q&A / escalations:\n" + "\n".join(
+                    f"- {s}" for s in extra_sections
+                )
             synthesis_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
                 worktree_path=project_dir or Path.home() / ".sweave",
                 message=(
                     f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
-                    + composed_synth.to_body()
+                    + synthesis_body
                 ),
                 trace=trace,
                 model_str=model_str,
                 session_id_getter=_get_orch_id,
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
+                on_reasoning=_on_reasoning,
             )
             if synthesis_turn_text.startswith("[chat error:"):
                 # Synthesis turn hard-failed. Return the explicit
@@ -673,6 +869,11 @@ class ChatLoop:
         # coalesced chat.delta events. None = no streaming (the
         # pre-M1.8 path: full text arrives on message.added).
         on_chunk: "Callable[[str], Any] | None" = None,
+        # Thinking capture: mirrors on_chunk for reasoning parts.
+        # The chat loop wraps this in a second coalescer emitting
+        # chat.thinking events; the full text is persisted on the
+        # assistant message metadata (see _finalise_turn).
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> str:
         """Run one orchestrator turn via SpecialistRuntime.
 
@@ -698,6 +899,7 @@ class ChatLoop:
                     session_id_getter=session_id_getter,
                     session_id_setter=session_id_setter,
                     on_chunk=on_chunk,
+                    on_reasoning=on_reasoning,
                 ),
                 timeout=self.turn_timeout,
             )
@@ -718,6 +920,7 @@ class ChatLoop:
         delegation_id: str,
         assistant_text: str | None = None,
         error_text: str | None = None,
+        thinking_text: str | None = None,
     ) -> dict[str, Any]:
         """Persist the final assistant message and mark the chat
         delegation ``done`` (auto-done per the M1.7 ruling)."""
@@ -748,6 +951,14 @@ class ChatLoop:
             },
         )
         assistant_content = error_text or (assistant_text or "")
+        # Thinking capture: the accumulated reasoning text rides
+        # on the assistant message metadata (omitted when empty)
+        # so reloads + the detail view keep it. The live
+        # chat.thinking deltas already painted the Thinking block;
+        # this is the durable copy with the same content.
+        metadata: dict[str, Any] = {"delegation_id": delegation_id}
+        if thinking_text:
+            metadata["thinking"] = thinking_text
         assistant_msg = session.add_message(
             role="assistant",
             content=assistant_content,
@@ -757,7 +968,7 @@ class ChatLoop:
             # the streaming bubble (keyed by the same id). The
             # message.added event replaces the partial; the
             # delegation_id is the join key.
-            metadata={"delegation_id": delegation_id},
+            metadata=metadata,
         )
         self.project_manager.save_session(session)
         await self._emit(

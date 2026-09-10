@@ -13,8 +13,9 @@
  *      is in flight (`turn !== "idle"`), `isSendDisabled` blocks send.
  *   2. WS `message.added` (user)   -> reconcile the optimistic copy.
  *   3. WS `delegation.status_changed` (running) -> turn running.
- *   4. WS `chat.delta` × N        -> append to the streaming bubble.
- *   5. WS `message.added` (assistant) -> finalize + turn idle.
+ *   4. WS `chat.thinking` × N      -> append to the bubble's Thinking block.
+ *   5. WS `chat.delta` × N        -> append to the streaming bubble.
+ *   6. WS `message.added` (assistant) -> finalize + turn idle.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -31,6 +32,7 @@ import {
   applyRerun,
   applyStatusChanged,
   applySubmit,
+  applyThinking,
   initialThreadState,
   mergeHistory,
   projectThread,
@@ -96,6 +98,12 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       if (typeof data.delegation_id !== "string" || typeof data.text !== "string") return;
       setState((s) => applyDelta(s, data.delegation_id as string, data.text as string));
     });
+    const offThinking = subscribe("chat.thinking", (env) => {
+      const data = env.data as Record<string, unknown>;
+      if (data.session_id !== sessionId) return;
+      if (typeof data.delegation_id !== "string" || typeof data.text !== "string") return;
+      setState((s) => applyThinking(s, data.delegation_id as string, data.text as string));
+    });
     const offAdded = subscribe("message.added", (env) => {
       const data = env.data as Record<string, unknown>;
       if (data.session_id !== sessionId) return;
@@ -113,6 +121,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
     });
     return () => {
       offDelta();
+      offThinking();
       offAdded();
       offStatus();
     };
