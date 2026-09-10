@@ -51,9 +51,38 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    terminal; wait for bus `session.idle`, then `GET /session/{sid}/message`. And
    opencode may deliver the WHOLE message stream as one newline-free JSON document —
    ALWAYS parse with brace-depth splitting (`_split_json_stream`), never `"\\n"`
-   line splitting. Free-model providers can hang entirely (zero stream bytes for
+   line splitting.    Free-model providers can hang entirely (zero stream bytes for
    minutes on ANY prompt) — don't diagnose that as a permission hang; permission
    hangs always come with a `permission.asked` event.
+
+0b. **M1.12 amendment 1 — the ask→question bridge is IN-BAND now
+   (2026-09-10)** (corrects 0/6's assumption that the out-of-band stall
+   branch is reliable). Incident: session `Sweave-20260910-071906-787887`
+   — two 900s turn deaths on a LIVE `permission.asked` with NO `stalled`
+   trace and NO escalation record. Why the old net failed is still
+   undetermined (byte-silence watchdog never tripped, or scheduled
+   branch never resumed) — DON'T trust silence-based ask recovery.
+   The primary path: plugin `sweave/runtime/permission_bridge_plugin.ts`
+   → island `~/.sweave/opencode/plugins/` → injected ONLY into sweave
+   serves via `OPENCODE_CONFIG_DIR` (`ServeRunner.start`). Standalone
+   opencode NEVER executes it (user ruling: a plugin is code —
+   project-dir `.opencode/plugins/` would auto-run in every session and
+   could block standalone asks on a dead sweave server; agents/MCP
+   config entries are inert clutter and may stay in the repo).
+   Plugin contract: ferry only, never reply itself (`event` hook,
+   fire-and-forget fetch to `POST /api/permission/hijack`, token via
+   `process.env.SWEAVE_MCP_TOKEN`, sweave URL via
+   `SWEAVE_HOST`/`SWEAVE_PORT`); the reply POST is sweave's job
+   (it owns the serve URL from the session registry
+   `permission_bridge.register_session` — added in
+   `SpecialistRuntime` after `_ensure_session`). Scope decision =
+   project record (`Project.permission_roots`) evaluated in
+   `resolve_hijack_request`; in-scope → auto `once`, out-of-scope →
+   blocking human question (the runtime's stall branch stays as
+   FALLBACK only). Gotchas if you touch it: the island is derived at
+   call time from `Path.home()` (`_island_dir()`) — never cache it in a
+   module constant (tests redirect home); a plugin copy failure
+   degrades silently to the out-of-band path (logged, never raises).
 
 1. **Sessions persist in `~/.local/share/opencode/opencode.db` (SQLite)** (corrects the
    M1.3 step 0 probe — "0 new files" was misleading: a new row was inserted into the

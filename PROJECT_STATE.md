@@ -39,10 +39,11 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-10)
-- **579/579** in `pytest tests/` plus 2 pre-existing environment-failure tests
+- **587/589** in `pytest tests/` plus 2 pre-existing environment-failure tests
   (models-registry default not in the live catalog — env-dependent, not code);
   includes the M1.12 suite (wire parser, scoped roots, roots endpoint,
-  permission ask-flow) and the bundled M1.11 execution tests
+  permission ask-flow), the bundled M1.11 execution tests, and the
+  M1.12 amendment-1 bridge tests (`tests/test_m1_12_permission_bridge.py`)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
 - **161** vitest unit tests in `sweave-web/` (verified 2026-09-10; the
   TurnQuestions inline card now covers the M1.12 `permission` kind — detail
@@ -88,6 +89,27 @@
   `a7cc9a1`, `f03eb56` (bundled the M1.11 execution cutover per user
   ruling; includes the specialist_runtime recovery after the same-day
   truncation incident — see GOTCHAS), `ae21de1`, `6d9e8c2` + close-out.
+- ⚠️ **M1.12 Amendment 1 (2026-09-10, user-locked): in-band permission
+  bridge** — executed same day. The dogfood session
+  `Sweave-20260910-071906-787887` died twice on a live
+  `external_directory` ask (orchestrator investigating global-config
+  pollution touched `~/.config/opencode/*`; out-of-cwd → ask → headless
+  forever → both 900s turn deaths); the out-of-band stall-branch
+  converter never created an escalation (no `stalled` trace, 404 on the
+  escalation endpoint). Fix: bundled opencode plugin
+  (`sweave/runtime/permission_bridge_plugin.ts`) ferries
+  `permission.asked` in-process to `POST /api/permission/hijack`
+  (token-guarded); `sweave/runtime/permission_bridge.py` scope-evaluates
+  against the project record (auto-allow in scope `once`; blocking
+  human escalation out of scope, no timeout) and POSTs the pinned reply
+  itself. The plugin ships ONLY via a sweave-owned config island
+  (`~/.sweave/opencode/plugins/`) injected as `OPENCODE_CONFIG_DIR` into
+  ServeRunner spawns — a standalone opencode never loads it (user
+  ruling: a plugin is code; project-dir placement rejected). The stall
+  walk-dance is fallback only. MCP file tools stay deferred (no second
+  read surface). Gates: 587 pass, `run.py --check` 13/13. Bridge-path
+  LIVE gate still pending (extend `scripts/m1_12_live_gate.py` with a
+  hijack-route scene). Commits `0113ec8` (amendment) + `9c0aa87` (exec).
 - ✅ **M1.prep** — all 8 steps (9 commits)
 - ✅ **M1.0 Live serve probe** — done: v2 HTTP API + per-message model +
   chunked JSON stream consumption. Its leftovers (session resume across

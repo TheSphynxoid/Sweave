@@ -110,5 +110,12 @@ Status: **done** (2026-09-10). Live gate green (3 scenes, `opencode-go/glm-5.3-f
 3. Gates: pytest (>= 579 pass rate), `run.py --check`; vitest + build only if UI touched (it is NOT). Fallback: if live verification impossible on 1.18.29 pinned serve, plan a dedicated M1.12.5 step-5 live gate following `scripts/m1_12_live_gate.py` pattern (3 scenes).
 4. Docs: DESIGN §4 permission row amended (in-band bridge added); PROJECT_STATE + GOTCHAS out-of-band-bridge flakiness + incident record.
 
-**Status: amendment accepted (2026-09-10), execution following.** Step-1/2 code + tests land in this session; the step-4-class live gate (plugin-bridge scenes on the pinned 1.18.29 serve, mirroring `scripts/m1_12_live_gate.py`) is the closing gate before the status is bumped to done.
+**Status: DONE (2026-09-10, amendment 1 executed).** Plugin bridge shipped
+(`sweave/runtime/permission_bridge.py` + `.ts`, `OPENCODE_CONFIG_DIR` island
+injection in `ServeRunner.start`, `POST /api/permission/hijack` in
+`web/routers/mcp.py`, session registry in `SpecialistRuntime`); gates:
+587 pytest pass (+2 pre-existing env fails), `run.py --check` 13/13.
+Commits `0113ec8` (amendment) + `9c0aa87` (execution). Live gate for the
+bridge path (hijack-route scenes on a pinned 1.18.29 serve, extending
+`scripts/m1_12_live_gate.py`) is the remaining follow-up.
 
