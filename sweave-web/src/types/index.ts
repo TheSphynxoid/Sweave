@@ -210,13 +210,16 @@ export interface EscalationRecord {
   delegation_id: string;
   question: string;
   options: string[] | null;
-  kind: "question" | "escalation";
+  kind: "question" | "escalation" | "permission";
   audience: "human" | "orchestrator";
   status: "pending" | "answered" | "skipped" | "timeout";
   created_at: string;
   deadline_at: string | null;
   answered_at: string | null;
   response: string | null;
+  /** M1.12: structured detail for permission questions (requestID,
+   *  patterns, command). */
+  metadata?: Record<string, unknown> | null;
 }
 
 // ---------- Models + rules + config ----------

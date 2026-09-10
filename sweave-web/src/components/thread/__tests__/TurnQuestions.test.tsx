@@ -115,4 +115,45 @@ describe("TurnQuestions", () => {
     for (const h of handlers.get("specialist.escalation_resolved") ?? []) h();
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(3));
   });
+
+  it("permission kind renders the card with the metadata detail line", async () => {
+    getMock.mockResolvedValue(
+      rec({
+        kind: "permission",
+        question:
+          "Permission required: opencode asks external_directory for [\"C:\\Windows\\*\"]. Answer 'allow once' / 'always allow' / 'deny'.",
+        options: ["allow once", "always allow", "deny"],
+        metadata: {
+          requestID: "per_01",
+          permission: "external_directory",
+          patterns: ["C:\\Windows\\*"],
+          command: "cat C:\\Windows\\win.ini",
+        },
+      }) as EscalationRecord,
+    );
+    answerMock.mockResolvedValue(rec({ status: "answered", response: "allow once" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    const card = await screen.findByTestId("turn-question-card");
+    expect(card.getAttribute("data-kind")).toBe("permission");
+    expect(screen.getByText(/Permission required — the turn is waiting/)).toBeTruthy();
+    expect(
+      screen.getByText(/tool check: external_directory.*patterns: C:\\Windows\\\*/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/'always allow' grants exactly: C:\\Windows\\\*/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByTestId("turn-question-option-allow once"));
+    await waitFor(() =>
+      expect(answerMock).toHaveBeenCalledWith("chat-abc", "allow once"),
+    );
+  });
+
+  it("permission still renders after ws.escalated event", async () => {
+    getMock.mockResolvedValue(
+      rec({ kind: "permission", options: ["allow once"] }) as EscalationRecord,
+    );
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("turn-question-card")).toBeTruthy();
+  });
 });

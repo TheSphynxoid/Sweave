@@ -71,7 +71,9 @@ export function TurnQuestions({ delegationId }: { delegationId: string }) {
     };
   }, [subscribe, load]);
 
-  if (!esc || esc.status !== "pending" || esc.kind !== "question") return null;
+  if (!esc || esc.status !== "pending") return null;
+  const isPermission = esc.kind === "permission";
+  if (!isPermission && esc.kind !== "question") return null;
 
   const options = esc.options ?? [];
 
@@ -94,7 +96,7 @@ export function TurnQuestions({ delegationId }: { delegationId: string }) {
   const sendSkip = async () => {
     if (busy) return;
     // System-issued confirm (not LLM text): the fat-finger guard.
-    if (!window.confirm(SKIP_CONFIRM_TEXT)) return;
+    if (!window.confirm(skipText)) return;
     setBusy(true);
     setError(null);
     try {
@@ -107,19 +109,48 @@ export function TurnQuestions({ delegationId }: { delegationId: string }) {
     }
   };
 
+  const skipText = isPermission
+    ? "Deny this permission? The tool call fails and the turn reports it explicitly. This cannot be undone."
+    : SKIP_CONFIRM_TEXT;
+
   return (
     <div
       data-testid="turn-question-card"
       data-delegation-id={delegationId}
+      data-kind={esc.kind}
       className="mt-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3"
     >
       <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
-        <HelpCircle size={14} />
-        <span>Question — the turn is waiting for your answer</span>
+        {isPermission ? <HelpCircle size={14} /> : <HelpCircle size={14} />}
+        <span>
+          {isPermission
+            ? "Permission required — the turn is waiting for your decision"
+            : "Question — the turn is waiting for your answer"}
+        </span>
       </div>
       <p className="whitespace-pre-wrap break-words text-sm text-foreground">
         {esc.question}
       </p>
+      {isPermission && esc.metadata != null && (
+        <p data-testid="turn-question-permission-detail" className="mt-1.5 text-[11px] text-muted-foreground">
+          {(() => {
+            const meta = esc.metadata as {
+              permission?: string;
+              patterns?: string[];
+              command?: string;
+            };
+            const parts = [
+              meta.permission ? `tool check: ${meta.permission}` : "",
+              meta.patterns?.length ? `patterns: ${meta.patterns.join(", ")}` : "",
+              meta.command ? `command: ${meta.command}` : "",
+            ].filter(Boolean);
+            // 'always allow' persists the pattern list opencode-side;
+            // the card labels it so the grant is explicit (audit).
+            parts.push(`'always allow' grants exactly: ${meta.patterns?.join(", ") ?? "the checked paths"}`);
+            return parts.join(" · ");
+          })()}
+        </p>
+      )}
       {options.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {options.map((opt) => (
@@ -164,7 +195,7 @@ export function TurnQuestions({ delegationId }: { delegationId: string }) {
           onClick={() => void sendSkip()}
           disabled={busy}
           data-testid="turn-question-skip"
-          title="Skip — the agent proceeds with best judgment"
+          title={isPermission ? "Deny — the tool call fails loud" : "Skip — the agent proceeds with best judgment"}
           className="inline-flex h-8 items-center gap-1 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
         >
           <SkipForward size={13} />

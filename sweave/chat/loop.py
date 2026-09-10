@@ -887,29 +887,75 @@ class ChatLoop:
         model_ref: ModelRef | None = None
         if model_str:
             model_ref = parse_model_ref(model_str)
+        inner = self.runtime.run(
+            specialist=specialist,
+            delegation=delegation,
+            worktree_path=worktree_path,
+            message=message,
+            trace=trace,
+            model_ref=model_ref,
+            session_id_getter=session_id_getter,
+            session_id_setter=session_id_setter,
+            on_chunk=on_chunk,
+            on_reasoning=on_reasoning,
+        )
+        task = asyncio.ensure_future(inner)
+        remaining = self.turn_timeout
         try:
-            return await asyncio.wait_for(
-                self.runtime.run(
-                    specialist=specialist,
-                    delegation=delegation,
-                    worktree_path=worktree_path,
-                    message=message,
-                    trace=trace,
-                    model_ref=model_ref,
-                    session_id_getter=session_id_getter,
-                    session_id_setter=session_id_setter,
-                    on_chunk=on_chunk,
-                    on_reasoning=on_reasoning,
-                ),
-                timeout=self.turn_timeout,
-            )
-        except asyncio.TimeoutError:
-            return (
-                f"[chat error: orchestrator turn exceeded "
-                f"{self.turn_timeout:.0f}s timeout]"
-            )
+            # M1.12: the turn timer SUSPENDS while a human question
+            # for this turn is unresolved (user ruling 2026-09-10:
+            # no-timeout questions; timers suspended). The shielded
+            # task keeps running across re-arms; on a real timeout
+            # (no pending question) we cancel with the old contract.
+            while True:
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(task), timeout=remaining
+                    )
+                except asyncio.TimeoutError:
+                    pending_q = await self._pending_human_question(
+                        delegation.delegation_id
+                    )
+                    if pending_q is None:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                        return (
+                            f"[chat error: orchestrator turn exceeded "
+                            f"{self.turn_timeout:.0f}s timeout]"
+                        )
+                    # Permission question outstanding: re-arm with the
+                    # FULL budget (the countdown suspends, not shrinks)
+                    # and hold until answered; then the post-answer
+                    # stretch gets a fresh full budget.
+                    trace.append(
+                        "turn_timer_suspended",
+                        {
+                            "delegation_id": delegation.delegation_id,
+                            "kind": pending_q.get("kind", "permission"),
+                        },
+                    )
+                    remaining = self.turn_timeout
         except Exception as e:  # noqa: BLE001
             return f"[chat error: {type(e).__name__}: {e}]"
+
+    async def _pending_human_question(
+        self, delegation_id: str
+    ) -> dict | None:
+        """The delegation's pending escalation (kind question or
+        permission), or None. Used by the turn-timer suspension."""
+        store = self.escalation_store
+        if store is None:
+            return None
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if rec is None or rec.get("status") != "pending":
+            return None
+        kind = str(rec.get("kind", "question"))
+        if kind in ("permission", "question"):
+            return rec
+        return None
 
     async def _finalise_turn(
         self,
