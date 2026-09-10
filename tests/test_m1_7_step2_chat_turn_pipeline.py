@@ -8,8 +8,9 @@ Covers:
 * ``POST /api/sessions/{id}/messages`` (user role) drives the
   ChatLoop: persists the user message, runs the orchestrator, persists
   the assistant reply. Both messages are returned.
-* Per-session serial queue: a second user message arriving mid-turn
-  waits; each becomes its own turn after the previous completes.
+* Double-send guard (supersedes lock-as-queue): a second user
+  message arriving mid-turn is REJECTED with TurnActiveError
+  (HTTP 409) -- never silently queued.
 * Orchestrator-unreachable: the loop persists an explicit error
   message -- never a silent fallback, never a swallowed failure.
 * Legacy / non-user roles (system, tool, assistant) still hit the
@@ -25,8 +26,6 @@ import asyncio
 import os
 import time
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -291,44 +290,50 @@ async def test_two_sessions_get_independent_orchestrator_bindings(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_chat_loop_serialises_per_session_concurrent_calls(tmp_path: Path):
-    """Two concurrent calls on the same session run in order; each
-    becomes its own turn. The per-session lock is the queue.
+async def test_chat_loop_double_send_rejected_with_turn_active(tmp_path: Path):
+    """Double-send guard (supersedes the M1.7 lock-as-queue semantics
+    per the chat-recovery hardening): a second user message arriving
+    while a turn is active is REJECTED with ``TurnActiveError``
+    (HTTP 409), never silently queued -- a queued POST would hang the
+    client's HTTP request for up to ``turn_timeout``, and a refreshed
+    client could never see it waiting. The error carries the active
+    turn's snapshot.
     """
     pm = ProjectManager(base_path=tmp_path / "projects")
     pm.create_project("demo", path=tmp_path)
     session = pm.create_session("demo", session_name="s1")
-    # Two responses; first sleeps briefly, second is fast. If the
-    # lock fails to serialise, the messages could interleave in
-    # surprising ways -- we assert ordering via the persisted
-    # transcript.
     chat, _stores = _build_chat_loop(
         pm=pm,
-        send_responses=["first-reply", "second-reply"],
-        send_delay=0.05,
+        send_responses=["first-reply"],
+        send_delay=0.15,
     )
 
-    # Fire both concurrently
+    from sweave.chat.loop import TurnActiveError
+
+    # Fire both concurrently: the second must be rejected, not queued.
     results = await asyncio.gather(
         chat.run_turn(session_id=session.id, user_content="first-msg"),
         chat.run_turn(session_id=session.id, user_content="second-msg"),
+        return_exceptions=True,
     )
-    # The first gathered result may not be the first by content
-    # (asyncio.gather doesn't preserve submission order on lock
-    # contention), but each result IS a coherent turn (its reply
-    # matches the per-turn response that was sent).
-    # What we assert: the persisted transcript has all 4 messages
-    # in submission order (user1, assistant1, user2, assistant2).
+    first, second = results
+    # Exactly one of the two raised TurnActiveError (the racing
+    # double-send); the other completed as a normal turn.
+    errs = [r for r in results if isinstance(r, TurnActiveError)]
+    oks = [r for r in results if not isinstance(r, Exception)]
+    assert len(oks) == 1
+    assert len(errs) == 1
+    err = errs[0]
+    assert err.snapshot["session_id"] == session.id
+    assert err.snapshot["status"] == "running"
+
     loaded = pm.get_session(session.id)
     assert loaded is not None
-    assert len(loaded.messages) == 4
-    user_msgs = [m for m in loaded.messages if m.role == "user"]
+    # Only ONE turn ran: one user + one assistant message; the
+    # rejected double-send never persisted a message.
+    assert len(loaded.messages) == 2
     assistant_msgs = [m for m in loaded.messages if m.role == "assistant"]
-    assert len(user_msgs) == 2
-    assert len(assistant_msgs) == 2
-    # The replies are distinct -- no message got the other's reply
-    reply_contents = {m.content for m in assistant_msgs}
-    assert reply_contents == {"first-reply", "second-reply"}
+    assert assistant_msgs[0].content == "first-reply"
 
 
 @pytest.mark.asyncio

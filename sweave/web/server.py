@@ -36,6 +36,42 @@ logger = logging.getLogger(__name__)
 get_state = _get_state
 
 
+async def _recover_interrupted_delegations(
+    delegation_stores, project_manager
+) -> int:
+    """Boot recovery for delegations orphaned by a previous run.
+
+    A server crash/restart leaves every non-terminal delegation
+    (``running``/``queued``) stale on disk: the coroutine driving it
+    died with the process. Called from the lifespan BEFORE any turn
+    can be accepted, so anything non-terminal in the persisted stores
+    is by definition from a previous process. Chat delegations keep
+    the partial ``output`` the streaming coalescer persisted, so the
+    already-streamed text survives the restart (surfaced on the
+    failed record; the UI shows a clear "interrupted" turn instead of
+    a phantom active one).
+
+    Returns the number of records recovered (for the boot log).
+    """
+    project_dirs: list[Path] = [
+        Path(p.path) for p in project_manager.list_projects()
+    ]
+    # The fallback store (chat sessions created without a project) is
+    # anchored at ~/.sweave, matching the loop's project_dir_resolver
+    # fallback.
+    project_dirs.append(Path.home() / ".sweave")
+    recovered = 0
+    for dir_path in project_dirs:
+        try:
+            store = await delegation_stores.for_project(dir_path)
+            recovered += await store.recover_interrupted()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "Boot recovery: could not recover %s: %s", dir_path, e
+            )
+    return recovered
+
+
 def _add_child_to_session(child, project_manager) -> None:
     """UI v1 compat bridge: add *child* to its parent session and persist.
 
@@ -97,6 +133,21 @@ async def lifespan(app: FastAPI):
     state = AppState.build(config_manager)
     state.event_bus = WSEventBus()
     state.delegation_stores = PerProjectDelegationStores()
+    # Chat-turn crash recovery (client-refresh / server-restart
+    # contract): before any turn can be accepted, mark every
+    # non-terminal delegation record orphaned by the previous
+    # process run as cleanly failed (chat delegations keep their
+    # partial streamed `output`). No phantom "running" turns for a
+    # freshly loaded UI.
+    _recovered = await _recover_interrupted_delegations(
+        state.delegation_stores, project_manager
+    )
+    if _recovered:
+        logger.info(
+            "Boot recovery: marked %d orphaned non-terminal delegation(s) "
+            "as failed (interrupted by server restart)",
+            _recovered,
+        )
     state.subagent_runs = SubAgentRunStore()
     # M1.2 step 2: build the specialist resolver first so the JobRunner
     # can be wired with the specialist factory + saver closures below.

@@ -343,6 +343,42 @@ class DelegationStore:
             await self._persist()
             return rec
 
+    async def recover_interrupted(self, reason: str = "server restart") -> int:
+        """Boot recovery: mark stale non-terminal records failed.
+
+        A server crash/restart orphans every record still in a
+        non-terminal status (``running``/``queued``): the coroutine
+        driving it died with the process, and nothing will ever pick
+        it up again (the JobRunner queue is in-memory). Called from
+        the FastAPI lifespan BEFORE any turn can be accepted, so any
+        non-terminal record found on disk is by definition stale from
+        a previous process run.
+
+        ``running``/``queued`` -> ``failed`` with an explicit
+        ``interrupted`` error; chat delegations keep whatever partial
+        ``output`` the streaming coalescer had already persisted (the
+        durable stream snapshot), so the already-streamed text is not
+        lost. ``review``/``done``/``failed`` are untouched (``review``
+        is a real user-facing state, not in-flight work).
+
+        Returns the number of records recovered.
+        """
+        async with self._lock:
+            n = 0
+            for rec in list(self._records.values()):
+                if rec.status not in ("running", "queued"):
+                    continue
+                rec.status = "failed"
+                if not rec.error:
+                    rec.error = f"[chat error: interrupted by {reason}]"
+                if rec.completed_at is None:
+                    rec.completed_at = _now()
+                rec.updated_at = _now()
+                n += 1
+            if n:
+                await self._persist()
+            return n
+
 
 class PerProjectDelegationStores:
     """Lazy map of project_name -> :class:`DelegationStore`.

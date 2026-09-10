@@ -29,6 +29,7 @@ import { cn } from "@/utils/cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 export function ProjectSessionTree() {
   const { activeProject, activeSession, setActiveProject, setActiveSession, pushNotification } =
@@ -42,6 +43,10 @@ export function ProjectSessionTree() {
   const [newName, setNewName] = useState("");
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [deletingProject, setDeletingProject] = useState<string | null>(null);
+  const [pendingDeleteSession, setPendingDeleteSession] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects"],
@@ -90,7 +95,10 @@ export function ProjectSessionTree() {
       pushNotification("success", "Session deleted.");
     },
     onError: (err) => pushNotification("error", `Failed to delete session: ${(err as Error).message}`),
-    onSettled: () => setDeletingSession(null),
+    onSettled: () => {
+      setDeletingSession(null);
+      setPendingDeleteSession(null);
+    },
   });
 
   const deleteProject = useMutation({
@@ -199,10 +207,11 @@ export function ProjectSessionTree() {
                     onCreate={() => createSession.mutate(p.name)}
                     creatingPending={createSession.isPending}
                     deletingSession={deletingSession}
-                    onDeleteSession={(id) => {
+                    onDeleteSession={(id, name) => {
                       if (deletingSession) return;
-                      setDeletingSession(id);
-                      deleteSession.mutate(id);
+                      // Confirmation first — deletion happens only in the
+                      // dialog's confirm handler.
+                      setPendingDeleteSession({ id, name });
                     }}
                     onPickSession={async (id) => {
                       if (id === activeSession?.id) return;
@@ -220,6 +229,25 @@ export function ProjectSessionTree() {
           })}
         </ul>
       </ScrollArea>
+      <ConfirmDeleteDialog
+        open={pendingDeleteSession !== null}
+        title="Delete session"
+        body={
+          pendingDeleteSession
+            ? `Delete "${pendingDeleteSession.name}"? This cannot be undone.`
+            : ""
+        }
+        pending={deleteSession.isPending}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteSession(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDeleteSession || deleteSession.isPending) return;
+          setDeletingSession(pendingDeleteSession.id);
+          deleteSession.mutate(pendingDeleteSession.id);
+        }}
+        testId="confirm-delete-session-dialog"
+      />
     </div>
   );
 }
@@ -246,7 +274,7 @@ function ProjectSessions({
   onCreate: () => void;
   creatingPending: boolean;
   deletingSession: string | null;
-  onDeleteSession: (id: string) => void;
+  onDeleteSession: (id: string, name: string) => void;
   onPickSession: (id: string) => void;
 }) {
   const { data: sessions = [], isLoading } = useQuery({
@@ -299,7 +327,7 @@ function ProjectSessions({
             <button
               type="button"
               aria-label={`Delete ${s.name}`}
-              onClick={() => onDeleteSession(s.id)}
+              onClick={() => onDeleteSession(s.id, s.name)}
               className="absolute right-1.5 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
             >
               {deletingSession === s.id ? (

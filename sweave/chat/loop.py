@@ -6,9 +6,23 @@ depth=0, no worktree) -> run the orchestrator specialist through
 SpecialistRuntime -> persist the assistant reply.
 
 Per-session serial queue: an asyncio.Lock keyed by session_id. A second
-user message arriving mid-turn waits; each becomes its own turn after
-the previous completes. Concurrent calls on different sessions are
-independent.
+user message arriving while a turn is already active is REJECTED as
+``TurnActiveError`` (HTTP 409; the double-send guard) -- the old
+lock-as-queue semantics wait-hidden multi-minute HTTP hangs, and a
+refreshed client could never see the queued message. Concurrent calls
+on different sessions are independent.
+
+Turn execution is DETACHED from the HTTP handler: ``run_turn`` spawns
+the turn into a task held by the loop and shields it, so a client
+refresh/disconnect cancels the POST but not the turn -- the reply is
+still persisted + emitted when it finishes. The loop's turn-activity
+registry (``_active_turns``) is the client-refresh recovery surface:
+``active_turn_snapshot`` (served by GET /api/sessions/{id}/turn)
+carries the delegation id, phase and the already-streamed text, and
+the streaming coalescer accumulates + periodically persists the
+partial reply onto the delegation record so a hard server death
+leaves it on disk (boot recovery marks the stale record failed and
+keeps the partial output).
 
 Orchestrator binding: the durable opencode session id lives on the
 Session record (Session.orchestrator_session_id, M1.7 step 1), not on
@@ -35,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -45,6 +60,69 @@ from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
 
 logger = logging.getLogger(__name__)
+
+
+class TurnActiveError(RuntimeError):
+    """A turn is already active (or in flight) for the session.
+
+    Raised by :meth:`ChatLoop.run_turn` / :meth:`ChatLoop.rerun_turn`
+    as the double-send guard: a second POST while a turn is running is
+    REJECTED (HTTP 409), not silently queued -- a queued POST would hang
+    the client's HTTP request for up to ``turn_timeout`` with no UI
+    feedback, and a refreshed client cannot see it waiting.
+
+    ``snapshot`` carries the active turn's state in exactly the shape
+    ``GET /api/sessions/{id}/turn`` returns, so the router can hand the
+    client the same recovery payload in the 409 response.
+    """
+
+    def __init__(self, message: str, snapshot: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot
+
+
+@dataclass
+class _ActiveTurn:
+    """The running turn's live state for one session (in-memory registry).
+
+    This is the server's half of the client-refresh recovery contract:
+    a freshly loaded page calls ``GET /api/sessions/{id}/turn`` and gets
+    this snapshot instead of seeing a dead ``idle`` thread.
+
+    * ``stream_text`` / ``thinking_text`` accumulate the partial reply /
+      reasoning emitted so far (the coalescer's emit closure appends),
+      so a re-subscriber gets the current text, not just "a turn exists".
+    * ``pending_question`` is True while a blocking human question
+      (ask_human / permission) holds the turn open (M1.11).
+    * ``durable_until`` tracks the last periodic persist of the partial
+      text onto the delegation record (see ChatLoop.stream_persist_interval).
+    """
+
+    session_id: str
+    delegation_id: str | None = None
+    registered_at: datetime = field(default_factory=datetime.now)
+    stream_text: str = ""
+    thinking_text: str = ""
+    pending_question: bool = False
+    task: asyncio.Task | None = None
+
+    def snapshot(self) -> dict[str, Any]:
+        if self.pending_question:
+            phase = "question"
+        elif self.stream_text or self.thinking_text:
+            phase = "streaming"
+        else:
+            phase = "waiting"
+        return {
+            "session_id": self.session_id,
+            "delegation_id": self.delegation_id,
+            "status": "running",
+            "phase": phase,
+            "started_at": self.registered_at.isoformat(),
+            "stream_text": self.stream_text,
+            "thinking_text": self.thinking_text,
+            "pending_question": self.pending_question,
+        }
 
 
 # Silence-class turn failures: the engine session may still be busy
@@ -147,6 +225,57 @@ class ChatLoop:
         # concurrent first-callers don't race.
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_meta: Optional[asyncio.Lock] = None
+        # Turn-activity registry (client-refresh recovery contract).
+        # ``_active_turns`` maps session_id -> the turn's live state
+        # while a turn runs on this process; ``active_turn_snapshot``
+        # is what GET /api/sessions/{id}/turn serves. Entries are
+        # removed in the turn's finally (never persisted: a turn in
+        # an old process has no live counterpart, and boot recovery
+        # marks those stale delegation records failed instead).
+        self._active_turns: dict[str, _ActiveTurn] = {}
+        # Synchronously-maintained companion of _active_turns: added
+        # BEFORE the turn task is spawned so two simultaneous callers
+        # can never both pass the guard (the registry entry itself
+        # only appears after the task acquires the lock).
+        self._turn_inflight: set[str] = set()
+        # How often (seconds) the accumulated partial reply is
+        # persisted onto the chat delegation record (``output``) so a
+        # hard server death leaves the already-streamed text on disk.
+        # 0 disables. The final ``_finalise_turn`` write is always
+        # authoritative, this is only the crash tail.
+        self.stream_persist_interval: float = 2.0
+
+    # ---- turn-activity registry (refresh recovery) ----------------------
+
+    def active_turn_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        """The session's active turn snapshot, or None when idle.
+
+        Served by GET /api/sessions/{id}/turn right after a page load /
+        WS reconnect so a freshly mounted thread can restore the
+        waiting/streaming indicator + the already-streamed bubble.
+        """
+        entry = self._active_turns.get(session_id)
+        if entry is None:
+            return None
+        snap = entry.snapshot()
+        snap["updated_at"] = None
+        return snap
+
+    def _register_active_turn(
+        self, session_id: str, delegation_id: str
+    ) -> _ActiveTurn:
+        entry = _ActiveTurn(session_id=session_id, delegation_id=delegation_id)
+        self._active_turns[session_id] = entry
+        return entry
+
+    def _unregister_active_turn(self, session_id: str) -> None:
+        self._active_turns.pop(session_id, None)
+        self._turn_inflight.discard(session_id)
+
+    def _set_question_flag(self, session_id: str, pending: bool) -> None:
+        entry = self._active_turns.get(session_id)
+        if entry is not None:
+            entry.pending_question = pending
 
     async def _lock_for(self, session_id: str) -> asyncio.Lock:
         """Return a per-session asyncio lock, creating on first use."""
@@ -290,6 +419,22 @@ class ChatLoop:
             if rec.get("status") != "pending":
                 return rec
 
+    async def _peek_escalation(self, delegation_id: str) -> dict | None:
+        """Non-blocking peek: a PENDING escalation record for this
+        delegation, or None. Drives the turn registry's question flag
+        (a peek that finds nothing does not touch the flag — the
+        ask never happened / already resolved)."""
+        store = self.escalation_store
+        if store is None:
+            return None
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if rec is None or rec.get("status") != "pending":
+            return None
+        return rec
+
     @staticmethod
     def _escalation_note(rec: dict) -> str:
         """One-block synthesis note for a resolved escalation."""
@@ -355,7 +500,17 @@ class ChatLoop:
         user_content: str,
     ) -> dict[str, Any]:
         """Run one user turn end-to-end. Returns the assistant message dict.
-        Steps (M1.7 step 2 + step 3):
+
+        The turn body runs inside a DETACHED task held by the loop
+        (not the HTTP handler): a client refresh/disconnect cancels
+        the request coroutine but NOT the turn -- the assistant reply
+        is still persisted + emitted when it finishes, and a refreshed
+        client re-subscribes / refetches the turn state. The guard
+        raises ``TurnActiveError`` (-> HTTP 409) when a turn is already
+        running for the session: the double-send is rejected, never
+        silently queued.
+
+        Body steps (in ``_turn_owner_runner``; M1.7 step 2 + step 3):
         1. Acquire the per-session lock (serial queue).
         2. Persist the user message.
         3. Build a chat Delegation (kind=chat, agent=orchestrator,
@@ -386,29 +541,52 @@ class ChatLoop:
         orchestrator's synthesis acknowledges them. The chat is
         never hung waiting forever; the child wait is bounded.
         """
-        lock = await self._lock_for(session_id)
-        async with lock:
-            # M1.8: streaming coalescer is created once per turn
-            # and closed on every exit path via try/finally. The
-            # coalescer's close_and_flush is idempotent; it can be
-            # called multiple times safely. We use a sentinel
-            # because the coalescer is created later (after the
-            # chat Delegation record), but the lock acquisition
-            # + body are a single try/finally block.
-            coalescer_box: list = [None]
-            thinking_box: list = [None]
-            try:
-                return await self._run_turn_body(
+        fallback = {
+            "session_id": session_id,
+            "delegation_id": None,
+            "status": "running",
+            "phase": "waiting",
+            "started_at": None,
+            "stream_text": "",
+            "thinking_text": "",
+            "pending_question": False,
+        }
+        snapshot = self.active_turn_snapshot(session_id)
+        if snapshot is None and session_id in self._turn_inflight:
+            snapshot = fallback
+        if snapshot is None:
+            lock = await self._lock_for(session_id)
+            if lock.locked():
+                snapshot = fallback
+        if snapshot is not None:
+            raise TurnActiveError(
+                f"Session '{session_id}' already has an active chat turn; "
+                "reconnect via GET /api/sessions/{id}/turn.",
+                snapshot=snapshot,
+            )
+
+        delegation_id = f"chat-{uuid.uuid4().hex[:12]}"
+        self._turn_inflight.add(session_id)
+        try:
+            task = asyncio.create_task(
+                self._turn_owner_runner(
                     session_id=session_id,
                     user_content=user_content,
-                    coalescer_box=coalescer_box,
-                    thinking_box=thinking_box,
+                    delegation_id=delegation_id,
                 )
-            finally:
-                if coalescer_box[0] is not None:
-                    await coalescer_box[0].close_and_flush()
-                if thinking_box[0] is not None:
-                    await thinking_box[0].close_and_flush()
+            )
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The HTTP handler is being cancelled (client refresh /
+            # disconnect). The turn task keeps running detached and
+            # still persists + emits its reply on completion.
+            logger.info(
+                "ChatLoop: client abandoned the POST; turn %s for session "
+                "%s continues detached",
+                delegation_id,
+                session_id,
+            )
+            raise
 
     async def rerun_turn(
         self,
@@ -429,48 +607,83 @@ class ChatLoop:
         contradictory history, while a pure retry keeps the binding.
         The turn then runs through the same body as a fresh turn, but
         the existing user message is reused (no duplicate persist).
+        The double-send guard applies here too: a rerun while a turn
+        is already running for the session raises ``TurnActiveError``.
 
         Returns the new assistant message dict.
         """
-        lock = await self._lock_for(session_id)
-        async with lock:
-            session = self.project_manager.get_session(session_id)
-            if session is None:
-                raise ValueError(f"Session '{session_id}' not found")
-            idx = next(
-                (i for i, m in enumerate(session.messages) if m.id == from_message_id),
-                None,
+        snapshot = self.active_turn_snapshot(session_id)
+        if snapshot is None and session_id in self._turn_inflight:
+            snapshot = {
+                "session_id": session_id,
+                "delegation_id": None,
+                "status": "running",
+                "phase": "waiting",
+                "started_at": None,
+                "stream_text": "",
+                "thinking_text": "",
+                "pending_question": False,
+            }
+        if snapshot is None:
+            lock = await self._lock_for(session_id)
+            if lock.locked():
+                snapshot = {
+                    "session_id": session_id,
+                    "delegation_id": None,
+                    "status": "running",
+                    "phase": "waiting",
+                    "started_at": None,
+                    "stream_text": "",
+                    "thinking_text": "",
+                    "pending_question": False,
+                }
+        if snapshot is not None:
+            raise TurnActiveError(
+                f"Session '{session_id}' already has an active chat turn; "
+                "reconnect via GET /api/sessions/{id}/turn.",
+                snapshot=snapshot,
             )
-            if idx is None:
-                raise ValueError(
-                    f"Message '{from_message_id}' not found in session '{session_id}'"
-                )
-            target = session.messages[idx]
-            if target.role != "user":
-                raise TypeError(
-                    f"Can only rerun from a user message (got role '{target.role}')"
-                )
-            edited = content is not None and content != target.content
-            if edited:
-                target.content = content
-            superseded = 0
-            for later in session.messages[idx + 1:]:
-                later.metadata["superseded"] = True
-                superseded += 1
-            rotated = False
-            if edited:
-                session.orchestrator_session_id = None
-                rotated = True
-            self.project_manager.save_session(session)
 
-            coalescer_box: list = [None]
-            thinking_box: list = [None]
-            try:
-                return await self._run_turn_body(
+        # The edit + supersede bookkeeping must complete synchronously
+        # (before the detached turn starts): the caller's POST response
+        # only covers this part -- the turn itself streams via WS.
+        session = self.project_manager.get_session(session_id)
+        if session is None:
+            raise ValueError(f"Session '{session_id}' not found")
+        idx = next(
+            (i for i, m in enumerate(session.messages) if m.id == from_message_id),
+            None,
+        )
+        if idx is None:
+            raise ValueError(
+                f"Message '{from_message_id}' not found in session '{session_id}'"
+            )
+        target = session.messages[idx]
+        if target.role != "user":
+            raise TypeError(
+                f"Can only rerun from a user message (got role '{target.role}')"
+            )
+        edited = content is not None and content != target.content
+        if edited:
+            target.content = content
+        superseded = 0
+        for later in session.messages[idx + 1:]:
+            later.metadata["superseded"] = True
+            superseded += 1
+        rotated = False
+        if edited:
+            session.orchestrator_session_id = None
+            rotated = True
+        self.project_manager.save_session(session)
+
+        delegation_id = f"chat-{uuid.uuid4().hex[:12]}"
+        self._turn_inflight.add(session_id)
+        try:
+            task = asyncio.create_task(
+                self._turn_owner_runner(
                     session_id=session_id,
                     user_content=target.content,
-                    coalescer_box=coalescer_box,
-                    thinking_box=thinking_box,
+                    delegation_id=delegation_id,
                     existing_user_msg=target,
                     rerun_info={
                         "from_message_id": from_message_id,
@@ -479,17 +692,127 @@ class ChatLoop:
                         "superseded_count": superseded,
                     },
                 )
+            )
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.info(
+                "ChatLoop: client abandoned the rerun POST; turn %s for "
+                "session %s continues detached",
+                delegation_id,
+                session_id,
+            )
+            raise
+
+    async def _turn_owner_runner(
+        self,
+        *,
+        session_id: str,
+        user_content: str,
+        delegation_id: str,
+        existing_user_msg: Any | None = None,
+        rerun_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """The turn task: lock + register + body + crash cleanup.
+
+        Registered in the loop's turn-activity registry (the
+        refresh-recovery surface) and unregistered in the finally on
+        every exit path. A mid-body crash -- before ``_finalise_turn``
+        could ever mark the delegation -- is caught here and the chat
+        delegation is marked ``failed`` explicitly (no phantom
+        ``running`` record).
+        """
+        lock = await self._lock_for(session_id)
+        async with lock:
+            self._register_active_turn(session_id, delegation_id)
+            # M1.8: streaming coalescers are created once per turn
+            # and closed on every exit path via try/finally. The
+            # coalescers' close_and_flush is idempotent.
+            coalescer_box: list = [None]
+            thinking_box: list = [None]
+            try:
+                return await self._run_turn_body(
+                    session_id=session_id,
+                    user_content=user_content,
+                    delegation_id=delegation_id,
+                    coalescer_box=coalescer_box,
+                    thinking_box=thinking_box,
+                    existing_user_msg=existing_user_msg,
+                    rerun_info=rerun_info,
+                )
+            except asyncio.CancelledError:
+                # Server shutdown / task cancel: mark the delegation
+                # cleanly failed (no phantom running record), then
+                # propagate.
+                await self._crash_finalise(
+                    session_id, delegation_id, "cancelled"
+                )
+                raise
+            except Exception as e:  # noqa: BLE001
+                await self._crash_finalise(session_id, delegation_id, e)
+                raise
             finally:
                 if coalescer_box[0] is not None:
                     await coalescer_box[0].close_and_flush()
                 if thinking_box[0] is not None:
                     await thinking_box[0].close_and_flush()
+                self._unregister_active_turn(session_id)
+
+    async def _crash_finalise(
+        self,
+        session_id: str,
+        delegation_id: str,
+        exc: Any,
+    ) -> None:
+        """Best-effort: mark the chat delegation ``failed`` when the
+        turn body died before ``_finalise_turn`` ran (crash, cancel,
+        compose error). Any storage failure is swallowed (this is the
+        cleanup path; the trace log + delegation record stay as-is).
+        """
+        entry = self._active_turns.get(session_id)
+        text = (
+            f"[chat error: {exc}]" if isinstance(exc, str)
+            else f"[chat error: {type(exc).__name__}: {exc}]"
+        )
+        partial = entry.stream_text if entry is not None else ""
+        try:
+            session = self.project_manager.get_session(session_id)
+            project_dir = (
+                self.project_dir_resolver(session.project_name)
+                if session is not None
+                else None
+            )
+            store = await self.delegation_stores.for_project(
+                project_dir or Path.home() / ".sweave"
+            )
+            await store.update(
+                delegation_id,
+                status="failed",
+                completed_at=datetime.now(),
+                output=partial,
+                error=text,
+            )
+        except Exception as cleanup_err:  # noqa: BLE001
+            logger.warning(
+                "ChatLoop: crash cleanup for %s failed: %s",
+                delegation_id, cleanup_err,
+            )
+        await self._emit(
+            "delegation.status_changed",
+            {
+                "delegation_id": delegation_id,
+                "status": "failed",
+                "kind": "chat",
+                "session_id": session_id,
+                "error": text,
+            },
+        )
 
     async def _run_turn_body(
         self,
         *,
         session_id: str,
         user_content: str,
+        delegation_id: str,
         coalescer_box: list,
         thinking_box: list,
         # Rerun path: reuse an already-persisted user message instead
@@ -524,9 +847,13 @@ class ChatLoop:
                 project_dir or Path.home() / ".sweave"
             )
 
-            # 2) Build + persist the chat Delegation record
+            # 2) Build + persist the chat Delegation record. The
+            # delegation id is generated by run_turn/rerun_turn up
+            # front so the turn-activity registry carries it from the
+            # first moment (a refresh inside the first second still
+            # gets a rescuable snapshot).
             delegation = Delegation(
-                delegation_id=f"chat-{uuid.uuid4().hex[:12]}",
+                delegation_id=delegation_id,
                 task_id=f"chat-{uuid.uuid4().hex[:12]}",
                 agent="orchestrator",
                 model=model_str or "",
@@ -594,20 +921,64 @@ class ChatLoop:
             # crosses ``stream_char_threshold``). The chat.delta
             # payload carries the live turn's delegation_id so
             # the UI can scope updates to the right bubble.
+            #
+            # Refresh-recovery hook: each emit also appends to the
+            # turn-activity registry's stream_text (so GET .../turn
+            # serves the accumulated snapshot) and -- rate-limited to
+            # ``stream_persist_interval`` -- persists the partial
+            # reply onto the delegation record, so a hard server
+            # death leaves the text on disk (boot recovery surfaces
+            # it on the failed record).
             from sweave.chat.streaming import ChatDeltaCoalescer
 
-            def _make_coalescer() -> ChatDeltaCoalescer:
-                async def _emit(text: str) -> None:
+            last_persist = {"t": asyncio.get_running_loop().time()}
+
+            async def _emit_delta(text: str) -> None:
+                entry = self._active_turns.get(session_id)
+                if entry is not None:
+                    entry.stream_text += text
                     await self._emit(
                         "chat.delta",
                         {
                             "session_id": session_id,
-                            "delegation_id": delegation.delegation_id,
+                            "delegation_id": delegation_id,
                             "text": text,
                         },
                     )
+                    loop_t = asyncio.get_running_loop().time()
+                    if (
+                        self.stream_persist_interval > 0
+                        and entry.stream_text
+                        and loop_t - last_persist["t"]
+                        >= self.stream_persist_interval
+                    ):
+                        last_persist["t"] = loop_t
+                        try:
+                            await store.update(
+                                delegation_id,
+                                output=entry.stream_text,
+                            )
+                        except Exception as persist_err:  # noqa: BLE001
+                            logger.warning(
+                                "ChatLoop: stream snapshot persist "
+                                "failed for %s: %s",
+                                delegation_id, persist_err,
+                            )
+                    return
+                # No registry entry (pre-registration emit or a
+                # non-registry turn): emit only.
+                await self._emit(
+                    "chat.delta",
+                    {
+                        "session_id": session_id,
+                        "delegation_id": delegation_id,
+                        "text": text,
+                    },
+                )
+
+            def _make_coalescer() -> ChatDeltaCoalescer:
                 return ChatDeltaCoalescer(
-                    emit=_emit,
+                    emit=_emit_delta,
                     flush_interval_ms=self.stream_coalesce_ms,
                     char_threshold=self.stream_char_threshold,
                 )
@@ -633,16 +1004,20 @@ class ChatLoop:
             # produce any events here.
             thinking_parts: list[str] = []
 
+            async def _emit_thinking(text: str) -> None:
+                entry = self._active_turns.get(session_id)
+                if entry is not None:
+                    entry.thinking_text += text
+                await self._emit(
+                    "chat.thinking",
+                    {
+                        "session_id": session_id,
+                        "delegation_id": delegation_id,
+                        "text": text,
+                    },
+                )
+
             def _make_thinking_coalescer() -> ChatDeltaCoalescer:
-                async def _emit_thinking(text: str) -> None:
-                    await self._emit(
-                        "chat.thinking",
-                        {
-                            "session_id": session_id,
-                            "delegation_id": delegation.delegation_id,
-                            "text": text,
-                        },
-                    )
                 return ChatDeltaCoalescer(
                     emit=_emit_thinking,
                     flush_interval_ms=self.stream_coalesce_ms,
@@ -746,7 +1121,14 @@ class ChatLoop:
             # open (no assistant persisted) until the human answers
             # or explicitly skips. No deadline by user ruling.
             escalation_note: str | None = None
+            # Question flag on the turn registry BEFORE waiting: a
+            # refresh during a blocking question must show that the
+            # turn is asking the human, not "waiting for the model".
+            if await self._peek_escalation(delegation.delegation_id):
+                self._set_question_flag(session_id, True)
             esc_rec = await self._wait_for_escalation(delegation.delegation_id)
+            if self._active_turns.get(session_id) is not None:
+                self._set_question_flag(session_id, False)
             if esc_rec is not None and esc_rec.get("status") in {
                 "answered",
                 "skipped",

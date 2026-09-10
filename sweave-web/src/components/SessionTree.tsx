@@ -17,12 +17,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 export function SessionTree() {
   const { activeProject, activeSession, setActiveSession, pushNotification } = useApp();
   const qc = useQueryClient();
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const { data: sessions = [], isLoading } = useQuery<SessionSummary[]>({
@@ -60,7 +62,10 @@ export function SessionTree() {
     onError: (err) => {
       pushNotification("error", `Failed to delete session: ${(err as Error).message}`);
     },
-    onSettled: () => setDeleting(null),
+    onSettled: () => {
+      setDeleting(null);
+      setPendingDelete(null);
+    },
   });
 
   const handleCreate = () => {
@@ -123,8 +128,9 @@ export function SessionTree() {
                   aria-label={`Delete ${s.name}`}
                   onClick={() => {
                     if (deleting) return;
-                    setDeleting(s.id);
-                    remove.mutate(s.id);
+                    // Confirmation first — deletion happens only in the
+                    // dialog's confirm handler.
+                    setPendingDelete({ id: s.id, name: s.name });
                   }}
                   className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive"
                 >
@@ -164,6 +170,25 @@ export function SessionTree() {
           New session
         </Button>
       </div>
+      <ConfirmDeleteDialog
+        open={pendingDelete !== null}
+        title="Delete session"
+        body={
+          pendingDelete
+            ? `Delete "${pendingDelete.name}"? This cannot be undone.`
+            : ""
+        }
+        pending={remove.isPending}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDelete || remove.isPending) return;
+          setDeleting(pendingDelete.id);
+          remove.mutate(pendingDelete.id);
+        }}
+        testId="confirm-delete-session-dialog"
+      />
     </div>
   );
 }

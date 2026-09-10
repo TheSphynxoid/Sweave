@@ -27,6 +27,7 @@ from sweave.api.projects import (
     set_active_session,
     update_permission_roots,
 )
+from sweave.chat.loop import TurnActiveError
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
 
@@ -222,6 +223,46 @@ async def api_get_session(session_id: str):
     return session
 
 
+@router.get("/api/sessions/{session_id}/turn")
+async def api_get_session_turn(
+    session_id: str,
+    state: AppState = Depends(get_state),
+):
+    # Client-refresh recovery: the freshly loaded page (or a WS
+    # reconnect) calls this immediately after mounting the thread to
+    # learn whether the server still has a turn running for this
+    # session. ``turn`` is None when idle; when active it carries the
+    # delegation join key, the phase (waiting | streaming | question)
+    # and the already-streamed text, so the UI can restore the
+    # waiting/streaming indicator + the partial bubble in one call.
+    # No error on idle: the UI can call this unconditionally without
+    # 404 handling.
+    chat_loop = state.chat_loop
+    snapshot = (
+        chat_loop.active_turn_snapshot(session_id)
+        if chat_loop is not None
+        else None
+    )
+    return {"active": snapshot is not None, "turn": snapshot}
+
+
+def _turn_active_409_err(e: Exception) -> HTTPException:
+    """Map ChatLoop.TurnActiveError to HTTP 409 with the active turn's
+    snapshot. The double-send is REJECTED (never silently queued): a
+    queued POST would hang the client's HTTP request for up to
+    ``turn_timeout`` and a refreshed client could never see it.
+    """
+    snapshot = dict(getattr(e, "snapshot", {}))
+    return HTTPException(
+        409,
+        detail={
+            "error": "turn_active",
+            "message": str(e),
+            "turn": snapshot,
+        },
+    )
+
+
 @router.post("/api/sessions/{session_id}/active")
 async def api_set_active_session(
     session_id: str,
@@ -292,6 +333,12 @@ async def api_add_message(
             }
         except ValueError as e:
             raise HTTPException(404, str(e)) from e
+        except TurnActiveError as e:
+            # Double-send guard: a turn is already running for this
+            # session; the 409 payload carries the active turn's
+            # snapshot so the UI can attach to it (no phantom
+            # double-send).
+            raise _turn_active_409_err(e) from e
         except Exception as e:  # noqa: BLE001
             # The loop is best-effort from the router's perspective:
             # if the orchestrator is unreachable, the loop itself
@@ -339,6 +386,8 @@ async def api_rerun_turn(
         raise HTTPException(404, str(e)) from e
     except TypeError as e:
         raise HTTPException(400, str(e)) from e
+    except TurnActiveError as e:
+        raise _turn_active_409_err(e) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"chat loop error: {e}") from e
 
