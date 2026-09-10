@@ -194,9 +194,12 @@ class ServeRunner:
         # the project dir never loads it). Copies are idempotent.
         import os as _os
 
+        from sweave.harness.opencode import isolated_opencode_env
         from sweave.runtime.permission_bridge import ensure_permission_bridge
 
-        spawn_env = {**_os.environ, **ensure_permission_bridge()}
+        spawn_env = isolated_opencode_env(
+            {**_os.environ, **ensure_permission_bridge()}
+        )
         cmd = [self._resolve_command(), "serve", *self.serve_args]
         self.log_path = Path(tempfile.gettempdir()) / (
             f"sweave-m1-3-{self.specialist_name}-{uuid.uuid4().hex[:8]}.log"

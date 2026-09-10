@@ -30,6 +30,63 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 
+# --- Data-dir isolation (2026-09-10, user-locked ruling) --------------------
+#
+# Sweave-managed opencode sessions must NOT populate the user's standalone
+# opencode. Without an override both read the same
+# ``~/.local/share/opencode/opencode.db`` (2.3 GB and growing on this
+# machine), so every managed orchestrator/specialist session showed up in
+# the standalone session list. Probe 2026-09-10: opencode 1.18.29 honors
+# ``XDG_DATA_HOME`` on Windows — db/wal/shm + log land under
+# ``<XDG_DATA_HOME>/opencode/``. Auth material lives in the same real dir
+# (auth.json / account.json / mcp-auth.json) and is copied into the sweave
+# dir so provider credentials keep working.
+
+_AUTH_MATERIAL = ("auth.json", "account.json", "mcp-auth.json")
+
+
+def sweave_opencode_data_home() -> Path:
+    """Sweave-owned opencode data dir (override: ``SWEAVE_OPENCODE_DATA_HOME``)."""
+    override = os.environ.get("SWEAVE_OPENCODE_DATA_HOME")
+    if override:
+        return Path(override)
+    return Path.home() / ".sweave" / "opencode-data"
+
+
+def isolated_opencode_env(env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of *env* with opencode's data dir redirected.
+
+    Sets ``XDG_DATA_HOME`` to :func:`sweave_opencode_data_home` and copies
+    auth material from the real data dir (best-effort, freshness-aware:
+    a newer source overwrites a stale copy). Opt back into the old
+    shared-db behaviour with ``SWEAVE_OPENCODE_SHARED_DATA=1``.
+
+    Migration note: session ids stored before the cutover point at the old
+    db, so the first managed turn after upgrade hits the SpecialistRuntime
+    404-recreate path once per specialist session. That is by design.
+    """
+    if os.environ.get("SWEAVE_OPENCODE_SHARED_DATA") == "1":
+        return env
+    data_home = sweave_opencode_data_home()
+    real_dir = Path.home() / ".local" / "share" / "opencode"
+    target_dir = data_home / "opencode"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in _AUTH_MATERIAL:
+            src = real_dir / name
+            dst = target_dir / name
+            if not src.is_file():
+                continue
+            if dst.is_file() and dst.stat().st_mtime >= src.stat().st_mtime:
+                continue
+            shutil.copy2(src, dst)
+    except OSError as exc:  # best-effort: isolation itself must never fail a spawn
+        logger.warning("opencode data isolation: auth copy skipped (%s)", exc)
+    out = dict(env)
+    out["XDG_DATA_HOME"] = str(data_home)
+    return out
+
+
 def _parse_provider_model(model: str) -> tuple[str | None, str | None]:
     """Split a ``provider/model`` string into ``(providerID, modelID)``.
 
@@ -917,10 +974,9 @@ captures the real failure.
         """
         if os.environ.get("SWEAVE_MOCK_OPENCODE") == "1":
             return self._spawn_mock(spec)
-        # Prepare environment
-        # Prepare environment
         env = os.environ.copy()
         env.update(spec.env)
+        env = isolated_opencode_env(env)
         env["OPENCODE_MODEL"] = (
             # Strip a "+variant" effort suffix: the bare-string form is
             # NOT accepted by provider catalogs (live probe 2026-09-10:
