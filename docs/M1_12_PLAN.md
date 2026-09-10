@@ -30,9 +30,9 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 ## Goal state
 
 1. Rendered `opencode.json` carries **scoped** `external_directory` roots (orchestrator: cwd + all worktrees + `~/.sweave`; specialist: own worktree; + user-declared shared roots surface — location TBD in step 1) with user-owned blocks still never overwritten.
-2. A pending permission for our session becomes a **blocking Sweave question** (M1.11 machinery: no timeout, skip, synthesis note, inline card) and the answer is POSTed back; the still-open stream resumes.
+2. A pending permission for our session becomes a **blocking Sweave question** (M1.11 machinery: no timeout, skip, synthesis note, inline card) and the answer is POSTed back; the still-open stream resumes. Applies to **both roles** (ruling 2026-09-10: specialists route to the human too).
 3. Stall watchdog + `turn_timeout` **suspend while the question is outstanding**; UI quiet badge already shows the wait.
-4. Blanket `allow` flipped to scoped **only after 2–3 work**; live repro gate (outside read → question → allow-once → completes).
+4. Blanket `allow` flipped to scoped **only after 2–3 work**; live repro gate (outside read → question → allow-once → completes). User-declared shared roots live as a **project record field** (human-declared only), surfaced in step 1.
 
 ## Steps
 
@@ -50,10 +50,14 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 - Sqlite polling of opencode's DB in production (forensics only).
 - Auto-answering permissions without the human (no `always`-by-default; `always` only from an explicit user choice, persisted as opencode approved patterns).
 
-## Open questions for the executor (ask-user, don't assume)
+## Open questions for the executor — RESOLVED by user ruling (2026-09-10)
 
-1. Specialist permission prompts: route to the human too, or auto-deny outside-roots for specialists (fail loud, orchestrator sees the error in synthesis)? Recommend the latter (specialists shouldn't interrupt the user mid-delegation), but it's a UX ruling.
-2. Where user-declared shared roots live (project record vs global config) and whether specialists may nominate new roots (no — human-declared only, recommended).
+1. Specialist permission prompts: **route to the human too** (user ruling, overriding
+   the auto-deny recommendation). A specialist hitting an outside-root permission
+   becomes a blocking human question the same as an orchestrator prompt.
+2. User-declared shared roots: **project record field; human-declared only**
+   (specialists never nominate roots). Orchestrator-only roots + named shared roots
+   for specialists both live there.
 
 ## Risks
 
