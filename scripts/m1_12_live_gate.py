@@ -315,7 +315,8 @@ async def main() -> int:
             await bus_task
         except Exception:  # noqa: BLE001
             pass
-        print(f"summary asks={[a['id'] for a in bus.requests()]} ok={ok}")        return 0 if ok else 1
+        print(f"summary asks={[a['id'] for a in bus.requests()]} ok={ok}")
+        return 0 if ok else 1
     finally:
         if proc.poll() is None:
             subprocess.run(

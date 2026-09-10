@@ -46,7 +46,14 @@ def test_bundled_plugin_exists_and_is_host_safe(tmp_path, monkeypatch):
     env = ensure_permission_bridge()
     island = tmp_path / ".sweave" / "opencode"
     assert env["OPENCODE_CONFIG_DIR"] == str(island)
-    p = plugin_path()
+    assert env["OPENCODE_CONFIG"] == str(island / "opencode.json")
+    import json as _json
+
+    island_cfg = _json.loads((island / "opencode.json").read_text())
+    assert island_cfg["plugin"] == [
+        (tmp_path / ".sweave" / "opencode" / "plugins" / "sweave-permission.ts").as_posix()
+    ]
+    p = island / "plugins" / "sweave-permission.ts"
     assert p.exists()
     assert p.read_text(encoding="utf-8") == source
 

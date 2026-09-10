@@ -35,6 +35,7 @@ triple at turn start (:func:`register_session`).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -95,12 +96,23 @@ def bundled_plugin_source() -> str:
 
 
 def ensure_permission_bridge() -> dict[str, str]:
-    """Copy the bundled plugin into the config island (idempotent
-    copy: refreshed on every serve spawn so template improvements
-    land on the next serve). Returns the env overrides for the
-    serve spawn process (``OPENCODE_CONFIG_DIR``). Never raises:
-    a failed copy means the bridge degrades to the existing
-    out-of-band path, never a hard serve failure."""
+    """Copy the bundled plugin into the config island and render the
+    island ``opencode.json`` that registers it (idempotent: refreshed
+    on every serve spawn so template improvements land on the next
+    serve). Returns the env overrides for the serve spawn process
+    (``OPENCODE_CONFIG_DIR`` + ``OPENCODE_CONFIG`` pointing at the
+    island config).
+
+    CRITICAL pin (2026-09-10 live gate): on serve 1.18.29 the
+    ``OPENCODE_CONFIG_DIR`` custom directory does NOT load its
+    ``plugins/`` subdir (docs say it does; the binary doesn't —
+    ``config.plugin`` stayed empty). The ONLY seam that loaded the
+    plugin was the ``plugin`` config array holding the absolute file
+    path of the plugin. So the island config file carries that array;
+    the plugin themselves is registered by absolute path, POSIX
+    slashes (Bun URL-normalizes either way). Never raises: a failed
+    copy means the bridge degrades to the existing out-of-band path,
+    never a hard serve failure."""
     try:
         target_dir = _plugin_dir()
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -109,13 +121,27 @@ def ensure_permission_bridge() -> dict[str, str]:
         current = target.read_text(encoding="utf-8") if target.exists() else None
         if current != source:
             target.write_text(source, encoding="utf-8")
-            logger.info(
-                "permission_bridge: wrote %s (OPENCODE_CONFIG_DIR=%s)",
-                target, _island_dir(),
-            )
-        return {"OPENCODE_CONFIG_DIR": str(_island_dir())}
+        island_cfg = _island_dir() / "opencode.json"
+        cfg_body = json.dumps({
+            "$schema": "https://opencode.ai/config.json",
+            "plugin": [target.as_posix()],
+        }, indent=2)
+        current_cfg = (
+            island_cfg.read_text(encoding="utf-8")
+            if island_cfg.exists() else None
+        )
+        if current_cfg != cfg_body:  # type: ignore[possibly-undefined]
+            island_cfg.write_text(cfg_body, encoding="utf-8")
+        logger.info(
+            "permission_bridge: plugin %s registered via %s",
+            target, island_cfg,
+        )
+        return {
+            "OPENCODE_CONFIG_DIR": str(_island_dir()),
+            "OPENCODE_CONFIG": str(island_cfg),
+        }
     except OSError as e:
-        logger.warning("permission_bridge: plugin copy failed: %s", e)
+        logger.warning("permission_bridge: plugin provisioning failed: %s", e)
         return {}
 
 

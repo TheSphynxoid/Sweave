@@ -39,7 +39,7 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-10)
-- **587/589** in `pytest tests/` plus 2 pre-existing environment-failure tests
+- **599/601** in `pytest tests/` plus 2 pre-existing environment-failure tests
   (models-registry default not in the live catalog — env-dependent, not code);
   includes the M1.12 suite (wire parser, scoped roots, roots endpoint,
   permission ask-flow), the bundled M1.11 execution tests, and the
@@ -56,7 +56,11 @@
   need the backend on :8100)
 - **LIVE GATE (M1.12)**: `scripts/m1_12_live_gate.py` green (3 scenes:
   scoped root silent pass; outside read → permission ask → allow-once →
-  real file content; reject → loud abort, no content)
+  real file content; reject → loud abort, no content);
+  **bridge gate** `scripts/m1_12_bridge_gate.py` green (2026-09-10,
+  amendment 1: in-scope ask auto-allowed via the plugin ferry; out-of-
+  scope ask → escalation → `allow once` → real content; deny → loud
+  abort on a real 1.18.29 serve)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 - v1 vanilla UI tests (test_full.py, test_sidebar_nav.js, test_promote_ui.js) retired
 

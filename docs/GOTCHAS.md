@@ -75,7 +75,7 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `SWEAVE_HOST`/`SWEAVE_PORT`); the reply POST is sweave's job
    (it owns the serve URL from the session registry
    `permission_bridge.register_session` — added in
-   `SpecialistRuntime` after `_ensure_session`). Scope decision =
+   `SpecialistRuntime` after `_ensure_session`).    Scope decision =
    project record (`Project.permission_roots`) evaluated in
    `resolve_hijack_request`; in-scope → auto `once`, out-of-scope →
    blocking human question (the runtime's stall branch stays as
@@ -83,6 +83,31 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    call time from `Path.home()` (`_island_dir()`) — never cache it in a
    module constant (tests redirect home); a plugin copy failure
    degrades silently to the out-of-band path (logged, never raises).
+
+0c. **Loading the bridge plugin on 1.18.29 (live-gated 2026-09-10).**
+   Two pins that CONTRADICT current opencode docs:
+   (1) `OPENCODE_CONFIG_DIR` custom directory does NOT load its
+   `plugins/` subdir on 1.18.29 (config.plugin stayed empty); the
+   seam that works is the `plugin` config ARRAY carrying the plugin's
+   absolute path (`["<abs path .ts>"]`, POSIX slashes) delivered via
+   the `OPENCODE_CONFIG` env var pointing at the island
+   `~/.sweave/opencode/opencode.json`. both env vars are injected
+   by `ServeRunner` per spawn (from `ensure_permission_bridge`).
+   (2) plugin `console.*` output does NOT appear in the serve stdout
+   or opencode's own log — the observable channel is the SDK
+   `client.app.log({body:{service, level, message}})` (messages land
+   in `~/.local/share/opencode/log/opencode.log` with
+   `message="..."`). (3) any FastAPI route defined in a file with
+   `from __future__ import annotations` MUST import its annotation
+   types (e.g. `Request`) at MODULE level — a function-local import
+   leaves the annotation string unresolved and FastAPI silently
+   reinterprets the parameter as a required query field (422
+   `missing query field "request"`). Live gate: `scripts/
+   m1_12_bridge_gate.py` — 3 scenes GREEN (in-scope auto-allow via
+   plugin; out-of-scope → escalation → `allow once` → content;
+   deny → loud abort). The older `scripts/m1_12_live_gate.py` was
+   committed BROKEN (line 318 concatenated `return` onto the
+   `print`; compile check now part of the gate routine).
 
 1. **Sessions persist in `~/.local/share/opencode/opencode.db` (SQLite)** (corrects the
    M1.3 step 0 probe — "0 new files" was misleading: a new row was inserted into the
@@ -620,13 +645,46 @@ group below for the traps that REPLACE this one.
    hang-probe scratch tests — a leftover one silently hangs the whole
    suite (files are listed by name in the failure output; anything
    with `__min`/scratch naming is suspect).
-10. **Tall popovers must respect ``--radix-popper-available-height``**
-    (note the name: it is the POPPER var; there is no
-    ``--radix-popover-content-*`` var in this radix version). Without
-    ``max-h-[var(--radix-popper-available-height)]`` + ``overflow-hidden``
-    + internal flex, a popover anchored near the viewport edge overflows
-    the screen (the picker's breadcrumbs rendered off-screen). The
-    scrolling region must carry ``min-h-0 flex-1 overflow-y-auto`` —
-    the same ``min-height: auto`` flex trap as the sidebar; without
-    ``min-h-0`` the list refuses to shrink and never scrolls. Footer
-    rows inside the popover take ``shrink-0``.
+ 10. **Tall popovers must respect ``--radix-popper-available-height``**
+     (note the name: it is the POPPER var; there is no
+     ``--radix-popover-content-*`` var in this radix version). Without
+     ``max-h-[var(--radix-popper-available-height)]`` + ``overflow-hidden``
+     + internal flex, a popover anchored near the viewport edge overflows
+     the screen (the picker's breadcrumbs rendered off-screen). The
+     scrolling region must carry ``min-h-0 flex-1 overflow-y-auto`` —
+     the same ``min-height: auto`` flex trap as the sidebar; without
+     ``min-h-0`` the list refuses to shrink and never scrolls. Footer
+     rows inside the popover take ``shrink-0``.
+
+## Chat turn lifecycle — refresh + restart (2026-09-10 recovery contract)
+
+1. **Chat turns are DETACHED from the HTTP handler** (see
+   `ChatLoop.run_turn` → `_turn_owner_runner`): the request coroutine
+   only spawns + `asyncio.shield`-awaits the turn task, so a client
+   refresh/disconnect cancels the POST but NOT the turn — the reply
+   is still persisted + emitted when it finishes. Never re-bind the
+   turn body to the request's task tree: the pre-hardening code let
+   uvicorn's disconnect cancellation kill mid-flight turns, leaving
+   the delegation phantom-`running` forever.
+2. **The M1.7 lock-as-queue semantics are GONE — don't restore
+   them.** A second POST while a turn is active raises
+   `TurnActiveError` (→ HTTP 409 carrying the active-turn snapshot).
+   The old code queued the second message behind the per-session
+   lock, silently hanging the client's HTTP request for up to
+   `turn_timeout`. New tests that send two turns on one session must
+   await the first turn's completion (or expect the 409).
+3. **Boot recovery ordering is load-bearing**: the lifespan calls
+   `_recover_interrupted_delegations` immediately after building
+   `PerProjectDelegationStores` because at that instant no task can
+   be running — anything non-terminal on disk is by definition from
+   a dead process. Don't move the recovery after the runners /
+   sweeper start, don't call `recover_interrupted` while the server
+   is live (it would fail live turns).
+4. `chat.stream_persist_interval` (default 2.0s) is how often the
+   partial reply is persisted onto the delegation `output`; the
+   final `_finalise_turn` write is always authoritative and
+   OVERWRITES it (error turns end with `output=""` — the partial
+   tail survives only on interrupted/crashed records + in the trace
+   log). Registry snapshots (`GET /api/sessions/{id}/turn`) are
+   in-memory only: they cover refreshes of the SAME process, never
+   express them as durable state.
