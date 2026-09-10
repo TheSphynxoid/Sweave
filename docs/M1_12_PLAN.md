@@ -119,3 +119,26 @@ Commits `0113ec8` (amendment) + `9c0aa87` (execution). Live gate for the
 bridge path (hijack-route scenes on a pinned 1.18.29 serve, extending
 `scripts/m1_12_live_gate.py`) is the remaining follow-up.
 
+## Amendment 2 (user-locked 2026-09-10): defer-beacon liveness + turn-cap extension + effort-variant preservation
+
+Trigger: session `Sweave-20260910-092707-3b37fd` — the backend child ran
+~15 min of real streamed work opencode-side (150 assistant steps in the
+serve DB) but sweave's 900s cap killed it mid-task and the chain gate
+then rejected the re-dispatch. Two user rulings ride along:
+(a) the `+variant` effort selection is NEVER silently dropped — the
+bare-suffix form is invalid on provider catalogs (live probe:
+structured `variant` field → 200; `model+suffix` → 500/NotFound);
+the legacy spec path now parses the string via the same ModelRef
+parser and emits the structured wire (live probe verified). Legacy
+spawn env strips the suffix instead of delivering a dead default.
+(b) opencode gives sweave NO streaming liveness mid-turn, but a
+`defer` call from a running turn IS observable: submit_task_v2 now
+appends a `child_deferred` beacon to the CALLER's trace file
+(schema-free) + emits it on the WS bus; JobRunner's turn cap
+(`_bounded_turn`) re-arms a full budget instead of killing when a
+beacon landed inside the beacon window (max 3 extensions), shielded
+so the in-flight work is never cancelled mid-extension.
+Re-dispatch gate (chain-active check must exclude terminal states)
++ UI overwrite of the pre-deferral assistant message remain open
+follow-ups (owner: M1.7/ChatLoop hardening).
+
