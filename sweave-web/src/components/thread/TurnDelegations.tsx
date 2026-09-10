@@ -28,7 +28,7 @@ import { useWS } from "@/context/WSProvider";
 import { DetailView } from "@/pages/children/DetailView";
 import { StatusPill } from "@/components/delegation/StatusPill";
 import { isTimeoutDelegation, parseTurnTimeout, formatRuntime } from "@/lib/delegation/taxonomy";
-import type { Delegation } from "@/types";
+import type { Delegation, EscalationRecord } from "@/types";
 
 const TASK_SNIPPET_CHARS = 140;
 const OUTPUT_SNIPPET_CHARS = 600;
@@ -85,9 +85,23 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
   }
   useEffect(() => {
     if (!subscribe) return;
-    return subscribe("delegation.status_changed", () => {
-      void load();
-    });
+    // Live pulse: status changes move pills; escalation events light
+    // the needs-attention badge + inline answer card up (a permission
+    // ask can arrive minutes AFTER the parent turn settled — the
+    // M1.12 stuck-reviewer incident — so the escalation events must
+    // refetch independently of status changes).
+    const offs = [
+      subscribe("delegation.status_changed", () => {
+        void load();
+      }),
+      subscribe("specialist.escalated", () => {
+        void load();
+      }),
+      subscribe("specialist.escalation_resolved", () => {
+        void load();
+      }),
+    ];
+    return () => offs.forEach((off) => off());
   }, [subscribe, load]);
 
   if (!children || children.length === 0) return null;
@@ -227,36 +241,104 @@ function TimeoutNotice({ error, hasOutput }: { error: string | null; hasOutput: 
   );
 }
 
-/** Escalation preview inside an expanded child card (M1.11 audit). */function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
-  const [text, setText] = useState<string | null>(null);
+/** Escalation preview inside an expanded child card (M1.11 audit).
+ *
+ * M1.12 fix: pending questions render their options INLINE (the
+ * "ask card") instead of bouncing the user to the Children audit
+ * log — the question can outlive the turn's own UI surface, and
+ * the asking turn holds until answered, so the card must answer.
+ */
+function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
+  const [rec, setRec] = useState<EscalationRecord | null | "error">(null);
+  const [busy, setBusy] = useState(false);
+
+  const loadRec = useCallback(async () => {
+    try {
+      const fetched = await api.getEscalation(delegationId);
+      setRec(fetched);
+    } catch {
+      setRec("error");
+    }
+  }, [delegationId]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const rec = await api.getEscalation(delegationId);
-        if (!cancelled) {
-          setText(
-            rec
-              ? `${rec.kind === "escalation" ? "Escalation" : "Question"} (${rec.status}): ${rec.question}`
-              : null,
-          );
-        }
+        const fetched = await api.getEscalation(delegationId);
+        if (!cancelled) setRec(fetched);
       } catch {
-        if (!cancelled) setText(null);
+        if (!cancelled) setRec("error");
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [delegationId]);
-  if (!text) return null;
+
+  const answer = async (response: string) => {
+    setBusy(true);
+    try {
+      await api.answerEscalation(delegationId, response);
+      await loadRec();
+    } catch {
+      // leave the card as-is; the audit log remains the fallback
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const skip = async () => {
+    // Same system-confirm guard the M1.11 Question card uses.
+    if (!window.confirm("Skip this question? Skip = deny.")) return;
+    setBusy(true);
+    try {
+      await api.skipEscalation(delegationId);
+      await loadRec();
+    } catch {
+      // ignore; card stays
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (rec === "error") return null;
+  if (!rec) return null;
+  const label = rec.kind === "escalation" ? "Escalation" : "Question";
   return (
-    <p
+    <div
       data-testid="turn-delegation-escalation"
-      className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+      className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
     >
-      {text.length > 280 ? `${text.slice(0, 280)}…` : text} — answer in the
-      Children audit log.
-    </p>
+      <p>
+        {label} ({rec.status}):{" "}
+        {rec.question.length > 280 ? `${rec.question.slice(0, 280)}…` : rec.question}
+      </p>
+      {rec.status === "pending" && rec.options && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {rec.options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              disabled={busy}
+              onClick={() => void answer(opt)}
+              data-testid={`turn-escalation-option`}
+              className="rounded border border-amber-500/40 bg-background px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300"
+            >
+              {opt}
+            </button>
+          ))}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void skip()}
+            data-testid="turn-escalation-skip"
+            className="text-[11px] text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+          >
+            skip = deny
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

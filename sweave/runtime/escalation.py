@@ -122,6 +122,7 @@ class EscalationStore:
         base_dir: Path,
         timeout_seconds: float | None = DEFAULT_ESCALATION_TIMEOUT_SECONDS,
         event_bus: EventEmitter = None,
+        delegation_flagger: Any = None,
     ) -> None:
         self.base_dir = Path(base_dir) / "escalations"
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +134,15 @@ class EscalationStore:
         # Process-local file lock for the sync load path.
         self._file_lock = threading.Lock()
         self._event_bus = event_bus
+        # M1.12 fix (2026-09-10): async callable ``(delegation_id,
+        # needs_attention)`` that flips the asking delegation's flag.
+        # Fulfils create()'s documented contract for ALL creators:
+        # the ask_human router flipped the flag itself, but the
+        # permission-bridge + stall-branch creators called create()
+        # directly, so the flag stayed False and every answer
+        # surface keyed on it (Children escalation lane, Turn
+        # delegation badge) never lit up.
+        self._delegation_flagger = delegation_flagger
         self._load_all()
 
     # ---- file IO -------------------------------------------------------
@@ -260,7 +270,28 @@ class EscalationStore:
                 "metadata": rec.get("metadata"),
             },
         )
+        await self._flag(delegation_id, True)
         return dict(rec)
+
+    async def _flag(self, delegation_id: str, value: bool) -> None:
+        """Best-effort ``needs_attention`` flip via the injected callback.
+
+        Never raises: the escalation lifecycle must not depend on
+        the delegation store being reachable (mirrors ``_emit``).
+        """
+        flagger = self._delegation_flagger
+        if flagger is None:
+            return
+        try:
+            result = flagger(delegation_id, value)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "EscalationStore: delegation flag flip failed for %s: %s",
+                delegation_id,
+                e,
+            )
 
     async def answer(
         self,
@@ -299,6 +330,7 @@ class EscalationStore:
                 "response": response,
             },
         )
+        await self._flag(delegation_id, False)
         return dict(rec)
 
     async def force_timeout(self, *, delegation_id: str) -> dict[str, Any] | None:
@@ -325,6 +357,7 @@ class EscalationStore:
                 "response": "no answer received",
             },
         )
+        await self._flag(delegation_id, False)
         return dict(rec)
 
     async def get(self, *, delegation_id: str) -> dict[str, Any] | None:
@@ -369,6 +402,7 @@ class EscalationStore:
                 "response": rec["response"],
             },
         )
+        await self._flag(delegation_id, False)
         return dict(rec)
 
     async def list_open(self) -> list[dict[str, Any]]:

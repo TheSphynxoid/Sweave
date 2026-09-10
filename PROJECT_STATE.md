@@ -77,6 +77,72 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **Ask-card defect trio fixed (2026-09-10/11, user rulings locked:
+  full budget re-armed; allow the orphans)** — diagnosis: reviewer
+  child `020e3ebb8d1b` (session `Sweave-20260910-091904-b64c4d`) hit an
+  out-of-scope `external_directory` ask; the in-band bridge worked
+  (escalation `esc-47fdd816e8` created 15 ms after the ask), but (1)
+  the child turn's 900s bound killed the asking turn while the question
+  was pending — the M1.12 step-3 suspension covered ChatLoop only, not
+  `JobRunner._bounded_turn`; (2) `needs_attention` was never flipped by
+  the permission creators (only the ask_human router did), so every
+  answer surface stayed dark; (3) `TurnDelegations` refetched only on
+  `delegation.status_changed`, so a question arriving after the parent
+  turn settled never rendered live (the "appears only after reload"
+  report). Fixes: `_bounded_turn` now suspends the countdown while a
+  pending escalation exists (unbounded holds, full-budget re-arm on
+  resolution — trace reasons `escalation_pending` /
+  `escalation_resolved_rearm`); `EscalationStore` takes an injected
+  `delegation_flagger` wired in server.py so create/answer/skip/
+  force_timeout flip the flag for ALL creators (fulfils the documented
+  M1.9 contract); `TurnDelegations` subscribes to
+  `specialist.escalated`/`specialist.escalation_resolved` and a pending
+  child question renders an INLINE ask card (options + skip=deny,
+  system-confirmed) instead of bouncing to the Children audit log.
+  Both orphaned questions answered `allow once` per ruling
+  (`020e3ebb8d1b`'s serve had already died — reply recorded, nothing to
+  resume; `a85b0e97e4a7`'s serve long gone). Note: the effective turn
+  window is clamped `max(budget, 1.0)`. Gates: 621 pytest (+8),
+  205 vitest (+2), build green. NEXT (user-stated): project the child's
+  own session text into the deferral cards — the child session is
+  persistent and defers should continue from it; the parallel session's
+  turn-recovery `TurnSnapshot` work is the foundation.
+- ✅ **Opencode data-dir isolation (2026-09-10, user-locked ruling:
+  "isolate it")** — Sweave-managed opencode sessions no longer populate
+  the user's standalone opencode. Both spawn sites
+  (`harness.opencode.spawn` + `ServeRunner.start`) now route env through
+  `isolated_opencode_env()` (`sweave/harness/opencode.py`), which sets
+  `XDG_DATA_HOME=~/.sweave/opencode-data` (probe: 1.18.29 honors it on
+  Windows — db/wal/log land under `<dir>/opencode/`) and copies auth
+  material (`auth.json`/`account.json`/`mcp-auth.json`) from the real
+  dir, freshness-aware, best-effort. Opt-out:
+  `SWEAVE_OPENCODE_SHARED_DATA=1`; test override:
+  `SWEAVE_OPENCODE_DATA_HOME`. Cutover needs a server restart (loads
+  new code + psutil orphan sweep reaps the 4 pre-isolation serves);
+  first managed turn per stored session hits the 404-recreate path
+  (stored ids point at the old 2.3 GB db — by design). GOTCHAS entry
+  pending (file held by the parallel session's WIP). 6 new pytest
+  (`test_opencode_data_isolation.py`). Motivation: the user noticed
+  Sweave sessions in standalone opencode — same shared db (M1.3's
+  durable-context design made the pollution load-bearing until this
+  isolation).
+- ✅ **Stuck-turn diagnosis (2026-09-10, session
+  `Sweave-20260910-091904-b64c4d`)** — reviewer delegation
+  `020e3ebb8d1b` showed `running` while the standalone opencode
+  transcript looked finished. Truth: the turn wedged at 23:27:54
+  INSIDE a `bash` tool call (trivial `Get-ChildItem`; no shell child
+  was ever spawned under the serve) — opencode-internal hang, not a
+  Sweave bug. Sweave's side was nominal in-flight (the runtime path
+  logs `output_chunk` only at the end — an early-turn trace with only
+  status/prompt/session events is NORMAL), and the 900s bound failed
+  the delegation at exactly 23:36:55
+  (`turn_timeout_exceeded_900s`). Self-healed by design; no code
+  change needed. The delegation's model was
+  `opencode-go/glm-5.3-flash+max` (the reviewer specialist's stale
+  `current_model` override — the 85d6d7e fix only corrected the
+  *default*; per-specialist overrides still carry `+max` and route
+  into the broken `opencode-go` lane). Separate follow-up: scrub
+  stale specialist `current_model` values.
 - ✅ **M1.11 Blocking Q&A cutover** — done 2026-09-10 (see its plan's
   Execution summary; landed in the same commits as M1.12 steps 0–2).
 - ✅ **M1.12 Permission-aware turns** — done 2026-09-10. Scoped

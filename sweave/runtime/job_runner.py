@@ -338,12 +338,27 @@ class JobRunner:
         re-arm: a turn exceeding the cap is NOT silently killed —
         when a fresh defer beacon proves it alive, a full fresh
         budget arms again (bounded by ``MAX_TURN_EXTENSIONS``);
-        only an unwitnessed cap fails loud."""
+        only an unwitnessed cap fails loud.
+
+        M1.12 fix (2026-09-10, user ruling "full budget re-armed"):
+        while THIS delegation has a pending escalation (blocking
+        human question, e.g. a ``permission`` ask), the countdown
+        suspends — every expiry re-arms a full budget for as long
+        as the question is open (unbounded: permission questions
+        have no deadline). When a held question has resolved, one
+        final full re-arm fires on the next expiry so the
+        post-answer work never resumes on a sliver of leftover
+        budget. Mirrors the ChatLoop suspension semantics on the
+        child path (the M1.12 step-3 build covered chat turns
+        only; the reviewer child ``020e3ebb8d1b`` was killed by
+        the 900s bound with its question still pending)."""
         import asyncio as _aio
 
         task = _aio.ensure_future(coro)
-        budget = float(self.turn_timeout or 900.0)
+        budget = float(self.turn_timeout or self.DEFAULT_TURN_TIMEOUT)
         extensions = 0
+        holds = 0
+        rearm = False
         try:
             while True:
                 try:
@@ -352,6 +367,38 @@ class JobRunner:
                     )
                     return True, output
                 except _aio.TimeoutError:
+                    if await self._escalation_pending(delegation):
+                        holds += 1
+                        rearm = True
+                        budget = float(
+                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
+                        )
+                        trace.append(
+                            "turn_extended",
+                            {
+                                "n": holds,
+                                "budget": budget,
+                                "reason": "escalation_pending",
+                            },
+                        )
+                        continue
+                    if rearm:
+                        # The question resolved mid-window: re-arm a
+                        # FULL budget once so post-answer work is not
+                        # capped by leftover time (user ruling).
+                        rearm = False
+                        budget = float(
+                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
+                        )
+                        trace.append(
+                            "turn_extended",
+                            {
+                                "n": holds,
+                                "budget": budget,
+                                "reason": "escalation_resolved_rearm",
+                            },
+                        )
+                        continue
                     if (
                         extensions < self.MAX_TURN_EXTENSIONS
                         and self._beacon_recent(
@@ -381,11 +428,33 @@ class JobRunner:
                 task.cancel()
             raise
 
+    async def _escalation_pending(self, delegation: Delegation) -> bool:
+        """True when this delegation has a PENDING blocking question.
+
+        Reads the SpecialistRuntime's escalation store (the same
+        store the permission bridge + stall branch create records
+        in). Best-effort: no runtime / no store / store error all
+        mean "not held" — the bound then behaves exactly as before
+        this fix.
+        """
+        store = getattr(
+            getattr(self, "specialist_runtime", None),
+            "escalation_store",
+            None,
+        )
+        if store is None:
+            return False
+        try:
+            rec = await store.get(delegation_id=delegation.delegation_id)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(rec) and rec.get("status") == "pending"
+
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
         """Background worker: drive the delegation through the state machine.
 
         M1.3 step 4: the agent call is wrapped in ``asyncio.wait_for`` with
-        ``self.turn_timeout`` (default 15 min, M1.3 plan). On expiry the
+        ``self.turn_timeout`` (default 30 min, ruling 2026-09-10). On expiry the
         delegation is marked failed with an explicit error; the
         ServeRunner is recycled on next use (the runner's
         ``runners.get_or_create`` checks ``is_alive`` before reusing).

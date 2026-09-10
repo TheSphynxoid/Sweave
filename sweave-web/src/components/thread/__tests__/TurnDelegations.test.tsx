@@ -20,6 +20,9 @@ vi.mock("@/api/client", () => ({
   api: {
     listDelegations: vi.fn(),
     getDelegationDetail: vi.fn(),
+    getEscalation: vi.fn(),
+    answerEscalation: vi.fn(),
+    skipEscalation: vi.fn(),
   },
 }));
 
@@ -43,6 +46,10 @@ vi.mock("@/context/WSProvider", () => ({
 
 function fireStatusChanged() {
   for (const h of handlers.get("delegation.status_changed") ?? []) h();
+}
+
+function fireEscalated() {
+  for (const h of handlers.get("specialist.escalated") ?? []) h();
 }
 
 function child(overrides: Partial<Delegation> & { delegation_id: string }): Delegation {
@@ -260,6 +267,84 @@ describe("TurnDelegations", () => {
     expect(useWS).toBeTruthy();
     fireStatusChanged();
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("refetches on specialist.escalated (the ask can outlive the turn)", async () => {
+    // M1.12 stuck-reviewer regression: a permission ask can arrive
+    // minutes AFTER the parent turn settled, so the escalation event
+    // must refetch the children independently of status changes.
+    listMock.mockResolvedValue([]);
+    renderTurn("chat-abc");
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    fireEscalated();
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("pending escalation renders an inline ask card; answering posts the option", async () => {
+    const escMock = vi.mocked(api.getEscalation);
+    const answerMock = vi.mocked(api.answerEscalation);
+    listMock.mockResolvedValue([
+      child({ delegation_id: "d-ask", status: "running", needs_attention: true }),
+    ]);
+    escMock.mockResolvedValueOnce({
+      escalation_id: "esc-1",
+      delegation_id: "d-ask",
+      question: "Permission required: opencode asks external_directory.",
+      options: ["allow once", "always allow", "deny"],
+      kind: "permission",
+      audience: "human",
+      status: "pending",
+      created_at: "2026-09-10T23:27:54",
+      deadline_at: null,
+      answered_at: null,
+      response: null,
+    });
+    answerMock.mockResolvedValueOnce({
+      escalation_id: "esc-1",
+      delegation_id: "d-ask",
+      question: "Permission required: opencode asks external_directory.",
+      options: ["allow once", "always allow", "deny"],
+      kind: "permission",
+      audience: "human",
+      status: "answered",
+      created_at: "2026-09-10T23:27:54",
+      deadline_at: null,
+      answered_at: "2026-09-10T23:40:00",
+      response: "allow once",
+    });
+    escMock.mockResolvedValueOnce({
+      escalation_id: "esc-1",
+      delegation_id: "d-ask",
+      question: "Permission required: opencode asks external_directory.",
+      options: ["allow once", "always allow", "deny"],
+      kind: "permission",
+      audience: "human",
+      status: "answered",
+      created_at: "2026-09-10T23:27:54",
+      deadline_at: null,
+      answered_at: "2026-09-10T23:40:00",
+      response: "allow once",
+    });
+
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+
+    const askCard = await screen.findByTestId("turn-delegation-escalation");
+    expect(askCard.textContent).toContain("Permission required");
+    const options = screen.getAllByTestId("turn-escalation-option");
+    expect(options).toHaveLength(3);
+    fireEvent.click(options[0]);
+    await waitFor(() =>
+      expect(answerMock).toHaveBeenCalledWith("d-ask", "allow once"),
+    );
+    // Answered: the buttons give way to the resolved record.
+    await waitFor(() =>
+      expect(screen.queryByTestId("turn-escalation-option")).toBeNull(),
+    );
+    expect(screen.getByTestId("turn-delegation-escalation").textContent).toContain(
+      "answered",
+    );
   });
 
   it("a failed fetch never breaks the thread", async () => {
