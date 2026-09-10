@@ -38,22 +38,24 @@
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
-### Test Results (All Passing - verified 2026-09-09)
-- **532/532** in `pytest tests/` (source of truth for logic tests;
-  includes 5 thinking-capture tests, 8 model-variant tests, 12
-  registry-sync tests, and 6 customs/metadata registry tests)
+### Test Results (All Passing - verified 2026-09-10)
+- **579/579** in `pytest tests/` plus 2 pre-existing environment-failure tests
+  (models-registry default not in the live catalog — env-dependent, not code);
+  includes the M1.12 suite (wire parser, scoped roots, roots endpoint,
+  permission ask-flow) and the bundled M1.11 execution tests
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **148** vitest unit tests in `sweave-web/` (verified 2026-09-09;
-  includes 44 theme tests across tokens/switcher/custom-color for the
-  20-preset / 37-token expansion, 4 thinking tests for
-  chat.thinking accumulation + projection, 4 ModelPicker variant
-  badge tests, and 9 EffortSelect tests)
+- **161** vitest unit tests in `sweave-web/` (verified 2026-09-10; the
+  TurnQuestions inline card now covers the M1.12 `permission` kind — detail
+  line + 'always' grant label — alongside the M1.11 question tests)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
   plus the local screenshot gates `npm run ui:shot` +
   `sweave-web/scripts/ui-chat-probe.mjs` (system Edge headless,
   need the backend on :8100)
+- **LIVE GATE (M1.12)**: `scripts/m1_12_live_gate.py` green (3 scenes:
+  scoped root silent pass; outside read → permission ask → allow-once →
+  real file content; reject → loud abort, no content)
 - **ALL GREEN** in `test_agents_loader.py` (24 checks)
 - v1 vanilla UI tests (test_full.py, test_sidebar_nav.js, test_promote_ui.js) retired
 
@@ -64,6 +66,28 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **M1.11 Blocking Q&A cutover** — done 2026-09-10 (see its plan's
+  Execution summary; landed in the same commits as M1.12 steps 0–2).
+- ✅ **M1.12 Permission-aware turns** — done 2026-09-10. Scoped
+  `external_directory` render (catch-all `ask` + built-in roots
+  `cwd`-subtrees via opencode itself, `<project>/.worktrees`, `~/.sweave`,
+  + human-declared `Project.permission_roots` via
+  `PUT /api/projects/{name}/permission_roots`); pending opencode
+  permission asks (bus-only surface in 1.18.29, pinned live) become
+  blocking human questions — kind `permission`, NO timeout, route to the
+  human for BOTH roles (2026-09-10 ruling); skip/deny maps to an opencode
+  `reject` and the turn fails loud; allow (`once`/`always`) POSTs the
+  reply and recovers the resumed content via
+  `GET /session/{sid}/message` after bus `session.idle` (the original
+  stream never re-delivers terminal after a pause). Turn timer suspends
+  while any human question is pending (shielded re-arm). Inline
+  Question card renders permission detail + the exact 'always' grant
+  patterns. Match-semantics corrections came from the installed binary
+  (`findLast` last-match-wins; platform-separator `dir*` rules).
+  Live gate green (`scripts/m1_12_live_gate.py`). Commits: `bb4868f`,
+  `a7cc9a1`, `f03eb56` (bundled the M1.11 execution cutover per user
+  ruling; includes the specialist_runtime recovery after the same-day
+  truncation incident — see GOTCHAS), `ae21de1`, `6d9e8c2` + close-out.
 - ✅ **M1.prep** — all 8 steps (9 commits)
 - ✅ **M1.0 Live serve probe** — done: v2 HTTP API + per-message model +
   chunked JSON stream consumption. Its leftovers (session resume across

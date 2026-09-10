@@ -1,6 +1,6 @@
 # M1.12 Plan — Permission-aware turns: scoped roots + ask-handling + silence watchdog
 
-Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
+Status: **done** (2026-09-10). Live gate green (3 scenes, `opencode-go/glm-5.3-flash`): scoped root passes silently; outside read → question → allow-once → real content; reject → loud abort. Rulings user-locked 2026-09-10:
 1. Unknown outside-cwd paths **ask the human** (blocking, **no timeout** — the M1.11 ruling extends to permission prompts). Sweave controls the loop so Sweave controls the timer: opencode waits, Sweave waits, like `ask_human`.
 2. **Allowlist roots pass silently**: project working dir + subfolders; worktrees (specialist: its own, orchestrator: all); global `~/.sweave` (required — the hung reads were global `agents.yaml`; per-project `.sweave` is inside the cwd, already covered).
 3. **Transition**: blanket `external_directory: allow` (shipped, see starting point) stays UNTIL ask-handling works; then flip to scoped roots. Never leave a path resolving to `ask` with no handler.
@@ -31,6 +31,7 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 - **Resume-after-once works**: tool executes; terminal content lands as a **NEW assistant message** (pre-pause assistant message completes with EMPTY text at the pause; post-resume message carries the content, completed-ts set) — session goes `session.idle` on the bus. The ORIGINAL `POST /session/{id}/message` stream does not re-deliver the terminal frame: ended-stream + `session.idle` on the bus is the completion signal to handle in step 2 (fetch `GET /session/{sid}/message` for the final text — route exists, returns the full message list with parts).
 - **Reject shape**: turn aborts; the assistant message persists with completed-ts and empty text (no loud tool error in the message list); `session.idle` on the bus. Treat reject as a failed turn.
 - Probe script committed: `scripts/m1_12_permission_wire_probe.py` (retrying scene loop — models are not tool-compliant every turn; defaults to a live provider model via `/config/providers`, overridable `M1_12_PROBE_MODEL`).
+- **Matcher semantics (supplementary pinning, from the installed binary):** the evaluate step is `rules.flat().findLast(...)` → **LAST matching rule wins** (catch-all first, specifics after — the plan's ordering was right). Checked patterns are generated as `path.join(dirname(file), "*")` with platform separators and `normalizePathPattern` only normalizes that `dir/*` form; rules must therefore use **platform separators** and BEST match the checked idiom. The render emits both `<root>{sep}*` and `<root>/**` per root (step-4 live gate proved the scoped root silently passes with this shape). Also: opencode's message stream may deliver a single newline-free JSON document — always parse with brace-depth splitting (`_split_json_stream`), never line-splitting (the live gate initially "saw nothing" because of this).
 
 ## Goal state
 
@@ -78,3 +79,14 @@ Status: **planned** (2026-09-10). Rulings user-locked 2026-09-10:
 - Delegations: `chat-f65e5774b8cb`, `chat-f94bd453c376`, `chat-1389698ec0e2` (all `[chat error: ReadTimeout: ]`, ~300.0s gaps in traces).
 - Live repro 2026-09-10: scratch serve (default policy), `Get-Content C:\Windows\win.ini` → same signature; serve destroyed after.
 - Timeout archaeology: httpx 300s (now 1000, `harness/opencode.py`), turn 900s (`chat/loop.py`), stall 300s (`specialist_runtime.py STALL_TIMEOUT_SECONDS`).
+
+## Execution summary (2026-09-10)
+
+1. **Step 0** — wire pinned (see the PINNED section above). Committed `bb4868f`.
+2. **Step 1** — `render_external_directory` + Project.permission_roots (+ `PUT /api/projects/{name}/permission_roots`). Committed `a7cc9a1`.
+3. **Step 2** — `runtime/permission_watch.py` (per-serve bus watcher, no new poller tasks; the standing SSE subscription is required because 1.18.29 has no pending-list route), the ask-dance in `SpecialistRuntime._send_message`'s stall branch (create kind=permission escalation w/ metadata requestID → unbounded wait → reply → idle-wait → recover via `GET /session/{sid}/message`), `escalation_store` metadata field. Mock tests: answer→always, skip→reject, no-pending→plain stall. Committed in `f03eb56` together with the M1.11 execution delta (user ruling: bundled).
+4. **Incident note** — during step 2 the executor truncated `sweave/runtime/specialist_runtime.py` working-tree state to zero bytes (an unguarded identity rewrite). Recovered from HEAD (679 lines) + an opencode-transcript full read of the M1.11 state (854 lines) + re-applied step-2 edits; suite re-verified. Gotcha recorded in `docs/GOTCHAS.md`.
+5. **Step 3** — turn-timer suspension (shielded re-arm while a pending human question exists; full budget restarts after each resolution) + permission kind on the inline question card ('always allow' grants exactly these patterns). Committed `ae21de1`.
+6. **Step 4** — flip catch-all → ask; matcher semantics corrected from the binary (`findLast` last-match-wins confirmed; platform-separator + `dir/*` + `dir/**` root rules); live gate `scripts/m1_12_live_gate.py` GREEN with `opencode-go/glm-5.3-flash` (scene A: silent scoped-root pass; B: once → real content; C: reject → loud, tool bash error). Trailing suite: 579 pytest (+2 pre-existing env), 161 vitest, build green. Committed `6d9e8c2` + close-out.
+7. **Explicit non-goals kept**: no MCP read_external tool; doom_loop/other ask-defaults untouched; no sqlite scraping; no auto-answer (always only from explicit user choice, patterns persisted opencode-side and shown on the card).
+

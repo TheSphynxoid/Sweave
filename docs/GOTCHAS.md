@@ -38,6 +38,23 @@ gotchas land here — grouped by branch, not appended as a numbered list.
 
 ## Opencode harness & wire protocol
 
+0. **M1.12 permission wire (2026-09-10, pinned + live-gated).** The ONLY pending-
+   permission surface in 1.18.29 serve is the `/event` bus — every candidate list GET
+   returns the SPA HTML catch-all with 200 (filter on `content-type`/`<` prefix, never
+   trust 200). Reply is `POST /session/{sid}/permissions/{rid}` body
+   `{"response": "once"|"always"|"reject"}` (key `response`, NOT `reply`; other key →
+   400 `Missing key at ["response"]`) → 200 `true`. Root-rule patterns: last-match-wins
+   (`findLast` in the binary), checked patterns are `path.join(dirname(file), "*")`
+   with platform separators; render rules with `<root>{sep}*` (+ `**`), never
+   forward-slash on Windows. After an allow reply the tool runs and its terminal
+   content lands as a NEW assistant message — the old stream doesn't re-deliver
+   terminal; wait for bus `session.idle`, then `GET /session/{sid}/message`. And
+   opencode may deliver the WHOLE message stream as one newline-free JSON document —
+   ALWAYS parse with brace-depth splitting (`_split_json_stream`), never `"\\n"`
+   line splitting. Free-model providers can hang entirely (zero stream bytes for
+   minutes on ANY prompt) — don't diagnose that as a permission hang; permission
+   hangs always come with a `permission.asked` event.
+
 1. **Sessions persist in `~/.local/share/opencode/opencode.db` (SQLite)** (corrects the
    M1.3 step 0 probe — "0 new files" was misleading: a new row was inserted into the
    `session` and `message` tables). The `session_id` persisted on the `Specialist`

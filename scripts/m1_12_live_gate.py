@@ -44,6 +44,7 @@ from m1_12_permission_wire_probe import (  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sweave.runtime.mcp_config import render_external_directory  # noqa: E402
+from sweave.harness.opencode import _split_json_stream  # noqa: E402
 from sweave.runtime.permission_watch import (  # noqa: E402
     fetch_messages,
     final_assistant_text,
@@ -113,12 +114,18 @@ async def run_turn(base: str, sid: str, model: tuple[str, str], prompt: str):
             headers={"content-type": "application/json"},
         ) as resp:
             resp.raise_for_status()
+            carry = ""
             async for chunk in resp.aiter_text():
                 buf += chunk
-                while "\n" in buf:
-                    line, buf = buf.split("\n", 1)
-                    obj = _parse_stream_line(line)
-                    if obj is None:
+                pieces, carry = _split_json_stream(buf, carry)
+                buf = ""
+                for piece in pieces:
+                    obj = None
+                    try:
+                        obj = json.loads(piece)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict):
                         continue
                     info = obj.get("info")
                     info = info if isinstance(info, dict) else {}
@@ -205,7 +212,7 @@ async def main() -> int:
             ]
             print(
                 f"scene A: done={done0} asks={len(asks0)} "
-                f"text[:80]={text0[:80]!r}"
+                f"text[:80]={text0[:80]!r} notes={notes0[-6:]}"
             )
             if not (done0 and not asks0 and "GATE-CANARY" in text0):
                 print("FAIL scene A (root did not pass silently)")
@@ -308,8 +315,7 @@ async def main() -> int:
             await bus_task
         except Exception:  # noqa: BLE001
             pass
-        print(f"summary asks={[a['id'] for a in bus.requests()]} ok={ok}")
-        return 0 if ok else 1
+        print(f"summary asks={[a['id'] for a in bus.requests()]} ok={ok}")        return 0 if ok else 1
     finally:
         if proc.poll() is None:
             subprocess.run(
