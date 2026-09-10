@@ -50,7 +50,8 @@ def _run_node_tests() -> dict:
         [npm_cmd, "test"],
         cwd=str(_SWEAVE_WEB),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     return {
@@ -124,7 +125,8 @@ def test_sweave_web_typechecks_clean():
         [npx_cmd, "tsc", "--noEmit"],
         cwd=str(_SWEAVE_WEB),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=180,
     )
     assert proc.returncode == 0, (
@@ -144,7 +146,8 @@ def test_sweave_web_build_succeeds():
         [npm_cmd, "run", "build"],
         cwd=str(_SWEAVE_WEB),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     assert proc.returncode == 0, (

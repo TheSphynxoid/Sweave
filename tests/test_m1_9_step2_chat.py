@@ -44,7 +44,8 @@ def test_chat_vitest_suite_passes():
         [_npm(), "test"],
         cwd=str(_SWEAVE_WEB),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
     )
     assert proc.returncode == 0, (

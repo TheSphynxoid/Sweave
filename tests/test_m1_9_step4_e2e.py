@@ -88,7 +88,8 @@ def test_sweave_web_e2e_suite_is_registered():
         [npx_cmd, "playwright", "test", "--list"],
         cwd=str(_SWEAVE_WEB),
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=120,
     )
     # The --list command exits 0 when the suite is loadable.

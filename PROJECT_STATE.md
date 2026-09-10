@@ -39,15 +39,21 @@
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
 
 ### Test Results (All Passing - verified 2026-09-10)
-- **599/601** in `pytest tests/` plus 2 pre-existing environment-failure tests
-  (models-registry default not in the live catalog — env-dependent, not code);
-  includes the M1.12 suite (wire parser, scoped roots, roots endpoint,
-  permission ask-flow), the bundled M1.11 execution tests, and the
-  M1.12 amendment-1 bridge tests (`tests/test_m1_12_permission_bridge.py`)
+- **602/602** in `pytest tests/` — fully green. The former "2 env
+  failures" are both gone: the models-registry default was fixed
+  (models.yaml drops the `+max` suffix; hermetic tmp-registry tests),
+  and the M1.9 npm-wrapper tests needed explicit
+  `encoding="utf-8", errors="replace"` in their `subprocess.run` calls
+  (cp1252 choked on vitest's UTF-8 `✓` output, killing the reader
+  thread and leaving `proc.stdout=None`). Includes the M1.12 suite
+  (wire parser, scoped roots, roots endpoint, permission ask-flow),
+  the bundled M1.11 execution tests, and the M1.12 amendment-1 bridge
+  tests (`tests/test_m1_12_permission_bridge.py`)
 - **13/13** in `run.py --check` (endpoint smoke + SPA mounted from sweave-web/dist)
-- **161** vitest unit tests in `sweave-web/` (verified 2026-09-10; the
-  TurnQuestions inline card now covers the M1.12 `permission` kind — detail
-  line + 'always' grant label — alongside the M1.11 question tests)
+- **203** vitest unit tests in `sweave-web/` (verified 2026-09-10;
+  includes the TurnQuestions inline card for the M1.12 `permission`
+  kind, the M1.11 question tests, and the in-flight turn-recovery
+  tests from the parallel session's WIP)
 - **2** Playwright e2e spec files in `sweave-web/e2e/` (CI gate; the
   R4.1 foundation-nav.spec.ts adds 6 tests but the chromium
   1243 dependency makes the suite CI-time per the wave-1 pattern);
@@ -677,7 +683,7 @@
   **501 pytest (+5), 119 vitest (+4), 13/13 run.py --check, build
   green.**
 - **Planner pattern to kill**: the M1.7 and M1.9 plans both said "no schema bump" for a new Delegation field and both were wrong (gotcha #12 gate forced 3->4 then 4->5). Rule for future plans: ANY new Delegation field = SCHEMA_VERSION bump + migration helper, no exceptions.
-- ✅ **M1.11 Blocking Q&A replaces native question (2026-09-10)** per `docs/M1_11_PLAN.md`. Rulings: native `question` denied both roles; `ask_human` = blocking orchestrator→human question with NO timeout (ChatLoop holds the turn open until answered|skipped, then synthesises); skip = opencode-Esc with system-issued `window.confirm` + `POST …/skip {confirmed:true}` (409 unconfirmed); `escalate` = specialist→orchestrator non-blocking notice (only sweave tool specialists may call; explicit denies replace the `sweave_*` wildcard); Children = global audit log (kind badges Q/ESC + question previews + DetailView escalation section). Thread shows an inline Question card (options buttons + answer + Skip-confirm, WS-driven). Escalation records gain `kind`/`audience`/`skipped` + nullable deadline (legacy timeout records readable). **11 new pytest (`test_m1_11_question_replace.py`), 4 new vitest (`TurnQuestions`), 13/13 run.py --check, `npm run build` green.** Known pre-existing env failure (not this slice): models-registry default `openrouter/...` not in generated `all_models` (`test_default_is_qualified_and_in_registry`, `test_api_models`).
+- ✅ **M1.11 Blocking Q&A replaces native question (2026-09-10)** per `docs/M1_11_PLAN.md`. Rulings: native `question` denied both roles; `ask_human` = blocking orchestrator→human question with NO timeout (ChatLoop holds the turn open until answered|skipped, then synthesises); skip = opencode-Esc with system-issued `window.confirm` + `POST …/skip {confirmed:true}` (409 unconfirmed); `escalate` = specialist→orchestrator non-blocking notice (only sweave tool specialists may call; explicit denies replace the `sweave_*` wildcard); Children = global audit log (kind badges Q/ESC + question previews + DetailView escalation section). Thread shows an inline Question card (options buttons + answer + Skip-confirm, WS-driven). Escalation records gain `kind`/`audience`/`skipped` + nullable deadline (legacy timeout records readable). **11 new pytest (`test_m1_11_question_replace.py`), 4 new vitest (`TurnQuestions`), 13/13 run.py --check, `npm run build` green.** (The models-registry env failure noted here at the time is since fixed — models.yaml dropped the `+max` default suffix; verified 31/31 models tests pass 2026-09-10.)
 
 ### M1.prep — done 2026-08-29
 - **Plan of record**: `docs/M1_PREP_PLAN.md`

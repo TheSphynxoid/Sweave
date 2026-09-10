@@ -53,7 +53,8 @@ def test_live_scene_short_circuit_when_disabled(tmp_path):
         cwd=str(repo_root),
         env=env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     assert result.returncode == 0
