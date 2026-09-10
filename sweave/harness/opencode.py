@@ -903,7 +903,16 @@ captures the real failure.
         # Prepare environment
         env = os.environ.copy()
         env.update(spec.env)
-        env["OPENCODE_MODEL"] = spec.model
+        env["OPENCODE_MODEL"] = (
+            # Strip a "+variant" effort suffix: the bare-string form is
+            # NOT accepted by provider catalogs (live probe 2026-09-10:
+            # opencode-go/glm-5.3-flash+max -> ProviderModelNotFoundError,
+            # suffix only valid as the structured v2 `variant` field the
+            # SpecialistRuntime body builder already emits). A suffix in
+            # the env-form default model silently 500s every serve turn
+            # (2026-09-10 dogfood: backend child 900s with zero output).
+            spec.model.split("+", 1)[0] if spec.model else spec.model
+        )
 
         # Create worktree directory
         spec.worktree_path.mkdir(parents=True, exist_ok=True)

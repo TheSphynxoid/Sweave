@@ -705,4 +705,4 @@ models:
     - glm-5.3
     - glm-5.3-flash
     - glm-5.3-highspeed
-  default: opencode-go/glm-5.3-flash+max
+  default: opencode-go/glm-5.3-flash

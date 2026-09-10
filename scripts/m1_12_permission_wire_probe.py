@@ -432,7 +432,8 @@ async def _pick_model(base: str) -> tuple[str, str]:
     providers = (
         data.get("providers") if isinstance(data, dict) else None
     ) or []
-    order = ["openrouter", "gmi", "ollama", "cloudflare-workers-ai"]
+    order = ["opencode-go", "openrouter", "gmi", "ollama",
+             "cloudflare-workers-ai"]
     by_id = {str(p.get("id") or p.get("id_", "")): p for p in providers
              if isinstance(p, dict)}
     for pid in order:
@@ -440,9 +441,16 @@ async def _pick_model(base: str) -> tuple[str, str]:
         if isinstance(p, dict):
             models = list((p.get("models") or {}).keys())
             if models:
-                # prefer a :free / think-capable default by scanning
-                preferred = [m for m in models if ":free" in m]
-                return pid, (preferred[0] if preferred else models[0])
+                # User cost ruling 2026-09-10: NEVER pick qwen3.7-max
+                # (paid; the bridge gate accidentally picked it) —
+                # `big-pickle` is free, everything else cheap/glm.
+                for m in models:
+                    if "big-pickle" in m:
+                        return pid, m
+                pool = [m for m in models if "qwen3.7-max" not in m]
+                if pool:
+                    free = [m for m in pool if ":free" in m]
+                    return pid, (free[0] if free else pool[0])
     raise RuntimeError(f"no provider model found: {json.dumps(data)[:400]}")
 
 

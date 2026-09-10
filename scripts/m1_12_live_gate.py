@@ -80,7 +80,14 @@ async def _pick_model(base: str) -> tuple[str, str]:
         if isinstance(p, dict):
             models = list((p.get("models") or {}).keys())
             if models:
-                return pid, models[0]
+                # Cost ruling 2026-09-10: big-pickle first (free),
+                # never qwen3.7-max (paid).
+                for m in models:
+                    if "big-pickle" in m:
+                        return pid, m
+                pool = [m for m in models if "qwen3.7-max" not in m]
+                if pool:
+                    return pid, pool[0]
     raise RuntimeError(f"no provider: {json.dumps(data)[:300]}")
 
 
