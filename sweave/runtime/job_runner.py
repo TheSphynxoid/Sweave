@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -302,6 +303,84 @@ class JobRunner:
     # Worker
     # ------------------------------------------------------------------
 
+    MAX_TURN_EXTENSIONS = 3
+    BEACON_WINDOW_SECONDS = 300.0
+
+    def _beacon_file(self, delegation_id: str) -> "Path | None":
+        """The delegation's own trace file (beacon + turn activity)."""
+        base = self.traces_dir or (
+            Path.home() / ".sweave" / "traces"
+        )
+        p = Path(base) / f"{delegation_id}.jsonl"
+        return p if p.exists() else None
+
+    def _beacon_recent(self, delegation: Delegation, window: float) -> bool:
+        """True iff the delegation's trace got a fresh defer beacon.
+
+        opencode gives us NO streaming liveness for a running turn,
+        but a `defer` call from THAT turn is an observable mid-turn
+        heartbeat (submission writes `child_deferred` to the caller's
+        trace — see the /api/v2/tasks beacon). Persistent-file mtime;
+        no Delegation schema change."""
+        p = self._beacon_file(delegation.delegation_id)
+        if p is None:
+            return False
+        try:
+            age = time.time() - p.stat().st_mtime
+            return age <= window
+        except OSError:
+            return False
+
+    async def _bounded_turn(
+        self, coro, delegation: Delegation, trace: "TraceLog"
+    ) -> "tuple[bool, str | object]":
+        """Run one agent turn under ``turn_timeout`` with a shielded
+        re-arm: a turn exceeding the cap is NOT silently killed —
+        when a fresh defer beacon proves it alive, a full fresh
+        budget arms again (bounded by ``MAX_TURN_EXTENSIONS``);
+        only an unwitnessed cap fails loud."""
+        import asyncio as _aio
+
+        task = _aio.ensure_future(coro)
+        budget = float(self.turn_timeout or 900.0)
+        extensions = 0
+        try:
+            while True:
+                try:
+                    output = await _aio.wait_for(
+                        _aio.shield(task), timeout=max(budget, 1.0)
+                    )
+                    return True, output
+                except _aio.TimeoutError:
+                    if (
+                        extensions < self.MAX_TURN_EXTENSIONS
+                        and self._beacon_recent(
+                            delegation, self.BEACON_WINDOW_SECONDS
+                        )
+                    ):
+                        extensions += 1
+                        budget = float(self.turn_timeout or 900.0)
+                        trace.append(
+                            "turn_extended",
+                            {
+                                "n": extensions,
+                                "budget": budget,
+                                "reason": "defer_beacon_recent",
+                            },
+                        )
+                        continue
+                    task.cancel()
+                    await _aio.gather(task, return_exceptions=True)
+                    trace.append(
+                        "turn_timeout", {"timeout": budget, "extensions": extensions}
+                    )
+                    return False, None
+        except Exception:  # noqa: BLE001
+            # Re-raise after cleanup so _run's outer handler sees it.
+            if not task.done():
+                task.cancel()
+            raise
+
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
         """Background worker: drive the delegation through the state machine.
 
@@ -318,110 +397,124 @@ class JobRunner:
             trace.append("prompt_sent", {"prompt": delegation.task, "agent": delegation.agent})
 
             # The actual agent call. Either path is wrapped in the
-            # turn timeout; on TimeoutError we mark the delegation
-            # failed and the runner (next use) will recycle the serve.
-            try:
-                if (
-                    self.specialist_runtime is not None
-                    and self.specialist_factory is not None
-                    and self.project_dir_resolver is not None
-                ):
-                    worktree_path = self.project_dir_resolver(delegation.project_name)
-                    if worktree_path is None:
-                        worktree_path = Path.home() / ".sweave"
-                    specialist = self.specialist_factory(delegation.agent)
-                    if specialist is None:
-                        from sweave.runtime.specialist_store import Specialist as _Spec
+            # turn timeout; on TimeoutError the beacons decide whether
+            # the cap extends (M1.12 amendment 2) or the turn fails.
+            if (
+                self.specialist_runtime is not None
+                and self.specialist_factory is not None
+                and self.project_dir_resolver is not None
+            ):
+                worktree_path = self.project_dir_resolver(delegation.project_name)
+                if worktree_path is None:
+                    worktree_path = Path.home() / ".sweave"
+                specialist = self.specialist_factory(delegation.agent)
+                if specialist is None:
+                    from sweave.runtime.specialist_store import Specialist as _Spec
 
-                        specialist = _Spec(
-                            name=delegation.agent,
-                            scope="project" if delegation.project_name else "global",
-                            is_orchestrator=False,
-                            system_prompt="",
-                            harness="opencode",
-                            current_model=delegation.model or None,
-                        )
-                    from sweave.runtime.specialist_store import ModelRef, parse_model_ref
-
-                    model_ref: ModelRef | None = None
-                    if delegation.model:
-                        model_ref = parse_model_ref(delegation.model)
-                    output = await asyncio.wait_for(
-                        self.specialist_runtime.run(
-                            specialist=specialist,
-                            delegation=delegation,
-                            worktree_path=worktree_path,
-                            message=delegation.task,
-                            trace=trace,
-                            model_ref=model_ref,
-                        ),
-                        timeout=self.turn_timeout,
+                    specialist = _Spec(
+                        name=delegation.agent,
+                        scope="project" if delegation.project_name else "global",
+                        is_orchestrator=False,
+                        system_prompt="",
+                        harness="opencode",
+                        current_model=delegation.model or None,
                     )
-                    # Persist the Specialist (the runtime set
-                    # specialist.session_id during run()). Best-effort:
-                    # a saver failure is logged, never raised -- the
-                    # delegation result stands on its own.
-                    #
-                    # Seed-scope views are NEVER persisted: writing one
-                    # would materialise a global/project shadow copy
-                    # that hides the seed via resolution shadowing
-                    # (2026-09-09: seed `backend-specialist` vanished
-                    # behind an auto-saved global of the same name).
-                    # Seed sessions are intentionally transient.
-                    if self.specialist_saver is not None and specialist.scope != "seed":
-                        try:
-                            self.specialist_saver(specialist, delegation.project_name)
-                            trace.append(
-                                "session_id_persisted",
-                                {
-                                    "specialist": specialist.name,
-                                    "session_id": specialist.session_id,
-                                },
-                            )
-                        except Exception as saver_err:  # noqa: BLE001
-                            logger.warning(
-                                "JobRunner: specialist_saver failed for %s: %s",
-                                specialist.name, saver_err,
-                            )
-                    elif specialist.scope == "seed":
+                from sweave.runtime.specialist_store import ModelRef, parse_model_ref
+
+                model_ref: ModelRef | None = None
+                if delegation.model:
+                    model_ref = parse_model_ref(delegation.model)
+                ok, output = await self._bounded_turn(
+                    self.specialist_runtime.run(
+                        specialist=specialist,
+                        delegation=delegation,
+                        worktree_path=worktree_path,
+                        message=delegation.task,
+                        trace=trace,
+                        model_ref=model_ref,
+                    ),
+                    delegation,
+                    trace,
+                )
+                if not ok:
+                    await store.update(
+                        delegation.delegation_id,
+                        output="",
+                        error=f"turn_timeout_exceeded_{self.turn_timeout}s",
+                    )
+                    trace.append("turn_timeout", {"timeout": self.turn_timeout})
+                    await self._transition(delegation, store, trace, "failed",
+                                           completed_at=datetime.now())
+                    return
+                # Persist the Specialist (the runtime set
+                # specialist.session_id during run()). Best-effort:
+                # a saver failure is logged, never raised -- the
+                # delegation result stands on its own.
+                #
+                # Seed-scope views are NEVER persisted: writing one
+                # would materialise a global/project shadow copy
+                # that hides the seed via resolution shadowing
+                # (2026-09-09: seed `backend-specialist` vanished
+                # behind an auto-saved global of the same name).
+                # Seed sessions are intentionally transient.
+                if self.specialist_saver is not None and specialist.scope != "seed":
+                    try:
+                        self.specialist_saver(specialist, delegation.project_name)
                         trace.append(
-                            "session_id_transient",
+                            "session_id_persisted",
                             {
                                 "specialist": specialist.name,
-                                "reason": "seed-scope views are never persisted",
+                                "session_id": specialist.session_id,
                             },
                         )
-                    from sweave.tools import DelegationResult
+                    except Exception as saver_err:  # noqa: BLE001
+                        logger.warning(
+                            "JobRunner: specialist_saver failed for %s: %s",
+                            specialist.name, saver_err,
+                        )
+                elif specialist.scope == "seed":
+                    trace.append(
+                        "session_id_transient",
+                        {
+                            "specialist": specialist.name,
+                            "reason": "seed-scope views are never persisted",
+                        },
+                    )
+                from sweave.tools import DelegationResult
 
-                    result = DelegationResult(
-                        success=True,
+                result = DelegationResult(
+                    success=True,
+                    agent=delegation.agent,
+                    task_id=delegation.task_id,
+                    output=output,
+                    error=None,
+                )
+            else:
+                # Legacy path: wrap the call in wait_for directly.
+                # delegate_tool.execute is async (returns a
+                # coroutine), so wait_for times the call. The
+                # returned DelegationResult becomes the value of
+                # the await expression.
+                from sweave.tools import DelegationResult
+
+                ok, legacy_result = await self._bounded_turn(
+                    self.delegate_tool.execute(
                         agent=delegation.agent,
+                        task=delegation.task,
+                        model=delegation.model or None,
                         task_id=delegation.task_id,
-                        output=output,
-                        error=None,
-                    )
+                    ),
+                    delegation,
+                    trace,
+                )
+                if not ok:
+                    result = type("R", (), {
+                        "success": False, "output": "",
+                        "error": f"turn_timeout_exceeded_{self.turn_timeout}s",
+                        "agent": delegation.agent,
+                    })()
                 else:
-                    # Legacy path: wrap the call in wait_for directly.
-                    # delegate_tool.execute is async (returns a
-                    # coroutine), so wait_for times the call. The
-                    # returned DelegationResult becomes the value of
-                    # the await expression.
-                    from sweave.tools import DelegationResult
-
-                    result: DelegationResult = await asyncio.wait_for(
-                        self.delegate_tool.execute(
-                            agent=delegation.agent,
-                            task=delegation.task,
-                            model=delegation.model or None,
-                            task_id=delegation.task_id,
-                        ),
-                        timeout=self.turn_timeout,
-                    )
-            except asyncio.TimeoutError:
-                trace.append("turn_timeout", {"timeout": self.turn_timeout})
-                result = type("R", (), {"success": False, "output": "",
-                                          "error": f"turn_timeout_exceeded_{self.turn_timeout}s",
-                                          "agent": delegation.agent})()
+                    result = legacy_result
 
             # Persist result + transition.
             await store.update(

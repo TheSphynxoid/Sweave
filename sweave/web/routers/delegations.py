@@ -32,6 +32,10 @@ from sweave.runtime.subagent_store import SubAgentRun, SubAgentStatus
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -281,6 +285,33 @@ async def submit_task_v2(
             user_agent=agent,
         )
 
+    # M1.12 amendment 2 (2026-09-10): Deferred-turn liveness beacon.
+    # When the parent's turn spawned this child, we now know the
+    # parent turn was ALIVE at this moment even if opencode sent us
+    # NO stream bytes yet — a defer is the one observable we get
+    # mid-turn (user ruling: "use the fact that a defer call happened").
+    # The beacon rides on the parent's trace file (append-only,
+    # schema-free), and JobRunner's turn-cap extension reads its
+    # mtime; ALSO emitted as a WS event for the UI's wait indicators.
+    if request.parent_task_id and parent is not None:
+        try:
+            from sweave.runtime.trace_log import TraceLog
+
+            parent_trace = TraceLog(request.parent_task_id)
+            parent_trace.append(
+                "child_deferred",
+                {
+                    "child": delegation.delegation_id,
+                    "agent": agent,
+                    "model": model,
+                },
+            )
+        except Exception as trace_err:  # noqa: BLE001
+            logger.warning(
+                "submit_task_v2: parent-trace beacon failed: %s", trace_err
+            )
+
+    # (child beacon done)
     return TaskSubmitV2Response(
         delegation_id=delegation.delegation_id,
         task_id=delegation.task_id,

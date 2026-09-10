@@ -43,6 +43,18 @@ def _parse_provider_model(model: str) -> tuple[str | None, str | None]:
     return provider, model_id
 
 
+def _parse_spec_model(model: str):
+    """Parse a spec model string into a ModelRef (function-local import
+    avoids the base↔spec store cycle; returns None when the string
+    can't be qualified). Preserves a ``+variant`` effort suffix."""
+    from sweave.runtime.specialist_store import parse_model_ref
+
+    try:
+        return parse_model_ref(model)
+    except Exception:
+        return None
+
+
 def _split_json_stream(
     chunk: str, carry: str = ""
 ) -> tuple[list[str], str]:
@@ -322,10 +334,16 @@ class OpenCodeProcess:
                     # emitted at the runtime, not here.
                     body["model"] = message.model["model_id"]
             elif self.spec.model:
-                provider_id, model_id = _parse_provider_model(self.spec.model)
-                if provider_id and model_id:
-                    body["model"] = {"providerID": provider_id, "modelID": model_id}
-                elif model_id:
+                # Preserve the effort selection: a "+variant" suffix
+                # rides along via the structured wire (the forms
+                # differ per provider — live probe 2026-09-10
+                # showed the bare suffix string 500s the catalog).
+                ref_ = _parse_spec_model(self.spec.model)
+                if ref_ is not None:
+                    wire_model = model_ref_to_wire(ref_)
+                    if wire_model is not None:
+                        body["model"] = wire_model
+                elif model_id := self.spec.model:
                     # Unqualified; serve resolves from its own default.
                     body["model"] = model_id
 
