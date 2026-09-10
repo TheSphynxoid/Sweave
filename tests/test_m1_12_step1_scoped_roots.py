@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,15 +45,16 @@ def test_render_scoped_order_and_builtins(tmp_path, isolated_home):
     proj = tmp_path / "proj"
     proj.mkdir()
     rendered = render_external_directory(proj, [])
-    # Catch-all first, under the transition value.
+    # Catch-all first, under the flipped (scoped) value.
     keys = list(rendered.keys())
     assert keys[0] == "*"
-    assert rendered["*"] == EXTERNAL_DIRECTORY_CATCH_ALL == "allow"
-    # Built-ins expand to posix globs + "/**" and follow the catch-all.
+    assert rendered["*"] == EXTERNAL_DIRECTORY_CATCH_ALL == "ask"
+    # Built-ins are platform separators + /* and /**, after the
+    # catch-all (last-match-wins).
     home = isolated_home / ".sweave"
-    assert f"{home.as_posix()}/**" in rendered
-    assert f"{(proj / '.worktrees').as_posix()}/**" in rendered
-    assert rendered[f"{home.as_posix()}/**"] == "allow"
+    assert f"{str(home)}{os.sep}**" in rendered
+    assert f"{str(proj / '.worktrees')}{os.sep}**" in rendered
+    assert rendered[f"{str(home)}{os.sep}**"] == "allow"
 
 
 def test_render_user_roots_expand_and_dedupe(tmp_path, isolated_home):
@@ -64,12 +66,12 @@ def test_render_user_roots_expand_and_dedupe(tmp_path, isolated_home):
         proj,
         [str(shared), "~", str(shared), "", "  "],
     )
-    assert rendered[f"{shared.as_posix()}/**"] == "allow"
+    assert rendered[f"{str(shared)}{os.sep}*"] == "allow"
     # "~" expanded to the tmp home, NOT the real one.
-    home_glob = f"{isolated_home.as_posix()}/**"
+    home_glob = f"{str(isolated_home)}{os.sep}**"
     assert rendered[home_glob] == "allow"
     # No duplicates, no empty-string keys.
-    assert list(rendered.keys()).count(f"{shared.as_posix()}/**") == 1
+    assert list(rendered.keys()).count(f"{str(shared)}{os.sep}*") == 1
     assert not any(k.strip() == "" for k in rendered)
 
 
@@ -95,7 +97,7 @@ def test_ensure_idempotent_with_roots(tmp_path, isolated_home):
         (proj / "opencode.json").read_text(encoding="utf-8")
     )
     ed = cfg3["permission"]["external_directory"]
-    assert f"{(tmp_path / 'extra').as_posix()}/**" in ed
+    assert f"{str(tmp_path / 'extra')}{os.sep}**" in ed
     assert ed["_sweave_managed"] if "_sweave_managed" in ed else True
 
 

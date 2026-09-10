@@ -261,13 +261,18 @@ def test_ensure_mcp_config_writes_managed_permission_policy(tmp_path: Path):
     config = ensure_mcp_config(project_dir)
     on_disk = json.loads((project_dir / "opencode.json").read_text(encoding="utf-8"))
     ed = on_disk["permission"]["external_directory"]
-    assert ed["*"] == "allow"
+    assert ed["*"] == "ask"
     keys = list(ed.keys())
     assert keys[0] == "*"
-    assert any(str(k).endswith("/.sweave/**") and ed[k] == "allow" for k in keys)
-    assert f"{(project_dir / '.worktrees').as_posix()}/**" in ed
+    assert any(
+        str(k).endswith(".sweave" + os.sep + "**") and ed[k] == "allow"
+        for k in keys
+    )
+    assert (
+        f"{str(project_dir / '.worktrees')}{os.sep}**" in ed
+    )
     assert on_disk["permission"]["_sweave_managed"] is True
-    assert config["permission"]["external_directory"]["*"] == "allow"
+    assert config["permission"]["external_directory"]["*"] == "ask"
 
 
 def test_ensure_mcp_config_preserves_user_permission_block(tmp_path: Path):
@@ -301,5 +306,5 @@ def test_ensure_mcp_config_refreshes_managed_permission_keys(tmp_path: Path):
     ensure_mcp_config(project_dir)
     on_disk = json.loads((project_dir / "opencode.json").read_text(encoding="utf-8"))
     ed = on_disk["permission"]["external_directory"]
-    assert isinstance(ed, dict) and ed["*"] == "allow"
+    assert isinstance(ed, dict) and ed["*"] == "ask"
     assert on_disk["permission"]["bash"] == "deny"

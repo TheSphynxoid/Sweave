@@ -156,7 +156,14 @@ SPECIALIST_AGENT_NAME = "sweave-specialist"
 # Deliberately NOT a blanket ``"*": "allow"``: every other class
 # keeps its default until one proves it hangs headless (then it
 # gets its own entry + comment, never a wildcard).
-EXTERNAL_DIRECTORY_CATCH_ALL = "allow"
+# M1.12 step 4 FLIP (2026-09-10): scoped now, asked-handled-by-Sweave.
+# Every outside-cwd read NOT under the rendered roots (cwd subfolders,
+# the project's worktrees, ~/.sweave, + the human-declared project
+# roots) resolves to "ask" and reaches the human via the runtime's
+# blocking question (M1.11 machinery, no-timeout). The scoped roots
+# pass silently; the rest of the ask-default land keeps its default
+# until one proves a hang (each gets its own entry, never a wildcard).
+EXTERNAL_DIRECTORY_CATCH_ALL = "ask"
 
 _BUILTIN_ROOT_MARKER = "~/.sweave"
 
@@ -207,8 +214,13 @@ def render_external_directory(
     """
     pattern_map: dict[str, Any] = {"*": EXTERNAL_DIRECTORY_CATCH_ALL}
     for root in _root_globs(project_dir, permission_roots):
-        glob = str(root).replace("\\", "/") + "/**"
-        pattern_map[glob] = "allow"
+        # Platform separators: opencode's checked patterns are generated
+        # with path.join (backslashes on Windows) and rules are matched
+        # pattern-to-pattern with last-match-wins — the rule must share
+        # the checked pattern's separator style to match deterministically.
+        base = str(root)
+        pattern_map[base + f"{os.sep}*"] = "allow"
+        pattern_map[base + f"{os.sep}**"] = "allow"
     return pattern_map
 
 
