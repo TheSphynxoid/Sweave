@@ -54,6 +54,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Detail value returned by :meth:`JobRunner._bounded_turn` when the
+#: human stops the turn at the soft-limit question (slice 3,
+#: incident 2026-09-11). Callers map it to a ``turn_stopped_by_user``
+#: error instead of the ``turn_timeout_exceeded_*`` text.
+USER_STOPPED = "user_stopped"
+
+#: Options on the soft-limit question (existing inline Question card
+#: renders them as buttons; free text also maps: keep iff it starts
+#: with "keep").
+SOFT_LIMIT_OPTIONS = ["Keep waiting", "Stop it"]
+
+
+def _is_soft_limit_record(rec: dict[str, Any] | None) -> bool:
+    """True iff an escalation record is a soft-limit question."""
+    if not rec:
+        return False
+    return bool((rec.get("metadata") or {}).get("soft_limit"))
+
+
+def _soft_keep_answer(rec: dict[str, Any] | None) -> bool:
+    """True iff a resolved soft-limit record says keep waiting."""
+    if not rec or rec.get("status") != "answered":
+        return False
+    return str(rec.get("response", "") or "").strip().lower().startswith("keep")
+
+
 class JobRunner:
     """Owns the delegation lifecycle for one process.
 
@@ -363,6 +389,11 @@ class JobRunner:
         extensions = 0
         holds = 0
         rearm = False
+        # Soft total limit (slice 3): one keep/stop question per turn,
+        # one keep-extension. ``soft_open`` marks the question asked;
+        # ``soft_extended`` marks the keep consumed.
+        soft_open = False
+        soft_extended = False
         try:
             while True:
                 try:
@@ -371,7 +402,12 @@ class JobRunner:
                     )
                     return True, output
                 except _aio.TimeoutError:
-                    if await self._escalation_pending(delegation):
+                    pending = await self._soft_record(delegation)
+                    if pending is not None and pending.get("status") == "pending":
+                        # A recorded question holds the turn (existing
+                        # semantics). Soft-limit questions report their
+                        # own reason so the trace shows who is being
+                        # waited on.
                         holds += 1
                         rearm = True
                         budget = float(
@@ -382,13 +418,53 @@ class JobRunner:
                             {
                                 "n": holds,
                                 "budget": budget,
-                                "reason": "escalation_pending",
+                                "reason": (
+                                    "soft_limit_pending"
+                                    if _is_soft_limit_record(pending)
+                                    else "escalation_pending"
+                                ),
                             },
                         )
                         continue
+                    if soft_open:
+                        # Our soft question resolved (or vanished) while
+                        # we waited. Keep (once) or stop now — never ask
+                        # twice in one turn.
+                        rec = await self._soft_record(delegation)
+                        if (
+                            _soft_keep_answer(rec)
+                            and not soft_extended
+                        ):
+                            soft_extended = True
+                            budget = float(
+                                self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
+                            )
+                            trace.append(
+                                "turn_soft_limit_extended",
+                                {"budget": budget},
+                            )
+                            continue
+                        stopped = (
+                            rec is not None
+                            and _is_soft_limit_record(rec)
+                            and rec.get("status") in {"answered", "skipped"}
+                            and not _soft_keep_answer(rec)
+                        )
+                        task.cancel()
+                        await _aio.gather(task, return_exceptions=True)
+                        if stopped:
+                            trace.append(
+                                "turn_soft_limit_stop", {"timeout": budget}
+                            )
+                            return False, USER_STOPPED
+                        trace.append(
+                            "turn_timeout",
+                            {"timeout": budget, "extensions": extensions},
+                        )
+                        return False, None
                     if rearm:
-                        # The question resolved mid-window: re-arm a
-                        # FULL budget once so post-answer work is not
+                        # A non-soft question resolved mid-window: re-arm
+                        # a FULL budget once so post-answer work is not
                         # capped by leftover time (user ruling).
                         rearm = False
                         budget = float(
@@ -422,6 +498,16 @@ class JobRunner:
                             },
                         )
                         continue
+                    if await self._ask_soft_limit(delegation, trace, budget):
+                        # First unwitnessed expiry: ask the human
+                        # (keep/stop) instead of failing. The answer
+                        # window re-arms a full budget; the outcome is
+                        # consumed once, above.
+                        soft_open = True
+                        budget = float(
+                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
+                        )
+                        continue
                     task.cancel()
                     await _aio.gather(task, return_exceptions=True)
                     trace.append(
@@ -442,6 +528,10 @@ class JobRunner:
         in). Best-effort: no runtime / no store / store error all
         mean "not held" — the bound then behaves exactly as before
         this fix.
+
+        Kept for its test pin (test_m1_12_turn_hold); ``_bounded_turn``
+        now reads via :meth:`_soft_record` (same store, record-level
+        so the trace can name soft-limit holds).
         """
         store = getattr(
             getattr(self, "specialist_runtime", None),
@@ -455,6 +545,63 @@ class JobRunner:
         except Exception:  # noqa: BLE001
             return False
         return bool(rec) and rec.get("status") == "pending"
+
+    def _soft_store(self) -> Any | None:
+        """The escalation store, if a runtime wires one in."""
+        return getattr(
+            getattr(self, "specialist_runtime", None),
+            "escalation_store",
+            None,
+        )
+
+    async def _soft_record(self, delegation: Delegation) -> dict[str, Any] | None:
+        """This delegation's escalation record at any status (or None).
+
+        Best-effort like :meth:`_escalation_pending`: no runtime /
+        no store / store error all mean "no record".
+        """
+        store = self._soft_store()
+        if store is None:
+            return None
+        try:
+            rec = await store.get(delegation_id=delegation.delegation_id)
+        except Exception:  # noqa: BLE001
+            return None
+        return rec if isinstance(rec, dict) else None
+
+    async def _ask_soft_limit(
+        self, delegation: Delegation, trace: "TraceLog", budget: float
+    ) -> bool:
+        """File the one-per-turn keep/stop question. False when there
+        is no store to ask through (caller falls back to fail-fast).
+        """
+        store = self._soft_store()
+        if store is None:
+            return False
+        question = (
+            f"Specialist '{delegation.agent}' has been running "
+            f"{budget:.0f}s with no new defer activity. "
+            f"Keep waiting or stop it?"
+        )
+        try:
+            await store.create(
+                delegation_id=delegation.delegation_id,
+                question=question,
+                options=list(SOFT_LIMIT_OPTIONS),
+                kind="question",
+                audience="human",
+                timeout_seconds=None,
+                metadata={"soft_limit": True, "agent": delegation.agent},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "JobRunner: soft-limit question create failed for %s",
+                delegation.delegation_id,
+                exc_info=True,
+            )
+            return False
+        trace.append("turn_soft_limit_asked", {"budget": budget})
+        return True
 
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
         """Background worker: drive the delegation through the state machine.
@@ -512,10 +659,15 @@ class JobRunner:
                     trace,
                 )
                 if not ok:
+                    stopped = output == USER_STOPPED
                     await store.update(
                         delegation.delegation_id,
                         output="",
-                        error=f"turn_timeout_exceeded_{self.turn_timeout}s",
+                        error=(
+                            "turn_stopped_by_user"
+                            if stopped
+                            else f"turn_timeout_exceeded_{self.turn_timeout}s"
+                        ),
                     )
                     trace.append("turn_timeout", {"timeout": self.turn_timeout})
                     await self._transition(delegation, store, trace, "failed",
@@ -583,9 +735,14 @@ class JobRunner:
                     trace,
                 )
                 if not ok:
+                    stopped = legacy_result == USER_STOPPED
                     result = type("R", (), {
                         "success": False, "output": "",
-                        "error": f"turn_timeout_exceeded_{self.turn_timeout}s",
+                        "error": (
+                            "turn_stopped_by_user"
+                            if stopped
+                            else f"turn_timeout_exceeded_{self.turn_timeout}s"
+                        ),
                         "agent": delegation.agent,
                     })()
                 else:
