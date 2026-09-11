@@ -320,7 +320,7 @@ parallel side-direction, not a minor — tracked alongside, not after.
   with the sprint, archived into project lore with provenance at
   reunion close.
 
-  Spearhead-as-sprint-master (explored 2026-09-11, NOT locked): the
+  Spearhead-as-scrum-master (explored 2026-09-11, NOT locked): the
   role mapping is nearly 1:1 — spearhead creates sprints and runs
   reunions (standup + retro combined), mediation clears impediments
   (escalations ARE impediments), tickets are the backlog, the kanban
