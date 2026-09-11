@@ -21,7 +21,7 @@ Verified 2026-09-11 against docs + code:
   hosted opt-in, secrets, docs). Memory backend is doubly broken
   (JSON-body 422s + no usable default backend).
 
-Ruling proposed (for user lock): M2 proceeds NOW on the backend;
+Ruling locked 2026-09-11: M2 proceeds NOW on the backend;
 R4-remainder runs as a parallel UI track whenever the user drives it
 (UI has been user-derived since the R4.4 intervention — parallel
 tracks fit established practice). Discipline holding them together:
@@ -58,15 +58,64 @@ user's selection INTO models.yaml (`config/manager.py:265-320` via
 session, competing writer) silently replaces the user's selection —
 the stray `default: opencode/muse-spark-...` M seen 2026-09-11 is the
 live exhibit. Generated artifact + user state in one file is the bug.
-Fix shape: the user default moves to `config.yaml` (`models.default`
-already exists on the config schema and already wins on the read path
-— `manager.py:228-230,90`); `set_default_model` writes there and never
-touches models.yaml; `write_registry`/sync stop reading/writing
-`default`; one migration adopts a legacy models.yaml default into
-config.yaml iff config is unset; `_persist_models` stops rewriting the
-registry from memory (second clobber vector). Half-step, no behavior
-change except the write path; goes before M2.0 (removes a live footgun
-the series would otherwise keep tripping over).
+
+### Starting point (executor: verify before touching code)
+
+- `SweaveConfig.models.default` exists on the schema and already wins
+  on the read path (`manager.py:228-230` prefers it; `:90` merges it).
+- Config write precedent: `SweaveConfig.to_yaml(path)` at
+  `config/schemas.py:158`; routing persist at `manager.py:404`.
+  Confirm no manager-level config saver exists before adding the call
+  (don't invent a second write path).
+- `load()` reads models.yaml `default` at `manager.py:61-66`, customs
+  overlay at `:75-77`, merge at `:88-90`.
+- `write_registry(path, providers, default)` at
+  `models_sync.py:445-459`; callers: `sync_registry` (`:565`) plus any
+  CLI/test callers (grep — signature change ripples).
+- `POST /api/models/regenerate` (`web/routers/config.py:112`) and
+  `sweave models sync` both funnel into `sync_registry` (verify).
+
+### Steps
+
+1. New home: `set_default_model` writes the bare default to
+   `config.yaml` (via the `to_yaml` path) and never touches
+   models.yaml. Validation logic unchanged (registry still the
+   allowlist for selectability).
+2. Precedence: config.yaml default wins; models.yaml `default`
+   becomes a legacy fallback read only when config is unset;
+   customs overlay behavior unchanged. `get_default_model` documents
+   the order.
+3. Migration (once, idempotent): on load, if config default is unset
+   and a legacy models.yaml default exists and is selectable, adopt
+   it into config.yaml (and leave the file key in place but
+   henceforth ignored — no destructive rewrite of user data).
+4. Generator purity: `write_registry` drops the `default` param;
+   `sync_registry` stops reading `old_default` (the `default_kept`
+   report goes with it); sync output is providers-only.
+5. Retire `_persist_models`' registry rewrite (second clobber
+   vector): after steps 1–4 nothing but sync writes models.yaml.
+   If callers remain, repoint or delete with justification.
+6. Gates + docs: pytest (set→sync→survives round-trip; legacy
+   adoption iff-config-unset; sync output contains no `default` key;
+   parallel-writer scenario: sync after external default change keeps
+   config value), `run.py --check`, suite 3×, live check (set default
+   via API → regenerate → default survives + turn routes on it);
+   PROJECT_STATE entry; GOTCHAS (three-writers lesson).
+
+### Explicit non-goals
+
+- No registry format change beyond dropping the `default` key
+  (legacy read stays for adoption).
+- No UI changes (Settings keeps calling the same endpoint).
+- No R4.4 dependency.
+
+### Risks
+
+- In-flight server holding a stale in-memory default across the
+  migration: mitigated by the `_sync_reload` contract (same as today).
+- Parallel sessions writing config.yaml concurrently: check for an
+  atomic-write helper on that path; if none, note it (don't build
+  locking in this half-step — file it).
 
 ## 3. M2.0 — Estimation records (execution-ready spec)
 
