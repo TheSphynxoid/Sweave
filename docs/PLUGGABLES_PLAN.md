@@ -303,6 +303,22 @@ parallel side-direction, not a minor — tracked alongside, not after.
   HTTP open), no inter-session messaging, no scheduled wakeups. So
   the design does NOT block on the custom engine; the engine removes
   polling/timeout fragility later.
+
+  Group memory (explored 2026-09-11, NOT locked): a fourth bank scope
+  `group-{id}` beside global / project / session, owned by the
+  spearhead scope (sprint/epic) and visible to member sessions only.
+  Context sharing is dynamic and curated, not broadcast: sessions
+  escalate memory candidates, the spearhead promotes them into the
+  group bank — the promotion discipline a fourth time (review→done,
+  refine local→global, review-request→review, candidate→group).
+  Unmediated shared banks decay into mush; curation is load-bearing.
+  Retrieval across own + group + project banks is ranked by a
+  COORDINATION embedding (relevance-to-my-contract, not generic
+  text similarity), trainable from usage signals (what retrieved
+  memory actually got used downstream) — another flywheel loop, and
+  a natural first customer for the dogfood loop. Lifecycle: born
+  with the sprint, archived into project lore with provenance at
+  reunion close.
 - **Five-minute onboard.** Open repo → stack detected → roster
   proposed → first delegation in minutes. The demo that sells dev
   tools. Seeds: agents loader, models sync, gallery, topology gen.
