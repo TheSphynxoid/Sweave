@@ -201,6 +201,33 @@ parallel side-direction, not a minor — tracked alongside, not after.
 - Deferred without exploration: learn-from-the-human (human-action
   distillation). May return.
 
+### Remix round (2026-09-11, explored, NOT locked)
+
+- **Dogfood loop.** Track-2 trajectory exports train Sweave's own R6
+  encoder heads (intent/dispatch/resolution/mediation). Sweave becomes
+  its own first training customer; opted-in user trajectories improve
+  dispatch for everyone. Closes training-ground × cheap-models × R6.
+- **Embedder decomposition.** R6 heads grow beyond dispatch: split tasks
+  by similarity to past delegations, assign reviewers by embedding
+  distance, match subtasks to existing contracts.
+- **Failure postmortems.** Failed delegations yield structured records
+  (tried / failed / hypothesis), retrieved on similar tasks, feeding
+  estimates and CI golden-negatives.
+- **Skills with tests.** Presets/skills ship golden tests; install runs
+  their evals; verified badges carry proof. Marketplace with teeth.
+- **Replay debugger.** Step through a trace turn-by-turn, inspect the
+  composed prompt at each step, fork a turn with a different model.
+  The plan board grows into an ops console.
+- **Model query planner.** Like a SQL planner picking joins from table
+  stats: at defer time Sweave estimates the task and picks the cheapest
+  model meeting the project's cost/latency policy. Needs estimation
+  first; `models.yaml` role buckets are the tiers.
+- **Training-ground extension: shared test-bed + aggregated DB.**
+  Beyond per-lab use: a shared environment suite for general ML
+  research (swarm-style multi-agent setups) plus an aggregated,
+  opt-in, anonymized trajectory database pooled from consenting users.
+  Always opt-in, never a default; local-first stays the posture.
+
 ## 8. Risks
 
 - Name drift: four kinds collapse back into `plugin` without a grep gate
