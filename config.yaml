@@ -1,5 +1,6 @@
 # Sweave Configuration
 # Copy to config.yaml and customize
+# (2026-09-10: config.yaml touched to hot-reload models.yaml default -> opencode/glm-5.3-flash)
 
 server:
   host: "127.0.0.1"
