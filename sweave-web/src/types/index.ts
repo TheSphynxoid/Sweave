@@ -156,6 +156,28 @@ export interface Delegation {
   coordination_tokens: number;
   kind: "task" | "chat";
   needs_attention: boolean;
+  /** M1.13 step 4 ARCHIVE-not-delete (ruling 2026-09-11); backend exposes the flag on every row. */
+  archived?: boolean;
+  archived_at?: string | null;
+}
+
+/**
+ * M1.13 step 5: compact per-project archive aggregate
+ * (``GET /api/delegations?include_archived=true`` ->
+ * ``archived_projects[]``; shape mirrors sweave/runtime/
+ * delegation_archive.py ``archive_group_entry``). No token sum
+ * is exposed; live-store rows read ``source: "store"``, the
+ * persisted ``~/.sweave/archived`` index rows ``"index"``.
+ */
+export interface ArchivedProjectSummary {
+  project_name: string;
+  workdir: string | null;
+  total: number;
+  by_status: Record<string, number>;
+  by_kind: Record<string, number>;
+  archived_at: string | null;
+  last_created_at: string | null;
+  source: "store" | "index";
 }
 
 export interface DelegationDetail {

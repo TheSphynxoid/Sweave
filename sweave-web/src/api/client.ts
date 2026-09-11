@@ -17,6 +17,7 @@
  */
 import axios, { AxiosInstance } from "axios";
 import type {
+  ArchivedProjectSummary,
   Delegation,
   DelegationDetail,
   EscalationRecord,
@@ -255,6 +256,29 @@ class ApiClient {
       { params: filters ?? {} },
     );
     return r.data.delegations;
+  }
+
+  /**
+   * M1.13 step 5: Children-tab archive surface. ``archived=false``
+   * keeps the live list clean (archived rows hidden); the unioned
+   * per-project aggregates ride along as ``archived_projects`` so
+   * the compact Archived group needs NO extra fetches. Shape mirrors
+   * sweave/web/routers/delegations.py ``list_delegations``.
+   */
+  async listDelegationsWithArchive(): Promise<{
+    delegations: Delegation[];
+    archived_projects: ArchivedProjectSummary[];
+  }> {
+    const r = await this.client.get<{
+      delegations: Delegation[];
+      archived_projects?: ArchivedProjectSummary[];
+    }>("/delegations", {
+      params: { archived: "false", include_archived: true },
+    });
+    return {
+      delegations: r.data.delegations ?? [],
+      archived_projects: r.data.archived_projects ?? [],
+    };
   }
 
   async getDelegation(delegationId: string): Promise<Delegation> {
