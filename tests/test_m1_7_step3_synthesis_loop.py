@@ -349,14 +349,20 @@ async def test_chat_turn_with_children_runs_synthesis(tmp_path: Path):
     assert result["content"] == "Backend did the thing."
 
     loaded = pm.get_session(session.id)
-    # The persisted messages: user, assistant(synthesis). The
-    # intermediate "I'll ask backend" reply is NOT persisted as the
-    # final assistant message.
+    # Multi-message turns (2026-09-11): the first-turn narration
+    # persists as round 0 (turn_final False) before the child wait;
+    # the synthesis persists as round 1 (final). Both carry the
+    # chat delegation id.
     user_msgs = [m for m in loaded.messages if m.role == "user"]
     assistant_msgs = [m for m in loaded.messages if m.role == "assistant"]
     assert len(user_msgs) == 1
-    assert len(assistant_msgs) == 1
-    assert assistant_msgs[0].content == "Backend did the thing."
+    assert len(assistant_msgs) == 2
+    assert assistant_msgs[0].content == "I'll ask backend to do that."
+    assert assistant_msgs[0].metadata["turn_round"] == 0
+    assert assistant_msgs[0].metadata["turn_final"] is False
+    assert assistant_msgs[1].content == "Backend did the thing."
+    assert assistant_msgs[1].metadata["turn_round"] == 1
+    assert assistant_msgs[1].metadata["turn_final"] is True
 
     store = await stores_real.for_project(tmp_path)
     chat_records = [r for r in store.list() if r.kind == "chat"]
@@ -420,5 +426,9 @@ async def test_chat_turn_with_failing_child_synthesis_still_runs(tmp_path: Path)
 
     loaded = pm.get_session(session.id)
     assistant_msgs = [m for m in loaded.messages if m.role == "assistant"]
-    assert len(assistant_msgs) == 1
-    assert "backend failed" in assistant_msgs[0].content
+    # Multi-message turns (2026-09-11): the first-turn narration
+    # persists as round 0 even when the child failed.
+    assert len(assistant_msgs) == 2
+    assert assistant_msgs[0].content == "trying..."
+    assert assistant_msgs[0].metadata["turn_round"] == 0
+    assert "backend failed" in assistant_msgs[1].content

@@ -123,6 +123,16 @@ class ChatDeltaCoalescer:
                     pass
             raise
 
+    async def flush(self) -> None:
+        """Emit the buffered text now.
+
+        Mid-turn use (multi-message turns): the chat loop flushes
+        the round-0 buffer before advancing the round so deltas
+        attribute to the round that produced them instead of the
+        round that happened to be live at the next timer tick.
+        """
+        await self._flush_once()
+
     async def _flush_once(self) -> None:
         async with self._lock:
             if self._buffer_chars == 0:

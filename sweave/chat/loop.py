@@ -92,6 +92,12 @@ class _ActiveTurn:
     * ``stream_text`` / ``thinking_text`` accumulate the partial reply /
       reasoning emitted so far (the coalescer's emit closure appends),
       so a re-subscriber gets the current text, not just "a turn exists".
+      Both reset when the turn advances to a new round (first turn ->
+      synthesis): the prior round's text is already persisted as its
+      own assistant message, so the snapshot always describes the
+      CURRENT bubble, never a mix of rounds.
+    * ``round`` (0 = first turn, 1 = synthesis) scopes the snapshot to
+      the live round's bubble (multi-message turns, 2026-09-11).
     * ``pending_question`` is True while a blocking human question
       (ask_human / permission) holds the turn open (M1.11).
     * ``durable_until`` tracks the last periodic persist of the partial
@@ -103,6 +109,7 @@ class _ActiveTurn:
     registered_at: datetime = field(default_factory=datetime.now)
     stream_text: str = ""
     thinking_text: str = ""
+    round: int = 0
     pending_question: bool = False
     task: asyncio.Task | None = None
 
@@ -121,6 +128,7 @@ class _ActiveTurn:
             "started_at": self.registered_at.isoformat(),
             "stream_text": self.stream_text,
             "thinking_text": self.thinking_text,
+            "round": self.round,
             "pending_question": self.pending_question,
         }
 
@@ -525,14 +533,18 @@ class ChatLoop:
            turn_timeout), build a server-composed synthesis prompt,
            and run a second orchestrator turn. The second turn's
            reply is the final answer.
-        7. Persist the final assistant message. Mark the chat
-           delegation as ``done`` (auto-done; implementation
-           delegations still stop at ``review`` per the M1.4+M1.5
-           ruling). The intermediate first-turn reply (when there
-           are children) is NOT persisted as the final assistant
-           message -- only the synthesis result is.
-        8. Fire ``message.added`` for the user + final assistant
-           messages.
+        7. Persist assistant messages — one per orchestrator round
+            (multi-message turns, 2026-09-11): the first-turn reply
+            persists immediately as round 0 (``turn_final: False``)
+            before the child wait, so a failed synthesis can never
+            erase the turn's narration; the synthesis result persists
+            as round 1 (final). Mark the chat delegation as ``done``
+            (auto-done; implementation delegations still stop at
+            ``review`` per the M1.4+M1.5 ruling). Childless turns keep
+            the single-message fast path (round 0, final).
+        8. Fire ``message.added`` per persisted message (round 0, then
+            the final); the streaming bubbles are round-scoped
+            (``chat.delta`` carries ``round``).
 
         Error handling: if either orchestrator call errors, the
         explicit error string is the assistant message. Children
@@ -929,19 +941,31 @@ class ChatLoop:
             # reply onto the delegation record, so a hard server
             # death leaves the text on disk (boot recovery surfaces
             # it on the failed record).
+            #
+            # Multi-message turns (2026-09-11): every event carries
+            # the live ``round`` (0 = first turn, 1 = synthesis) so
+            # the UI scopes streaming bubbles per round instead of
+            # merging both rounds into one bubble that the final
+            # message then replaces. The registry resets its text on
+            # a round change (the prior round is already persisted).
             from sweave.chat.streaming import ChatDeltaCoalescer
 
             last_persist = {"t": asyncio.get_running_loop().time()}
+            round_box = {"round": 0}
 
             async def _emit_delta(text: str) -> None:
                 entry = self._active_turns.get(session_id)
                 if entry is not None:
+                    if entry.round != round_box["round"]:
+                        entry.round = round_box["round"]
+                        entry.stream_text = ""
                     entry.stream_text += text
                     await self._emit(
                         "chat.delta",
                         {
                             "session_id": session_id,
                             "delegation_id": delegation_id,
+                            "round": round_box["round"],
                             "text": text,
                         },
                     )
@@ -972,6 +996,7 @@ class ChatLoop:
                     {
                         "session_id": session_id,
                         "delegation_id": delegation_id,
+                        "round": round_box["round"],
                         "text": text,
                     },
                 )
@@ -1007,12 +1032,16 @@ class ChatLoop:
             async def _emit_thinking(text: str) -> None:
                 entry = self._active_turns.get(session_id)
                 if entry is not None:
+                    if entry.round != round_box["round"]:
+                        entry.round = round_box["round"]
+                        entry.thinking_text = ""
                     entry.thinking_text += text
                 await self._emit(
                     "chat.thinking",
                     {
                         "session_id": session_id,
                         "delegation_id": delegation_id,
+                        "round": round_box["round"],
                         "text": text,
                     },
                 )
@@ -1149,6 +1178,28 @@ class ChatLoop:
                 r for r in store.list()
                 if r.parent_task_id == delegation.delegation_id
             ]
+            if children:
+                # Transparency (2026-09-11): one persisted assistant
+                # message per orchestrator round. The first-turn reply
+                # lands NOW, before the (possibly long) child wait +
+                # synthesis — a failed synthesis can no longer erase
+                # it, and sequential deferral rounds keep their
+                # narration instead of collapsing to the final step.
+                # Flush both coalescers first so the buffered round-0
+                # deltas attribute to round 0, not to whatever round
+                # is live at the next timer tick.
+                await coalescer.flush()
+                await thinking_coalescer.flush()
+                await self._persist_round_message(
+                    session=session,
+                    session_id=session_id,
+                    delegation_id=delegation.delegation_id,
+                    round=0,
+                    text=first_turn_text,
+                    thinking_text="".join(thinking_parts) or None,
+                )
+                del thinking_parts[:]
+                round_box["round"] = 1
             if not children and escalation_note is None:
                 # Fast path: no deferrals and no blocking question --
                 # the first turn's reply is the final answer.
@@ -1224,15 +1275,19 @@ class ChatLoop:
                 # Synthesis turn hard-failed. Return the explicit
                 # error; the children are still visible via the
                 # Children tab, so the user can pick up the
-                # conversation.
+                # conversation. The round-0 message is already
+                # persisted above, so unlike before, the failure no
+                # longer erases the turn's narration.
                 return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=synthesis_turn_text,
+                    round=1,
                 )
 
             return await _finish(
                 delegation_id=delegation.delegation_id,
                 assistant_text=synthesis_turn_text,
+                round=1,
             )
 
     async def _run_orchestrator_turn(
@@ -1339,6 +1394,44 @@ class ChatLoop:
             return rec
         return None
 
+    async def _persist_round_message(
+        self,
+        *,
+        session: Any,
+        session_id: str,
+        delegation_id: str,
+        round: int,
+        text: str,
+        thinking_text: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist one intermediate round's assistant message.
+
+        Unlike :meth:`_finalise_turn` this touches nothing else: no
+        delegation status change, no delegation output rewrite, no
+        turn close. The round carries ``turn_round`` + ``turn_final:
+        False`` metadata so the UI renders it collapsible and the
+        streaming runtime scopes bubbles per round.
+        """
+        metadata: dict[str, Any] = {
+            "delegation_id": delegation_id,
+            "turn_round": round,
+            "turn_final": False,
+        }
+        if thinking_text:
+            metadata["thinking"] = thinking_text
+        msg = session.add_message(
+            role="assistant",
+            content=text,
+            agent="orchestrator",
+            metadata=metadata,
+        )
+        self.project_manager.save_session(session)
+        await self._emit(
+            "message.added",
+            {"session_id": session_id, "message": msg.to_dict()},
+        )
+        return msg.to_dict()
+
     async def _finalise_turn(
         self,
         *,
@@ -1349,9 +1442,15 @@ class ChatLoop:
         assistant_text: str | None = None,
         error_text: str | None = None,
         thinking_text: str | None = None,
+        round: int = 0,
+        turn_final: bool = True,
     ) -> dict[str, Any]:
         """Persist the final assistant message and mark the chat
-        delegation ``done`` (auto-done per the M1.7 ruling)."""
+        delegation ``done`` (auto-done per the M1.7 ruling).
+
+        ``round`` / ``turn_final`` (multi-message turns, 2026-09-11):
+        the synthesis result lands as round 1 / final; every other
+        call site keeps the fast-path shape (round 0, final)."""
         store = await self.delegation_stores.for_project(
             session.project_name
             and self.project_dir_resolver(session.project_name)
@@ -1384,7 +1483,11 @@ class ChatLoop:
         # so reloads + the detail view keep it. The live
         # chat.thinking deltas already painted the Thinking block;
         # this is the durable copy with the same content.
-        metadata: dict[str, Any] = {"delegation_id": delegation_id}
+        metadata: dict[str, Any] = {
+            "delegation_id": delegation_id,
+            "turn_round": round,
+            "turn_final": turn_final,
+        }
         if thinking_text:
             metadata["thinking"] = thinking_text
         assistant_msg = session.add_message(
