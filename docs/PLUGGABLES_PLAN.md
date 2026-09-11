@@ -251,16 +251,26 @@ parallel side-direction, not a minor — tracked alongside, not after.
   remote execution, cross-repo contracts, capability advertisement,
   budget escrow across trust boundaries. `defer` semantics generalize
   to a remote roster. Unlocks the team-server and multi-repo stories.
+  Extended 2026-09-11: the same plane carries TOTAL project
+  orchestration/automation — sprints planned and executed across
+  sessions, multiple orchestrators coordinating, the `/plan` kanban
+  as the shared state. Open tension (not resolved): the orchestrator
+  is today a per-project singleton (DESIGN §2.2) — federation needs
+  either orchestrator-per-workstream, a meta-orchestrator tier, or
+  cross-project delegation. Decision owed before any spec.
 - **Five-minute onboard.** Open repo → stack detected → roster
   proposed → first delegation in minutes. The demo that sells dev
   tools. Seeds: agents loader, models sync, gallery, topology gen.
   First step: measure time-to-first-delegation, then drive it down.
-- **Anti-differentiators (explained, not yet adopted).** Positioning by
-  refusal — sentences competitors cannot say: never auto-merge to
-  base; never silent exfiltration (fail-closed, explicit consent);
-  never prompt-only guarantees (enforced or it doesn't ship); never
-  unbounded autonomy (budgets + gates always); never train on user
-  data by default. Candidate for a written list in DESIGN.md.
+- **Anti-differentiators (stance adopted 2026-09-11; NOT the moat).**
+  Positioning by refusal — sentences competitors cannot say: never
+  auto-merge to base; never silent exfiltration (fail-closed, explicit
+  consent); never prompt-only guarantees (enforced or it doesn't ship);
+  never unbounded autonomy (budgets + gates always); never train on user
+  data by default. User ruling: these are stance (mine, by extension the
+  project's) and belong written in DESIGN.md — but stance alone is not
+  differentiation; the moat must come from capabilities. Candidate for
+  a DESIGN.md principles list; no behavior change.
 
 ## 8. Risks
 
