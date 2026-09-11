@@ -254,9 +254,35 @@ parallel side-direction, not a minor — tracked alongside, not after.
   Extended 2026-09-11: the same plane carries TOTAL project
   orchestration/automation — sprints planned and executed across
   sessions, multiple orchestrators coordinating, the `/plan` kanban
-  as the shared state. Open tension (not resolved): the orchestrator
-  is today a per-project singleton (DESIGN §2.2) — federation needs
-  either orchestrator-per-workstream, a meta-orchestrator tier, or
+  as the shared state.
+  Coordination design (explored 2026-09-11, NOT locked):
+  - **Spearhead (scoped single-writer, rotation deferred).** The valuable
+    core is the single-writer principle — it generalizes the existing
+    one-authority doctrines (orchestrator-only spawn §2.1, human-only
+    merge, promote endpoint as sole path to `done`). Headship is
+    scoped (per sprint/epic/lane), not global: only the head closes
+    the sprint / merges the integration branch / files cross-project
+    defers. Token rotation across peers is deferred — it rebuilds
+    Raft-lite (leases, handoff, failure detection) before static
+    scoping has been shown to hurt. Rotation may return as a
+    load-balancing policy across sprints.
+  - **Cross-boundary wait reuses the wait-set.** Pass-and-wait vs
+    fire-and-forget across projects is the locked `blocking` flag at
+    wider scope: `true` joins at the reunion, `false` runs async
+    against contracts. No new primitive. New failure modes only:
+    remote stall (bounded wait + existing escalation machinery),
+    partial results.
+  - **Reunion (bounded sync ritual) + mediation (three-tier).** Default
+    is NO waiting — orchestrators work async against contracts;
+    the reunion is the scheduled wait (barrier with an LLM-readable
+    agenda), triggered by milestone (wait-set settled) or escalation
+    threshold, not wall-clock (scheduler stays deferred per TRACKING
+    Phase D). Mediation on disagreement: automated contract-conformance
+    first, spearhead breaks ties, human for the rest — mirrors the
+    review pipeline. Every reunion emits a decision log into lore.
+  Open tension (not resolved): the orchestrator is today a per-project
+  singleton (DESIGN §2.2) — federation needs either
+  orchestrator-per-workstream, a meta-orchestrator tier, or
   cross-project delegation. Decision owed before any spec.
 - **Five-minute onboard.** Open repo → stack detected → roster
   proposed → first delegation in minutes. The demo that sells dev
