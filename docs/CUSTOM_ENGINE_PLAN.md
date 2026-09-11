@@ -86,6 +86,24 @@ header, per-specialist `harness` selection semantics (default + fallback).
 Done-gate: protocol doc in this file's appendix + contract tests against
 the mock (no engine binary yet); pytest green.
 
+Wire drift (user ruling 2026-09-11: our wire is versioned by us,
+theirs drifts under us — asymmetric by construction):
+* Native protocol carries an explicit version (header + handshake);
+  mismatches refuse loudly at connect, never fail turns cryptically.
+* Third-party adapters get the same `Harness` contract PLUS a probe
+  gate: version check + capability handshake at runner start
+  (session-create → message → terminal shape; reasoning parts?
+  permission bus? which terminal signal?) recorded into a
+  per-adapter capability map. Behavior branches on the map, never
+  on hope. Generalizes the R4.0 `ses_` assertion and the M1.3
+  step-0 probes (which were manual) into runtime behavior.
+* Trace-rate drift alarms: `sweave doctor` aggregates `incomplete_turn`
+  / `stalled` / wire-death rates — a post-upgrade spike IS the drift
+  detector, catching the next incident within one turn, not one session.
+* Wire knowledge stays quarantined in `harness/<name>.py` (+
+  `permission_watch.py` for opencode); drift fixes land there only,
+  never in the loop or stores.
+
 ### Step 1 — Engine skeleton, chat path, no tools (~1 session)
 TS sidecar: `serve --port 0`, direct LLM call (OpenAI-compatible endpoint;
 same provider catalog as `models.yaml`), true token SSE → Python `on_chunk`

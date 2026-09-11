@@ -564,6 +564,14 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - `ClaudeCodeHarness`, `CodexHarness` implementing AgentProcess (subprocess/headless),
   register in harness_registry; per-agent `harness:` field already in AgentSpec.
 - Cross-vendor review then = reviewer on a different harness than implementer.
+- Wire drift (ruling 2026-09-11): third-party wires drift under us while
+  ours is versioned by us. Every third-party adapter ships a probe gate
+  (version check + capability handshake at runner start — generalizes the
+  R4.0 `ses_` assertion and the M1.3 manual probes) and branches on the
+  resulting capability map, never on assumed shapes; `sweave doctor`
+  aggregates `incomplete_turn`/`stalled`/wire-death rates as the drift
+  alarm. Wire knowledge stays quarantined in `harness/<name>.py`.
+  Full spec: `docs/CUSTOM_ENGINE_PLAN.md` Step 0.
 
 ### R4 — Web UI rebuild: sweave-web (re-planned 2026-09-05, done 2026-09-05)
 Rulings: stack = sweave-web's (Vite + React 18 + TS + Tailwind + Zustand + React
