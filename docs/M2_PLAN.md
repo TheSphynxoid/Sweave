@@ -1,7 +1,9 @@
 # M2 — Backend capabilities (ordered series)
 
 Status: planned (2026-09-11). Plan of record for the next execution
-session(s). Companion: `docs/PLUGGABLES_PLAN.md` (taxonomy + locked
+session(s). Thread: M2-started (see PROJECT_STATE "Threads
+(2026-09-11)"); R4 continues as the sidelined parallel thread.
+Companion: `docs/PLUGGABLES_PLAN.md` (taxonomy + locked
 mechanics + explored directions). M2 implements the backend half;
 UI binds later on API contracts.
 

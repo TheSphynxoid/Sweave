@@ -77,6 +77,28 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ▶ **Threads (2026-09-11): R4 sidelined, M2 started** —
+  plan of record for the new thread: `docs/M2_PLAN.md`; taxonomy +
+  locked mechanics live in `docs/PLUGGABLES_PLAN.md`.
+  - **R4 thread — SIDELINED (parallel, user-driven).** State: wave 1 ✅,
+    R4.0 ✅, R4.1 ✅, TRACKING Phase A ✅; R4.2 tail (2b/2c/3) gated on
+    the user's own `/chat` visual sign-off; R4.3 is a table row with no
+    plan file (unplanned); R4.4 re-cut planned (6 steps, backend-heavy —
+    memory doubly broken: JSON-body 422s + no usable default backend).
+    Rationale: UI has been user-derived since the R4.4 intervention, so
+    a parallel UI track fits practice; nothing in M2 needs the memory
+    backend. Coupling discipline: every M2 step ships API contracts +
+    pytest so UI binds later without rework. Return condition: R4.4
+    local memory backend comes back when group-memory/lore work starts
+    (M3 at earliest).
+  - **M2 thread — STARTED (backend capabilities, prerequisite-ordered).**
+    M2.0 estimation records (execution-ready spec) → M2.1 wait-set +
+    review-request → M2.2 contract record → M2.3 per-specialist tool
+    policy → M2.4 golden-set v0 → M2.5 dogfood-minimal into R6.
+    Beyond M2 (out): planner, group memory, reunion runtime, training
+    env/export, audit export. Locks owed before execution: the
+    R4-deferral ruling + M2.3 proposed defaults (default-off servers,
+    locked reviewer, allow/deny-only).
 - ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
   session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
   the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the
