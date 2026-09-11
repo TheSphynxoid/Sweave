@@ -116,7 +116,12 @@ as prompt surgery. Instruction files land here too (user-noted 2026-09-11:
 opencode auto-loads `AGENTS.md`; the ecosystem convention varies —
 `CLAUDE.md`/`AGENTS.md` per harness — so the orchestrator loads
 `{project}/AGENTS.md` + `{worktree}/AGENTS.md` itself, budgeted and traced
-like any other section, and the engine receives finished text). Done-gate: curated-memory turn shows the audit event;
+like any other section, and the engine receives finished text). Compaction
+rides here too (user-noted 2026-09-11: opencode's hidden compaction agent;
+MIT per DESIGN §8 — lift its prompt verbatim with the notice preserved in
+THIRD_PARTY_NOTICES, or improve on it — as the engine-side compactor for
+within-turn/long-session growth; runtime R6 compaction ownership
+unchanged). Done-gate: curated-memory turn shows the audit event;
 over-cap turn drops lowest-priority with trace reason; composer tests
 extended, engine-agnostic by construction (R4.4 "custom-engine memory API"
 note satisfied).
