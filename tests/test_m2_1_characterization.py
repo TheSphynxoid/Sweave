@@ -35,11 +35,19 @@ from sweave.runtime.delegation_store import (
 
 
 def test_schema_is_v7_with_no_waitset_fields():
-    """Pre-M2.1: schema v7; no blocking / review_request attributes."""
-    assert SCHEMA_VERSION == 7
+    """Pre-M2.1: schema v7; no blocking / review_request attributes.
+
+    M2.1 step 2 update: schema is now v8 WITH the fields (defaults
+    False/None). The pin moves to tests/test_m2_1_schema.py; this
+    test now asserts the post-step-2 surface.
+    """
+    assert SCHEMA_VERSION == 8
     fields = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
-    assert "blocking" not in fields
-    assert "review_request" not in fields
+    assert "blocking" in fields
+    assert "review_request" in fields
+    d = Delegation(agent="a", task="t")
+    assert d.blocking is False
+    assert d.review_request is None
 
 
 def _runner_with_store(turn_timeout: float):

@@ -34,6 +34,11 @@ Schema history
 * **v7** (M2.0): adds ``estimate`` (caller-supplied
   ``{tokens, seconds}`` or None; record only — no enforcement, no
   calibration; pre-M2.0 records default to None).
+* **v8** (M2.1): adds ``blocking`` (wait-set opt-in at submit;
+  default False — fire-and-forget into the Children lane) and
+  ``review_request`` (embedded review-request record attached when a
+  delegation lands in ``review``; pre-M2.1 records default to
+  None).
 """
 
 from __future__ import annotations
@@ -52,13 +57,14 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
 SCHEMA_VERSION_V4 = 4  # M1.7 records (chat kind)
 SCHEMA_VERSION_V5 = 5  # M1.9 records (needs_attention)
 SCHEMA_VERSION_V6 = 6  # M1.13 records (archived / archived_at)
+SCHEMA_VERSION_V7 = 7  # M2.0 records (estimate)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -111,6 +117,36 @@ class Estimate(TypedDict, total=False):
 
     tokens: int
     seconds: float
+
+
+class ReviewRequest(TypedDict, total=False):
+    """Review-request record attached to a Delegation (M2.1).
+
+    Embedded on the finished delegation (the ``Manifest``/``Estimate``
+    precedent), not a separate store or record type (ruling 2). All
+    fields optional at write time; absent request (None) means "no
+    review requested" (pre-M2.1 records, failed delegations).
+
+    * ``reviewer_hint`` — the reviewer role the orchestrator should
+      defer to (e.g. ``"reviewer"``).
+    * ``diff_ref`` — ``{worktree_path, branch, pr_url}`` pointer at
+      the finished work.
+    * ``manifest_summary`` — the finishing specialist's manifest
+      intent, when present.
+    * ``confidence`` — the finishing specialist's manifest
+      confidence, when present.
+    * ``requested_at`` — ISO timestamp of the review transition.
+
+    Resolution is explicit (``defer(target=reviewer)`` or batched at
+    wait-set settle); promotion keeps the request as history (ruling
+    3). No verdict payload in M2.1 (ruling 4 — M2.2 owns it).
+    """
+
+    reviewer_hint: str
+    diff_ref: dict[str, str | None]
+    manifest_summary: str | None
+    confidence: float | None
+    requested_at: str
 
 
 @dataclass
@@ -176,6 +212,16 @@ class Delegation:
     # (detail view) joins this against trace `tokens_used` events +
     # created->completed wall time.
     estimate: Estimate | None = None
+    # M2.1: wait-set flag. True = this child joins the synthesis
+    # join set (ChatLoop + parent gate wait on it); False (default)
+    # = fire-and-forget into the Children lane. Task delegations
+    # only (chat turns never carry one — the M2.0 chat-estimate
+    # non-goal, same boundary).
+    blocking: bool = False
+    # M2.1: embedded review-request, attached when the delegation
+    # lands in ``review``. None = no review requested (pre-M2.1
+    # records, failed delegations). Kept as history on promote.
+    review_request: ReviewRequest | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -205,12 +251,15 @@ class Delegation:
             d = _migrate_v4_to_v5(d)
         if schema_version < SCHEMA_VERSION_V6:
             d = _migrate_v5_to_v6(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V7:
             d = _migrate_v6_to_v7(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v7_to_v8(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
-        # version so the in-memory object matches what a fresh v4 record
-        # looks like. (Roundtripping a v1 record should produce a v4.)
+        # version so the in-memory object matches what a fresh record
+        # looks like. (Roundtripping a v1 record should produce the
+        # current SCHEMA_VERSION.)
         d["schema_version"] = SCHEMA_VERSION
         # Datetime parsing
         for k in ("created_at", "updated_at", "started_at", "completed_at", "archived_at"):
@@ -301,6 +350,20 @@ def _migrate_v6_to_v7(d: dict[str, Any]) -> dict[str, Any]:
     submitted without one — the field defaults to None.
     """
     d.setdefault("estimate", None)
+    return d
+
+
+def _migrate_v7_to_v8(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v7 record forward to the v8 field set (M2.1).
+
+    v7 records predate the wait-set flag + review-request: they have
+    no ``blocking`` / ``review_request`` fields. Every pre-M2.1
+    delegation was by definition submitted without opting into the
+    join set, and finished without a request record — defaults are
+    False / None.
+    """
+    d.setdefault("blocking", False)
+    d.setdefault("review_request", None)
     return d
 
 

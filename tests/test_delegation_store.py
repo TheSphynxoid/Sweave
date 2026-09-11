@@ -241,6 +241,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     escalation lane in the Children tab.
     M2.0 added the v7 field (estimate) for caller-supplied
     {tokens, seconds} (record only).
+    M2.1 added the v8 fields (blocking + review_request) for the
+    wait-set flag + review-request record.
     """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -259,6 +261,9 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         "archived_at",
         # M2.0 addition: caller-supplied estimate (record only)
         "estimate",
+        # M2.1 additions: wait-set flag + review-request record
+        "blocking",
+        "review_request",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -267,12 +272,12 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v7():
-    """M2.0: the current schema is v7 (estimate was added on top of
-    v6's archived / archived_at)."""
+def test_schema_version_is_v8():
+    """M2.1: the current schema is v8 (blocking + review_request on
+    top of v7's estimate)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 7
+    assert SCHEMA_VERSION == 8
 
 
 def test_v5_record_loads_as_v6_with_archive_defaults():
