@@ -112,7 +112,11 @@ Pre-turn hook owned by the orchestrator: memory/embedder retrieval runs
 server-side with section budget + `context.built {sections, tokens,
 dropped}` trace event; the engine receives finished context, never builds
 it. The embedder guide lands here (retrieve-then-inject with scores), not
-as prompt surgery. Done-gate: curated-memory turn shows the audit event;
+as prompt surgery. Instruction files land here too (user-noted 2026-09-11:
+opencode auto-loads `AGENTS.md`; the ecosystem convention varies —
+`CLAUDE.md`/`AGENTS.md` per harness — so the orchestrator loads
+`{project}/AGENTS.md` + `{worktree}/AGENTS.md` itself, budgeted and traced
+like any other section, and the engine receives finished text). Done-gate: curated-memory turn shows the audit event;
 over-cap turn drops lowest-priority with trace reason; composer tests
 extended, engine-agnostic by construction (R4.4 "custom-engine memory API"
 note satisfied).
