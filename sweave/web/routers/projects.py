@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,6 +31,8 @@ from sweave.api.projects import (
 from sweave.chat.loop import TurnActiveError
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -164,6 +167,32 @@ async def api_delete_project(
     name: str,
     state: AppState = Depends(get_state),
 ):
+    # M1.13 cleanup cascade (ruling 2026-09-11, ARCHIVE-not-delete):
+    # before the registry entry is removed, archive the project's
+    # delegations in place (status + stats preserved) and persist its
+    # aggregate into the archive index. Best-effort: a cascade failure
+    # is logged and never blocks the delete itself.
+    if state.delegation_stores is not None:
+        try:
+            from sweave.runtime.delegation_archive import (
+                archive_project_scope,
+            )
+
+            archived = await archive_project_scope(
+                state.delegation_stores, name,
+                index=getattr(state, "archive_index", None),
+            )
+            if archived:
+                logger.info(
+                    "Project delete cascade: archived %d delegation(s) "
+                    "of project '%s'",
+                    archived, name,
+                )
+        except Exception as cascade_err:  # noqa: BLE001
+            logger.warning(
+                "Project delete cascade failed for '%s': %s",
+                name, cascade_err,
+            )
     result = await delete_project(name)
     # R4.1: the session list for the deleted project also
     # becomes invalid. The consumer's React Query tree handles
@@ -299,6 +328,32 @@ async def api_delete_session(
     # needs an invalidation).
     session = await get_session(session_id)
     project_name = session["project_name"] if session else None
+    # M1.13 cleanup cascade (ruling 2026-09-11, ARCHIVE-not-delete):
+    # before the session row is removed, archive its delegations in
+    # place (status + stats preserved). Best-effort; a cascade
+    # failure never blocks the delete itself.
+    if state.delegation_stores is not None:
+        try:
+            from sweave.runtime.delegation_archive import (
+                archive_session_scope,
+            )
+
+            archived = await archive_session_scope(
+                state.delegation_stores,
+                session_id,
+                project_name=project_name,
+            )
+            if archived:
+                logger.info(
+                    "Session delete cascade: archived %d delegation(s) "
+                    "of session '%s'",
+                    archived, session_id,
+                )
+        except Exception as cascade_err:  # noqa: BLE001
+            logger.warning(
+                "Session delete cascade failed for '%s': %s",
+                session_id, cascade_err,
+            )
     result = await delete_session(session_id)
     await state.publish(
         "session.deleted",

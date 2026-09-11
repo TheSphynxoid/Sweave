@@ -331,11 +331,32 @@ async def list_delegations(
     project_name: Optional[str] = None,
     status: Optional[str] = None,
     parent_task_id: Optional[str] = None,
+    archived: Optional[str] = None,
+    include_archived: bool = False,
     state: AppState = Depends(get_state),
 ):
     """List delegations, newest first. Optional filters:
     ``?project_name=`` / ``?status=`` / ``?parent_task_id=``.
+
+    M1.13 cleanup (ruling 2026-09-11, ARCHIVE-not-delete):
+
+    * ``?archived=`` selects the archive sub-state for the returned
+      rows: ``false`` (default — archived records are hidden),
+      ``true`` (only archived), ``all`` (everything). Rows each carry
+      their ``archived`` bool + ``archived_at`` timestamp.
+    * ``?include_archived=true`` adds ``archived_projects`` — compact
+      per-project aggregate rows (total / by_status / by_kind /
+      archived_at / last_created_at) so the Children tab can render
+      the compact Archived group WITHOUT pulling every archived row.
+      Rows sourced from live stores (``source: "store"``) are unioned
+      with rows from the persisted index (``source: "index"``) for
+      projects whose records are no longer reachable; store rows win.
     """
+    mode = (archived or "false").strip().lower()
+    if mode not in {"true", "false", "all"}:
+        raise HTTPException(
+            400, "archived must be one of: true, false, all"
+        )
     records: list = []
     for store in _all_stores(state):
         records.extend(store.list())
@@ -345,8 +366,28 @@ async def list_delegations(
         status=status,
         parent_task_id=parent_task_id,
     )
+    if mode == "true":
+        records = [r for r in records if r.archived]
+    elif mode == "false":
+        records = [r for r in records if not r.archived]
     records.sort(key=lambda d: d.created_at, reverse=True)
-    return {"delegations": [d.to_dict() for d in records]}
+    response: dict = {"delegations": [d.to_dict() for d in records]}
+    if include_archived:
+        from sweave.runtime.delegation_archive import (
+            archived_project_aggregates,
+        )
+
+        all_records: list = []
+        for store in _all_stores(state):
+            all_records.extend(store.list())
+        if project_name is not None:
+            all_records = [
+                r for r in all_records if r.project_name == project_name
+            ]
+        response["archived_projects"] = archived_project_aggregates(
+            all_records, index=getattr(state, "archive_index", None)
+        )
+    return response
 
 
 @router.get("/api/delegations/{delegation_id}")

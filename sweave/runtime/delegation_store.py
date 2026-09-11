@@ -41,11 +41,12 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
 SCHEMA_VERSION_V4 = 4  # M1.7 records (chat kind)
+SCHEMA_VERSION_V5 = 5  # M1.9 records (needs_attention)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -132,10 +133,18 @@ class Delegation:
     # the source of truth for the question / options / answer; this
     # flag is the cheap read-side indicator the renderer branches on.
     needs_attention: bool = False
+    # M1.13 cleanup (ruling 2026-09-11): archive sub-state. ARCHIVE,
+    # never delete — records referencing dead projects / deleted
+    # sessions (or cascaded on project/session delete) keep their
+    # full status + stats; ``archived`` just hides them from the
+    # default Children listing while the aggregate surface keeps
+    # counting them. ``archived_at`` is the archive timestamp.
+    archived: bool = False
+    archived_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        for k in ("created_at", "updated_at", "started_at", "completed_at"):
+        for k in ("created_at", "updated_at", "started_at", "completed_at", "archived_at"):
             if d[k] is not None:
                 d[k] = d[k].isoformat()
         return d
@@ -157,15 +166,17 @@ class Delegation:
             d = _migrate_v2_to_v3(d)
         if schema_version < SCHEMA_VERSION_V4:
             d = _migrate_v3_to_v4(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V5:
             d = _migrate_v4_to_v5(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v5_to_v6(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh v4 record
         # looks like. (Roundtripping a v1 record should produce a v4.)
         d["schema_version"] = SCHEMA_VERSION
         # Datetime parsing
-        for k in ("created_at", "updated_at", "started_at", "completed_at"):
+        for k in ("created_at", "updated_at", "started_at", "completed_at", "archived_at"):
             v = d.get(k)
             if isinstance(v, str):
                 d[k] = datetime.fromisoformat(v)
@@ -229,6 +240,19 @@ def _migrate_v4_to_v5(d: dict[str, Any]) -> dict[str, Any]:
     never escalated -- the field defaults to False.
     """
     d.setdefault("needs_attention", False)
+    return d
+
+
+def _migrate_v5_to_v6(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v5 record forward to the v6 field set (M1.13 cleanup).
+
+    v5 records predate the archive sub-state: they have no
+    ``archived`` / ``archived_at`` fields. Every v5 record is by
+    definition live (archiving did not exist yet) -- defaults are
+    False / None.
+    """
+    d.setdefault("archived", False)
+    d.setdefault("archived_at", None)
     return d
 
 
@@ -342,6 +366,31 @@ class DelegationStore:
             rec.updated_at = _now()
             await self._persist()
             return rec
+
+    async def archive_many(self, delegation_ids: list[str]) -> int:
+        """M1.13 cleanup (ruling 2026-09-11): bulk-archive records.
+
+        ARCHIVE, not delete: sets ``archived=True`` + ``archived_at``
+        on each matching record and persists once. Status, output and
+        every stat field are preserved (the aggregate surface keeps
+        counting archived records). Idempotent: already-archived
+        records are skipped and don't count. Returns the number of
+        records newly archived.
+        """
+        async with self._lock:
+            n = 0
+            for did in delegation_ids:
+                rec = self._records.get(did)
+                if rec is None or rec.archived:
+                    continue
+                rec.archived = True
+                if rec.archived_at is None:
+                    rec.archived_at = _now()
+                rec.updated_at = _now()
+                n += 1
+            if n:
+                await self._persist()
+            return n
 
     async def recover_interrupted(self, reason: str = "server restart") -> int:
         """Boot recovery: mark stale non-terminal records failed.

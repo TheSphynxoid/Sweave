@@ -250,8 +250,11 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         "depth", "chain_root_id", "coordination_tokens",
         # M1.7 step 2 addition
         "kind",
-        # M1.9 step 3 addition
+            # M1.9 step 3 addition
         "needs_attention",
+        # M1.13 cleanup addition (ruling 2026-09-11): archive sub-state
+        "archived",
+        "archived_at",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -260,12 +263,48 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v5():
-    """M1.9 step 3: the current schema is v5 (needs_attention was added on
-    top of v4)."""
+def test_schema_version_is_v6():
+    """M1.13 cleanup (ruling 2026-09-11): the current schema is v6
+    (archived / archived_at were added on top of v5)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 5
+    assert SCHEMA_VERSION == 6
+
+
+def test_v5_record_loads_as_v6_with_archive_defaults():
+    """A v5 record (pre-M1.13) has no ``archived`` / ``archived_at``
+    fields; they default to False / None."""
+    from sweave.runtime.delegation_store import SCHEMA_VERSION
+
+    v5_record = {
+        "schema_version": 5,
+        "delegation_id": "del-v5",
+        "task_id": "t5",
+        "agent": "backend",
+        "model": "",
+        "task": "x",
+        "status": "done",
+        "created_at": "2026-09-10T00:00:00",
+        "updated_at": "2026-09-10T00:00:00",
+        "completed_at": "2026-09-10T00:00:01",
+        "kind": "task",
+        "needs_attention": False,
+    }
+    d = Delegation.from_dict(v5_record)
+    assert d.schema_version == SCHEMA_VERSION
+    assert d.archived is False
+    assert d.archived_at is None
+
+
+def test_archive_fields_roundtrip():
+    d = Delegation(agent="a", task="t")
+    assert d.archived is False
+    d.archived = True
+    ts = datetime(2026, 9, 11, 12, 0, 0)
+    d.archived_at = ts
+    d2 = Delegation.from_dict(d.to_dict())
+    assert d2.archived is True
+    assert d2.archived_at == ts
 
 
 def test_v2_to_v3_migration_fills_defaults():
@@ -330,3 +369,33 @@ def test_v1_to_v3_migration_also_works():
     assert d.depth == 0
     assert d.parent_task_id is None  # v1 didn't have this; defaults
     assert d.coordination_tokens == 0
+
+# --- M1.13 cleanup (ruling 2026-09-11): archive sub-state ----------------
+
+
+@pytest.mark.asyncio
+async def test_store_archive_many_marks_and_persists(tmp_path):
+    store = DelegationStore(tmp_path)
+    d1 = Delegation(agent="a", task="t1", status="done")
+    d2 = Delegation(agent="b", task="t2", status="failed")
+    d3 = Delegation(agent="c", task="t3", status="done")
+    await store.add(d1)
+    await store.add(d2)
+    await store.add(d3)
+    n = await store.archive_many([d1.delegation_id, d3.delegation_id])
+    assert n == 2
+    assert d1.archived is True and d1.archived_at is not None
+    assert d3.archived is True
+    assert d2.archived is False
+
+    # Idempotent: re-archiving changes nothing.
+    assert await store.archive_many([d1.delegation_id]) == 0
+
+    # Persisted: a fresh store instance sees the archive sub-state
+    # (status + stats preserved, not deleted).
+    reloaded = DelegationStore(tmp_path)
+    got = reloaded.get(d1.delegation_id)
+    assert got is not None
+    assert got.status == "done"
+    assert got.archived is True
+    assert got.archived_at is not None
