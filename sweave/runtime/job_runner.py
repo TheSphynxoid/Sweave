@@ -55,6 +55,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Reviewer-role hint attached to every review-request (M2.1). The
+#: orchestrator resolves the request explicitly via
+#: ``defer(target=reviewer)``; the constant names the role the
+#: reviewer pool is known by (M2.3 may refine this per project).
+REVIEWER_HINT = "reviewer"
+
+
+def build_review_request(delegation: Delegation) -> dict[str, Any]:
+    """Build the M2.1 review-request record for a finished delegation.
+
+    Pure function (producer seam, tested directly): reviewer hint is
+    the ``reviewer`` role; the diff pointer comes from the
+    delegation's own ``worktree_path``/``branch``/``pr_url``; the
+    manifest summary + confidence ride along when the finishing
+    specialist reported them. No verdict payload (ruling 4 — M2.2
+    owns the contract + conformance check).
+    """
+    manifest = delegation.manifest
+    manifest = manifest if isinstance(manifest, dict) else {}
+    return {
+        "reviewer_hint": REVIEWER_HINT,
+        "diff_ref": {
+            "worktree_path": delegation.worktree_path,
+            "branch": delegation.branch,
+            "pr_url": delegation.pr_url,
+        },
+        "manifest_summary": manifest.get("intent"),
+        "confidence": manifest.get("confidence"),
+        "requested_at": datetime.now().isoformat(),
+    }
+
+
 #: Detail value returned by :meth:`JobRunner._bounded_turn` when the
 #: human stops the turn at the soft-limit question (slice 3,
 #: incident 2026-09-11). Callers map it to a ``turn_stopped_by_user``
@@ -830,6 +862,23 @@ class JobRunner:
             if final_status != "failed":
                 await self._wait_for_children(
                     delegation, store, trace
+                )
+            # M2.1 step 4: on the success branch (landing in
+            # ``review``), attach the review-request record + a
+            # ``review_requested`` trace event. The failure branch
+            # attaches nothing (failed work has nothing to review).
+            if final_status == "review":
+                review_request = build_review_request(delegation)
+                await store.update(
+                    delegation.delegation_id,
+                    review_request=review_request,
+                )
+                trace.append(
+                    "review_requested",
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "reviewer_hint": review_request["reviewer_hint"],
+                    },
                 )
             trace.append(
                 "output_chunk" if result.success else "error",
