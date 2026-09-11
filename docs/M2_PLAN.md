@@ -1,6 +1,7 @@
 # M2 — Backend capabilities (ordered series)
 
-Status: planned (2026-09-11). Plan of record for the next execution
+Status: fast-track + M2.0 DONE (2026-09-11); M2.1+ still planned
+(see §6 execution record). Plan of record for the next execution
 session(s). Thread: M2-started (see PROJECT_STATE "Threads
 (2026-09-11)"); R4 continues as the sidelined parallel thread.
 Companion: `docs/PLUGGABLES_PLAN.md` (taxonomy + locked
@@ -215,3 +216,66 @@ method). Per-series: every step leaves API contracts UI can bind
 (R4-parallel discipline); PROJECT_STATE + DESIGN §4 updated per
 step; no step reshapes an earlier step's records without a migration
 and a justification citing this file.
+
+## 6. Execution record: fast-track + M2.0 (done 2026-09-11)
+
+Commits: `9e701a7` (fast-track steps 1–3), `ccedbfd` (steps 4–5),
+`2cd150e` (M2.0 steps 1–3). Gates: 707 pytest (674 + 12 fast-track
++ 21 M2.0), 13/13 `run.py --check`, live checks on :8100 per the
+plan gates (set→regenerate→survives, `/api/route` on the new
+default, detail projection on a real pre-M2.0 delegation).
+
+### Amendments (one block; executor-justified per the method)
+
+1. **Starting-point corrections (no redesign).** (a) §2 claimed
+   `SweaveConfig.models.default` "already wins on the read path
+   (`manager.py:228-230`, `:90`)" — inverted: `:228-230` read the
+   models.yaml-derived value and `:88-90` OVERWROTE the config value
+   with it; config.yaml had no `default` key at all. Step 2's
+   precedence is a behavior change, implemented as specified.
+   (b) §2 claimed regenerate + `sweave models sync` "both funnel
+   into `sync_registry`" — wrong: the endpoint shelled out to
+   `scripts/generate_models.py` WITHOUT `--write`, so it never
+   wrote the file (legacy npx generator). Only the CLI called
+   `sync_registry`.
+2. **Steps 1–3 shipped as one commit** (single intertwined hunk in
+   `manager.py::load/set_default_model`; each behavior separately
+   pytest-pinned). Steps 4–5 shipped as one commit with the
+   regenerate repoint (same generator hunk).
+3. **`to_yaml` NOT used for the config write** (plan suggested "via
+   the `to_yaml` path"): it dumps the MERGED config, which would
+   have baked providers + routing into config.yaml. The surgical
+   `_set_models_default_line` + `atomic_write_text_sync`
+   (`runtime/locking.py`) path preserves comments byte-for-byte.
+4. **Migration guard: never adopt FROM customs.** §2 step 3 said
+   "a legacy models.yaml default"; made explicit: adoption fires
+   iff config-unset AND no customs default AND legacy selectable —
+   the live customs layer stays dynamic (freezing it would shadow
+   later customs edits under the locked config-wins precedence).
+5. **User rulings (execution Q&A 2026-09-11):** scope =
+   fast-track + M2.0 (M2.1+ needs its own execution-ready section
+   first, per §4); regenerate REPOINTED to `sync_registry`
+   (in-process, plain-`def` endpoint so the blocking fetch rides
+   the threadpool); projection FOLDED into the detail view (no new
+   endpoint); the working tree's stray default ADOPTED via
+   migration (it is the post-execution config.yaml value).
+6. **Unknown-id detail keeps the 200-degrade contract** (not a
+   404): the estimate join degrades to nulls like a missing trace.
+
+### Execution summary
+
+Fast-track: `set_default_model` → config.yaml only (validation
+unchanged); precedence config > customs > legacy; one-time
+idempotent adoption; providers-only `write_registry`;
+`_persist_models` deleted; regenerate in-process. M2.0: schema v7
++ `Estimate` TypedDict + full v1→v7 chain; submit + defer
+plumbing (lenient shape, strict non-negatives); `estimate_vs_
+actual` in detail + `sweave log`. Non-goals held: no UI changes
+(Settings calls the same endpoint), no registry format change
+beyond dropping `default`, no R4.4 dependency, no enforcement/
+calibration/chat estimates. Gotchas landed: three-writer rule +
+`safe_dump`-scalar `...` splice (both in `docs/GOTCHAS.md`,
+Paths & config). Live registry churn from the gate's regenerate
+(13+/3-) was restored byte-identical from backup after
+verification; server left running on the new code with state as
+found.

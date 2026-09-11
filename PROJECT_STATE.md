@@ -91,14 +91,16 @@
     pytest so UI binds later without rework. Return condition: R4.4
     local memory backend comes back when group-memory/lore work starts
     (M3 at earliest).
-  - **M2 thread — STARTED (backend capabilities, prerequisite-ordered).**
+  - **M2 thread — FAST-TRACK + M2.0 DONE (2026-09-11).**
     M2.0 estimation records (execution-ready spec) → M2.1 wait-set +
     review-request → M2.2 contract record → M2.3 per-specialist tool
     policy → M2.4 golden-set v0 → M2.5 dogfood-minimal into R6.
     Beyond M2 (out): planner, group memory, reunion runtime, training
-    env/export, audit export. Locks owed before execution: the
-    R4-deferral ruling + M2.3 proposed defaults (default-off servers,
-    locked reviewer, allow/deny-only).
+    env/export, audit export. Locks resolved: R4-deferral ruling locked
+    2026-09-11 (M2 now, R4-remainder parallel — in M2_PLAN §0 +
+    DESIGN §6 M2 section); M2.3 proposed defaults lock at the M2.3
+    detailing round (default-off servers, locked reviewer,
+    allow/deny-only).
   - Cleanup (2026-09-11, `3baf1e8`): removed retired v1 artifacts —
     empty root `agents.yaml` (home-anchored since M1.2), `test_page.html`,
     `test_m1_8_streaming_ui.js` (logic ported into tests/), root
@@ -108,6 +110,38 @@
     Versioning: no V1 was ever cut (`pyproject` still `0.1.0`, R5
     unshipped) — proposal is `0.2.0` for the M2 thread, `1.0` at first
     public cut. Not locked.
+- ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
+  three writers shared one file (`set_default_model` persisted INTO
+  models.yaml, `sync_registry` read/rewrote `old_default`, any stale
+  read clobbered the selection — live exhibit: the stray `default:
+  opencode/muse-spark-...`). New home: config.yaml `models.default`
+  (surgical line edit via `_set_models_default_line`, comments
+  preserved, atomic via `atomic_write_text_sync`); models.yaml is
+  providers-only. Precedence config > customs > legacy (legacy adopted
+  once on load iff selectable + no customs default; never adopted FROM
+  customs — the live layer stays dynamic). `POST /api/models/
+  regenerate` now calls `sync_registry` in-process (the old shell-out
+  ran `generate_models.py` WITHOUT `--write`, so it never wrote the
+  file). Live gate on :8100: set via API → regenerate (13+/3-,
+  models.dev+serve) → default survives; `/api/route` resolves the new
+  default; registry files restored byte-identical after. Commits
+  `9e701a7` (steps 1-3) + `ccedbfd` (steps 4-5). 12 new pytest.
+- ✅ **M2.0 estimation records (2026-09-11)** — Delegation schema v6→v7
+  (`estimate: {tokens, seconds} | None`, `_migrate_v6_to_v7`; v1→v7
+  chain pinned); `POST /api/v2/tasks` + MCP `defer` accept optional
+  estimate (non-negative validated, unknown keys ignored, all-null →
+  None; non-dict via defer → `rejected:` line); estimate-vs-actual
+  folded into the detail projection (`estimate_vs_actual`: echo +
+  trace `tokens_used` SUMMED across turns — differs from the `tokens`
+  section's last-wins display — + created→completed seconds; nulls on
+  missing trace/record, unknown id keeps the 200-degrade contract) +
+  `sweave log` panel. Live: a real pre-M2.0 delegation projects
+  `{estimate: null, seconds: 162.9}` (v6→v7 on real data). No
+  enforcement/calibration/UI (M2.5 / later). Commit `2cd150e`.
+  Gates: 707 pytest green, 13/13 run.py --check.
+  Rulings (execution Q&A 2026-09-11): scope fast-track+M2.0;
+  regenerate repointed (not preserved); fold-in (not new endpoint);
+  stray default adopted via migration.
 - ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
   session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
   the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the

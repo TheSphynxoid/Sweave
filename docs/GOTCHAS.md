@@ -400,6 +400,30 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    failure-taxonomy can parse the `turn_timeout_exceeded_<N>s` substring with
    whatever value is configured.
 
+3. **Generated artifact + user state in one file = three-writer
+   clobber** (fast-track 2026-09-11: models.yaml carried the
+   hand-set `default` AND the generated providers, written by
+   `set_default_model`, `sync_registry`, and any stale reader —
+   the stray `default: opencode/muse-spark-...` was the live
+   exhibit). Rule: generators write providers-only; user
+   selections live in config.yaml (`models.default`,
+   config > customs > legacy precedence). If you add a new
+   generated file, decide on day one which writer owns every key.
+   Related: `SweaveConfig.to_yaml` dumps the MERGED config
+   (providers + routing included) — never use it to persist one
+   key or the registry pollutes config.yaml; the surgical
+   `_set_models_default_line` + `atomic_write_text_sync` path is
+   the precedent for single-key config writes.
+
+4. **Never splice `yaml.safe_dump(scalar)` into a larger document**
+   (2026-09-11: broke config.yaml mid-suite). PyYAML appends a
+   `...` document-end marker to a bare scalar
+   (`"<v>\n...\n"`) that `.strip()` does NOT remove — the splice
+   inserted a stray `...` line and every load 500'd with
+   `ParserError: expected '<document start>'`. Allowlist-match
+   plain-safe values and emit them verbatim; dump-and-take-
+   first-line only as a fallback.
+
 ## sweave-web UI
 
 1. **React StrictMode + WS connections in dev** (R4 step 1). The WSProvider

@@ -270,6 +270,8 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Delegation v3 schema (chain metadata)** | ✅ | M1.6 — schema_version=3; new fields `depth` (0 for orchestrator, +1 per defer), `chain_root_id` (None for top-level; the root of the deferral chain otherwise), `coordination_tokens` (tiktoken estimate; coordination traffic only — specialist internal work is opaque by design). `from_dict` migrates v2 → v3 and v1 → v3 |
 | **Human promotion (review → done) endpoint** | ✅ | M1.4+M1.5 — `POST /api/delegations/{id}/promote`; 409 from non-review; 404 unknown; trace `status_changed` (source=human_promote); WS `delegation.status_changed`; bridged `ChildSession.status` synced to `done`; Children-tab "Mark done" button (review only, offsetParent-verifiable). **R2's cross-review calls this same endpoint programmatically** — the API is the automation seam |
 | **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 295 tests across 27 files; `pytest` is the source of truth |
+| **User default in config.yaml (not models.yaml)** | ✅ | Fast-track 2026-09-11 — `set_default_model` writes `models.default` into config.yaml (surgical line edit, comments preserved, atomic); models.yaml is providers-only (`write_registry` dropped the `default` param, `sync_registry` never reads it). Precedence: config > customs overlay > legacy models.yaml key (adopted once into config on load iff selectable and no customs default; legacy key left in place, ignored). `POST /api/models/regenerate` calls `sync_registry` in-process (the old shell-out to `generate_models.py` never wrote the file). |
+| **Estimation records (record-only)** | ✅ | M2.0 2026-09-11 — Delegation schema v7 (`estimate: {tokens, seconds} | None`, `_migrate_v6_to_v7`); `POST /api/v2/tasks` + MCP `defer` accept optional estimate (non-negative, unknown keys ignored, all-null normalises to None); estimate-vs-actual folded into the detail projection (`estimate_vs_actual`: estimate echo + trace `tokens_used` summed + created→completed seconds; nulls on missing trace/record) + `sweave log` panel. No enforcement, no calibration (M2.5), no chat-turn estimates. |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
@@ -519,6 +521,32 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
 - M1 exit demo: chat → orchestrator delegates → specialist worktree diff reaches review;
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.
+
+### M2 — Backend capabilities (started 2026-09-11; fast-track + M2.0 done)
+
+Ruling locked 2026-09-11: M2 proceeds NOW on the backend; the R4
+remainder runs as a parallel user-driven UI track (UI has been
+user-derived since the R4.4 intervention — parallel tracks fit
+practice). Coupling discipline: every M2 step ships API contracts +
+pytest so UI binds later without rework (the M1.9 `detail_view.py`
+precedent). Exception: the R4.4 local memory backend returns when
+group-memory/lore work starts (M3 at earliest) — nothing in M2 needs
+it. Plan of record: `docs/M2_PLAN.md`; taxonomy + locked mechanics
+(wait-set `blocking` flag, review-request record, per-specialist tool
+enforcement): `docs/PLUGGABLES_PLAN.md` §3.
+- **Fast-track (done 2026-09-11)**: user default out of models.yaml
+  (see §4 row) — removes the three-writer clobber footgun before the
+  series builds on records.
+- **M2.0 estimation records (done 2026-09-11)**: record-only
+  `estimate` + estimate-vs-actual projection (see §4 row). Seeds the
+  query planner, velocity, and denser training rewards.
+- Next (each gets its own execution-ready section before it runs):
+  M2.1 wait-set + review-request → M2.2 contract record → M2.3
+  per-specialist tool policy (defaults lock at the M2.3 detailing
+  round: proposed default-off new servers, locked reviewer,
+  allow/deny-only) → M2.4 golden-set v0 → M2.5 dogfood-minimal into
+  R6. Out: planner, group memory, reunion runtime, training env/export,
+  audit export.
 
 ### R2 — Orchestrator skills (Polly's core loop)
 - `/fanout`: parallel-safe subtasks → routed across the specialist pool (one Delegation,
