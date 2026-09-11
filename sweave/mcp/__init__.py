@@ -2,11 +2,12 @@
 
 A stdio MCP server that exposes tools to the opencode sessions:
 
-* ``defer(target, task, reason?)`` -- hand work to a named specialist
+* ``defer(target, task, reason?, estimate?)`` -- hand work to a named specialist
   via ``POST /api/v2/tasks`` (parent_task_id = caller's delegation;
   agent = target). The submit path runs DelegationManager.validate
   (depth / loop / budget) and the per-specialist ServeRunner; the
   MCP server is a thin client of the existing JobRunner pipeline.
+  ``estimate`` is the M2.0 record-only ``{tokens, seconds}`` object.
 
 * ``list_specialists()`` -- return the resolved specialist names with
   a one-line description (no secrets). Helps the orchestrator pick
@@ -239,6 +240,12 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     * ``caller_delegation_id`` (str, required): the orchestrator's own
       delegation id; the new delegation's ``parent_task_id`` is set to
       this so the chain links and parent-gating (M1.6 step 3) work.
+    * ``estimate`` (object, optional, M2.0): caller-supplied
+      ``{tokens, seconds}`` estimate (record only — no enforcement).
+      Must be an object when present (else a ``rejected:`` line);
+      numeric validation happens at the submit endpoint (a 422 there
+      surfaces as an ``error:`` line the orchestrator can retry
+      without).
 
     Returns plain text:
     * success: "queued: <delegation_id> (target=<target>, depth=<n>)"
@@ -251,6 +258,7 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     task = args.get("task")
     reason = args.get("reason") or ""
     caller_delegation_id = args.get("caller_delegation_id")
+    estimate = args.get("estimate")
 
     if not isinstance(target, str) or not target.strip():
         return _result_text("rejected: 'target' is required and must be a non-empty string", is_error=True)
@@ -262,6 +270,12 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
             "(the orchestrator's own delegation id; set it in the tool call)",
             is_error=True,
         )
+    if estimate is not None and not isinstance(estimate, dict):
+        return _result_text(
+            "rejected: 'estimate' must be an object like "
+            "{tokens: 1000, seconds: 60} when present",
+            is_error=True,
+        )
 
     body: dict[str, Any] = {
         "task": task,
@@ -270,6 +284,8 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     }
     if reason:
         body["manifest"] = {"intent": reason, "source": "orchestrator_defer"}
+    if estimate is not None:
+        body["estimate"] = estimate
 
     token = _token_from_env_or_file()
     try:
@@ -500,6 +516,13 @@ async def _list_tools_handler(
                         "caller_delegation_id": {
                             "type": "string",
                             "description": "The orchestrator's own delegation id; links the chain.",
+                        },
+                        "estimate": {
+                            "type": "object",
+                            "description": (
+                                "Optional {tokens, seconds} estimate "
+                                "(record only, no enforcement)."
+                            ),
                         },
                     },
                     "required": ["target", "task", "caller_delegation_id"],

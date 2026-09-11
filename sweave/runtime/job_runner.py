@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from sweave.runtime.delegation_store import (
     Delegation,
+    Estimate,
     PerProjectDelegationStores,
 )
 from sweave.runtime.trace_log import TraceLog
@@ -191,6 +192,7 @@ class JobRunner:
         chain_root_id: str | None = None,
         coordination_tokens: int = 0,
         kind: str = "task",
+        estimate: Estimate | None = None,
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
@@ -222,6 +224,12 @@ class JobRunner:
           default) or "chat" (orchestrator conversation turn; created
           by the chat loop). Additive; pre-M1.7 records carry no
           ``kind`` and load with "task".
+
+        M2.0:
+        * ``estimate`` is the caller-supplied ``{tokens, seconds}``
+          (or None). Record only — nothing reads it for decisions in
+          M2.0; the estimate-vs-actual projection joins it against the
+          trace. Chat turns never carry one (non-goal).
         """
         delegation = Delegation(
             agent=agent,
@@ -235,6 +243,7 @@ class JobRunner:
             chain_root_id=chain_root_id,
             coordination_tokens=coordination_tokens,
             kind=kind,
+            estimate=estimate,
             status="queued",
         )
         store = await self._store_for(delegation)

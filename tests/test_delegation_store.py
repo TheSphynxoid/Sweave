@@ -239,6 +239,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     M1.7 step 2 added the v4 field (kind) for the chat vs task distinction.
     M1.9 step 3 added the v5 field (needs_attention) for the ask_human
     escalation lane in the Children tab.
+    M2.0 added the v7 field (estimate) for caller-supplied
+    {tokens, seconds} (record only).
     """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -255,6 +257,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         # M1.13 cleanup addition (ruling 2026-09-11): archive sub-state
         "archived",
         "archived_at",
+        # M2.0 addition: caller-supplied estimate (record only)
+        "estimate",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -263,12 +267,12 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v6():
-    """M1.13 cleanup (ruling 2026-09-11): the current schema is v6
-    (archived / archived_at were added on top of v5)."""
+def test_schema_version_is_v7():
+    """M2.0: the current schema is v7 (estimate was added on top of
+    v6's archived / archived_at)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION == 7
 
 
 def test_v5_record_loads_as_v6_with_archive_defaults():

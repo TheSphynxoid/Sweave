@@ -16,6 +16,10 @@ sections the UI detail view patches into place (and the same data the
   reasoning, cost, cache). Aggregates across all step-finish parts.
 * ``status_timeline`` -- the status transitions (queued -> running
   -> review | done | failed) with timestamps.
+* ``estimate_vs_actual`` -- M2.0: the stored caller-supplied
+  ``{tokens, seconds}`` estimate echoed beside actuals (trace
+  ``tokens_used`` summed across turns + created->completed wall
+  seconds). Missing trace/record degrades to nulls, never raises.
 
 The trace is the source of truth (the JSONL is appended on every
 state change). This module is the read-side projector: it never
@@ -26,6 +30,7 @@ returns a minimal detail view (just the id + empty sections).
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,15 +57,83 @@ def _read_trace_events(trace_dir: Path, delegation_id: str) -> list[dict[str, An
     return out
 
 
+def _parse_ts(value: Any) -> datetime | None:
+    """Best-effort datetime parse (datetime passthrough, ISO string,
+    else None — the projection never raises)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def render_estimate_vs_actual(
+    *,
+    estimate: dict[str, Any] | None,
+    events: list[dict[str, Any]],
+    created_at: Any = None,
+    completed_at: Any = None,
+) -> dict[str, Any]:
+    """Project estimate-vs-actual for one delegation (M2.0).
+
+    * ``estimate`` — the stored caller-supplied ``{tokens, seconds}``
+      (or None = "no estimate supplied"); echoed verbatim.
+    * actual tokens — SUMMED across every trace ``tokens_used`` event
+      (differs from the ``tokens`` section's last-wins display: that
+      one shows the latest turn, this one totals the delegation).
+    * actual seconds — created→completed wall time, when both stamps
+      exist (a still-running delegation reports null).
+
+    Missing trace / missing record degrades to nulls, never raises.
+    """
+    total: dict[str, Any] | None = None
+    for ev in events:
+        if ev.get("event") != "tokens_used":
+            continue
+        if total is None:
+            total = {
+                "input": 0, "output": 0, "reasoning": 0,
+                "cache_read": 0, "cache_write": 0, "cost": 0,
+            }
+        for key in ("input", "output", "reasoning", "cache_read", "cache_write"):
+            value = ev.get(key, 0)
+            total[key] += value if isinstance(value, (int, float)) else 0
+        cost = ev.get("cost", 0)
+        total["cost"] += cost if isinstance(cost, (int, float)) else 0
+
+    seconds: float | None = None
+    start = _parse_ts(created_at)
+    end = _parse_ts(completed_at)
+    if start is not None and end is not None:
+        seconds = (end - start).total_seconds()
+
+    return {
+        "estimate": dict(estimate) if estimate else None,
+        "actual": {"tokens": total, "seconds": seconds},
+    }
+
+
 def render_detail_view(
     delegation_id: str,
     *,
     trace_dir: Path,
+    estimate: dict[str, Any] | None = None,
+    created_at: Any = None,
+    completed_at: Any = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
     Returns the dict the UI / CLI consume. Always returns; a missing
     trace returns a minimal record (id + empty sections).
+    Record-side inputs (``estimate`` + stamps) are optional so offline
+    readers (``sweave log``, which has the trace but no store) keep
+    working: estimate degrades to null while actual tokens still
+    project from the trace.
     """
     events = _read_trace_events(trace_dir, delegation_id)
 
@@ -128,4 +201,10 @@ def render_detail_view(
         "tool_timeline": list(tool_timeline.values()),
         "tokens": tokens,
         "status_timeline": status_timeline,
+        "estimate_vs_actual": render_estimate_vs_actual(
+            estimate=estimate,
+            events=events,
+            created_at=created_at,
+            completed_at=completed_at,
+        ),
     }

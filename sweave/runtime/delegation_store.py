@@ -23,6 +23,17 @@ Schema history
   + defer payloads + result summaries in this delegation; specialist
   internal work is NOT counted). ``from_dict`` migrates v2 records
   forward (defaults fill in).
+* **v4** (M1.7): adds ``kind`` (``"task"`` implementation delegation
+  vs ``"chat"`` orchestrator conversation turn; pre-M1.7 records
+  default to ``"task"``).
+* **v5** (M1.9): adds ``needs_attention`` (an ``ask_human`` call is
+  currently pending for this delegation; pre-M1.9 records default to
+  False).
+* **v6** (M1.13): adds ``archived`` / ``archived_at`` (ARCHIVE-not-
+  delete sub-state; pre-M1.13 records default to False / None).
+* **v7** (M2.0): adds ``estimate`` (caller-supplied
+  ``{tokens, seconds}`` or None; record only — no enforcement, no
+  calibration; pre-M2.0 records default to None).
 """
 
 from __future__ import annotations
@@ -41,12 +52,13 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
 SCHEMA_VERSION_V4 = 4  # M1.7 records (chat kind)
 SCHEMA_VERSION_V5 = 5  # M1.9 records (needs_attention)
+SCHEMA_VERSION_V6 = 6  # M1.13 records (archived / archived_at)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -82,6 +94,23 @@ class Manifest(TypedDict, total=False):
     intent: str
     confidence: float | None
     breaking_change: bool
+
+
+class Estimate(TypedDict, total=False):
+    """Caller-supplied cost estimate attached to a Delegation (M2.0).
+
+    Both keys optional at write time; absent estimate (None) means
+    "no estimate supplied". Record ONLY: nothing enforces or
+    calibrates these numbers in M2.0 (calibration is M2.5), and any
+    caller-supplied non-negative numbers are accepted — estimate
+    gaming is noted, not solved.
+
+    * ``tokens`` — estimated total tokens for the delegation.
+    * ``seconds`` — estimated wall-clock seconds for the delegation.
+    """
+
+    tokens: int
+    seconds: float
 
 
 @dataclass
@@ -141,6 +170,12 @@ class Delegation:
     # counting them. ``archived_at`` is the archive timestamp.
     archived: bool = False
     archived_at: datetime | None = None
+    # M2.0: caller-supplied estimate. Nullable, no behavior change:
+    # task delegations may carry {tokens, seconds} from submit; chat
+    # turns never do (non-goal). The estimate-vs-actual projection
+    # (detail view) joins this against trace `tokens_used` events +
+    # created->completed wall time.
+    estimate: Estimate | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -168,8 +203,10 @@ class Delegation:
             d = _migrate_v3_to_v4(d)
         if schema_version < SCHEMA_VERSION_V5:
             d = _migrate_v4_to_v5(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V6:
             d = _migrate_v5_to_v6(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v6_to_v7(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh v4 record
@@ -253,6 +290,17 @@ def _migrate_v5_to_v6(d: dict[str, Any]) -> dict[str, Any]:
     """
     d.setdefault("archived", False)
     d.setdefault("archived_at", None)
+    return d
+
+
+def _migrate_v6_to_v7(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v6 record forward to the v7 field set (M2.0).
+
+    v6 records predate caller-supplied estimates: they have no
+    ``estimate`` field. Every pre-M2.0 delegation was by definition
+    submitted without one — the field defaults to None.
+    """
+    d.setdefault("estimate", None)
     return d
 
 

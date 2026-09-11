@@ -646,6 +646,38 @@ def log(delegation_id: str = typer.Argument(..., help="Delegation id to render")
         console.print("[bold]Status timeline:[/bold]")
         for c in detail["status_timeline"]:
             console.print(f"  - {c['status']}")
+    # M2.0: estimate-vs-actual (record only; the CLI has the trace but
+    # no store, so estimate is null here while actual tokens still
+    # project — the HTTP detail endpoint joins the record side).
+    eva = detail.get("estimate_vs_actual") or {}
+    est = eva.get("estimate")
+    act = eva.get("actual") or {}
+    act_tokens = act.get("tokens")
+    act_seconds = act.get("seconds")
+    if est or act_tokens or act_seconds is not None:
+        est_line = (
+            f"estimate: tokens={est.get('tokens')} seconds={est.get('seconds')}"
+            if est
+            else "estimate: (none supplied)"
+        )
+        if act_tokens:
+            act_line = (
+                f"actual: tokens in={act_tokens['input']} "
+                f"out={act_tokens['output']} "
+                f"reasoning={act_tokens['reasoning']} "
+                f"cost={act_tokens['cost']}"
+            )
+        else:
+            act_line = "actual: tokens=(no trace yet)"
+        if act_seconds is not None:
+            act_line += f" seconds={act_seconds:.1f}"
+        console.print(
+            Panel(
+                f"{est_line}\n{act_line}",
+                title="Estimate vs actual",
+                border_style="green",
+            )
+        )
     if not any(
         [
             detail["composed_prompt"],

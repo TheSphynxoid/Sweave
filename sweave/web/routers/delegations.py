@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from sweave.runtime.delegation_store import Manifest
 from sweave.runtime.subagent_store import SubAgentRun, SubAgentStatus
@@ -44,6 +44,15 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+class EstimateIn(BaseModel):
+    """Caller-supplied estimate for one task delegation (M2.0)."""
+
+    model_config = {"extra": "ignore"}
+
+    tokens: Optional[int] = Field(default=None, ge=0)
+    seconds: Optional[float] = Field(default=None, ge=0)
+
+
 class TaskSubmitV2(BaseModel):
     task: str
     agent: Optional[str] = None
@@ -54,6 +63,12 @@ class TaskSubmitV2(BaseModel):
     parent_task_id: Optional[str] = None
     # M1.1: optional specialist self-report; generation is M1.6 scope.
     manifest: Optional[Manifest] = None
+    # M2.0: optional caller-supplied estimate (record only — no
+    # enforcement, no calibration). Unknown keys are ignored (lenient:
+    # a strict shape here would 422 whole submits on LLM-supplied
+    # extras); known keys must be non-negative numbers or the submit
+    # is a 422.
+    estimate: Optional[EstimateIn] = None
 
 
 class TaskSubmitV2Response(BaseModel):
@@ -266,6 +281,13 @@ async def submit_task_v2(
         depth=new_delegation.depth if new_delegation else 0,
         chain_root_id=new_delegation.chain_root_id if new_delegation else None,
         coordination_tokens=new_delegation.coordination_tokens if new_delegation else 0,
+        # M2.0: record-only estimate (absent or all-null normalises to
+        # None — "no estimate supplied").
+        estimate=(
+            request.estimate.model_dump(exclude_none=True) or None
+            if request.estimate is not None
+            else None
+        ),
     )
 
     # M1.2 step 3: append an override log entry if the user supplied an
@@ -422,10 +444,25 @@ async def get_delegation_detail(
     detail view reads this endpoint and patches the sections in
     place (M1.8 no-rerender invariant; the same shape the
     ``sweave log`` CLI prints).
+
+    M2.0: the record (estimate + created/completed stamps) is joined
+    in for the ``estimate_vs_actual`` section; an id with no record
+    (or no trace) still degrades to nulls, never a 500.
     """
     from sweave.web.detail_view import render_detail_view
 
-    return render_detail_view(delegation_id, trace_dir=state.traces_dir)
+    record = None
+    for store in _all_stores(state):
+        record = store.get(delegation_id)
+        if record is not None:
+            break
+    return render_detail_view(
+        delegation_id,
+        trace_dir=state.traces_dir,
+        estimate=record.estimate if record is not None else None,
+        created_at=record.created_at if record is not None else None,
+        completed_at=record.completed_at if record is not None else None,
+    )
 
 
 # ---------------------------------------------------------------------------

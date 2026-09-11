@@ -12,6 +12,7 @@ from sweave.runtime.delegation_store import (
     SCHEMA_VERSION_PREP,
     Delegation,
     DelegationStore,
+    Estimate,
     Manifest,
     PerProjectDelegationStores,
 )
@@ -20,6 +21,7 @@ from sweave.runtime.locking import (
     ProjectLockRegistry,
     atomic_write_json,
     atomic_write_json_sync,
+    atomic_write_text_sync,
 )
 from sweave.runtime.override_log import (
     OverrideLog,
@@ -58,12 +60,14 @@ __all__ = [
     "ProjectLockRegistry",
     "atomic_write_json",
     "atomic_write_json_sync",
+    "atomic_write_text_sync",
     "TraceLog",
     "read_trace",
     "Delegation",
     "DelegationStore",
     "PerProjectDelegationStores",
     "Manifest",
+    "Estimate",
     "JobRunner",
     "SCHEMA_VERSION",
     "SCHEMA_VERSION_PREP",
