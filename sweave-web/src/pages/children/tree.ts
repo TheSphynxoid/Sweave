@@ -11,8 +11,10 @@
  * the per-project store). Depth is 0 for roots, 1 for direct
  * children, etc.
  *
- * Sibling order: ascending by ``created_at`` (the natural
- * chronological order). The tree doesn't carry a depth limit;
+ * Sibling order: newest-first by ``created_at`` (descending --
+ * M1.13 step 1, ruling 2026-09-10; the M1.9-era ascending order
+ * pushed the newest work to the bottom of the tab). The tree
+ * doesn't carry a depth limit;
  * the page's indent caps visually at a reasonable depth (the
  * actual delegation chain depth is bounded by the
  * DelegationManager -- default 2).
@@ -24,6 +26,17 @@ export interface TreeNode {
   children: TreeNode[];
   /** Distance from the root (0-indexed). */
   depth: number;
+}
+
+export interface ProjectGroup {
+  /** ``project_name`` of the group's roots; "" for the ghost/unknown group. */
+  project: string;
+  /** Top-level nodes (roots) belonging to this project. */
+  nodes: TreeNode[];
+  /** Total record count in the group (roots + descendants). */
+  count: number;
+  /** How many of those records are currently ``running``. */
+  runningCount: number;
 }
 
 export function buildDelegationTree(records: Delegation[]): TreeNode[] {
@@ -42,9 +55,9 @@ export function buildDelegationTree(records: Delegation[]): TreeNode[] {
       childrenByParent.set(key, [r]);
     }
   }
-  // Sort each sibling list by created_at ascending.
+  // Sort each sibling list newest-first (created_at descending).
   for (const arr of childrenByParent.values()) {
-    arr.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    arr.sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
 
   // Roots = records whose parent_task_id is null. A record whose
@@ -56,7 +69,7 @@ export function buildDelegationTree(records: Delegation[]): TreeNode[] {
       (r) => r.parent_task_id === null || !byId.has(r.parent_task_id),
     )
     .slice();
-  roots.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  roots.sort((a, b) => b.created_at.localeCompare(a.created_at));
 
   // Children of orphan-parents (records whose parent_task_id
   // points to a delegation not in the set) were filed under the
@@ -107,4 +120,70 @@ export function findEscalatingNodes(nodes: TreeNode[]): TreeNode[] {
   }
   for (const n of nodes) walk(n);
   return out;
+}
+
+/**
+ * Group the delegation tree by project (M1.13 step 1, ruling
+ * 2026-09-10: "Group per project and make the page have a coherent
+ * purpose"). The groups derive from the records themselves -- NOT
+ * from the registered-projects endpoint -- so a deleted project's
+ * children still render (under the ghost/unknown group).
+ *
+ * Ordering: the active project's group is pinned on top; the
+ * remaining groups sort by their newest record (descending); the
+ * ghost group (``project_name`` is null/unset) sinks to last, and
+ * the Children page collapses it by default.
+ */
+export function groupDelegationTree(
+  records: Delegation[],
+  activeProject?: string | null,
+): ProjectGroup[] {
+  const tree = buildDelegationTree(records);
+  const groups = new Map<string, ProjectGroup>();
+  function get(project: string): ProjectGroup {
+    const existing = groups.get(project);
+    if (existing) return existing;
+    const fresh: ProjectGroup = {
+      project,
+      nodes: [],
+      count: 0,
+      runningCount: 0,
+    };
+    groups.set(project, fresh);
+    return fresh;
+  }
+  function countTree(n: TreeNode): { count: number; running: number } {
+    let count = 1;
+    let running = n.record.status === "running" ? 1 : 0;
+    for (const c of n.children) {
+      const sub = countTree(c);
+      count += sub.count;
+      running += sub.running;
+    }
+    return { count, running };
+  }
+  for (const node of tree) {
+    const project = node.record.project_name ?? "";
+    const group = get(project);
+    group.nodes.push(node);
+    const c = countTree(node);
+    group.count += c.count;
+    group.runningCount += c.running;
+  }
+
+  const newest = (g: ProjectGroup): string =>
+    g.nodes.reduce(
+      (max, n) => (n.record.created_at > max ? n.record.created_at : max),
+      "",
+    );
+  const isGhost = (g: ProjectGroup) => g.project === "";
+  const isActive = (g: ProjectGroup) =>
+    !!activeProject && g.project === activeProject;
+  return [...groups.values()].sort((a, b) => {
+    if (isActive(a)) return -1;
+    if (isActive(b)) return 1;
+    if (isGhost(a)) return 1;
+    if (isGhost(b)) return -1;
+    return newest(b).localeCompare(newest(a));
+  });
 }

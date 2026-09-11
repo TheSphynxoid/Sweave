@@ -14,13 +14,26 @@
  * tree rebuild is O(n) per change; the row-level patch keeps
  * the change local (the M1.8 no-rerender invariant + the plan's
  * "Children-tab live updates" -- same single-node patch pattern).
+ *
+ * M1.13 step 1 (ruling 2026-09-10): the page groups per project --
+ * every row carries a kind badge (CHAT/TASK), the agent name, a
+ * relative created_at, and the status pill; the active project's
+ * group is pinned on top and expanded, ghost/unknown groups
+ * collapse by default.
  */
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ChevronDown, Send, X, AlertCircle } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
-import { buildDelegationTree, findEscalatingNodes, type TreeNode } from "./tree";
+import {
+  buildDelegationTree,
+  findEscalatingNodes,
+  groupDelegationTree,
+  type ProjectGroup,
+  type TreeNode,
+} from "./tree";
+import { formatRelativeTime } from "@/utils/cn";
 import { cn } from "@/utils/cn";
 import type { Delegation, DelegationStatus } from "@/types";
 
@@ -43,11 +56,21 @@ const STATUS_LABEL: Record<DelegationStatus, string> = {
 export interface LiveTreeProps {
   delegations: Delegation[];
   onOpen: (delegationId: string) => void;
+  /** The active project's name; its group is pinned on top + expanded. */
+  activeProjectName?: string | null;
 }
 
-export function LiveTree({ delegations, onOpen }: LiveTreeProps) {
+export function LiveTree({
+  delegations,
+  onOpen,
+  activeProjectName = null,
+}: LiveTreeProps) {
   const tree = useMemo(() => buildDelegationTree(delegations), [delegations]);
   const escalations = useMemo(() => findEscalatingNodes(tree), [tree]);
+  const groups = useMemo(
+    () => groupDelegationTree(delegations, activeProjectName),
+    [delegations, activeProjectName],
+  );
 
   if (delegations.length === 0) {
     return (
@@ -66,16 +89,92 @@ export function LiveTree({ delegations, onOpen }: LiveTreeProps) {
       {escalations.length > 0 && (
         <EscalationLane nodes={escalations} onOpen={onOpen} />
       )}
-      <ul data-testid="live-tree" className="space-y-1">
-        {tree.map((node) => (
-          <TreeRow
-            key={node.record.delegation_id}
-            node={node}
+      <div data-testid="live-tree">
+        {groups.map((group) => (
+          <ProjectGroupNode
+            key={group.project || "__ghost__"}
+            group={group}
+            active={group.project === activeProjectName}
             onOpen={onOpen}
           />
         ))}
-      </ul>
+      </div>
     </div>
+  );
+}
+
+function ProjectGroupNode({
+  group,
+  active,
+  onOpen,
+}: {
+  group: ProjectGroup;
+  active: boolean;
+  onOpen: (id: string) => void;
+}) {
+  // Ruling 2026-09-10: the active project's group renders expanded
+  // so the live tree lands open; the ghost/unknown group collapses
+  // by default (deleted-project leftovers stay out of the way).
+  const [expanded, setExpanded] = useState(group.project !== "");
+  const label = group.project === "" ? "Unknown project" : group.project;
+  const displayCount = group.runningCount > 0 ? `${group.runningCount} running` : null;
+  return (
+    <section
+      data-testid={`project-group-${group.project || "unknown"}`}
+      className="rounded border border-border overflow-hidden"
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 px-3 py-2 text-sm bg-muted/40",
+          active && "bg-muted",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          aria-label={expanded ? "Collapse group" : "Expand group"}
+          data-testid={`group-toggle-${group.project || "unknown"}`}
+          className="p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+        <span
+          data-testid={`group-name-${group.project || "unknown"}`}
+          className={cn(
+            "font-medium truncate",
+            active && "text-foreground",
+          )}
+        >
+          {label}
+          {active && (
+            <span className="ml-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+              active
+            </span>
+          )}
+        </span>
+        <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+          {displayCount && (
+            <span data-testid={`group-running-${group.project || "unknown"}`} className="text-amber-700 dark:text-amber-300">
+              {displayCount}
+            </span>
+          )}
+          <span data-testid={`group-count-${group.project || "unknown"}`}>
+            {group.count}
+          </span>
+        </span>
+      </div>
+      {expanded && (
+        <ul className="space-y-1 p-1">
+          {group.nodes.map((node) => (
+            <TreeRow
+              key={node.record.delegation_id}
+              node={node}
+              onOpen={onOpen}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -111,11 +210,19 @@ function TreeRow({ node, onOpen }: { node: TreeNode; onOpen: (id: string) => voi
           data-testid={`tree-row-open-${id}`}
           className="flex-1 min-w-0 text-left truncate"
         >
-          <span className="font-mono text-xs text-muted-foreground mr-2">
-            {id.slice(0, 8)}…
+          <KindPill kind={node.record.kind} />
+          <span className="text-xs text-muted-foreground">
+            {node.record.agent}
           </span>
           <span className="truncate">{node.record.task || "(empty)"}</span>
         </button>
+        <span
+          data-testid={`tree-row-time-${id}`}
+          className="text-[10px] text-muted-foreground whitespace-nowrap"
+          title={node.record.created_at}
+        >
+          {formatRelativeTime(node.record.created_at)}
+        </span>
         <StatusPill status={node.record.status} />
         {node.record.status === "review" && (
           <PromoteButton delegationId={id} />
@@ -132,6 +239,21 @@ function TreeRow({ node, onOpen }: { node: TreeNode; onOpen: (id: string) => voi
         </ul>
       )}
     </li>
+  );
+}
+
+function KindPill({ kind }: { kind: Delegation["kind"] }) {
+  const label = kind === "chat" ? "CHAT" : "TASK";
+  return (
+    <span
+      data-testid={`kind-badge-${kind === "chat" ? "CHAT" : "TASK"}`}
+      className={cn(
+        "mr-2 px-1.5 py-px rounded text-[9px] font-semibold tracking-wide text-white uppercase",
+        kind === "chat" ? "bg-blue-500/70" : "bg-slate-500/70",
+      )}
+    >
+      {label}
+    </span>
   );
 }
 

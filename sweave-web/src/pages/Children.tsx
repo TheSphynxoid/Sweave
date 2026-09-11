@@ -21,7 +21,7 @@ import { DetailView } from "./children/DetailView";
 import type { Delegation } from "@/types";
 
 export function ChildrenPage() {
-  const { activeProject, activeSession } = useApp();
+  const { activeProject } = useApp();
   const { subscribe } = useWS();
   const qc = useQueryClient();
   const [openId, setOpenId] = useState<string | null>(null);
@@ -74,13 +74,23 @@ export function ChildrenPage() {
       <header>
         <h1 className="text-xl font-semibold">Children</h1>
         <p className="text-sm text-muted-foreground">
-          {activeSession
-            ? `Live delegation tree for ${activeSession.name}.`
-            : "Live delegation tree for the active project."}
+          {/* M1.13 step 1 (ruling 2026-09-10): the tab shows ALL
+              projects' delegations grouped per project -- no per-session
+              claim (it wasn't true; the list isn't session-filtered). */}
+          All projects
+          {activeProject ? (
+            <>
+              {" · "}
+              <span className="text-foreground">
+                active: {activeProject.name}
+              </span>
+            </>
+          ) : null}
         </p>
       </header>
       <LiveTree
         delegations={delegations}
+        activeProjectName={activeProject?.name ?? null}
         onOpen={(id) => setOpenId(id)}
       />
       {openId && (

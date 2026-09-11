@@ -19,6 +19,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildDelegationTree,
   findEscalatingNodes,
+  groupDelegationTree,
   type TreeNode,
 } from "../tree";
 import type { Delegation } from "@/types";
@@ -139,14 +140,87 @@ describe("buildDelegationTree: needs_attention", () => {
 });
 
 describe("buildDelegationTree: stable sort", () => {
-  it("sorts siblings by created_at ascending", () => {
+  // M1.13 step 1 (ruling 2026-09-10): newest-first everywhere.
+  // The M1.9-era ascending order made the newest root render last.
+  it("sorts siblings newest-first (created_at descending)", () => {
     const tree = buildDelegationTree([
       d("root", "running", null, { created_at: "2026-01-01T00:00:02Z" }),
       d("older", "running", "root", { created_at: "2026-01-01T00:00:00Z" }),
       d("newer", "running", "root", { created_at: "2026-01-01T00:00:01Z" }),
     ]);
     const ids = tree[0].children.map((c) => c.record.delegation_id);
-    expect(ids).toEqual(["older", "newer"]);
+    expect(ids).toEqual(["newer", "older"]);
+  });
+
+  it("sorts roots newest-first", () => {
+    const tree = buildDelegationTree([
+      d("old-root", "done", null, { created_at: "2026-01-01T00:00:00Z" }),
+      d("mid-root", "done", null, { created_at: "2026-01-01T00:00:01Z" }),
+      d("new-root", "running", null, { created_at: "2026-01-01T00:00:02Z" }),
+    ]);
+    expect(tree.map((t) => t.record.delegation_id)).toEqual([
+      "new-root",
+      "mid-root",
+      "old-root",
+    ]);
+  });
+});
+
+describe("groupDelegationTree: project grouping (M1.13 step 1)", () => {
+  it("groups top-level nodes by project_name", () => {
+    const groups = groupDelegationTree([
+      d("a", "running", null, { project_name: "alpha" }),
+      d("b", "running", "a", { project_name: "alpha" }),
+      d("c", "review", null, { project_name: "beta" }),
+    ]);
+    expect(groups.map((g) => g.project)).toEqual(["alpha", "beta"]);
+    expect(groups[0].nodes).toHaveLength(1);
+    expect(groups[0].nodes[0].record.delegation_id).toBe("a");
+    expect(groups[0].nodes[0].children[0].record.delegation_id).toBe("b");
+  });
+
+  it("counts every record in the group (roots + descendants)", () => {
+    const groups = groupDelegationTree([
+      d("a", "running", null, { project_name: "alpha" }),
+      d("b", "running", "a", { project_name: "alpha" }),
+      d("c", "running", "b", { project_name: "alpha" }),
+      d("z", "done", null, { project_name: "beta" }),
+    ]);
+    const alpha = groups.find((g) => g.project === "alpha")!;
+    expect(alpha.count).toBe(3);
+    expect(alpha.runningCount).toBe(3);
+    const beta = groups.find((g) => g.project === "beta")!;
+    expect(beta.count).toBe(1);
+    expect(beta.runningCount).toBe(0);
+  });
+
+  it("pins the active project's group on top", () => {
+    const groups = groupDelegationTree(
+      [
+        d("a", "running", null, { project_name: "alpha" }),
+        d("b", "running", null, { project_name: "beta" }),
+      ],
+      "beta",
+    );
+    expect(groups[0].project).toBe("beta");
+    expect(groups[1].project).toBe("alpha");
+  });
+
+  it("fileds a root with unknown project_name under the ghost group (last)", () => {
+    const groups = groupDelegationTree([
+      d("a", "running", null, { project_name: "alpha" }),
+      d("ghost", "done", null, { project_name: null }),
+    ]);
+    expect(groups.map((g) => g.project)).toEqual(["alpha", ""]);
+    expect(groups[1].nodes[0].record.delegation_id).toBe("ghost");
+  });
+
+  it("orders non-pinned groups by their newest record (descending)", () => {
+    const groups = groupDelegationTree([
+      d("slow", "done", null, { project_name: "old-proj", created_at: "2026-01-01T00:00:00Z" }),
+      d("hot", "running", null, { project_name: "hot-proj", created_at: "2026-01-01T00:05:00Z" }),
+    ]);
+    expect(groups.map((g) => g.project)).toEqual(["hot-proj", "old-proj"]);
   });
 });
 
