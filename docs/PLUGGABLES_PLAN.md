@@ -336,8 +336,7 @@ parallel side-direction, not a minor — tracked alongside, not after.
   proposed → first delegation in minutes. The demo that sells dev
   tools. Seeds: agents loader, models sync, gallery, topology gen.
   First step: measure time-to-first-delegation, then drive it down.
-- **Anti-differentiators (stance adopted 2026-09-11; NOT the moat).**
-  Positioning by refusal — sentences competitors cannot say: never
+- **Anti-differentiators (stance adopted 2026-09-11; NOT the moat).**  Positioning by refusal — sentences competitors cannot say: never
   auto-merge to base; never silent exfiltration (fail-closed, explicit
   consent); never prompt-only guarantees (enforced or it doesn't ship);
   never unbounded autonomy (budgets + gates always); never train on user
@@ -345,6 +344,16 @@ parallel side-direction, not a minor — tracked alongside, not after.
   project's) and belong written in DESIGN.md — but stance alone is not
   differentiation; the moat must come from capabilities. Candidate for
   a DESIGN.md principles list; no behavior change.
+- **Self-diagnose skill (explored 2026-09-11, NOT locked).** A skill
+  that pulls a small HERMITIC diagnose-suite from git (pinned to the
+  installed version's tag/commit, hash-checked, fail-closed on skew)
+  and runs it on the user's machine — chat-driven `sweave doctor`.
+  Constraints: not the 74-file dev corpus (assumes repo layout + dev
+  deps); code-download executes under the bridges ruling (explicit
+  trust, never silent); offline degrades to the bundled `doctor`.
+  Packaging twin: exclude `tests/` from the shipped artifact (R5
+  packaging) — installs stay lean either way. Natural pilot for
+  skills-with-tests.
 
 ## 8. Risks
 
