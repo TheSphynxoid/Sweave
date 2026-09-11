@@ -196,6 +196,27 @@ class FakeStore:
         })
         return {"status": "pending"}
 
+    async def create_or_reuse(self, **kwargs):
+        # Test double of EscalationStore.create_or_reuse (incident
+        # 2026-09-11 slice 2): same request id + pending record ->
+        # reuse, else create. Metadata is not persisted by this fake;
+        # reuse tests live against the real store in
+        # test_permission_hold_coherence.py.
+        did = kwargs["delegation_id"]
+        rid = kwargs.get("reuse_request_id")
+        existing = self.responses.get(did)
+        if (
+            rid is not None
+            and isinstance(existing, dict)
+            and existing.get("status") == "pending"
+            and (existing.get("metadata") or {}).get("requestID") == rid
+        ):
+            return dict(existing), False
+        rec = await self.create(
+            **{k: v for k, v in kwargs.items() if k != "reuse_request_id"}
+        )
+        return rec, True
+
     async def get(self, *, delegation_id: str):
         return self.responses.get(delegation_id)
 

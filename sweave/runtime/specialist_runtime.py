@@ -936,6 +936,24 @@ class SpecialistRuntime:
         return "".join(text_parts)
 
 
+    async def _recorded_hold(self, delegation_id: str) -> dict[str, Any] | None:
+        """The recorded blocking question for a delegation, if still pending.
+
+        Best-effort: no store / store error / no record / resolved
+        record all mean "no hold" — callers fall back to their
+        pre-hold behaviour.
+        """
+        store = getattr(self, "escalation_store", None)
+        if store is None:
+            return None
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+        except Exception:  # noqa: BLE001
+            return None
+        if not rec or rec.get("status") != "pending":
+            return None
+        return rec
+
     async def _resolve_pending_permission(
         self,
         *,
@@ -947,8 +965,15 @@ class SpecialistRuntime:
         """Convert a pending opencode permission into a blocking human
         question and resume the turn (M1.12 step 2).
 
-        Called from the ``stalled`` branch of ``_send_message`` ONLY
-        when a watcher reports a pending ask for this engine session.
+        Called from the ``stalled`` branch of ``_send_message`` when
+        EITHER the watcher reports a pending ask for this engine
+        session OR the store holds a recorded (bridge-owned) question
+        for this delegation. Coherence rule (incident 2026-09-11):
+        exactly one finder owns the reply POST — a second finder
+        waits on the recorded hold (``permission_reused`` /
+        ``permission_hold_wait``) instead of overwriting it, and the
+        stall timer never fails a turn that the total budget is
+        holding for a recorded question.
         Returns None when nothing answerable was found (caller falls
         back to the plain stall error); otherwise the recovered turn
         text — or a ``[chat error: ...]`` string when the human
@@ -973,47 +998,131 @@ class SpecialistRuntime:
 
         watcher = get_permission_watcher(base_url)
         pending = watcher.pending_for(session_id)
+        owned_reply = True
+        recover_session_id = session_id
         if not pending:
-            return None
-        rec = pending[0]
-        request_id = rec["id"]
-        permission = rec["permission"]
-        patterns = rec.get("patterns") or []
-        command = str((rec.get("metadata") or {}).get("command", ""))
+            # No bus signal. A recorded hold owned by the other finder
+            # (in-band bridge) still suspends us: wait for it, never
+            # fail the turn for silence mid-wait. The total budget
+            # already holds for recorded questions (_bounded_turn);
+            # the stall timer must not contradict it (incident
+            # 2026-09-11). The bridge owns the reply POST — we only
+            # wait and recover.
+            held = await self._recorded_hold(delegation_id)
+            if held is None:
+                # Late-answer check: the hold resolved just before we
+                # looked (human answer racing the stall). One fetch —
+                # no wait — recovers text that would otherwise die as
+                # a stall despite the answer existing.
+                try:
+                    late = await self.escalation_store.get(
+                        delegation_id=delegation_id
+                    )
+                except Exception:  # noqa: BLE001
+                    late = None
+                late_meta = ((late or {}).get("metadata") or {})
+                if (
+                    late is not None
+                    and late.get("status") == "answered"
+                    and str(late_meta.get("sessionID") or "") == session_id
+                    and str(late_meta.get("requestID") or "")
+                ):
+                    try:
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            late_messages = await fetch_messages(
+                                client, base_url, session_id
+                            )
+                    except Exception:  # noqa: BLE001
+                        late_messages = []
+                    late_text = final_assistant_text(late_messages)
+                    if late_text:
+                        try:
+                            trace.append(
+                                "permission_recovered_late",
+                                {
+                                    "request_id": str(
+                                        late_meta.get("requestID") or ""
+                                    ),
+                                    "chars": len(late_text),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return late_text
+                return None
+            meta = held.get("metadata") or {}
+            request_id = str(meta.get("requestID") or "")
+            permission = str(meta.get("permission") or "permission")
+            patterns = list(meta.get("patterns") or [])
+            command = str(meta.get("command", ""))
+            recover_session_id = str(meta.get("sessionID") or session_id)
+            owned_reply = False
+        else:
+            rec = pending[0]
+            request_id = rec["id"]
+            permission = rec["permission"]
+            patterns = rec.get("patterns") or []
+            command = str((rec.get("metadata") or {}).get("command", ""))
 
         summary = (
             f"opencode asks {permission} for {patterns}"
             + (f" (command: {command})" if command else "")
         )
-        # Blocking human question — no timeout (M1.11 ruling extends
-        # to permission prompts; specialist prompts route to the
-        # human too). Answered -> grant ("always" wording -> always),
-        # skipped -> deny.
-        try:
-            await self.escalation_store.create(
-                delegation_id=delegation_id,
-                question=(
-                    f"Permission required: {summary}. Answer 'allow once'"
-                    f" / 'always allow' / 'deny' (or skip = deny)."
-                ),
-                options=["allow once", "always allow", "deny"],
-                kind="permission",
-                audience="human",
-                timeout_seconds=None,
-                metadata={
-                    "requestID": request_id,
-                    "sessionID": session_id,
-                    "permission": permission,
-                    "patterns": patterns,
-                    "command": command,
-                },
-            )
-        except Exception as esc_err:  # noqa: BLE001
-            logger.warning(
-                "SpecialistRuntime: permission escalation create "
-                "failed: %s", esc_err,
-            )
-            return None
+        if owned_reply:
+            # Blocking human question — no timeout (M1.11 ruling extends
+            # to permission prompts; specialist prompts route to the
+            # human too). Answered -> grant ("always" wording -> always),
+            # skipped -> deny. The claim is atomic: a concurrent finder
+            # (in-band bridge) racing us on the same ask reuses instead
+            # of overwriting (incident 2026-09-11).
+            try:
+                _, created = await self.escalation_store.create_or_reuse(
+                    delegation_id=delegation_id,
+                    question=(
+                        f"Permission required: {summary}. Answer 'allow once'"
+                        f" / 'always allow' / 'deny' (or skip = deny)."
+                    ),
+                    options=["allow once", "always allow", "deny"],
+                    kind="permission",
+                    audience="human",
+                    timeout_seconds=None,
+                    metadata={
+                        "requestID": request_id,
+                        "sessionID": session_id,
+                        "permission": permission,
+                        "patterns": patterns,
+                        "command": command,
+                    },
+                    reuse_request_id=request_id,
+                )
+            except Exception as esc_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: permission escalation create "
+                    "failed: %s", esc_err,
+                )
+                return None
+            owned_reply = bool(created)
+            if not created:
+                # Lost the race: the other finder recorded first and
+                # owns the reply POST — wait on its record.
+                try:
+                    trace.append(
+                        "permission_reused",
+                        {"request_id": request_id},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            # Case D (recorded hold, no bus signal): the bridge owns
+            # the reply — trace the wait, then fall into the shared
+            # wait + resume-recovery below.
+            try:
+                trace.append(
+                    "permission_hold_wait",
+                    {"request_id": request_id},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         # Wait for the human resolution — unbounded by user ruling.
         esc: dict[str, Any] = {}
         while True:
@@ -1052,32 +1161,42 @@ class SpecialistRuntime:
             )
         except Exception:  # noqa: BLE001
             pass
-        idle_baseline = watcher.idle_snapshot(session_id)
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                code = await reply_permission_request(
-                    client, base_url, session_id, request_id, response_value
+        if owned_reply:
+            idle_baseline = watcher.idle_snapshot(session_id)
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    code = await reply_permission_request(
+                        client, base_url, session_id, request_id, response_value
+                    )
+            except Exception as reply_err:  # noqa: BLE001
+                logger.warning(
+                    "SpecialistRuntime: permission reply POST failed: %s",
+                    reply_err,
                 )
-        except Exception as reply_err:  # noqa: BLE001
-            logger.warning(
-                "SpecialistRuntime: permission reply POST failed: %s",
-                reply_err,
-            )
-            return (
-                f"[chat error: permission reply failed "
-                f"({response_value}): {type(reply_err).__name__}]"
-            )
-        if code != 200:
-            return f"[chat error: permission reply rejected (HTTP {code})]"
-        if response_value == "reject":
-            return f"[chat error: permission denied: {summary}]"
+                return (
+                    f"[chat error: permission reply failed "
+                    f"({response_value}): {type(reply_err).__name__}]"
+                )
+            if code != 200:
+                return f"[chat error: permission reply rejected (HTTP {code})]"
+            if response_value == "reject":
+                return f"[chat error: permission denied: {summary}]"
+        else:
+            # The other finder owns the reply POST (double-POSTing the
+            # same request id corrupts the serve's permission state):
+            # on deny it posts reject itself — mirror the loud failure
+            # without a second POST. On allow, fall through to the
+            # shared resume-recovery below.
+            if response_value == "reject":
+                return f"[chat error: permission denied: {summary}]"
+            idle_baseline = watcher.idle_snapshot(recover_session_id)
         # Allowed: wait for the resumed turn to finish, then recover
         # the final text from the message list (the original stream
         # does not re-deliver terminal).
-        completed = await watcher.wait_idle(session_id, idle_baseline)
+        completed = await watcher.wait_idle(recover_session_id, idle_baseline)
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                messages = await fetch_messages(client, base_url, session_id)
+                messages = await fetch_messages(client, base_url, recover_session_id)
         except Exception as fetch_err:  # noqa: BLE001
             logger.warning(
                 "SpecialistRuntime: post-permission message fetch "

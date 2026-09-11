@@ -194,7 +194,7 @@ class EscalationStore:
 
     # ---- CRUD ----------------------------------------------------------
 
-    async def create(
+    async def create_or_reuse(
         self,
         *,
         delegation_id: str,
@@ -204,27 +204,20 @@ class EscalationStore:
         audience: str = "human",
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Persist a new escalation. Returns the escalation record.
+        reuse_request_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Persist a new escalation, or reuse the live one for the same ask.
 
-        ``kind`` is ``question`` (orchestrator -> human, blocking)
-        or ``escalation`` (specialist -> orchestrator, notice).
-        ``audience`` mirrors it (``human`` | ``orchestrator``).
-        ``timeout_seconds`` overrides the store default for this
-        record only; ``None`` (default) means no deadline — the
-        record waits until answered or skipped (M1.11 ruling).
-        ``metadata`` (M1.12) carries structured detail (e.g. the
-        opencode permission request id + patterns for
-        ``kind="permission"`` records); optional, persisted
-        additively (records load key-tolerantly, no schema bump —
-        escalation records are not Delegations).
-
-        Side effects:
-        * Sets the asking delegation's ``needs_attention`` flag via
-          the WSEventBus (``delegation.needs_attention``).
-        * Publishes ``specialist.escalated`` with the question +
-          options + delegation_id + escalation_id + kind +
-          audience + deadline (``None`` when no timeout).
+        Atomic under the store lock (incident 2026-09-11: the in-band
+        bridge and the stall branch both created unconditionally, and
+        create() overwrites per delegation_id — the second finder
+        destroyed the first's live record or its recorded answer).
+        When ``reuse_request_id`` is set and a PENDING record for this
+        delegation already carries that request id in its metadata, the
+        existing record returns untouched with ``created=False`` (no
+        new event, no flag flip — the UI already shows it). Otherwise
+        a new record is created exactly as before (``created=True``).
+        Param shapes mirror :meth:`create`.
         """
         escalation_id = f"esc-{uuid.uuid4().hex[:10]}"
         now = _now()
@@ -255,6 +248,15 @@ class EscalationStore:
             "metadata": metadata if isinstance(metadata, dict) else None,
         }
         async with self._lock:
+            if reuse_request_id is not None:
+                existing = self._records.get(delegation_id)
+                if (
+                    existing is not None
+                    and existing.get("status") == "pending"
+                    and (existing.get("metadata") or {}).get("requestID")
+                    == reuse_request_id
+                ):
+                    return dict(existing), False
             self._records[delegation_id] = rec
             await self._persist(delegation_id)
         await self._emit(
@@ -271,7 +273,36 @@ class EscalationStore:
             },
         )
         await self._flag(delegation_id, True)
-        return dict(rec)
+        return dict(rec), True
+
+    async def create(
+        self,
+        *,
+        delegation_id: str,
+        question: str,
+        options: list[str] | None = None,
+        kind: str = "question",
+        audience: str = "human",
+        timeout_seconds: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a new escalation. Returns the escalation record.
+
+        Thin wrapper over :meth:`create_or_reuse` (no reuse key, so it
+        always creates). Callers racing another finder on the SAME ask
+        (permission bridge, stall branch) must use ``create_or_reuse``
+        with the ask's request id instead.
+        """
+        rec, _ = await self.create_or_reuse(
+            delegation_id=delegation_id,
+            question=question,
+            options=options,
+            kind=kind,
+            audience=audience,
+            timeout_seconds=timeout_seconds,
+            metadata=metadata,
+        )
+        return rec
 
     async def _flag(self, delegation_id: str, value: bool) -> None:
         """Best-effort ``needs_attention`` flip via the injected callback.

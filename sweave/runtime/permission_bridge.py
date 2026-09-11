@@ -286,6 +286,11 @@ async def resolve_hijack_request(
         project_dir=Path(state["project_dir"]) if state.get("project_dir") else None,
         permission_roots=state["roots"],
     )
+    # The stall branch owns the reply when IT recorded first
+    # (``created`` False below): only the creator posts. Defaults
+    # True for the in-scope path, which creates no record but must
+    # still fire its auto-allow reply.
+    created = True
     if in_scope:
         response_value = "once"
         status = "auto_allowed"
@@ -294,8 +299,12 @@ async def resolve_hijack_request(
             f"opencode asks {permission} for {patterns}"
             + (f" (command: {command})" if command else "")
         )
+        # Atomic claim (incident 2026-09-11): the stall branch races
+        # us on the same ask, and create() overwrites per
+        # delegation_id — a double-ferried event must reuse, never
+        # destroy the live record or double-post the reply.
         try:
-            await escalation_store.create(
+            _, created = await escalation_store.create_or_reuse(
                 delegation_id=state["delegation_id"],
                 question=(
                     f"Permission required: {summary}. Answer 'allow once'"
@@ -312,6 +321,7 @@ async def resolve_hijack_request(
                     "patterns": patterns,
                     "command": command,
                 },
+                reuse_request_id=request_id,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("permission_bridge: escalation create failed: %s", e)
@@ -339,7 +349,10 @@ async def resolve_hijack_request(
                 response_value = "once"
         else:
             response_value = "reject"
-    if base_url:
+    if base_url and created:
+        # The stall branch owns the reply when it recorded first
+        # (``created`` False): skip our POST or the same request id
+        # is answered twice against the serve.
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 code = await reply_permission_request(
