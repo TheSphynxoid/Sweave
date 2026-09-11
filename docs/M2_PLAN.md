@@ -136,7 +136,28 @@ only: no planner, no UI, no enforcement, no calibration.
   per-specialist estimate correction counts) + a calibration report
   endpoint. Bridge into R6; no neural training in M2.
 
-## 4. Gates for the series
+## 4. Fast-track (pre-M2): user default out of models.yaml
+
+Accepted defect 2026-09-11 (user proposal, verified against code).
+Three writers share one file today: `set_default_model` persists the
+user's selection INTO models.yaml (`config/manager.py:265-320` via
+`_persist_models`, which rewrites providers+default at `:343-358`);
+`sync_registry` reads `old_default` from the same file and rewrites it
+(`models_sync.py:520,565`); any stale read (fresh checkout, parallel
+session, competing writer) silently replaces the user's selection —
+the stray `default: opencode/muse-spark-...` M seen 2026-09-11 is the
+live exhibit. Generated artifact + user state in one file is the bug.
+Fix shape: the user default moves to `config.yaml` (`models.default`
+already exists on the config schema and already wins on the read path
+— `manager.py:228-230,90`); `set_default_model` writes there and never
+touches models.yaml; `write_registry`/sync stop reading/writing
+`default`; one migration adopts a legacy models.yaml default into
+config.yaml iff config is unset; `_persist_models` stops rewriting the
+registry from memory (second clobber vector). Half-step, no behavior
+change except the write path; goes before M2.0 (removes a live footgun
+the series would otherwise keep tripping over).
+
+## 5. Gates for the series
 
 Per-step: the step's pytest + `run.py --check` + 3× suite green +
 live check where the plan calls for it (established execution
