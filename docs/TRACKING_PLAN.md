@@ -55,7 +55,7 @@ justification citing this file's phase and the reality evidence below.
 
 ## 3. Phases (each shippable, each gated; later phases never reshape earlier ones)
 
-### Phase A — Plan board over Delegation data, read-only (THIS session)
+### Phase A — Plan board over Delegation data, read-only (DONE 2026-09-11)
 New `/plan` route + Sidebar entry. Three views over EXISTING endpoints
 only (`GET /api/delegations`, `GET .../detail`, escalation endpoints):
 Kanban columns queued/running/review/done/failed, Table of the same
@@ -68,6 +68,17 @@ trace-todos); T5 (route pattern exists).
 Done-gate: board renders the Sweave project's own 198 delegations in a
 screenshot gate; empty-project state honest; pytest untouched-green (no
 backend change), vitest +, `npm run build` green.
+
+Execution summary (2026-09-11, commit `eeb636d`): shipped as planned, no
+deviations. `pages/plan/board.ts` pure builder (columns + bugs lane +
+BOARD_CAP 200) + 5 vitest; `pages/Plan.tsx` (Kanban/table toggle, bugs
+lane, shared DetailView modal, same `["delegations"]` query key as
+Children); route + Sidebar funnel entry + palette item; LiveTree
+`KindPill`/`StatusPill` exported (one-word, behavior-neutral) for one
+pill convention. Gates: 238/238 vitest (was 233; +5), `npm run build`
+green (tsc + vite), 645/645 pytest untouched-green (zero backend files
+in the commit). Screenshot gate deferred (no backend running in this
+session) — owed before Phase B.
 
 ### Phase B — Lightweight tickets store + user creation (next)
 Per-project `{project}/.sweave/tickets.json` (atomic write-through,

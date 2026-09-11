@@ -77,6 +77,18 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **Tracking Phase A — read-only /plan board (2026-09-11)** — plan of
+  record `docs/TRACKING_PLAN.md` (validated same day: new `/plan` tab,
+  schedule = visual due-dates+reminders, Phase D; scheduled runs
+  deferred). Reality findings that shaped it: 0 `todo` tool parts across
+  6,396 traces (trace projection rejected on evidence), 198 delegation
+  records in this repo (board has real data), no scheduler/store/skills.
+  Shipped `eeb636d`: Kanban + table + bugs lane over existing endpoints
+  (zero backend change), 238/238 vitest (+5), build green, 645/645
+  pytest. Screenshot gate owed before Phase B. Rulings: specialists
+  escalate, never file tickets (Phase B); skills read via files, zero
+  new MCP slots; `customize-sweave` standalone post-MVP, activatable,
+  island-isolated.
 - ✅ **`_sweave_managed` body-leak fixed (2026-09-11)** — the "Console
   Go: invalid request body: json: unknown field `_sweave_managed`"
   errors (dogfood children 20:24+ AND the orchestrator chat lane):
