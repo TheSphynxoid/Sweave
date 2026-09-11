@@ -319,6 +319,19 @@ parallel side-direction, not a minor — tracked alongside, not after.
   a natural first customer for the dogfood loop. Lifecycle: born
   with the sprint, archived into project lore with provenance at
   reunion close.
+
+  Spearhead-as-sprint-master (explored 2026-09-11, NOT locked): the
+  role mapping is nearly 1:1 — spearhead creates sprints and runs
+  reunions (standup + retro combined), mediation clears impediments
+  (escalations ARE impediments), tickets are the backlog, the kanban
+  is the board, estimation grows toward velocity, postmortems are
+  retros, the human is the product owner (priorities + acceptance via
+  merges/promotes). Lean into the mapping where it clarifies (names:
+  sprint, backlog, reunion, impediment); don't force it where the
+  medium differs (async agents: milestone cadence, not daily;
+  spearhead also holds technical authority — assignment + conformance
+  — which Scrum splits across team/PO). Value: any engineering
+  manager understands the product in one paragraph.
 - **Five-minute onboard.** Open repo → stack detected → roster
   proposed → first delegation in minutes. The demo that sells dev
   tools. Seeds: agents loader, models sync, gallery, topology gen.
