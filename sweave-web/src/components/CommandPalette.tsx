@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MessageSquare,
   Network,
+  ListTodo,
   Brain,
   Users,
   Settings,
@@ -83,6 +84,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => run(() => navigate("/children"))}>
             <Network />
             <span>Go to Children</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(() => navigate("/plan"))}>
+            <ListTodo />
+            <span>Go to Plan</span>
           </CommandItem>
           <CommandItem onSelect={() => run(() => navigate("/memory"))}>
             <Brain />

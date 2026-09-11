@@ -3,7 +3,7 @@
  *
  * Modern agent-shell nav: brand header + collapse toggle, the project
  * switcher, the always-visible session tree, the primary funnels
- * (Chat / Children) and the pane shells (Memory / Agents / Settings).
+ * (Chat / Children / Plan) and the pane shells (Memory / Agents / Settings).
  * Active items get a left accent bar (expanded) or a filled chip (collapsed);
  * section labels + counts keep it scannable. A ⌘K hint at the bottom opens
  * the command palette.
@@ -17,6 +17,7 @@ import { type LucideIcon } from "lucide-react";
 import {
   MessageSquare,
   Network,
+  ListTodo,
   Brain,
   Users,
   Settings,
@@ -38,6 +39,9 @@ import { Button } from "@/components/ui/button";
 const FUNNELS = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/children", label: "Children", icon: Network },
+  // TRACKING_PLAN Phase A: the plan board sits with the funnels
+  // (same weight as Chat/Children, per the 2026-09-11 ruling).
+  { to: "/plan", label: "Plan", icon: ListTodo },
 ] as const;
 
 const SCAFFOLDS = [

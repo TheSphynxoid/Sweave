@@ -10,6 +10,7 @@
  * Pages:
  *   - /chat (M1.9 step 2)
  *   - /children (M1.9 step 3)
+ *   - /plan (TRACKING_PLAN Phase A: read-only board over delegations)
  *   - /delegations/:id (R4.1 step 3 scaffold; R4.3 fills in)
  *   - /memory, /agents, /settings (R4.1 step 3 scaffolds; R4.4 fills in)
  */
@@ -20,6 +21,7 @@ import { WSProvider } from "@/context/WSProvider";
 import { Layout } from "@/components/Layout";
 import { ChatPage } from "@/pages/Chat";
 import { ChildrenPage } from "@/pages/Children";
+import { PlanPage } from "@/pages/Plan";
 import { MemoryPage } from "@/pages/Memory";
 import { AgentsPage } from "@/pages/Agents";
 import { SettingsPage } from "@/pages/Settings";
@@ -43,6 +45,9 @@ export default function App() {
                 <Route index element={<Navigate to="/chat" replace />} />
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="children" element={<ChildrenPage />} />
+                {/* TRACKING_PLAN Phase A: read-only plan board
+                    (Kanban + table + bugs lane over delegations). */}
+                <Route path="plan" element={<PlanPage />} />
                 {/* R4.1 step 3: designed scaffolds for the
                     surfaces whose feature work ships in
                     R4.3 (delegation detail) and R4.4 (memory

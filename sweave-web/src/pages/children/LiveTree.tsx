@@ -255,7 +255,9 @@ function TreeRow({ node, onOpen }: { node: TreeNode; onOpen: (id: string) => voi
   );
 }
 
-function KindPill({ kind }: { kind: Delegation["kind"] }) {
+/** Shared with the Plan board (TRACKING_PLAN Phase A): one pill convention
+ * across the funnel surfaces. */
+export function KindPill({ kind }: { kind: Delegation["kind"] }) {
   const label = kind === "chat" ? "CHAT" : "TASK";
   return (
     <span
@@ -270,7 +272,9 @@ function KindPill({ kind }: { kind: Delegation["kind"] }) {
   );
 }
 
-function StatusPill({ status }: { status: DelegationStatus }) {
+/** Shared with the Plan board (TRACKING_PLAN Phase A): one pill convention
+ * across the funnel surfaces (calm-amber failed per the M1.13 taxonomy). */
+export function StatusPill({ status }: { status: DelegationStatus }) {
   return (
     <span
       data-testid={`status-pill-${status}`}
