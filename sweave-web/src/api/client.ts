@@ -31,6 +31,7 @@ import type {
   SessionSummary,
   SpecialistCreate,
   SpecialistSummary,
+  TurnSnapshot,
   Worktree,
 } from "@/types";
 
@@ -165,6 +166,20 @@ class ApiClient {
       { timeout: 900_000 },
     );
     return r.data;
+  }
+
+  /**
+   * Active-turn snapshot (2026-09-10 recovery contract). Returns the
+   * snapshot when a turn is active for THIS server process, else
+   * ``null`` (the endpoint answers 200 with ``{active: false,
+   * turn: null}`` when idle -- no 404 path). Never durable: after a
+   * server restart there is no active turn.
+   */
+  async getActiveTurn(sessionId: string): Promise<TurnSnapshot | null> {
+    const r = await this.client.get<{ active: boolean; turn: TurnSnapshot | null }>(
+      `/sessions/${encodeURIComponent(sessionId)}/turn`,
+    );
+    return r.data.active ? (r.data.turn ?? null) : null;
   }
 
   /**

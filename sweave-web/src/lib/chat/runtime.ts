@@ -31,12 +31,24 @@
  *                                   carries the full reasoning text;
  *                                   this replaces the bubble.
  *
+ * Two hardening deviations from the happy order (2026-09-11 finalize
+ * hardening — a stuck `streaming` bubble renders raw markdown as plain
+ * text forever):
+ *   - a trailing `chat.delta`/`chat.thinking` AFTER the authoritative
+ *     `message.added` (WS replay / coalescer tail) must NOT resurrect
+ *     the settled bubble or re-stick the composer;
+ *   - the crash path (`sweave/chat/loop.py::_crash_finalise`) emits
+ *     ONLY `delegation.status_changed` (failed|cancelled) — no
+ *     `message.added` — so a streaming bubble for the closing
+ *     delegation is promoted to a settled placeholder there, and a
+ *     later authoritative `message.added` replaces the placeholder.
+ *
  * This module is PURE (no React). The React hook in step 1b wraps it in
  * `useExternalStoreRuntime`. All functions are side-effect free and the
  * state machine is fully deterministic per event sequence -- the vitest
  * suite pins the ordering + finalize + queue semantics.
  */
-import type { SessionMessage } from "@/types";
+import type { SessionMessage, TurnSnapshot } from "@/types";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 
 // ---------------------------------------------------------------------------
@@ -137,7 +149,96 @@ export function mergeHistory(
   };
 }
 
-/** Synthetic id prefix for optimistic user messages. */
+/**
+ * Restore the streaming/waiting state from an ACTIVE-turn snapshot
+ * (2026-09-10 recovery contract).
+ *
+ * Sources of the snapshot:
+ *   - ``GET /api/sessions/{id}/turn`` on page load / session
+ *     activation / WS reconnect: ``{active, turn}`` — apply when
+ *     ``active`` is true and ``turn`` carries a delegation id.
+ *   - HTTP 409 from the turn-send endpoint while a turn runs: the
+ *     body is ``detail.turn`` — adopt as if the turn were locally
+ *     started (no error).
+ *
+ * Semantics:
+ *   - Only ACTIVE turns are restored: never resurrect text for a
+ *     turn that already finalized (the final overwrite is
+ *     authoritative and the stream tail on a completed/error record
+ *     is a partial, not the truth). Callers must therefore only
+ *     hand in snapshots with ``active`` truthy; this function also
+ *     guards against a settled local state (a non-streaming entry
+ *     joined by the delegation id already proves the turn ended
+ *     between snapshot and apply — identity return).
+ *   - If the live state already tracks the same delegation (a
+ *     reconnect mid-stream is the common case), the LIVE
+ *     accumulated text wins over the (older) snapshot text —
+ *     deltas may have landed since the snapshot was taken. Only
+ *     empty live thinking is backfilled from the snapshot.
+ *   - The delegation join key is required to seed the bubble; a
+ *     snapshot without one can only bump the turn to ``running``
+ *     (waiting indicator, no bubble) — the WS deltas will key the
+ *     bubble when they arrive.
+ */
+export function applyTurnSnapshot(
+  state: SweaveThreadState,
+  snapshot: TurnSnapshot | null | undefined,
+): SweaveThreadState {
+  if (!snapshot) return state;
+  const delegationId = snapshot.delegation_id;
+  if (!delegationId) {
+    // No join key: best-effort waiting indicator only; the WS
+    // deltas (which carry delegation_id) key the real bubble.
+    return state.turn === "idle" ? { ...state, turn: "running" } : state;
+  }
+  // Already settled for this delegation: the turn finished between
+  // the snapshot and now -- never resurrect partial text.
+  if (state.entries.some((e) => !e.streaming && delegationIdOf(e.message) === delegationId)) {
+    return state;
+  }
+  const existing = state.entries.find(
+    (e) => e.streaming && e.delegationId === delegationId,
+  );
+  if (existing) {
+    // Live text wins over the (older) snapshot accumulation; only
+    // empty live thinking is backfilled.
+    const entries = state.entries.map((e) =>
+      e.streaming && e.delegationId === delegationId
+        ? { ...e, thinking: e.thinking ?? (snapshot.thinking_text || undefined) }
+        : e,
+    );
+    return { ...state, entries, turn: "running", activeDelegationId: delegationId };
+  }
+  // Seed the recovering bubble. The registry's stream_text is the
+  // FULL accumulated partial reply (the loop appends to it), so it
+  // maps 1:1 onto the bubble content; subsequent chat.delta events
+  // append inline.
+  const bubble: SessionMessage = {
+    id: `stream-${delegationId}`,
+    role: "assistant",
+    content: snapshot.stream_text,
+    timestamp: new Date().toISOString(),
+    agent: "orchestrator",
+    tool_name: null,
+    tool_result: null,
+    metadata: { delegation_id: delegationId },
+  };
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      {
+        message: bubble,
+        streaming: true,
+        delegationId,
+        thinking: snapshot.thinking_text || undefined,
+      },
+    ],
+    turn: "running",
+    activeDelegationId: delegationId,
+  };
+}
+
 const OPTIMISTIC_PREFIX = "local-";
 
 // ---------------------------------------------------------------------------
@@ -216,6 +317,44 @@ export function projectThread(state: SweaveThreadState): ThreadMessageLike[] {
 // Event mapping (pure)
 // ---------------------------------------------------------------------------
 
+/** Delegation statuses that end the turn (loop.py _finalise_turn / _crash_finalise). */
+const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
+
+/**
+ * True when the state carries proof the delegation already finalized:
+ * a SETTLED assistant entry joined by metadata delegation id. Optimistic
+ * user entries and persisted USER messages never prove a settle (the
+ * persisted user message lands BEFORE the assistant streams), which is
+ * why the role is checked.
+ */
+function hasSettledAssistant(
+  state: SweaveThreadState,
+  delegationId: string,
+): boolean {
+  return state.entries.some(
+    (e) =>
+      !e.streaming &&
+      !e.optimistic &&
+      e.message.role === "assistant" &&
+      delegationIdOf(e.message) === delegationId,
+  );
+}
+
+/**
+ * Close the turn on the given entries, but never clobber a turn that
+ * still has another live streaming bubble (concurrent impl children /
+ * interleaved turns): the close only reaches idle when nothing streams.
+ */
+function closeTurnIfIdle(
+  state: SweaveThreadState,
+  entries: ChatEntry[],
+): SweaveThreadState {
+  if (entries.some((e) => e.streaming)) {
+    return { ...state, entries };
+  }
+  return { ...state, entries, turn: "idle", activeDelegationId: null };
+}
+
 /**
  * Submit a user turn. Optimistically appends the user message and
  * moves the turn to ``queued`` (the serial loop will run it next).
@@ -251,12 +390,18 @@ export function applySubmit(
  * assistant bubble keyed by ``delegationId``, creating the bubble on
  * the first delta. Also flips the turn to ``running`` + records the
  * active delegation (fallback in case ``status_changed`` was missed).
+ *
+ * Finalize hardening: a delta for a delegation that ALREADY has its
+ * settled assistant (metadata join) is trailing garbage (WS replay /
+ * coalescer tail) — it must not resurrect a zombie streaming bubble
+ * or flip the turn back to ``running`` (raw-markdown bug, 2026-09-11).
  */
 export function applyDelta(
   state: SweaveThreadState,
   delegationId: string,
   text: string,
 ): SweaveThreadState {
+  if (hasSettledAssistant(state, delegationId)) return state;
   const existing = state.entries.find(
     (e) => e.streaming && e.delegationId === delegationId,
   );
@@ -299,13 +444,15 @@ export function applyDelta(
  * bubble's reasoning, keyed by ``delegationId`` — creating the bubble
  * (with empty content) when thinking precedes the first text delta.
  * Also flips the turn to ``running`` + records the active delegation,
- * same fallback contract as ``applyDelta``.
+ * same fallback contract as ``applyDelta`` (same trailing-garbage
+ * guard: no thinking after this delegation settled).
  */
 export function applyThinking(
   state: SweaveThreadState,
   delegationId: string,
   text: string,
 ): SweaveThreadState {
+  if (hasSettledAssistant(state, delegationId)) return state;
   const existing = state.entries.find(
     (e) => e.streaming && e.delegationId === delegationId,
   );
@@ -402,14 +549,24 @@ export function applyMessageAdded(
   if (streamingIdx >= 0) {
     const entries = state.entries.slice();
     entries[streamingIdx] = { message, streaming: false };
-    return { ...state, entries, turn: "idle", activeDelegationId: null };
+    return closeTurnIfIdle(state, entries);
   }
-  return {
-    ...state,
-    entries: [...state.entries, { message, streaming: false }],
-    turn: "idle",
-    activeDelegationId: null,
-  };
+  // Crash-path hardening: a terminal status may already have promoted
+  // the streaming bubble into a settled placeholder (ids are
+  // deterministic: stream-<delegationId>). The late authoritative
+  // message REPLACES the placeholder instead of appending a duplicate.
+  if (join) {
+    const placeholderIdx = state.entries.findIndex(
+      (e) =>
+        !e.streaming && !e.optimistic && e.message.id === `stream-${join}`,
+    );
+    if (placeholderIdx >= 0) {
+      const entries = state.entries.slice();
+      entries[placeholderIdx] = { message, streaming: false };
+      return closeTurnIfIdle(state, entries);
+    }
+  }
+  return closeTurnIfIdle(state, [...state.entries, { message, streaming: false }]);
 }
 
 /**
@@ -443,10 +600,19 @@ export function applyRerun(
 }
 
 /**
- * Apply a ``delegation.status_changed`` event. Only the ``running``
- * transition mutates state (queued → running + record the delegation);
- * ``done``/``failed`` are informational — the authoritative close is
- * the assistant ``message.added`` which always follows.
+ * Apply a ``delegation.status_changed`` event. ``running`` transitions
+ * to running + records the delegation (queued → running).
+ *
+ * Terminal statuses: the happy path (status done → message.added) has
+ * message.added owning the close, and a bubble-less terminal status
+ * stays informational (legacy contract). BUT the crash path
+ * (loop.py ``_crash_finalise``) emits ONLY status_changed(failed) —
+ * no message.added — so a streaming bubble FOR THE CLOSING delegation
+ * is promoted to a settled placeholder here (its projection gets a
+ * terminal message status, so the Text part completes and Markdown
+ * renders instead of raw plain text) and the composer re-enables.
+ * A terminal status for an unrelated delegation (impl child, im-*) is
+ * the identity — it must never close a different live turn.
  */
 export function applyStatusChanged(
   state: SweaveThreadState,
@@ -460,5 +626,22 @@ export function applyStatusChanged(
       activeDelegationId: delegationId,
     };
   }
-  return state;
+  if (!TERMINAL_STATUSES.has(status)) return state;
+  const idx = state.entries.findIndex(
+    (e) => e.streaming && e.delegationId === delegationId,
+  );
+  if (idx < 0) return state;
+  const entries = state.entries.map((e, i) =>
+    i === idx ? { ...e, streaming: false } : e,
+  );
+  if (entries.some((e) => e.streaming)) {
+    // Another bubble is still live: keep the turn running, re-point
+    // tracking only if the closed delegation was the tracked one.
+    const activeDelegationId =
+      state.activeDelegationId === delegationId
+        ? entries.find((e) => e.streaming)?.delegationId ?? null
+        : state.activeDelegationId;
+    return { ...state, entries, activeDelegationId };
+  }
+  return { ...state, entries, turn: "idle", activeDelegationId: null };
 }

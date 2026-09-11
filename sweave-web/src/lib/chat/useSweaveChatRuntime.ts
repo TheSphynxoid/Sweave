@@ -25,7 +25,8 @@ import {
 } from "@assistant-ui/react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
-import type { SessionMessage } from "@/types";
+import type { SessionMessage, TurnSnapshot } from "@/types";
+import axios from "axios";
 import {
   applyDelta,
   applyMessageAdded,
@@ -33,6 +34,7 @@ import {
   applyStatusChanged,
   applySubmit,
   applyThinking,
+  applyTurnSnapshot,
   initialThreadState,
   mergeHistory,
   projectThread,
@@ -48,8 +50,27 @@ export function extractAppendText(message: AppendMessage): string {
     .join("");
 }
 
+/**
+ * Pull the ACTIVE-turn snapshot out of a turn-send error, when the
+ * error IS the double-send guard (HTTP 409 whose body carries the
+ * snapshot). Everything else (network, 500, 404) yields ``null`` --
+ * callers fall through to the legacy silent-catch path.
+ */
+export function turnSnapshotFromSendError(err: unknown): TurnSnapshot | null {
+  if (!axios.isAxiosError(err)) return null;
+  const status = err.response?.status;
+  const data = err.response?.data as { detail?: { turn?: TurnSnapshot } } | undefined;
+  const turn = data?.detail?.turn;
+  if (status !== 409 || !turn) return null;
+  return turn;
+}
+
 export function useSweaveChatRuntime(sessionId: string | null) {
-  const { subscribe } = useWS();
+  // The connection state doubles as the refresh/reconnect recovery
+  // trigger: every transition to "open" (page load after the socket
+  // comes up, or a reconnect) re-eyes the server's active-turn
+  // snapshot for the current session (2026-09-10 recovery contract).
+  const { state: wsState, subscribe } = useWS();
   const [state, setState] = useState<SweaveThreadState>(initialThreadState);
   // Which session the local state belongs to. A session switch
   // replaces (never merges): merging would leak the old session's
@@ -87,6 +108,31 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       setState(initialThreadState());
     }
   }, [sessionDetail, sessionId]);
+
+  // Active-turn recovery (2026-09-10 contract): on page load (the
+  // first socket "open" after mount), on session activation, and on
+  // every WS reconnect, ask the server whether a turn is still
+  // running for this session. If so, restore the waiting/streaming
+  // indicator + the accumulated partial text; the turn's completion
+  // event via WS (authoritative `message.added`) clears it. In-memory
+  // only: after a server restart the answer is always "no active
+  // turn" and nothing is expressed. applyTurnSnapshot is defensive
+  // against the live state already streaming for the same delegation.
+  useEffect(() => {
+    if (!sessionId || wsState !== "open" || !sessionDetail) return;
+    if (sessionDetail.id !== sessionId) return;
+    let cancelled = false;
+    api.getActiveTurn(sessionId).then((snapshot) => {
+      if (cancelled || !snapshot) return;
+      // Stale-session guard: the snapshot must belong to the session
+      // still active in this hook.
+      if (snapshot.session_id !== sessionId) return;
+      setState((s) => applyTurnSnapshot(s, snapshot));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, wsState, sessionDetail]);
 
   // WS subscriptions, scoped to the active session. `sessionId` is in
   // the dep list but the closures read the current value directly.
@@ -129,7 +175,6 @@ export function useSweaveChatRuntime(sessionId: string | null) {
 
   // Projection -> assistant-ui runtime.
   const messages = useMemo(() => projectThread(state), [state]);
-  const isRunning = state.turn === "running" || state.turn === "queued";
 
   const rerun = useCallback(
     async (messageId: string, content?: string) => {
@@ -144,8 +189,6 @@ export function useSweaveChatRuntime(sessionId: string | null) {
         return next;
       });
       if (!applied) return;
-      // The backend runs the turn; the WS events are authoritative
-      // for the thread view (the response's `assistant` is ignored).
       try {
         await api.rerunTurn(
           sessionId,
@@ -153,11 +196,15 @@ export function useSweaveChatRuntime(sessionId: string | null) {
             ? { from_message_id: messageId }
             : { from_message_id: messageId, content },
         );
-      } catch {
-        // The backend persists an error assistant message on
-        // failure; the WS `message.added` surfaces it. A transport
-        // failure self-heals on the next history refetch
-        // (mergeHistory drops non-authoritative rows).
+      } catch (err: unknown) {
+        // Double-send guard (409 + snapshot): a turn was already
+        // running for this session -- adopt the snapshot instead of
+        // erroring. Other failures: the backend persists an error
+        // assistant message; the WS `message.added` surfaces it.
+        const snapshot = turnSnapshotFromSendError(err);
+        if (snapshot && snapshot.session_id === sessionId) {
+          setState((s) => applyTurnSnapshot(s, snapshot));
+        }
       }
     },
     [sessionId],
@@ -175,17 +222,32 @@ export function useSweaveChatRuntime(sessionId: string | null) {
         if (s.turn !== "idle") return s;
         return applySubmit(s, text);
       });
-      // The backend runs the turn; the WS events are authoritative
-      // for the thread view (the response's `assistant` is ignored).
+      // The optimistic user message stays: the running turn's own
+      // `message.added` (user) reconciles it against the persisted copy.
       try {
         await api.sendMessage(sessionId, { role: "user", content: text });
-      } catch {
-        // The backend persists an error assistant message on
-        // failure; the WS `message.added` surfaces it.
+      } catch (err: unknown) {
+        // Double-send guard (HTTP 409 whose body carries the active
+        // turn's snapshot): adopt the snapshot as if the turn were
+        // locally started -- switch to the waiting/streaming view,
+        // block the composer, resume via WS events. NO error path:
+        // the user's message simply belongs to a turn that already
+        // started. Everything else (network, 500, 404): the backend
+        // persists an error assistant message; WS surfaces it.
+        const snapshot = turnSnapshotFromSendError(err);
+        if (snapshot && snapshot.session_id === sessionId) {
+          setState((s) => applyTurnSnapshot(s, snapshot));
+        }
       }
     },
     [sessionId],
   );
+
+  // isRunning is the server-truth-derived composer gate: it reads the
+  // restored turn (snapshot) exactly like a locally-started one, so a
+  // refresh can never resurrect an editable composer while a turn
+  // runs. isSendDisabled below is the SAME invariant.
+  const isRunning = state.turn === "running" || state.turn === "queued";
 
   return {
     runtime: useExternalStoreRuntime({
@@ -196,5 +258,11 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       onNew,
     }),
     rerun,
+    onNew,
+    /** Projected thread for tests/telemetry; the Thread renders `runtime`. */
+    messages,
+    /** Exposed for tests/telemetry only -- the Thread renders `runtime`. */
+    turn: state.turn,
+    isRunning,
   };
 }

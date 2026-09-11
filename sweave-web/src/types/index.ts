@@ -93,6 +93,25 @@ export interface SessionDetail extends SessionSummary {
   children: SessionChild[];
 }
 
+/**
+ * Active-turn snapshot (2026-09-10 recovery contract). From
+ * `GET /api/sessions/{id}/turn` (``turn`` field when ``active``) or
+ * the HTTP 409 body of a second POST while a turn is running
+ * (``detail.turn``). In-memory only: never durable across a server
+ * restart (``active: false`` then, always).
+ */
+export interface TurnSnapshot {
+  session_id: string;
+  delegation_id: string | null;
+  status: string;
+  /** waiting | streaming | question */
+  phase: string;
+  started_at: string;
+  stream_text: string;
+  thinking_text: string;
+  pending_question: boolean;
+}
+
 export interface SessionCreate {
   name: string;
   project_name?: string;

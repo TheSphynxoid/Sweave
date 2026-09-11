@@ -19,6 +19,7 @@ import {
   applyStatusChanged,
   applySubmit,
   applyThinking,
+  applyTurnSnapshot,
   delegationIdOf,
   initialThreadState,
   isSuperseded,
@@ -28,7 +29,7 @@ import {
   stateFromHistory,
   type SweaveThreadState,
 } from "../runtime";
-import type { SessionMessage } from "@/types";
+import type { SessionMessage, TurnSnapshot } from "@/types";
 
 function userMessage(id: string, content: string): SessionMessage {
   return {
@@ -348,5 +349,159 @@ describe("rerun: edit + resend / retry (supersede, don't delete)", () => {
         ?.custom;
     expect(customOf("u1")?.superseded).toBe(false);
     expect(customOf("a1")?.superseded).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turn recovery (2026-09-10 contract): applyTurnSnapshot
+// ---------------------------------------------------------------------------
+
+function turnSnapshot(overrides: Partial<TurnSnapshot> = {}): TurnSnapshot {
+  return {
+    session_id: "s-1",
+    delegation_id: "chat-active",
+    status: "running",
+    phase: "streaming",
+    started_at: "2026-09-10T12:00:00Z",
+    stream_text: "Partial reply so far",
+    thinking_text: "",
+    pending_question: false,
+    ...overrides,
+  };
+}
+
+function userMsg(id: string, content: string): SessionMessage {
+  return {
+    id,
+    role: "user",
+    content,
+    timestamp: "2026-09-10T11:59:00Z",
+    agent: null,
+    tool_name: null,
+    tool_result: null,
+    metadata: {},
+  };
+}
+
+describe("turn recovery: applyTurnSnapshot", () => {
+  it("seeds the streaming bubble + running turn from an active snapshot", () => {
+    const base = stateFromHistory([userMsg("u1", "do it")]);
+    const s = applyTurnSnapshot(base, turnSnapshot());
+
+    expect(s.turn).toBe("running");
+    expect(s.activeDelegationId).toBe("chat-active");
+    const bubble = s.entries.find((e) => e.streaming);
+    expect(bubble).toBeDefined();
+    expect(bubble?.message.content).toBe("Partial reply so far");
+    expect(bubble?.message.id).toBe("stream-chat-active");
+    // Projected as running -> the waiting/streaming indicator shows
+    // and the composer derives isRunning === true (disabled).
+    const projected = projectThread(s);
+    const like = projected.find((m) => m.id === "stream-chat-active");
+    expect((like as { status?: unknown }).status).toEqual({ type: "running" });
+  });
+
+  it("seeds thinking from the snapshot alongside partial text", () => {
+    const s = applyTurnSnapshot(
+      initialThreadState(),
+      turnSnapshot({ thinking_text: "recorded reasoning", stream_text: "text..." }),
+    );
+    const bubble = s.entries[0];
+    expect(bubble.streaming).toBe(true);
+    expect(bubble.thinking).toBe("recorded reasoning");
+    const projected = projectEntry(bubble);
+    const custom = (projected?.metadata ?? {}) as {
+      custom?: { thinking?: string | null };
+    };
+    expect(custom.custom?.thinking).toBe("recorded reasoning");
+  });
+
+  it("completion event clears the restored turn and re-enables the composer", () => {
+    let s = applyTurnSnapshot(initialThreadState(), turnSnapshot());
+    expect(s.turn).toBe("running");
+
+    // The turn's own WS events keep flowing; the authoritative close.
+    expect(s.entries.filter((e) => e.streaming)).toHaveLength(1);
+    s = applyDelta(s, "chat-active", " more");
+    s = applyMessageAdded(s, assistantMessage("a1", "Full final reply", "chat-active"));
+
+    expect(s.turn).toBe("idle");
+    expect(s.activeDelegationId).toBeNull();
+    expect(s.entries.filter((e) => e.streaming)).toHaveLength(0);
+    const final = s.entries.find((e) => e.message.id === "a1");
+    expect(final?.message.content).toBe("Full final reply");
+    // Assistant finalize replaces the recovering bubble entirely.
+    expect(s.entries.some((e) => e.message.id === "stream-chat-active")).toBe(false);
+  });
+
+  it("no change on idle: null snapshot is the identity", () => {
+    const base = stateFromHistory([userMsg("u1", "hi")]);
+    expect(applyTurnSnapshot(base, null)).toBe(base);
+    expect(applyTurnSnapshot(base, undefined)).toBe(base);
+  });
+
+  it("never resurrects a settled turn from a late snapshot", () => {
+    // History already carries the persisted assistant for this
+    // delegation (the turn finished between snapshot and apply).
+    const settled = stateFromHistory([
+      userMsg("u1", "do it"),
+      assistantMessage("a1", "final", "chat-active"),
+    ]);
+    const s = applyTurnSnapshot(settled, turnSnapshot());
+    expect(s).toBe(settled);
+    expect(s.turn).toBe("idle");
+    expect(s.entries.some((e) => e.streaming)).toBe(false);
+  });
+
+  it("reconnect mid-stream: live text wins over the older snapshot", () => {
+    let s = applyDelta(initialThreadState(), "chat-active", "summary: ");
+    s = applyDelta(s, "chat-active", "live tail");
+    const s2 = applyTurnSnapshot(s, turnSnapshot({ stream_text: "older partial" }));
+
+    expect(s2.turn).toBe("running");
+    const bubble = s2.entries.find((e) => e.streaming);
+    // Live accumulation ("summary: live tail") beats the snapshot's
+    // older accumulation, but the turn is re-confirmed as running
+    // (the reconnect could have raced a poll that just finalized).
+    expect(bubble?.message.content).toBe("summary: live tail");
+  });
+
+  it("deltas landing after a snapshot restore append to the recovered bubble", () => {
+    let s = applyTurnSnapshot(initialThreadState(), turnSnapshot());
+    s = applyDelta(s, "chat-active", " appended");
+    const bubble = s.entries.find((e) => e.streaming);
+    expect(bubble?.message.content).toBe("Partial reply so far appended");
+    expect(s.entries).toHaveLength(1);
+    expect(s.turn).toBe("running");
+  });
+
+  it("history merge keeps the recovered turn alive across a refetch", () => {
+    let s = applyTurnSnapshot(initialThreadState(), turnSnapshot());
+    // A React Query refetch mid-turn (window refocus) brings the
+    // persisted user message; the recovered bubble must survive.
+    s = mergeHistory(s, [userMsg("u1", "do it")]);
+    expect(s.turn).toBe("running");
+    expect(s.entries.some((e) => e.streaming)).toBe(true);
+    expect(s.entries.find((e) => e.streaming)?.message.content).toBe(
+      "Partial reply so far",
+    );
+  });
+
+  it("snapshot without a delegation id still flips the waiting indicator", () => {
+    const s = applyTurnSnapshot(initialThreadState(), turnSnapshot({ delegation_id: null }));
+    expect(s.turn).toBe("running");
+    expect(s.activeDelegationId).toBeNull();
+    expect(s.entries).toHaveLength(0);
+  });
+
+  it("already-streaming state is not bumped to a new turn / entries not duplicated", () => {
+    let s = applyTurnSnapshot(initialThreadState(), turnSnapshot());
+    // The server's next re-poll returns the same active snapshot; a
+    // re-apply must stay idempotent (one bubble).
+    const s2 = applyTurnSnapshot(s, turnSnapshot());
+    expect(s2.entries.filter((e) => e.streaming)).toHaveLength(1);
+    expect(s2).not.toBe(s); // new object, same number of bubbles
+    // Content untouched (no double prepend of the snapshot text).
+    expect(s2.entries[0].message.content).toBe("Partial reply so far");
   });
 });
