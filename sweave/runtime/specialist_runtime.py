@@ -651,12 +651,74 @@ class SpecialistRuntime:
         try:
             headers_fn = getattr(process, "_default_headers", None)
             headers = headers_fn() if callable(headers_fn) else {}
-            async with process._client.stream(
+            # Incident 2026-09-11 (17-min silent turn died on httpx
+            # ReadTimeout; the stall watchdog never fired): the
+            # watchdog below only wraps body chunks — a hang in
+            # response-header wait sat outside it. Bound the open
+            # too, and trace both phases so the next silent death is
+            # classifiable from the trace alone.
+            loop = asyncio.get_running_loop()
+            raw_cm = process._client.stream(
                 "POST",
                 f"/session/{wire_session_id}/message",
                 json=body,
                 headers=headers,
-            ) as resp:
+            )
+            t_open = loop.time()
+
+            class _AlreadyOpen:
+                """Re-wrap a manually-entered stream CM for ``async with``.
+
+                Lets the header wait carry its own stall bound while
+                the body below keeps its exact shape (no re-indent,
+                no behaviour change past the open).
+                """
+
+                def __init__(self, cm: Any, resp: Any) -> None:
+                    self._cm = cm
+                    self._resp = resp
+
+                async def __aenter__(self) -> Any:
+                    return self._resp
+
+                async def __aexit__(self, *exc: Any) -> Any:
+                    return await self._cm.__aexit__(*exc)
+
+            try:
+                _resp = await asyncio.wait_for(
+                    raw_cm.__aenter__(), timeout=stall_seconds
+                )
+            except asyncio.TimeoutError:
+                if trace is not None:
+                    try:
+                        trace.append(
+                            "stalled",
+                            {
+                                "phase": "headers",
+                                "stall_seconds": stall_seconds,
+                                "wait_s": round(loop.time() - t_open, 1),
+                            },
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await raw_cm.__aexit__(asyncio.TimeoutError, asyncio.TimeoutError(), None)
+                except Exception:
+                    pass
+                return (
+                    f"[chat error: stalled after {stall_seconds:.0f}s without "
+                    f"data (response headers never arrived; the turn may "
+                    f"still be running server-side; retry starts a fresh session)]"
+                )
+            if trace is not None:
+                try:
+                    trace.append(
+                        "stream_opened",
+                        {"wait_s": round(loop.time() - t_open, 2)},
+                    )
+                except Exception:
+                    pass
+            async with _AlreadyOpen(raw_cm, _resp) as resp:
                 resp.raise_for_status()
                 # Stall watchdog: ANY bytes reset the clock, so a slow
                 # but streaming turn keeps its full budget while a
@@ -666,6 +728,7 @@ class SpecialistRuntime:
                 stream_iter = resp.aiter_text().__aiter__()
                 carry = ""
                 stalled = False
+                first_byte_at: float | None = None
                 while True:
                     try:
                         chunk = await asyncio.wait_for(
@@ -678,6 +741,21 @@ class SpecialistRuntime:
                         break
                     if not chunk:
                         continue
+                    # Incident 2026-09-11: first body bytes vs open
+                    # distinguishes "headers hung" (no stream_opened /
+                    # first_byte events) from "body dribbled then died".
+                    if first_byte_at is None:
+                        first_byte_at = loop.time()
+                        if trace is not None:
+                            try:
+                                trace.append(
+                                    "first_byte",
+                                    {
+                                        "latency_s": round(first_byte_at - t_open, 2),
+                                    },
+                                )
+                            except Exception:
+                                pass
                     pieces, carry = _split_json_stream(chunk, carry)
                     for piece in pieces:
                         try:

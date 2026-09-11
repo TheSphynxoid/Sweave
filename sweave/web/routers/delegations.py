@@ -208,9 +208,7 @@ async def submit_task_v2(
         # agent name is what we check for loops; its chain_root_id
         # establishes which cache the new delegation lives under.
         from sweave.runtime.delegation_manager import (
-            BudgetExceededError,
-            DepthExceededError,
-            LoopDetectedError,
+            ChainError,
         )
 
         parent = None
@@ -237,11 +235,22 @@ async def submit_task_v2(
                     else ""
                 ),
             )
-        except DepthExceededError as e:
-            raise HTTPException(409, f"rejected: {e}") from e
-        except LoopDetectedError as e:
-            raise HTTPException(409, f"rejected: {e}") from e
-        except BudgetExceededError as e:
+        except ChainError as e:
+            # Incident 2026-09-11 (backend re-dispatch rejected by loop
+            # detection): rejections were invisible server-side — the
+            # "rejected: ..." line returns to the LLM only, so the next
+            # "why was my re-dispatch rejected" is unanswerable from
+            # web.log. Log every chain rejection with its code, target
+            # and chain root; the HTTP surface is unchanged.
+            logger.warning(
+                "submit_task_v2: chain %s rejected (parent=%s target=%s "
+                "chain_root=%s): %s",
+                getattr(e, "code", "chain_error"),
+                request.parent_task_id,
+                agent,
+                parent.chain_root_id or parent.delegation_id,
+                e,
+            )
             raise HTTPException(409, f"rejected: {e}") from e
     else:
         new_delegation = None
