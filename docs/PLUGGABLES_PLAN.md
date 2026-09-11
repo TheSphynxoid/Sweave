@@ -71,6 +71,29 @@ Four kinds. The word `plugin` means exactly one of them.
   rollback needs real design.
 - Skill reads add zero new always-visible MCP tools (TRACKING rule stands).
 - Bridges never live in project dirs (permission-bridge ruling stands).
+- Defer wait-set (locked 2026-09-11): `defer` stays non-blocking
+  (`queued: <id>` at tool level, `sweave/mcp/__init__.py:244-287`);
+  a `blocking` flag puts that child in the synthesis join set
+  (`ChatLoop._wait_for_children`, `sweave/chat/loop.py:346-384),
+  `false` = fire-and-forget into the Children lane. No tool-call
+  holding (kills fanout, burns the turn timeout on one child).
+- Review-request record (locked 2026-09-11): a finishing specialist
+  yields status `review` + a review-request (reviewer-role hint, diff
+  pointer, manifest/confidence); the orchestrator resolves it
+  explicitly (`defer(target=reviewer)`) or batched when the wait-set
+  settles. Verdicts flow through `POST /api/delegations/{id}/promote`
+  only. Specialists never spawn reviewers (one-authority rule stands).
+  Detail design lands with R2 cross-review.
+- Per-specialist tool enforcement (locked 2026-09-11): one `Specialist`
+  record is the source of truth for tool policy. Opencode translates
+  it by rendering `agent.sweave-spec-{name}` entries (Option A;
+  system prompt stays a session-level send there — transitional).
+  The custom engine consumes it natively per run
+  (`tools[] + permission_map`, `docs/CUSTOM_ENGINE_PLAN.md:81`).
+  Opencode render quirks stay quarantined in `mcp_config.py` +
+  `harness/opencode.py` per the wire-drift doctrine.
+  Still owed: new-server default, reviewer locked-vs-template,
+  allow/deny-only values (proposed: default-off, locked, no `ask`).
 
 ## 4. Goal state
 
