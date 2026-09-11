@@ -99,6 +99,15 @@
     env/export, audit export. Locks owed before execution: the
     R4-deferral ruling + M2.3 proposed defaults (default-off servers,
     locked reviewer, allow/deny-only).
+  - Cleanup (2026-09-11, `3baf1e8`): removed retired v1 artifacts —
+    empty root `agents.yaml` (home-anchored since M1.2), `test_page.html`,
+    `test_m1_8_streaming_ui.js` (logic ported into tests/), root
+    `test_projects.py` (superseded by `tests/`), `WEB_UI_README.md`
+    (documented the removed vanilla UI), `tmp-debug-gate/`; cleared
+    ignored runtime logs + stale `web.pid`. 674 tests collect clean.
+    Versioning: no V1 was ever cut (`pyproject` still `0.1.0`, R5
+    unshipped) — proposal is `0.2.0` for the M2 thread, `1.0` at first
+    public cut. Not locked.
 - ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
   session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
   the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the
