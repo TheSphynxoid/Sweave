@@ -505,3 +505,118 @@ describe("turn recovery: applyTurnSnapshot", () => {
     expect(s2.entries[0].message.content).toBe("Partial reply so far");
   });
 });
+
+describe("rounds: multi-message turns (2026-09-11)", () => {
+  function roundMessage(
+    id: string,
+    content: string,
+    delegationId: string,
+    round: number,
+    turnFinal: boolean,
+  ): SessionMessage {
+    return {
+      id,
+      role: "assistant",
+      content,
+      timestamp: "2026-09-07T00:00:00Z",
+      agent: "orchestrator",
+      tool_name: null,
+      tool_result: null,
+      metadata: {
+        delegation_id: delegationId,
+        turn_round: round,
+        turn_final: turnFinal,
+      },
+    };
+  }
+
+  it("deltas scope bubbles per round", () => {
+    let s = applyDelta(initialThreadState(), "chat-1", "first ", 0);
+    s = applyDelta(s, "chat-1", "second", 1);
+    const bubbles = s.entries.filter((e) => e.streaming);
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles.map((e) => e.message.id)).toEqual([
+      "stream-chat-1",
+      "stream-chat-1-r1",
+    ]);
+    expect(bubbles.map((e) => e.message.content)).toEqual(["first ", "second"]);
+  });
+
+  it("a settled round-0 message does not eat round-1 deltas", () => {
+    let s = applyDelta(initialThreadState(), "chat-1", "first");
+    s = applyMessageAdded(s, roundMessage("m0", "first", "chat-1", 0, false));
+    expect(s.turn).toBe("running");
+    s = applyDelta(s, "chat-1", "synth", 1);
+    const bubbles = s.entries.filter((e) => e.streaming);
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].message.content).toBe("synth");
+  });
+
+  it("intermediate finalize keeps the turn running; final closes it", () => {
+    let s = applyDelta(initialThreadState(), "chat-1", "first");
+    s = applyMessageAdded(s, roundMessage("m0", "first", "chat-1", 0, false));
+    expect(s.turn).toBe("running");
+    expect(s.activeDelegationId).toBe("chat-1");
+    s = applyDelta(s, "chat-1", "synth", 1);
+    s = applyMessageAdded(s, roundMessage("m1", "synth", "chat-1", 1, true));
+    expect(s.turn).toBe("idle");
+    expect(s.activeDelegationId).toBeNull();
+    const settled = s.entries.filter((e) => !e.streaming);
+    expect(settled.map((e) => e.message.id)).toEqual(["m0", "m1"]);
+  });
+
+  it("finalize replaces only its own round's bubble", () => {
+    let s = applyDelta(initialThreadState(), "chat-1", "first");
+    s = applyDelta(s, "chat-1", "synth", 1);
+    s = applyMessageAdded(s, roundMessage("m1", "synth!", "chat-1", 1, true));
+    const r0 = s.entries.find((e) => e.streaming);
+    expect(r0?.message.content).toBe("first");
+    // Round 1 settled but the turn stays running (more rounds may come).
+    expect(s.turn).toBe("running");
+  });
+
+  it("history merge keeps a live round-1 bubble despite a settled round-0", () => {
+    let s = applyDelta(initialThreadState(), "chat-1", "first");
+    s = applyMessageAdded(s, roundMessage("m0", "first", "chat-1", 0, false));
+    s = applyDelta(s, "chat-1", "synth", 1);
+    const history = [
+      userMessage("u1", "do it"),
+      roundMessage("m0", "first", "chat-1", 0, false),
+    ];
+    const s2 = mergeHistory(s, history);
+    expect(s2.turn).toBe("running");
+    expect(s2.entries.some((e) => e.streaming)).toBe(true);
+  });
+
+  it("projection carries round + turnFinal into custom", () => {
+    const p = projectEntry({
+      message: roundMessage("m0", "first", "chat-1", 0, false),
+      streaming: false,
+    });
+    const custom = (p?.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    expect(custom?.round).toBe(0);
+    expect(custom?.turnFinal).toBe(false);
+  });
+
+  it("legacy messages without round metadata default to round 0 / final", () => {
+    const p = projectEntry({
+      message: assistantMessage("a1", "old", "chat-1"),
+      streaming: false,
+    });
+    const custom = (p?.metadata as { custom?: Record<string, unknown> } | undefined)
+      ?.custom;
+    expect(custom?.round).toBe(0);
+    expect(custom?.turnFinal).toBe(true);
+  });
+
+  it("snapshot round seeds the matching bubble", () => {
+    const s = applyTurnSnapshot(
+      initialThreadState(),
+      turnSnapshot({ round: 1, stream_text: "synth so far" }),
+    );
+    const bubble = s.entries.find((e) => e.streaming);
+    expect(bubble?.message.id).toBe("stream-chat-active-r1");
+    expect(bubble?.message.content).toBe("synth so far");
+  });
+});

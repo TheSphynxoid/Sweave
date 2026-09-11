@@ -21,15 +21,18 @@
  *                                   confirmed by this persisted copy.
  *   2. `delegation.status_changed` (running)
  *   3. `chat.thinking` × N         — reasoning increments, keyed by
- *                                   `delegation_id` (only when the
- *                                   provider exposes reasoning parts).
+ *                                   (delegation_id, round).
  *   4. `chat.delta` × N            — streaming deltas, keyed by
- *                                   `delegation_id`.
- *   5. `delegation.status_changed` (done | failed)
- *   6. `message.added` (assistant) — `metadata.delegation_id` is the
- *                                   join key; `metadata.thinking`
- *                                   carries the full reasoning text;
- *                                   this replaces the bubble.
+ *                                   (delegation_id, round).
+ *   5. `message.added` (assistant, intermediate, multi-message turns
+ *      only) — the round's narration persists (`turn_final: false`);
+ *      the turn stays running for the next round.
+ *   6. `delegation.status_changed` (done | failed)
+ *   7. `message.added` (assistant, final) — `metadata.delegation_id`
+ *                                   is the join key (+ `turn_round`);
+ *                                   `metadata.thinking` carries the
+ *                                   full reasoning text; this replaces
+ *                                   the round's bubble.
  *
  * Two hardening deviations from the happy order (2026-09-11 finalize
  * hardening — a stuck `streaming` bubble renders raw markdown as plain
@@ -69,10 +72,43 @@ export interface ChatEntry {
   streaming: boolean;
   /** Join key for streaming/finalize (chat turn delegation id). */
   delegationId?: string;
+  /** Orchestrator round within the turn (0 = first turn, 1 =
+      synthesis). Bubbles and finalize match on (delegationId,
+      round); absent (legacy) means 0. */
+  round?: number;
   /** True for a locally-optimistic user message (not yet confirmed by the server). */
   optimistic?: boolean;
   /** Live-accumulated reasoning text for the in-flight bubble (chat.thinking). */
   thinking?: string;
+}
+
+/**
+ * Orchestrator round of a persisted message (backend
+ * ``metadata.turn_round``; multi-message turns, 2026-09-11).
+ * Absent (legacy records, streaming bubbles) means round 0.
+ */
+export function roundOf(message: SessionMessage): number {
+  const v = (message.metadata ?? {}).turn_round;
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0;
+}
+
+/**
+ * False only for intermediate round messages (backend
+ * ``metadata.turn_final === false``). Absent (legacy records,
+ * optimistic entries) means final — preserving the single-message
+ * close semantics for everything the backend didn't mark.
+ */
+export function isFinal(message: SessionMessage): boolean {
+  return (message.metadata ?? {}).turn_final !== false;
+}
+
+/**
+ * Streaming-bubble id for a (delegation, round) pair. Round 0 keeps
+ * the historical ``stream-<id>`` shape (the crash-path placeholder
+ * lookup matches on it); later rounds suffix.
+ */
+export function bubbleIdFor(delegationId: string, round: number): string {
+  return round > 0 ? `stream-${delegationId}-r${round}` : `stream-${delegationId}`;
 }
 
 export interface SweaveThreadState {
@@ -88,7 +124,11 @@ export function initialThreadState(): SweaveThreadState {
 /** Fold REST history into the initial authoritative state. */
 export function stateFromHistory(messages: SessionMessage[]): SweaveThreadState {
   return {
-    entries: messages.map((message) => ({ message, streaming: false })),
+    entries: messages.map((message) => ({
+      message,
+      streaming: false,
+      round: roundOf(message),
+    })),
     turn: "idle",
     activeDelegationId: null,
   };
@@ -114,11 +154,17 @@ export function mergeHistory(
   const historyUserContents = new Set(
     messages.filter((m) => m.role === "user").map((m) => m.content),
   );
-  const historyAssistantDelegations = new Set(
+  // Settled assistants keyed by (delegation, round): a reconnect
+  // mid-synthesis must not drop the round-1 bubble just because the
+  // round-0 message already persisted.
+  const historySettledRounds = new Set(
     messages
       .filter((m) => m.role === "assistant")
-      .map((m) => delegationIdOf(m))
-      .filter((id): id is string => id !== null),
+      .map((m) => {
+        const id = delegationIdOf(m);
+        return id === null ? null : `${id}::${roundOf(m)}`;
+      })
+      .filter((k): k is string => k !== null),
   );
   const kept = prev.entries.filter((e) => {
     if (e.optimistic) {
@@ -130,9 +176,12 @@ export function mergeHistory(
       return true;
     }
     if (e.streaming) {
-      // The persisted assistant for this delegation landed while we
-      // weren't looking: the bubble is settled, drop it.
-      if (e.delegationId && historyAssistantDelegations.has(e.delegationId)) {
+      // The persisted assistant for this (delegation, round) landed
+      // while we weren't looking: the bubble is settled, drop it.
+      if (
+        e.delegationId &&
+        historySettledRounds.has(`${e.delegationId}::${e.round ?? 0}`)
+      ) {
         return false;
       }
       return true;
@@ -141,7 +190,11 @@ export function mergeHistory(
   });
   return {
     entries: [
-      ...messages.map((message) => ({ message, streaming: false })),
+      ...messages.map((message) => ({
+        message,
+        streaming: false,
+        round: roundOf(message),
+      })),
       ...kept,
     ],
     turn: kept.length > 0 ? prev.turn : "idle",
@@ -191,19 +244,30 @@ export function applyTurnSnapshot(
     // deltas (which carry delegation_id) key the real bubble.
     return state.turn === "idle" ? { ...state, turn: "running" } : state;
   }
-  // Already settled for this delegation: the turn finished between
+  const round =
+    typeof snapshot.round === "number" && snapshot.round >= 0
+      ? Math.floor(snapshot.round)
+      : 0;
+  // Already settled for this (delegation, round): the turn finished between
   // the snapshot and now -- never resurrect partial text.
-  if (state.entries.some((e) => !e.streaming && delegationIdOf(e.message) === delegationId)) {
+  if (
+    state.entries.some(
+      (e) =>
+        !e.streaming &&
+        delegationIdOf(e.message) === delegationId &&
+        roundOf(e.message) === round,
+    )
+  ) {
     return state;
   }
   const existing = state.entries.find(
-    (e) => e.streaming && e.delegationId === delegationId,
+    (e) => e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round,
   );
   if (existing) {
     // Live text wins over the (older) snapshot accumulation; only
     // empty live thinking is backfilled.
     const entries = state.entries.map((e) =>
-      e.streaming && e.delegationId === delegationId
+      e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round
         ? { ...e, thinking: e.thinking ?? (snapshot.thinking_text || undefined) }
         : e,
     );
@@ -214,7 +278,7 @@ export function applyTurnSnapshot(
   // maps 1:1 onto the bubble content; subsequent chat.delta events
   // append inline.
   const bubble: SessionMessage = {
-    id: `stream-${delegationId}`,
+    id: bubbleIdFor(delegationId, round),
     role: "assistant",
     content: snapshot.stream_text,
     timestamp: new Date().toISOString(),
@@ -231,6 +295,7 @@ export function applyTurnSnapshot(
         message: bubble,
         streaming: true,
         delegationId,
+        round,
         thinking: snapshot.thinking_text || undefined,
       },
     ],
@@ -290,6 +355,8 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
         delegationId: entry.delegationId ?? delegationIdOf(message),
         superseded: isSuperseded(message),
         thinking,
+        round: entry.round ?? roundOf(message),
+        turnFinal: isFinal(message),
       },
     },
   };
@@ -321,22 +388,25 @@ export function projectThread(state: SweaveThreadState): ThreadMessageLike[] {
 const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"]);
 
 /**
- * True when the state carries proof the delegation already finalized:
- * a SETTLED assistant entry joined by metadata delegation id. Optimistic
- * user entries and persisted USER messages never prove a settle (the
- * persisted user message lands BEFORE the assistant streams), which is
- * why the role is checked.
+ * True when the state carries proof the (delegation, round) already
+ * finalized: a SETTLED assistant entry joined by metadata delegation
+ * id + round. Optimistic user entries and persisted USER messages
+ * never prove a settle (the persisted user message lands BEFORE the
+ * assistant streams), which is why the role is checked. Scoped by
+ * round so a settled round-0 message never eats round-1 deltas.
  */
 function hasSettledAssistant(
   state: SweaveThreadState,
   delegationId: string,
+  round: number = 0,
 ): boolean {
   return state.entries.some(
     (e) =>
       !e.streaming &&
       !e.optimistic &&
       e.message.role === "assistant" &&
-      delegationIdOf(e.message) === delegationId,
+      delegationIdOf(e.message) === delegationId &&
+      roundOf(e.message) === round,
   );
 }
 
@@ -400,14 +470,15 @@ export function applyDelta(
   state: SweaveThreadState,
   delegationId: string,
   text: string,
+  round: number = 0,
 ): SweaveThreadState {
-  if (hasSettledAssistant(state, delegationId)) return state;
+  if (hasSettledAssistant(state, delegationId, round)) return state;
   const existing = state.entries.find(
-    (e) => e.streaming && e.delegationId === delegationId,
+    (e) => e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round,
   );
   if (existing) {
     const entries = state.entries.map((e) =>
-      e.delegationId === delegationId && e.streaming
+      e.delegationId === delegationId && e.streaming && (e.round ?? 0) === round
         ? {
             ...e,
             message: { ...e.message, content: e.message.content + text },
@@ -417,9 +488,9 @@ export function applyDelta(
     return { ...state, entries, turn: "running", activeDelegationId: delegationId };
   }
 
-  // First delta of the turn: create the streaming bubble.
+  // First delta of the (delegation, round): create the streaming bubble.
   const bubble: SessionMessage = {
-    id: `stream-${delegationId}`,
+    id: bubbleIdFor(delegationId, round),
     role: "assistant",
     content: text,
     timestamp: new Date().toISOString(),
@@ -432,7 +503,7 @@ export function applyDelta(
     ...state,
     entries: [
       ...state.entries,
-      { message: bubble, streaming: true, delegationId },
+      { message: bubble, streaming: true, delegationId, round },
     ],
     turn: "running",
     activeDelegationId: delegationId,
@@ -451,14 +522,15 @@ export function applyThinking(
   state: SweaveThreadState,
   delegationId: string,
   text: string,
+  round: number = 0,
 ): SweaveThreadState {
-  if (hasSettledAssistant(state, delegationId)) return state;
+  if (hasSettledAssistant(state, delegationId, round)) return state;
   const existing = state.entries.find(
-    (e) => e.streaming && e.delegationId === delegationId,
+    (e) => e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round,
   );
   if (existing) {
     const entries = state.entries.map((e) =>
-      e.delegationId === delegationId && e.streaming
+      e.delegationId === delegationId && e.streaming && (e.round ?? 0) === round
         ? { ...e, thinking: (e.thinking ?? "") + text }
         : e,
     );
@@ -468,7 +540,7 @@ export function applyThinking(
   // Thinking before any text: create the streaming bubble early so
   // the Thinking block paints during the reasoning phase.
   const bubble: SessionMessage = {
-    id: `stream-${delegationId}`,
+    id: bubbleIdFor(delegationId, round),
     role: "assistant",
     content: "",
     timestamp: new Date().toISOString(),
@@ -481,7 +553,7 @@ export function applyThinking(
     ...state,
     entries: [
       ...state.entries,
-      { message: bubble, streaming: true, delegationId, thinking: text },
+      { message: bubble, streaming: true, delegationId, round, thinking: text },
     ],
     turn: "running",
     activeDelegationId: delegationId,
@@ -506,9 +578,9 @@ export function delegationIdOf(message: SessionMessage): string | null {
  *   there is no optimistic entry (e.g. a history replay), the message
  *   is appended — with id-dedupe so a re-delivery is a no-op.
  * - assistant: finalize. The streaming bubble (joined by
- *   ``metadata.delegation_id``, or ``activeDelegationId`` as fallback)
- *   is replaced by the authoritative message; the turn returns to
- *   ``idle`` and the active delegation is cleared.
+ *   ``metadata.delegation_id`` + round, or ``activeDelegationId`` as fallback)
+ *   is replaced by the authoritative message; a final message returns
+ *   the turn to ``idle``, an intermediate round message keeps it running.
  */
 export function applyMessageAdded(
   state: SweaveThreadState,
@@ -541,32 +613,49 @@ export function applyMessageAdded(
     return { ...state, entries };
   }
 
-  // assistant -> finalize
+  // assistant -> finalize. The streaming bubble (joined by
+  // ``metadata.delegation_id`` + round, or ``activeDelegationId`` as
+  // fallback) is replaced by the authoritative message. A FINAL
+  // message returns the turn to ``idle``; an intermediate round
+  // message (``turn_final === false``) keeps the turn running for
+  // the next round's bubble.
   const join = delegationIdOf(message) ?? state.activeDelegationId;
+  const round = roundOf(message);
+  const final = isFinal(message);
+  const finish = (entries: ChatEntry[]): SweaveThreadState => {
+    if (!final) {
+      return { ...state, entries, turn: "running", activeDelegationId: join };
+    }
+    return closeTurnIfIdle(state, entries);
+  };
   const streamingIdx = state.entries.findIndex(
-    (e) => e.streaming && (join === null || e.delegationId === join),
+    (e) =>
+      e.streaming &&
+      (join === null || e.delegationId === join) &&
+      (e.round ?? 0) === round,
   );
   if (streamingIdx >= 0) {
     const entries = state.entries.slice();
-    entries[streamingIdx] = { message, streaming: false };
-    return closeTurnIfIdle(state, entries);
+    entries[streamingIdx] = { message, streaming: false, round };
+    return finish(entries);
   }
   // Crash-path hardening: a terminal status may already have promoted
   // the streaming bubble into a settled placeholder (ids are
-  // deterministic: stream-<delegationId>). The late authoritative
-  // message REPLACES the placeholder instead of appending a duplicate.
+  // deterministic: stream-<delegationId>[-r<round>]). The late
+  // authoritative message REPLACES the placeholder instead of
+  // appending a duplicate.
   if (join) {
     const placeholderIdx = state.entries.findIndex(
       (e) =>
-        !e.streaming && !e.optimistic && e.message.id === `stream-${join}`,
+        !e.streaming && !e.optimistic && e.message.id === bubbleIdFor(join, round),
     );
     if (placeholderIdx >= 0) {
       const entries = state.entries.slice();
-      entries[placeholderIdx] = { message, streaming: false };
-      return closeTurnIfIdle(state, entries);
+      entries[placeholderIdx] = { message, streaming: false, round };
+      return finish(entries);
     }
   }
-  return closeTurnIfIdle(state, [...state.entries, { message, streaming: false }]);
+  return finish([...state.entries, { message, streaming: false, round }]);
 }
 
 /**

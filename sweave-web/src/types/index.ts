@@ -110,6 +110,10 @@ export interface TurnSnapshot {
   stream_text: string;
   thinking_text: string;
   pending_question: boolean;
+  /** Multi-message turns (2026-09-11): the live round (0 = first
+      turn, 1 = synthesis). Absent on old servers — readers default
+      to 0. */
+  round?: number | null;
 }
 
 export interface SessionCreate {

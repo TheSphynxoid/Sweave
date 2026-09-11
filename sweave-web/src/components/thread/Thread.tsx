@@ -391,6 +391,13 @@ interface SweaveCustom {
   superseded?: boolean;
   /** Live or persisted reasoning text (chat.thinking / metadata.thinking). */
   thinking?: string | null;
+  /** Multi-message turns (2026-09-11): orchestrator round (0 = first
+      turn, 1 = synthesis). Absent on legacy messages — readers treat
+      it as 0. */
+  round?: number | null;
+  /** False only for intermediate round messages, which render
+      collapsed (RoundBlock) instead of inline. Absent means final. */
+  turnFinal?: boolean | null;
 }
 
 function useMessageCustom(): SweaveCustom {
@@ -426,9 +433,13 @@ function AssistantMessage() {
         {isRunning && <span className="streaming-cursor" aria-hidden />}
       </div>
 
-      {custom.delegationId && <TurnQuestions delegationId={custom.delegationId} />}
+      {custom.delegationId && custom.turnFinal !== false && (
+        <TurnQuestions delegationId={custom.delegationId} />
+      )}
 
-      {custom.delegationId && <TurnDelegations parentDelegationId={custom.delegationId} />}
+      {custom.delegationId && custom.turnFinal !== false && (
+        <TurnDelegations parentDelegationId={custom.delegationId} />
+      )}
 
       <div className="mt-1.5 flex items-center justify-between gap-2">
         {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
@@ -437,6 +448,21 @@ function AssistantMessage() {
       </div>
     </>
   );
+
+  // Intermediate round messages (a defer turn's narration before the
+  // final synthesis) render collapsed but present — the transcript
+  // never loses a round. Final + legacy messages render inline.
+  const roundShell =
+    custom.turnFinal === false ? (
+      <RoundBlock
+        round={typeof custom.round === "number" ? custom.round : 0}
+        preview={threadTextOf(message)}
+      >
+        {body}
+      </RoundBlock>
+    ) : (
+      body
+    );
 
   return (
     <div
@@ -463,12 +489,47 @@ function AssistantMessage() {
 
         {custom.superseded ? (
           <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
-            {body}
+            {roundShell}
           </SupersededBlock>
         ) : (
-          body
+          roundShell
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Collapsed shell for an intermediate round message (multi-message
+ * turns, 2026-09-11). Unlike SupersededBlock this is live history,
+ * not rewound history: neutral (not dimmed), collapsed by default,
+ * click to expand the round's narration in place. Exported for the
+ * round-block unit test (LiveTree KindPill/StatusPill precedent).
+ */
+export function RoundBlock({
+  round,
+  preview,
+  children,
+}: {
+  round: number;
+  preview: string;
+  children: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div data-testid="round-block" data-round={round}>
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        aria-expanded={expanded}
+        className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        <span className="shrink-0 rounded bg-muted px-1 py-px font-medium">
+          Round {round + 1}
+        </span>
+        <span className="truncate">{preview.slice(0, 80) || "—"}</span>
+      </button>
+      {expanded && <div className="mt-1.5">{children}</div>}
     </div>
   );
 }

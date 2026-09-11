@@ -142,13 +142,15 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       const data = env.data as Record<string, unknown>;
       if (data.session_id !== sessionId) return;
       if (typeof data.delegation_id !== "string" || typeof data.text !== "string") return;
-      setState((s) => applyDelta(s, data.delegation_id as string, data.text as string));
+      const round = typeof data.round === "number" && data.round >= 0 ? Math.floor(data.round) : 0;
+      setState((s) => applyDelta(s, data.delegation_id as string, data.text as string, round));
     });
     const offThinking = subscribe("chat.thinking", (env) => {
       const data = env.data as Record<string, unknown>;
       if (data.session_id !== sessionId) return;
       if (typeof data.delegation_id !== "string" || typeof data.text !== "string") return;
-      setState((s) => applyThinking(s, data.delegation_id as string, data.text as string));
+      const round = typeof data.round === "number" && data.round >= 0 ? Math.floor(data.round) : 0;
+      setState((s) => applyThinking(s, data.delegation_id as string, data.text as string, round));
     });
     const offAdded = subscribe("message.added", (env) => {
       const data = env.data as Record<string, unknown>;
