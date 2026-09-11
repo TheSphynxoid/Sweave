@@ -202,7 +202,6 @@ parallel side-direction, not a minor — tracked alongside, not after.
   distillation). May return.
 
 ### Remix round (2026-09-11, explored, NOT locked)
-
 - **Dogfood loop.** Track-2 trajectory exports train Sweave's own R6
   encoder heads (intent/dispatch/resolution/mediation). Sweave becomes
   its own first training customer; opted-in user trajectories improve
@@ -227,6 +226,41 @@ parallel side-direction, not a minor — tracked alongside, not after.
   research (swarm-style multi-agent setups) plus an aggregated,
   opt-in, anonymized trajectory database pooled from consenting users.
   Always opt-in, never a default; local-first stays the posture.
+
+### Round 3 (2026-09-11, explored, NOT locked)
+
+- **Flywheel map.** Outputs feeding inputs: traces → estimation
+  calibration → query planner → cheaper runs → more runs → more
+  traces; verdicts + override logs → gold labels → dogfood heads →
+  better dispatch → more usage → more labels; postmortems → lore →
+  fewer failures; golden tasks → train distribution → better heads.
+  Compounding core = the record layer. Rule: every feature emits
+  records; records are the product.
+- **Provenance ledger.** Actor+reason+hash for every commit, PR,
+  promote, grant, refine, verdict. Seeds: `Sweave-Delegation` trailers
+  + manifests + traces. Supply-chain for agent work; the compliance
+  wedge and the training-provenance answer in one.
+- **Multi-human teams.** Roster, lore, plans shared across humans;
+  presence; human-to-human handoff on the same protocol as delegation.
+  Key user insight (locked as design intent): the collaboration
+  protocol IS the training protocol — human↔human, human↔Sweave and
+  Sweave↔Sweave interactions all emit the same records, so scaling
+  collaboration scales training (multiplexing). One protocol, three
+  uses.
+- **Sweave-to-Sweave.** Delegations callable across machines/repos:
+  remote execution, cross-repo contracts, capability advertisement,
+  budget escrow across trust boundaries. `defer` semantics generalize
+  to a remote roster. Unlocks the team-server and multi-repo stories.
+- **Five-minute onboard.** Open repo → stack detected → roster
+  proposed → first delegation in minutes. The demo that sells dev
+  tools. Seeds: agents loader, models sync, gallery, topology gen.
+  First step: measure time-to-first-delegation, then drive it down.
+- **Anti-differentiators (explained, not yet adopted).** Positioning by
+  refusal — sentences competitors cannot say: never auto-merge to
+  base; never silent exfiltration (fail-closed, explicit consent);
+  never prompt-only guarantees (enforced or it doesn't ship); never
+  unbounded autonomy (budgets + gates always); never train on user
+  data by default. Candidate for a written list in DESIGN.md.
 
 ## 8. Risks
 
