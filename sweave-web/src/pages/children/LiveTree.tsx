@@ -33,7 +33,7 @@ import {
   type ProjectGroup,
   type TreeNode,
 } from "./tree";
-import { formatRelativeTime } from "@/utils/cn";
+import { formatRelativeTime, truncate } from "@/utils/cn";
 import { cn } from "@/utils/cn";
 import type { Delegation, DelegationStatus } from "@/types";
 
@@ -42,7 +42,11 @@ const STATUS_CLASS: Record<DelegationStatus, string> = {
   running: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
   review: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
   done: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  failed: "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  // M1.13 step 2 (ruling 2026-09-10): failed CHILDREN render amber,
+  // not the red rose tone -- the 3fc8e28 taxonomy treats user-facing
+  // failure as calm-amber on this surface; the true error sits in
+  // the row's note below.
+  failed: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
 };
 
 const STATUS_LABEL: Record<DelegationStatus, string> = {
@@ -229,6 +233,15 @@ function TreeRow({ node, onOpen }: { node: TreeNode; onOpen: (id: string) => voi
         )}
         {node.record.needs_attention && (
           <AnswerInline delegationId={id} />
+        )}
+        {node.record.status === "failed" && node.record.error && (
+          <span
+            data-testid={`row-error-${id}`}
+            className="text-[10px] text-amber-700 dark:text-amber-300 truncate max-w-[16rem]"
+            title={node.record.error}
+          >
+            {truncate(node.record.error, 120)}
+          </span>
         )}
       </div>
       {hasChildren && expanded && (
