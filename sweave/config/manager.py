@@ -87,6 +87,7 @@ class ConfigManager:
         
         # Merge into main config
         self._config.models.providers = self._models_config.providers
+        self._config.models.default = self._models_config.default
         self._config.routing = self._routing_config
         
         return self._config
@@ -271,6 +272,13 @@ class ConfigManager:
         sidecar knows the model — otherwise the next chat turn
         would 500 in the opencode serve. Raises ``ValueError`` on
         violation (the router maps this to a 400).
+
+        M1.13 step 3 (ruling 2026-09-10): the STORED default stays
+        BARE — no ``+variant`` suffix in models.yaml. The env-form
+        ``OPENCODE_MODEL`` must be bare (a suffix there 500s every
+        serve turn: harness/opencode.py:980-988, live probe
+        2026-09-10); effort variants flow as the structured v2 body
+        field, never through the stored default.
         """
         from sweave.runtime.specialist_store import parse_model_ref
 
@@ -280,7 +288,7 @@ class ConfigManager:
             )
         available = set(self.get_all_models())
         if model in available:
-            resolved_variant: str | None = None
+            bare = model
         else:
             ref = parse_model_ref(model)
             if not ref or not ref.get("provider") or not ref.get("model_id"):
@@ -296,12 +304,41 @@ class ConfigManager:
                         f"unknown variant {resolved_variant!r} for {base} "
                         f"(advertised: {', '.join(known)})"
                     )
+            # Strip the variant: the STORED default stays bare (see
+            # docstring) — the suffix is validated above, then dropped.
+            bare = base
         models = self.get_models()
-        models.default = model
+        models.default = bare
         if self._config is not None:
-            self._config.models.default = model
+            self._config.models.default = bare
         self._persist_models()
-        return model
+        # models.yaml edits do NOT fire the ConfigReloader (it watches
+        # config.yaml only — see ConfigReloader.schedule/on_modified):
+        # reload synchronously + fan out to the registered callbacks,
+        # the same contract the file-watch path invokes.
+        self._sync_reload()
+        return bare
+
+    def _sync_reload(self) -> None:
+        """Programmatic hot-reload after a registry write.
+
+        The ConfigReloader (manager.py:12-30) only fires on
+        ``config.yaml`` edits; a models.yaml-only write NEVER
+        triggers the registered reload callbacks, so the running
+        server kept the boot-time default until restart or a manual
+        config.yaml mtime touch (2026-09-10 live probe: POST
+        /api/models changed the file, the next chat turn still
+        routed on the stale model). This reloads in-process and
+        invokes every registered callback with the (old, new) pair
+        — identical contract to :meth:`_on_reload`.
+        """
+        old_config = self._config
+        self.load()
+        for callback in self._reload_callbacks:
+            try:
+                callback(old_config, self._config)
+            except Exception:
+                pass  # Log in production
 
     def _persist_models(self) -> None:
         """Write providers + default back to models.yaml (UTF-8, no BOM).

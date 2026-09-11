@@ -36,6 +36,7 @@ from sweave.runtime.override_log import (
 from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     Specialist,
+    parse_model_ref,
 )
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -275,7 +276,12 @@ async def set_specialist_model(
             400,
             f"model must be qualified as 'provider/model' (got {body.model!r})",
         )
-    existing.current_model = body.model
+    # Persist the structured ModelRef (M1.13 step 3, ruling
+    # 2026-09-10): set_model_ref stores the JSON-encoded ref so
+    # provider/model/variant survive round-trip. A bare-string
+    # ``current_model = body.model`` decodes elsewhere but wrote the
+    # legacy v1 shape effort variants can't round-trip through.
+    existing.set_model_ref(parse_model_ref(body.model))
     try:
         resolver.update(existing, project_dir=proj_dir if existing.scope == "project" else None)
     except ValueError as e:

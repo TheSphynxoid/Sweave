@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ModelWithEffort } from "@/components/EffortSelect";
+import { EffectiveDefaultNote } from "@/components/EffectiveDefaultNote";
 import { CreateSpecialistDialog } from "@/components/CreateSpecialistDialog";
 import { EditSpecialistDialog } from "@/components/EditSpecialistDialog";
 
@@ -157,6 +158,7 @@ export function AgentsPage() {
                       specialist={s}
                       modelOptions={modelOptions}
                       variantsMap={models?.variants ?? {}}
+                      defaultModel={models?.default ?? null}
                       onModel={(m) => setModel(s, m)}
                       onDelete={() => remove(s)}
                       onEdit={() => setEditTarget(s)}
@@ -185,6 +187,7 @@ function SpecialistCard({
   specialist,
   modelOptions,
   variantsMap,
+  defaultModel,
   onModel,
   onDelete,
   onEdit,
@@ -192,6 +195,8 @@ function SpecialistCard({
   specialist: SpecialistSummary;
   modelOptions: string[];
   variantsMap: Record<string, string[]>;
+  /** Global default (GET /api/models `default`); effective when no current_model. */
+  defaultModel?: string | null;
   onModel: (model: string) => void;
   onDelete: () => void;
   onEdit: () => void;
@@ -230,6 +235,11 @@ function SpecialistCard({
             disabled={locked}
             className="h-8 text-xs flex-1"
             testId={`model-picker-${specialist.scope}-${specialist.name}`}
+          />
+          <EffectiveDefaultNote
+            currentModel={specialist.current_model}
+            defaultModel={defaultModel}
+            testId={`effective-default-${specialist.name}`}
           />
         </div>
 

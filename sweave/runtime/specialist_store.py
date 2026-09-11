@@ -267,6 +267,27 @@ class Specialist:
         kwargs = {k: v for k, v in d.items() if k in known}
         return cls(**kwargs)
 
+    def public_model(self) -> "str | None":
+        """Render :attr:`current_model` in the canonical
+        ``provider/model[+variant]`` string form.
+
+        A JSON-encoded :class:`ModelRef` (the v2 shape written by
+        :meth:`set_model_ref`) renders so UI pickers + tests always
+        see the qualified form, whatever the on-disk shape is.
+        ``None``/empty stays as-is; a legacy bare id or an
+        unparseable value passes through untouched.
+        """
+        if not self.current_model:
+            return self.current_model
+        ref = self.model_ref
+        provider = ref.get("provider") if ref else None
+        model_id = ref.get("model_id") if ref else None
+        if not provider or not model_id:
+            return self.current_model
+        base = f"{provider}/{model_id}"
+        variant = ref.get("variant") if ref else None
+        return f"{base}+{variant}" if variant else base
+
     def public_dict(self) -> dict[str, Any]:
         """API-facing view: identity + config + the durable session link.
 
@@ -274,7 +295,9 @@ class Specialist:
         cross-restart session reuse (opencode persists sessions in
         opencode.db; our stored session_id is how a fresh serve finds
         the conversation). Omits schema_version + timestamps as
-        internal noise.
+        internal noise. ``current_model`` renders via
+        :meth:`public_model` — the canonical ``provider/model[+variant]``
+        string, not the raw storage shape (M1.13 step 3).
         """
         return {
             "name": self.name,
@@ -284,7 +307,7 @@ class Specialist:
             "description": self.description,
             "system_prompt": self.system_prompt,
             "harness": self.harness,
-            "current_model": self.current_model,
+            "current_model": self.public_model(),
             "session_id": self.session_id,
         }
 

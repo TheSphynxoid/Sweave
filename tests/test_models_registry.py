@@ -282,11 +282,52 @@ def _tmp_config_with_meta(tmp_path: Path) -> Path:
 
 
 def test_set_default_model_accepts_advertised_variant(tmp_path: Path):
+    """A variant on the offered default is VALIDATED against the
+    sidecar, but the STORED default stays bare (M1.13 step 3 ruling
+    2026-09-10: no ``+variant`` suffix in models.yaml — the env-form
+    OPENCODE_MODEL must be bare, harness/opencode.py:980-988)."""
     config_path = _tmp_config_with_meta(tmp_path)
     cm = ConfigManager(config_path=config_path)
     cm.load()
-    assert cm.set_default_model("ollama/b-model+low") == "ollama/b-model+low"
-    assert cm.get_default_model() == "ollama/b-model+low"
+    assert cm.set_default_model("ollama/b-model+low") == "ollama/b-model"
+    assert cm.get_default_model() == "ollama/b-model"
+
+
+def test_set_default_model_stores_bare_default(tmp_path: Path):
+    """Round-trip: a variant-carrying selection persists BARE."""
+    config_path = _tmp_config_with_meta(tmp_path)
+    cm = ConfigManager(config_path=config_path)
+    cm.load()
+    cm.set_default_model("ollama/b-model+low")
+    reloaded = ConfigManager(config_path=config_path)
+    reloaded.load()
+    assert reloaded.get_default_model() == "ollama/b-model"
+
+
+def test_set_default_model_fires_reload_callbacks(tmp_path: Path):
+    """models.yaml writes do NOT fire the ConfigReloader (it watches
+    config.yaml only — manager.py:12-30); set_default_model reloads
+    programmatically and fans out to the registered callbacks so the
+    running server's view stays current (2026-09-10 live probe: the
+    in-memory default went stale until a config.yaml mtime touch)."""
+    fired: list = []
+    config_path = _tmp_config(tmp_path)
+    cm = ConfigManager(config_path=config_path)
+    cm.load()
+    cm.register_reload_callback(lambda old, new: fired.append((old, new)))
+    cm.set_default_model("ollama/b-model")
+    assert fired, "callback must fire programmatically"
+    old, new = fired[0]
+    assert old is not None and new is not None
+    assert new.models.default == "ollama/b-model"
+
+
+def test_set_default_model_without_registered_callback_is_ok(tmp_path: Path):
+    """No callbacks registered: persisting still works (no reload work)."""
+    config_path = _tmp_config(tmp_path)
+    cm = ConfigManager(config_path=config_path)
+    cm.load()
+    assert cm.set_default_model("ollama/b-model") == "ollama/b-model"
 
 
 def test_set_default_model_rejects_unadvertised_variant(tmp_path: Path):
@@ -299,12 +340,13 @@ def test_set_default_model_rejects_unadvertised_variant(tmp_path: Path):
 
 def test_set_default_model_variant_without_meta(tmp_path: Path):
     """No sidecar: any suffix on a registered base is accepted (the
-    serve is the final arbiter; the UI only offers advertised ones)."""
+    serve is the final arbiter; the UI only offers advertised ones).
+    Persistence still lands BARE (M1.13 step 3 ruling 2026-09-10)."""
     config_path = _tmp_config(tmp_path)
     cm = ConfigManager(config_path=config_path)
     cm.load()
-    assert cm.set_default_model("ollama/b-model+low") == "ollama/b-model+low"
-    assert cm.get_default_model() == "ollama/b-model+low"
+    assert cm.set_default_model("ollama/b-model+low") == "ollama/b-model"
+    assert cm.get_default_model() == "ollama/b-model"
 
 
 def test_set_default_model_rejects_unknown_base_with_variant(tmp_path: Path):
