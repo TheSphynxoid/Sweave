@@ -69,6 +69,10 @@ class TaskSubmitV2(BaseModel):
     # extras); known keys must be non-negative numbers or the submit
     # is a 422.
     estimate: Optional[EstimateIn] = None
+    # M2.1: wait-set opt-in. True = this child joins the synthesis
+    # join set; False (default) = fire-and-forget into the Children
+    # lane (ruling 1).
+    blocking: bool = False
 
 
 class TaskSubmitV2Response(BaseModel):
@@ -288,6 +292,8 @@ async def submit_task_v2(
             if request.estimate is not None
             else None
         ),
+        # M2.1: wait-set flag (default False — fire-and-forget).
+        blocking=request.blocking,
     )
 
     # M1.2 step 3: append an override log entry if the user supplied an

@@ -193,6 +193,7 @@ class JobRunner:
         coordination_tokens: int = 0,
         kind: str = "task",
         estimate: Estimate | None = None,
+        blocking: bool = False,
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
@@ -230,6 +231,12 @@ class JobRunner:
           (or None). Record only — nothing reads it for decisions in
           M2.0; the estimate-vs-actual projection joins it against the
           trace. Chat turns never carry one (non-goal).
+
+        M2.1:
+        * ``blocking`` is the wait-set opt-in (default False —
+          fire-and-forget). True puts the child in the synthesis join
+          set (ChatLoop + parent gate wait on it). Task delegations
+          only; chat turns never carry one.
         """
         delegation = Delegation(
             agent=agent,
@@ -244,6 +251,7 @@ class JobRunner:
             coordination_tokens=coordination_tokens,
             kind=kind,
             estimate=estimate,
+            blocking=blocking,
             status="queued",
         )
         store = await self._store_for(delegation)

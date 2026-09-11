@@ -246,6 +246,11 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
       numeric validation happens at the submit endpoint (a 422 there
       surfaces as an ``error:`` line the orchestrator can retry
       without).
+    * ``blocking`` (bool, optional, M2.1): wait-set opt-in. True =
+      this child joins the synthesis join set (the turn waits on
+      it); absent/False = fire-and-forget into the Children lane.
+      Must be a bool when present (else a ``rejected:`` line, same
+      discipline as the estimate non-dict guard).
 
     Returns plain text:
     * success: "queued: <delegation_id> (target=<target>, depth=<n>)"
@@ -259,6 +264,7 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     reason = args.get("reason") or ""
     caller_delegation_id = args.get("caller_delegation_id")
     estimate = args.get("estimate")
+    blocking = args.get("blocking")
 
     if not isinstance(target, str) or not target.strip():
         return _result_text("rejected: 'target' is required and must be a non-empty string", is_error=True)
@@ -276,6 +282,13 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
             "{tokens: 1000, seconds: 60} when present",
             is_error=True,
         )
+    if blocking is not None and not isinstance(blocking, bool):
+        return _result_text(
+            "rejected: 'blocking' must be a boolean when present "
+            "(true = join the synthesis wait-set, false/absent = "
+            "fire-and-forget)",
+            is_error=True,
+        )
 
     body: dict[str, Any] = {
         "task": task,
@@ -286,6 +299,8 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
         body["manifest"] = {"intent": reason, "source": "orchestrator_defer"}
     if estimate is not None:
         body["estimate"] = estimate
+    if blocking is not None:
+        body["blocking"] = blocking
 
     token = _token_from_env_or_file()
     try:
@@ -522,6 +537,15 @@ async def _list_tools_handler(
                             "description": (
                                 "Optional {tokens, seconds} estimate "
                                 "(record only, no enforcement)."
+                            ),
+                        },
+                        "blocking": {
+                            "type": "boolean",
+                            "description": (
+                                "Wait-set opt-in (default false). True = "
+                                "this child joins the synthesis join set "
+                                "(the turn waits on it); false/absent = "
+                                "fire-and-forget into the Children lane."
                             ),
                         },
                     },
