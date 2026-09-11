@@ -158,7 +158,11 @@ orchestrator — policy holds).
   urgent). Sandbox phasing: software sandbox now (per-call roots +
   permission maps, zero native code) → Windows Job Objects helper next
   (kill-on-close + resource limits, DESIGN §8 native candidate) →
-  AppContainer/integrity later, if ever.
+  AppContainer/integrity later, if ever. Linux note (2026-09-11):
+  `bubblewrap`/Landlock hardening is R5 backlog (opt-in, alongside
+  cross-platform verification) — easier than Windows, but the uniform
+  software sandbox stays the cross-platform guarantee so "sandboxed"
+  never means different things per OS.
 
 ## 6. Risks
 
