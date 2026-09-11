@@ -146,14 +146,46 @@ Prime's warning — documented, not sandboxed in v1).
 - No `customize-sweave` here (standalone, post-MVP).
 - No differentiation lock-in (left open per 2026-09-11 — see §7).
 
-## 7. Open: differentiation (left open, not decided)
+## 7. Explored: differentiation (explored 2026-09-11, NOT locked)
 
-Per user ruling 2026-09-11 this section stays divergent. Pillar-lock
-(delivery guarantees / human-gated refine / harness-agnostic / local-first)
-was presented and explicitly deferred — "not what I meant by brainstorming".
-The next planning round runs an open brainstorm on developer-first jobs
-vibe tools won't do, then returns with options + trade-offs for rulings.
-No DESIGN.md behavior change lands from this plan until those rulings lock.
+Prior art noted honestly: promptfoo (open-source prompt eval/regression)
+and DSPy (optimize LM programs against metrics) are the ancestors of any
+"CI for the harness" idea; LangSmith/Langfuse cover output observability;
+closed labs co-design harness+model invisibly. None wires evals as
+promotion gates inside a live orchestrator fed by its own delivery
+records — that composition is the opening. Prime's Factorio cheat
+(reward hack preserved as a skill) is the cautionary tale for
+improvement-without-gates.
+
+Five directions explored with the user, none locked. Each seeds from
+machinery already in the repo:
+
+- **Runs on cheap models.** Prime's RLM needs frontier models (their own
+  paper: Flash-Lite variants underperformed the baseline — capability
+  floor). Sweave's protocols (structured defer, typed manifests,
+  promotion endpoints, wait-sets) are built so a cheap model can PM
+  with strong engineers (R6 thesis). First step is a benchmark, not a
+  feature: same task, cheap vs frontier orchestrator, delegation
+  success compared.
+- **Agent estimation.** Estimate tokens/time at defer time, track
+  estimate-vs-actual per specialist from trace `tokens_used` + cost
+  records, calibrate. Nobody does this. First step: record only.
+- **Contract-first fanout.** Agree interface contracts (API shapes, file
+  boundaries) before parallel implementation; sides code against the
+  contract; cross-review checks conformance. Moves semantic conflicts
+  (frontend calls an API backend never added) from review time to plan
+  time. Seeds: Stage-0 overlap check + manifests + resolution queue.
+  First step: a contract record type on the parent delegation.
+- **CI for the harness.** Golden task sets per project; prompt / routing /
+  tool-policy changes evaluated before promotion, rollback on red.
+  Seeds: `override_log.jsonl` gold labels (M1.2), traces, live-gate
+  scripts. First step: golden-set format + one eval runner script.
+- **Audit export.** Actor+reason log for merges, promotes, grants,
+  refines — exportable for regulated shops. Seeds: traces +
+  override log + escalation store already record most of it. First
+  step: a projection endpoint on the `detail_view.py` pattern.
+- Deferred without exploration: learn-from-the-human (human-action
+  distillation). May return.
 
 ## 8. Risks
 
