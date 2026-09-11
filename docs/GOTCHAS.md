@@ -204,6 +204,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    to ``_send_message``, update all ``fake_send*`` stubs in the
    same change (grep ``async def fake_send`` under ``tests/``).
 
+4. **Test answerers for escalation flows must be gated, never
+   fire-once** (2026-09-11: a fire-once answerer answered the
+   pre-created hold in ~10ms — before the 50ms stall even engaged —
+   routing the test into supersede-create instead of the reuse path,
+   and hanging the suite when the new card had no answerer left).
+   Gate on the trace marker that proves the path under test ran
+   (``permission_reused`` / ``permission_hold_wait`` /
+   ``turn_soft_limit_asked``), then answer. A pure-creation path
+   (late-answer) needs no answerer at all. Symptom of getting this
+   wrong: the suite hangs with zero output (faulthandler shows an
+   idle loop — coroutine frames are invisible).
+
 ## MCP surface
 
 1. **The auth token is the only seam between the sweave MCP server and the API**
@@ -341,6 +353,26 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    engine (side-project, future) is where the runtime fully owns the transcript.
    When adding a new engine, decide: external (composed + engine view) or internal
    (composed only).
+3. **Three timers bound a turn — know which one you are changing**
+   (incident 2026-09-11: a 17-min silent turn died on httpx's 1000s
+   client timeout with a bare ReadTimeout; neither Sweave timer
+   fired). Total budget (`_bounded_turn`, 1800s, hard→soft since
+   slice 3) bounds the turn; stall watchdog (`_send_message`,
+   300s) bounds wire silence incl. header wait; httpx (1000s) bounds
+   the socket. Invariant to preserve: a *silent* turn must die on
+   the stall bound with a truthful message, never ride out to
+   httpx. After changing any of the three values, re-check the
+   ordering (stall < httpx < total keeps each failure attributed
+   to the right layer).
+4. **Escalation records are single-slot per delegation — concurrent
+   creators must claim atomically** (incident 2026-09-11: the
+   in-band bridge and the stall branch both called `create()`
+   unconditionally, and `create()` overwrites — the second finder
+   destroyed the first's live record or its recorded answer).
+   Same-ask races go through `EscalationStore.create_or_reuse` with
+   the ask's request id; exactly one finder owns the reply POST
+   (the other waits + recovers). Never add a third `create()`
+   caller on the permission path without the reuse key.
 
 ## Paths & config
 

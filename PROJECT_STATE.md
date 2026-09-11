@@ -77,6 +77,22 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **Turn timers hardened after the 2026-09-11 incident (3 slices)** —
+  session `Sweave-20260911-124817-6d6851`: backend child hung 17 min
+  silent (out-of-scope `external_directory` ask never ferried), died on
+  the httpx 1000s timeout with a bare ReadTimeout (neither Sweave timer
+  fired); the re-dispatch was loop-rejected while the child was stuck
+  (rule correct, outcome wrong); the permission escalation was created
+  30s AFTER death and answered to a dead delegation. Fixes: (1) 409s
+  logged server-side + header/first-byte stall instrumentation
+  (`04986ce`); (2) atomic escalation claim + stall/hold coherence +
+  late-answer recovery (`3e29b88`); (3) soft total limit — one
+  keep/stop question per turn, `turn_stopped_by_user` on stop
+  (`e818234`). Timers now agree: recorded holds suspend both total
+  and stall; unwitnessed caps ask once instead of killing. Rulings:
+  300s stall < 1000s httpx < 1800s total ordering (GOTCHAS); single-slot
+  escalation records need atomic claim (GOTCHAS); test answerers must be
+  trace-gated (GOTCHAS).
 - ✅ **Per-seed model overrides + seed materialization-leak fix
   (2026-09-11)** — seeds are granted a per-seed model choice:
   `PUT /api/specialists/{name}/model` now accepts seed-scoped records
