@@ -158,7 +158,8 @@ records — that composition is the opening. Prime's Factorio cheat
 improvement-without-gates.
 
 Five directions explored with the user, none locked. Each seeds from
-machinery already in the repo:
+machinery already in the repo. The sixth (training ground) is a
+parallel side-direction, not a minor — tracked alongside, not after.
 
 - **Runs on cheap models.** Prime's RLM needs frontier models (their own
   paper: Flash-Lite variants underperformed the baseline — capability
@@ -184,6 +185,19 @@ machinery already in the repo:
   refines — exportable for regulated shops. Seeds: traces +
   override log + escalation store already record most of it. First
   step: a projection endpoint on the `detail_view.py` pattern.
+- **Training ground (parallel side-direction).** Sweave as the harness
+  labs train against instead of building in-house. Two tracks: (a) RL
+  environment — fresh worktree = reset, delegation = episode, test
+  evidence + promote verdicts = verifiable reward, constrained action
+  space = clean credit assignment (vs free-form REPL); needs a formal
+  Env API + parallel scale story. (b) Trajectory datasets — traces +
+  reviewer verdicts + promote/demote + override gold labels as SFT /
+  preference data; needs curation/export + opt-in consent (local-first
+  is the privacy answer). Interoperate, don't compete: export in
+  `verifiers`-compatible shape. Composes with CI (golden tasks = train
+  distribution) and cheap-models (small models train well here).
+  Risks: single-machine JobRunner vs hundred-env scale; reward gaming
+  (verifiable tests as reward, never LLM-judged success).
 - Deferred without exploration: learn-from-the-human (human-action
   distillation). May return.
 
