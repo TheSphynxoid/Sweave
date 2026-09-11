@@ -146,9 +146,10 @@ section before it runs — a re-scope against what M2.0 actually built)
   (task/question denies, specialist orchestration denies, escalate
   always-allowed — API 409s) + opencode per-specialist agent render
   (sidecar ownership per agent, stale sweep, `body["agent"]` probe) +
-  custom-engine `tools[]/permission_map` passthrough. Proposed
-  defaults (default-off new servers, locked reviewer, allow/deny only)
-  need user lock before execution.
+   custom-engine `tools[]/permission_map` passthrough. Proposed
+   defaults (default-off new servers, locked reviewer, allow/deny only)
+   lock at the M2.3 detailing round per the planning method (2026-09-11:
+   agreed — phase detail surfaces its own rulings in due time).
 - **M2.4**: golden-task format + one eval runner script + a first
   golden set drawn from Sweave's own repo tasks. Seeds harness CI
   and the training distribution. Curation judgment per task is the
