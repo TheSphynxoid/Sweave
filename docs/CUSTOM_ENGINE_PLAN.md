@@ -153,6 +153,12 @@ orchestrator — policy holds).
 - No LangGraph/CrewAI/AutoGen/Agents-SDK adoption (§8: they own the loop).
 - No ACP harness (verdict stands until opencode streams session updates).
 - No changes to promotion/merge policy (human promotes, human merges).
+- No OS-level filesystem sandbox in v1 (user ruling 2026-09-11:
+  AppContainer/integrity-levels = non-goal roadmap, nice-to-have, not
+  urgent). Sandbox phasing: software sandbox now (per-call roots +
+  permission maps, zero native code) → Windows Job Objects helper next
+  (kill-on-close + resource limits, DESIGN §8 native candidate) →
+  AppContainer/integrity later, if ever.
 
 ## 6. Risks
 
