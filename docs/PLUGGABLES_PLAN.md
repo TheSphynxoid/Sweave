@@ -284,6 +284,25 @@ parallel side-direction, not a minor — tracked alongside, not after.
   singleton (DESIGN §2.2) — federation needs either
   orchestrator-per-workstream, a meta-orchestrator tier, or
   cross-project delegation. Decision owed before any spec.
+
+  Meta-view (2026-09-11): today the HUMAN is the spearhead — creates
+  sessions, passes messages, orchestrates everything. The automated
+  spearhead unifies all sessions under one orchestration umbrella the
+  user interacts with (the funnels, unified); the human moves up one
+  level to policy + exceptions + merges. Three planes vs prime-agent's
+  two (daemon + workers): execution (sessions), coordination
+  (orchestrators, reunions, spearhead), governance (promotions,
+  review phasing, contracts, audit). Reunion + mediation improves the
+  existing worktree/diff/review phasing rather than replacing it.
+  Temporal phasing: reunion-v1 runs runtime-driven on opencode (the
+  runtime holds barrier state and wakes orchestrators with composed
+  prompts — the synthesis pattern generalized; no new primitive).
+  Full temporal coordination (schedules, heartbeats, cross-session
+  messaging, sleep/wake) needs the custom engine — opencode's gaps
+  are concrete: turns are bounded request/response (waiting = holding
+  HTTP open), no inter-session messaging, no scheduled wakeups. So
+  the design does NOT block on the custom engine; the engine removes
+  polling/timeout fragility later.
 - **Five-minute onboard.** Open repo → stack detected → roster
   proposed → first delegation in minutes. The demo that sells dev
   tools. Seeds: agents loader, models sync, gallery, topology gen.
