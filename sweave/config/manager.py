@@ -1,12 +1,46 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 import yaml
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from .schemas import SweaveConfig, RoutingConfig, ModelsConfig, RoutingRule
+
+
+def _set_models_default_line(text: str, scalar: str) -> str | None:
+    """Splice ``default: <scalar>`` into the top-level ``models:`` block.
+
+    Returns the edited text, or None when the file has no anchorable
+    block (an inline ``models: {...}`` or no ``models:`` key at all —
+    the caller falls back to a YAML rewrite). Comment- and
+    key-preserving: every other line is byte-identical, including the
+    original indent style of an existing ``default:`` line.
+    """
+    import re
+
+    lines = text.splitlines(keepends=True)
+    start = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^models:\s*(#.*)?$", ln)),
+        None,
+    )
+    if start is None:
+        return None
+    # The block is the run of indented/blank lines after `models:`.
+    # An inline value (`models: {...}`) never matches the anchor
+    # regex above, so reaching here with a scalar on the anchor line
+    # is impossible — but guard anyway.
+    end = start + 1
+    while end < len(lines) and (
+        lines[end].strip() == "" or lines[end][:1] in (" ", "\t")
+    ):
+        existing = re.match(r"^(\s*)default\s*:.*$", lines[end])
+        if existing:
+            lines[end] = f"{existing.group(1)}default: {scalar}\n"
+            return "".join(lines)
+        end += 1
+    lines.insert(start + 1, f"  default: {scalar}\n")
+    return "".join(lines)
 
 
 class ConfigReloader(FileSystemEventHandler):
@@ -42,13 +76,21 @@ class ConfigManager:
         self._reloader: ConfigReloader | None = None
     
     def load(self) -> SweaveConfig:
-        """Load configuration from YAML files."""
+        """Load configuration from YAML files.
+
+        User-default home (fast-track 2026-09-11): the user's model
+        selection lives in ``config.yaml`` (``models.default``), NOT in
+        the generated registry. Stored-default precedence:
+        config.yaml ``default`` > ``models.custom.yaml`` overlay >
+        legacy ``models.yaml`` ``default`` (adopted once, below).
+        """
         # Load main config
         if self.config_path.exists():
             self._config = SweaveConfig.from_yaml(self.config_path)
         else:
             self._config = SweaveConfig()
-        
+        file_default = self._config.models.default
+
         # Load models config
         models_path = Path(self._config.models.registry_path)
         if models_path.exists():
@@ -75,7 +117,30 @@ class ConfigManager:
         customs_default = self._merge_custom_registry(models_path)
         if customs_default:
             self._models_config.default = customs_default
-        
+
+        # Fast-track migration (once, idempotent): a legacy
+        # models.yaml ``default`` with no config.yaml home is adopted
+        # into config.yaml — but never from under a live customs
+        # layer (customs stays dynamic; freezing it into config would
+        # silently pin the user's hand-maintained file, and a later
+        # customs ``default`` edit is shadowed by an adopted config
+        # value by the precedence above). The models.yaml key is left
+        # in place but henceforth ignored — no destructive rewrite of
+        # user data. No file is ever created from load(): a missing
+        # config file adopts in memory only.
+        registry_default = self._models_config.default
+        if (
+            not file_default
+            and customs_default is None
+            and registry_default
+            and self.config_path.exists()
+            and self._is_selectable_model(
+                registry_default, set(self.get_all_models())
+            )
+        ):
+            file_default = registry_default
+            self._persist_config_default(registry_default)
+
         # Load routing config
         rules_path = Path(self._config.models.rules_path)
         if rules_path.exists():
@@ -84,12 +149,13 @@ class ConfigManager:
             self._routing_config = RoutingConfig(**rules_data)
         else:
             self._routing_config = RoutingConfig()
-        
+
         # Merge into main config
         self._config.models.providers = self._models_config.providers
-        self._config.models.default = self._models_config.default
+        self._config.models.default = file_default or registry_default
+        self._models_config.default = self._config.models.default
         self._config.routing = self._routing_config
-        
+
         return self._config
     
     def get(self) -> SweaveConfig:
@@ -215,13 +281,18 @@ class ConfigManager:
     def get_default_model(self) -> str:
         """Get the default model (orchestrator + unset specialists).
 
-        Precedence: models.yaml ``default`` (when it names a model in
-        the registry) > the user's opencode.json ``model`` (the serve's
-        own working default) > first ``opencode/`` model > first
-        ``ollama/`` model > first ``gmi/`` model > first registry
-        entry. The old behaviour (first registry entry, currently a
-        cloudflare model most serves can't reach) 500s the chat turn,
-        so the registry-first fallback is intentionally last.
+        Precedence (fast-track 2026-09-11 — the STORED default is the
+        first applicable of the first three; the rest are fallbacks
+        when it is unset or names a model no longer in the registry):
+        config.yaml ``models.default`` (the user's selection) >
+        ``models.custom.yaml`` overlay > legacy ``models.yaml``
+        ``default`` (adopted into config on load when selectable) >
+        the user's opencode.json ``model`` (the serve's own working
+        default) > first ``opencode/`` model > first ``ollama`` /
+        ``gmi`` / ``openrouter`` model > first registry entry. The old
+        behaviour (first registry entry, currently a cloudflare model
+        most serves can't reach) 500s the chat turn, so the
+        registry-first fallback is intentionally last.
         """
         all_models = self.get_all_models()
         available = set(all_models)
@@ -263,7 +334,7 @@ class ConfigManager:
         return not known or variant in known
 
     def set_default_model(self, model: str) -> str:
-        """Persist a new default model to models.yaml.
+        """Persist a new default model to config.yaml.
 
         Accepts qualified ``provider/model`` ids and
         ``provider/model+variant`` effort selections (the effort
@@ -274,11 +345,16 @@ class ConfigManager:
         violation (the router maps this to a 400).
 
         M1.13 step 3 (ruling 2026-09-10): the STORED default stays
-        BARE — no ``+variant`` suffix in models.yaml. The env-form
+        BARE — no ``+variant`` suffix in the file. The env-form
         ``OPENCODE_MODEL`` must be bare (a suffix there 500s every
         serve turn: harness/opencode.py:980-988, live probe
         2026-09-10); effort variants flow as the structured v2 body
         field, never through the stored default.
+
+        Fast-track 2026-09-11: the home is config.yaml
+        (``models.default``); models.yaml is never touched — it is a
+        generated artifact, and user state + generated artifact in
+        one file was the three-writer clobber bug.
         """
         from sweave.runtime.specialist_store import parse_model_ref
 
@@ -311,13 +387,69 @@ class ConfigManager:
         models.default = bare
         if self._config is not None:
             self._config.models.default = bare
-        self._persist_models()
-        # models.yaml edits do NOT fire the ConfigReloader (it watches
-        # config.yaml only — see ConfigReloader.schedule/on_modified):
-        # reload synchronously + fan out to the registered callbacks,
-        # the same contract the file-watch path invokes.
+        self._persist_config_default(bare)
+        # config.yaml edits fire the ConfigReloader too (it watches
+        # config.yaml — see ConfigReloader.schedule/on_modified), but
+        # the watchdog is async and racy: reload synchronously + fan
+        # out to the registered callbacks now, the same contract the
+        # file-watch path invokes (a later watchdog reload is a
+        # harmless idempotent no-op).
         self._sync_reload()
         return bare
+
+    def _persist_config_default(self, value: str) -> None:
+        """Write the bare user default into config.yaml (surgical).
+
+        Line-preserving edit inside the top-level ``models:`` block so
+        comments and unrelated keys survive byte-identical (a PyYAML
+        round-trip would strip them); falls back to a full YAML
+        rewrite when the file has no ``models:`` block to anchor on,
+        and to a minimal ``{models: {default}}`` document when the
+        config file does not exist yet (schema defaults fill the rest
+        on the next load — never dump merged registry data here).
+
+        The write is atomic (tmp + os.replace). Concurrent-writer
+        locking is out of scope (filed per the plan risk note).
+
+        Never touches models.yaml (fast-track 2026-09-11). Never
+        write via PowerShell redirection (UTF-16 LE + BOM breaks
+        PyYAML).
+        """
+        import re
+
+        import yaml
+
+        from sweave.runtime.locking import atomic_write_text_sync
+
+        # Quote iff the value needs it. NOTE: never splice
+        # ``yaml.safe_dump(value)`` for a bare scalar straight into a
+        # larger document — PyYAML appends a ``...`` document-end
+        # marker (``"<v>\n...\n"``) that ``.strip()`` does NOT remove
+        # (2026-09-11: this exact splice broke config.yaml mid-suite).
+        if re.match(r"^[A-Za-z0-9][A-Za-z0-9_/.:+@-]*$", value):
+            scalar = value
+        else:  # pragma: no cover - validated defaults are plain-safe
+            scalar = yaml.safe_dump(value, allow_unicode=True).splitlines()[0]
+        path = Path(self.config_path)
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            edited = _set_models_default_line(text, scalar)
+            if edited is not None:
+                atomic_write_text_sync(path, edited)
+                return
+            data = yaml.safe_load(text) or {}
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+        models = data.get("models")
+        if not isinstance(models, dict):
+            models = {}
+            data["models"] = models
+        models["default"] = value
+        atomic_write_text_sync(
+            path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        )
 
     def _sync_reload(self) -> None:
         """Programmatic hot-reload after a registry write.
@@ -340,23 +472,6 @@ class ConfigManager:
             except Exception:
                 pass  # Log in production
 
-    def _persist_models(self) -> None:
-        """Write providers + default back to models.yaml (UTF-8, no BOM).
-
-        yaml.safe_dump quotes entries that need it (e.g. ``@cf/...``
-        ids), so no manual quoting is required. Never write via
-        PowerShell redirection (UTF-16 LE + BOM breaks PyYAML).
-        """
-        models = self.get_models()
-        registry_path = Path(
-            self._config.models.registry_path if self._config else "models.yaml"
-        )
-        payload: dict[str, Any] = {"models": {"providers": models.providers}}
-        if models.default:
-            payload["models"]["default"] = models.default
-        with open(registry_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
-    
     def resolve_model(self, role: str, override: str | None = None) -> str:
         """Resolve model for a role, with optional override.
         

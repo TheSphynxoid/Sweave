@@ -34,6 +34,42 @@ async def atomic_write_json(
     atomic_write_json_sync(path, data, use_yaml=use_yaml)
 
 
+def atomic_write_text_sync(path: Path | str, text: str) -> None:
+    """Write *text* to *path* atomically (synchronous, UTF-8).
+
+    Same tmp-file + fsync + ``os.replace`` contract as
+    :func:`atomic_write_json_sync`, for callers that already hold
+    rendered text (e.g. a comment-preserving config edit that must
+    not round-trip through a YAML dump).
+    """
+    path = Path(path)
+    parent = path.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(parent) if parent else None,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def atomic_write_json_sync(
     path: Path | str,
     data: Any,
