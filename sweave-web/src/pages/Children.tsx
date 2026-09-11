@@ -18,6 +18,7 @@ import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { LiveTree } from "./children/LiveTree";
 import { DetailView } from "./children/DetailView";
+import { ArchivedGroup } from "./children/ArchivedGroup";
 import type { Delegation } from "@/types";
 
 export function ChildrenPage() {
@@ -33,6 +34,17 @@ export function ChildrenPage() {
   const { data: delegations = [] } = useQuery<Delegation[]>({
     queryKey: ["delegations"],
     queryFn: () => api.listDelegations(),
+  });
+
+  // M1.13 step 5 (ruling 2026-09-11): compact Archived group. One
+  // fetch carries both the live rows (archived=false, backend
+  // default hides them) and the per-project archive aggregates
+  // (include_archived=true); the live query above stays untouched
+  // so the M1.8 no-rerender pattern keeps functioning for
+  // row-level WS updates.
+  const { data: archive } = useQuery({
+    queryKey: ["archivedProjects"],
+    queryFn: () => api.listDelegationsWithArchive(),
   });
 
   // WS subscription: status_changed pulses. We invalidate
@@ -93,6 +105,10 @@ export function ChildrenPage() {
         activeProjectName={activeProject?.name ?? null}
         onOpen={(id) => setOpenId(id)}
       />
+      {/* M1.13 step 5: at the very bottom — stats preserved, no
+          clutter (collapsed by default; aggregates only, never
+          individual archived rows). */}
+      <ArchivedGroup archivedProjects={archive?.archived_projects ?? []} />
       {openId && (
         <DetailView
           delegationId={openId}
