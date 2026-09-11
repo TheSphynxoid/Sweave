@@ -62,7 +62,11 @@ class JobRunner:
     so the runner just calls them in background tasks.
     """
 
-    DEFAULT_TURN_TIMEOUT = 15 * 60  # 15 min per the M1.3 plan
+    # 30 min per turn (ruling 2026-09-10: the M1.3 15-min default killed
+    # real agentic turns too early). Configurable via
+    # ``routing.turn_timeout_s`` (sweave/config/schemas.py); hot-reloaded
+    # through the ConfigManager reload callback wired in server.py.
+    DEFAULT_TURN_TIMEOUT = 30 * 60
 
     def __init__(
         self,
@@ -406,7 +410,9 @@ class JobRunner:
                         )
                     ):
                         extensions += 1
-                        budget = float(self.turn_timeout or 900.0)
+                        budget = float(
+                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
+                        )
                         trace.append(
                             "turn_extended",
                             {
@@ -584,6 +590,36 @@ class JobRunner:
                     })()
                 else:
                     result = legacy_result
+
+            # Honest failure states (2026-09-10 ruling: failed children
+            # must not masquerade as review). The SpecialistRuntime's
+            # in-band error contract returns a wire death as a
+            # "[chat error: ...]" string with no exception; the chat
+            # loop knows that prefix, but a CHILD delegation arriving
+            # through this runner was stored as output with success ->
+            # review / error=None (the APIError only ever visible in
+            # the trace file). Detect the sentinel HERE, at the single
+            # convergence point of both agent paths, and convert it to
+            # a truthful failed record: error text on the row, status
+            # failed, empty output.
+            _sentinel_output = (
+                (result.output or "") if isinstance(result.output, str) else ""
+            )
+            if result.success and _sentinel_output.lstrip().startswith(
+                "[chat error:"
+            ):
+                wire_error = _sentinel_output.strip()
+                result = DelegationResult(
+                    success=False,
+                    agent=delegation.agent,
+                    task_id=delegation.task_id,
+                    output="",
+                    error=wire_error,
+                )
+                trace.append(
+                    "wire_death_recorded",
+                    {"error": wire_error},
+                )
 
             # Persist result + transition.
             await store.update(

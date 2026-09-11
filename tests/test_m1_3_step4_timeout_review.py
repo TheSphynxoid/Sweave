@@ -78,9 +78,31 @@ async def test_turn_timeout_marks_delegation_failed(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_turn_timeout_default_is_15_minutes():
-    """The default turn_timeout per the M1.3 plan is 15 min (900s)."""
-    assert JobRunner.DEFAULT_TURN_TIMEOUT == 900
+async def test_turn_timeout_default_is_30_minutes():
+    """Default turn_timeout = 30 min (1800s) per the 2026-09-10 ruling.
+
+    Was 15 min (M1.3 plan); raised because real agentic turns outlive
+    it. Configurable via ``routing.turn_timeout_s``.
+    """
+    assert JobRunner.DEFAULT_TURN_TIMEOUT == 1800
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_config_field_default_and_bounds():
+    """routing.turn_timeout_s: default 1800s, bounded (0, 14400]."""
+    from pydantic import ValidationError
+
+    from sweave.config.schemas import RoutingConfig
+
+    assert RoutingConfig().turn_timeout_s == 1800.0
+    with pytest.raises(ValidationError):
+        RoutingConfig(turn_timeout_s=0)
+    with pytest.raises(ValidationError):
+        RoutingConfig(turn_timeout_s=-5)
+    with pytest.raises(ValidationError):
+        RoutingConfig(turn_timeout_s=14_400.1)
+    RoutingConfig(turn_timeout_s=14_400).turn_timeout_s == 14_400
+    RoutingConfig(turn_timeout_s=60).turn_timeout_s == 60
 
 
 @pytest.mark.asyncio

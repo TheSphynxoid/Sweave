@@ -237,6 +237,11 @@ async def lifespan(app: FastAPI):
         # in the same chain can pick a target that was previously
         # busy).
         delegation_manager=state.delegation_manager,
+        # Per-turn cap from config (routing.turn_timeout_s, default
+        # 1800s). Hot-reloaded below via a ConfigManager reload
+        # callback; the ChatLoop is constructed AFTER this from
+        # state.job_runner.turn_timeout and shares the same value.
+        turn_timeout=config_manager.get_routing().turn_timeout_s,
     )
     # One-time legacy import: if the anchored file is absent but the
     # in-memory dynamic_agents dict has entries (from the legacy CWD-
@@ -318,6 +323,26 @@ async def lifespan(app: FastAPI):
         memory_whats_new_recall=state.memory_tool.memory,
         git_snapshotter=GitSnapshotter(),
     )
+
+    # Hot-reload wiring for the per-turn cap (2026-09-10 ruling):
+    # when the ConfigManager reloads (config.yaml watch), the fresh
+    # ``routing.turn_timeout_s`` is pushed into both the JobRunner and
+    # the ChatLoop so an edit takes effect without a server restart.
+    # The reload callback arity is (old_config, new_config); the
+    # callback consults get_routing() directly because rules.yaml is
+    # merged back into config.routing on every load().
+    def _apply_turn_timeout(old_cfg, new_cfg):
+        try:
+            value = config_manager.get_routing().turn_timeout_s
+        except Exception:  # noqa: BLE001 — best-effort reload, never fatal
+            return
+        if value and value > 0:
+            state.job_runner.turn_timeout = float(value)
+            if state.chat_loop is not None:
+                state.chat_loop.turn_timeout = float(value)
+
+    config_manager.register_reload_callback(_apply_turn_timeout)
+    config_manager.enable_hot_reload()
 
     # M1.6 step 2: build the DelegationManager from the loaded config.
     # The v2 task endpoint runs ``validate`` before delegating to the

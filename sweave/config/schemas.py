@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +93,37 @@ class RoutingConfig(BaseModel):
     # specialist -> defer -> orchestrator -> peer). Plan ruling
     # 2026-08-30: default 2.
     max_depth: int = 2
+    # Per-turn wall-clock cap (seconds) for a managed specialist /
+    # orchestrator agent turn (JobRunner._bounded_turn + ChatLoop).
+    # M1.3 plan default was 900s; raised to 1800s (30 min, ruling
+    # 2026-09-10) because real agentic turns (large worktree edits,
+    # extended thinking) routinely outlive 15 min, and because the
+    # M1.12 shielded turn-cap extension can still stretch the total
+    # (bounded x3) — the base budget should not be the bottleneck.
+    #
+    # Bound: 0 < turn_timeout_s <= 14_400 (4 hours). Justification:
+    # (a) the M1.12 beacon machinery already multiplies the effective
+    # wall-clock by up to (extensions+1)x, so the base budget must
+    # stay a single-turn cap, not a session cap; (b) each turn holds
+    # a per-specialist serve process alive — beyond ~4h a "turn" is a
+    # wedged serve, and leaked serves compound forever; (c) 4h keeps
+    # the boutique single-digit-hour ceiling aligned with opencode's
+    # own practical turn sizes. Anything <= 0 makes wait_for fire
+    # instantly (turn can never succeed); anything > 4h is
+    # almost certainly a typo (hours entered as seconds).
+    turn_timeout_s: float = 1800.0
+
+    @field_validator("turn_timeout_s")
+    @classmethod
+    def _validate_turn_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("turn_timeout_s must be > 0 (seconds)")
+        if v > 14_400:
+            raise ValueError(
+                "turn_timeout_s must be <= 14400s (4h): beyond that a "
+                "turn is a wedged serve, not a turn"
+            )
+        return v
 
 
 class ServerConfig(BaseModel):
