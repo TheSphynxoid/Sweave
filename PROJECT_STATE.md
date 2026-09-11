@@ -77,6 +77,30 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **`_sweave_managed` body-leak fixed (2026-09-11)** — the "Console
+  Go: invalid request body: json: unknown field `_sweave_managed`"
+  errors (dogfood children 20:24+ AND the orchestrator chat lane):
+  SINK-CAPTURED PROOF that unknown keys inside managed
+  `opencode.json` entries land at the TOP LEVEL of the upstream LLM
+  request body (`{"model":...,"max_tokens":32000,"_sweave_managed":true,...}`)
+  — strict providers (z.ai console's Go decoder) reject them. Fix:
+  ownership moved OUT of opencode.json into a sweave-owned sidecar
+  (`{project}/.sweave/opencode-managed.json`, dotted-path owned-set);
+  the rendered opencode.json is now MARKER-FREE; legacy in-file
+  markers are adopted + stripped on the next ensure (migration);
+  falsy legacy markers still mean user-owned. Live Sweave project
+  config migrated (sidecar: mcp + both agents + permission). NOTE:
+  the pre-restart server runs old marker-writing code — a project
+  re-activation before the restart re-adds markers (regenerate by
+  re-running ensure_mcp_config, or just restart). Probe caveat:
+  plain-serve probes with the same config did NOT reproduce the
+  rejection (real-path trigger not fully isolated), but the leak
+  mechanism is captured fact and the fix removes it categorically.
+  +1 migration test; marker asserts flipped across
+  test_m1_6_step3/test_native_agents/m1_6_live_scene. 619/619 pytest.
+  Process note (own the mistake): the leak bisect's cleanup killed
+  ALL opencode.exe by image name — took down the user's live
+  harness; never blanket-kill, always PID-scope.
 - ✅ **Ask-card defect trio fixed (2026-09-10/11, user rulings locked:
   full budget re-armed; allow the orphans)** — diagnosis: reviewer
   child `020e3ebb8d1b` (session `Sweave-20260910-091904-b64c4d`) hit an

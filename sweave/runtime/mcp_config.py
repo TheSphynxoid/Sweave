@@ -25,12 +25,18 @@ to ``"allow"``. This is deliberately NOT a blanket allow: danger
 gates stay in the per-agent profiles
 (``runtime/agent_permission.py``).
 
-This module writes that file **idempotently** with a versioned
-marker, so re-activation is a no-op and a user-edited config isn't
-clobbered on every activate. The marker is the key
-``_sweave_managed`` inside the ``mcp.sweave`` entry (and inside each
-managed ``agent`` entry); if the marker is absent (user wrote their
-own block) we leave the file alone.
+This module writes that file **idempotently** so re-activation is a
+no-op and a user-edited config isn't clobbered on every activate.
+Ownership lives in a SWEAVE-OWNED SIDECAR
+(``{project}/.sweave/opencode-managed.json`` — a set of dotted paths
+sweave renders), NOT in markers inside ``opencode.json``: the 2026-09-10
+Console Go incident proved unknown keys inside managed entries LEAK
+INTO THE UPSTREAM REQUEST BODY (sink capture:
+``{"model":...,"max_tokens":32000,"_sweave_managed":true,...}``) and
+strict providers (z.ai console's Go JSON decoder) reject them with
+``invalid_request_error``. Legacy ``_sweave_managed: true`` markers are
+stripped from the file on the next ensure (migration) and recorded in
+the sidecar; a falsy legacy marker still means user-owned.
 
 Token + activation: the shared MCP token is read from
 ``~/.sweave/mcp_token`` and embedded in the spawned process's
@@ -54,17 +60,45 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Marker key inside the mcp.sweave entry. Presence of this key (set
-# to True) means sweave wrote this block; absence means the user
-# wrote their own -- we don't touch it.
+# Legacy in-file ownership marker. NEVER rendered into
+# opencode.json anymore (body-leak incident 2026-09-10); kept for
+# the migration path only: ``true`` on an existing entry = sweave
+# wrote it (adopt into the sidecar + strip the key), falsy = the
+# user wrote it (leave alone).
 _MANAGED_KEY = "_sweave_managed"
 _MANAGED_VALUE = True
 
 # The opencode version we tested the schema with (M1.6 step 0 probe).
 # If the user's opencode is older / newer and the schema changes,
-# the marker still protects us; the worst case is a no-op config
+# ownership still protects us; the worst case is a no-op config
 # write + the user seeing a stale entry.
 _OPENCODE_CONFIG_FILENAME = "opencode.json"
+
+# Sidecar: sweave-owned record of which dotted paths in opencode.json
+# sweave renders. Lives under {project}/.sweave/ so opencode never
+# sees it and nothing can leak into a request body.
+_SIDECAR_FILENAME = "opencode-managed.json"
+_SIDECAR_VERSION = 1
+
+
+def _sidecar_path(project_dir: Path) -> Path:
+    return project_dir / ".sweave" / _SIDECAR_FILENAME
+
+
+def _load_owned(project_dir: Path) -> set[str]:
+    data = _read_json(_sidecar_path(project_dir))
+    owned = data.get("owned")
+    if isinstance(owned, list):
+        return {str(x) for x in owned}
+    return set()
+
+
+def _save_owned(project_dir: Path, owned: set[str]) -> None:
+    path = _sidecar_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(
+        path, {"version": _SIDECAR_VERSION, "owned": sorted(owned)}
+    )
 
 
 def _opencode_config_path(project_dir: Path) -> Path:
@@ -109,10 +143,6 @@ def _sweave_mcp_entry(token: str, env_token_var: str) -> dict[str, Any]:
         },
         "enabled": True,
         "timeout": 30000,
-        # Marker: presence of this key means sweave wrote the block.
-        # Re-runs are no-ops; user-edited blocks (no marker) are
-        # left alone.
-        _MANAGED_KEY: _MANAGED_VALUE,
     }
 
 
@@ -228,24 +258,28 @@ def _ensure_top_level_permission(
     existing: dict[str, Any],
     project_dir: Path,
     permission_roots: Any = None,
-) -> bool:
+    owned: set[str] | None = None,
+) -> tuple[bool, bool]:
     """Merge the managed top-level ``permission`` policy.
 
-    Returns True iff the caller should persist (we changed
-    something). Ownership rules mirror the agent map: absent ->
-    write managed block; present-with-marker -> refresh our keys,
-    preserve user keys; present-without-marker (fully user-owned)
-    -> leave alone + warn (an ``ask`` default in there will hang
-    the headless serve; that warning is the most we can do without
-    overwriting someone's security config).
+    Returns ``(changed, owned_changed)``. Ownership rules: owned per
+    the sidecar, or adopted from a legacy ``_sweave_managed: true``
+    marker (stripped + migrated) -> refresh our keys, preserve user
+    keys; present with a falsy/absent legacy marker and NOT in the
+    sidecar (fully user-owned) -> leave alone + warn (an ``ask``
+    default in there will hang the headless serve; that warning is
+    the most we can do without overwriting someone's security
+    config).
     """
+    owned = owned if owned is not None else set()
+    owned_changed = False
     current = existing.get("permission", None)
     if current is None:
         existing["permission"] = {
             **_sweave_managed_permission(project_dir, permission_roots),
-            _MANAGED_KEY: _MANAGED_VALUE,
         }
-        return True
+        owned.add("permission")
+        return True, True
     if not isinstance(current, dict):
         logger.warning(
             "ensure_mcp_config: top-level 'permission' has an unexpected "
@@ -253,8 +287,14 @@ def _ensure_top_level_permission(
             "headless serves)",
             type(current).__name__,
         )
-        return False
-    if not current.get(_MANAGED_KEY):
+        return False, False
+    legacy = bool(current.get(_MANAGED_KEY))
+    if legacy:
+        # Migration: adopt + strip the in-file marker (body-leak fix).
+        current.pop(_MANAGED_KEY, None)
+        owned.add("permission")
+        owned_changed = True
+    elif "permission" not in owned:
         if "external_directory" not in current:
             logger.warning(
                 "ensure_mcp_config: user-owned top-level 'permission' has no "
@@ -262,7 +302,7 @@ def _ensure_top_level_permission(
                 "hangs headless serves forever on outside-cwd access. "
                 "Consider setting it explicitly."
             )
-        return False
+        return False, False
     changed = any(
         current.get(key) != value
         for key, value in _sweave_managed_permission(
@@ -274,7 +314,7 @@ def _ensure_top_level_permission(
             project_dir, permission_roots
         ).items():
             current[key] = value
-    return changed
+    return changed, owned_changed
 
 
 def _sweave_managed_permission(
@@ -320,14 +360,12 @@ def _sweave_agent_map() -> dict[str, Any]:
             "mode": "primary",
             "prompt": (orch.prompt if orch else "") or "",
             "permission": render_agent_permission_profile(is_orchestrator=True),
-            _MANAGED_KEY: _MANAGED_VALUE,
         },
         SPECIALIST_AGENT_NAME: {
             "description": "Sweave specialist: implements delegated work in its worktree.",
             "mode": "primary",
             "prompt": SPECIALIST_AGENT_CHARTER,
             "permission": render_agent_permission_profile(is_orchestrator=False),
-            _MANAGED_KEY: _MANAGED_VALUE,
         },
     }
 
@@ -398,15 +436,20 @@ def ensure_mcp_config(
 
     path = _opencode_config_path(project_dir)
     existing = _read_json(path)
+    owned = _load_owned(project_dir)
+    owned_changed = False
 
     mcp_block = existing.get("mcp", {})
     if not isinstance(mcp_block, dict):
         mcp_block = {}
     existing_sweave = mcp_block.get("sweave", {})
 
-    # If a sweave entry exists but is NOT managed by us, leave it
-    # alone (user override). If it IS managed, refresh in place.
-    if existing_sweave and not existing_sweave.get(_MANAGED_KEY):
+    # Ownership: sidecar, else a legacy in-file marker (migrated +
+    # stripped). Anything else is user-written and left alone.
+    legacy_mcp = isinstance(existing_sweave, dict) and bool(
+        existing_sweave.get(_MANAGED_KEY)
+    )
+    if existing_sweave and "mcp.sweave" not in owned and not legacy_mcp:
         logger.info(
             "ensure_mcp_config: project %s has a user-written 'mcp.sweave' block; skipping",
             project_dir,
@@ -420,22 +463,32 @@ def ensure_mcp_config(
             env_token_var=token_env_var,
         )
         existing["mcp"] = mcp_block
+        if "mcp.sweave" not in owned:
+            owned.add("mcp.sweave")
+            owned_changed = True
         # Headless permission policy (never unhandled-ask): merged
         # with the same ownership rules as the agent map (user-owned
         # blocks are never overwritten; see
         # _ensure_top_level_permission). The M1.12 scoped render
         # needs the project dir for the worktree-root glob.
-        _ensure_top_level_permission(existing, project_dir, permission_roots)
-        # Managed opencode-native agents (same marker convention per
-        # agent name: present-without-marker = user-owned, left
-        # alone; otherwise refreshed from the YAML specs so prompt
-        # edits land on the next activation).
+        _, perm_owned_changed = _ensure_top_level_permission(
+            existing, project_dir, permission_roots, owned
+        )
+        owned_changed = owned_changed or perm_owned_changed
+        # Managed opencode-native agents (ownership via the sidecar,
+        # else legacy in-file marker -> migrate + strip; anything
+        # else is user-owned and left alone so prompt edits land on
+        # the next activation).
         agent_block = existing.get("agent", {})
         if not isinstance(agent_block, dict):
             agent_block = {}
         for name, rendered in _sweave_agent_map().items():
+            dotted = f"agent.{name}"
             current = agent_block.get(name, {})
-            if current and not (isinstance(current, dict) and current.get(_MANAGED_KEY)):
+            legacy_agent = isinstance(current, dict) and bool(
+                current.get(_MANAGED_KEY)
+            )
+            if current and dotted not in owned and not legacy_agent:
                 logger.info(
                     "ensure_mcp_config: project %s has a user-written 'agent.%s' block; skipping",
                     project_dir,
@@ -443,6 +496,9 @@ def ensure_mcp_config(
                 )
                 continue
             agent_block[name] = rendered
+            if dotted not in owned:
+                owned.add(dotted)
+                owned_changed = True
         existing["agent"] = agent_block
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,14 +506,20 @@ def ensure_mcp_config(
             logger.info("ensure_mcp_config: wrote %s", path)
         except OSError as e:
             logger.warning("ensure_mcp_config: write failed for %s: %s", path, e)
+        if owned_changed:
+            _save_owned(project_dir, owned)
     return existing
 
 
 def has_managed_sweave_block(project_dir: Path) -> bool:
-    """True iff the project's opencode.json carries the sweave-managed
-    block. Used by tests + the activate-project endpoint to skip
-    re-writes (the ensure_mcp_config path is already idempotent;
-    this is a fast read-side check)."""
+    """True iff the project's opencode.json sweave-MCP block is
+    sweave-owned: per the sidecar (post-migration) or a legacy
+    in-file marker (not yet migrated). Used by tests + the
+    activate-project endpoint to skip re-writes (the
+    ensure_mcp_config path is already idempotent; this is a fast
+    read-side check)."""
+    if "mcp.sweave" in _load_owned(project_dir):
+        return True
     existing = _read_json(_opencode_config_path(project_dir))
     mcp_block = existing.get("mcp", {})
     if not isinstance(mcp_block, dict):

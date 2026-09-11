@@ -87,11 +87,23 @@ def test_ensure_mcp_config_writes_per_project_opencode_json(tmp_path: Path):
     assert sweave["environment"]["SWEAVE_MCP_TOKEN"] == "{env:SWEAVE_MCP_TOKEN}"
     assert sweave["enabled"] is True
     assert sweave["timeout"] == 30000
-    assert sweave["_sweave_managed"] is True
+    # Body-leak fix (2026-09-10): NO marker key inside the rendered
+    # entry -- unknown agent/mcp keys leak into the upstream request
+    # body and strict providers reject them. Ownership lives in the
+    # sidecar.
+    assert "_sweave_managed" not in sweave
 
-    # The on-disk JSON is valid and the marker is present.
+    # The on-disk JSON is valid, marker-free, and ownership is
+    # recorded in the sweave-owned sidecar.
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["mcp"]["sweave"]["_sweave_managed"] is True
+    assert "_sweave_managed" not in json.dumps(on_disk)
+    sidecar = json.loads(
+        (project_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "mcp.sweave" in sidecar["owned"]
+    assert "agent.sweave-orchestrator" in sidecar["owned"]
 
 
 def test_ensure_mcp_config_is_idempotent(tmp_path: Path):
@@ -167,8 +179,65 @@ def test_ensure_mcp_config_preserves_other_top_level_keys(tmp_path: Path):
     assert config["model"] == "ollama/qwen3:8b"
     assert config["provider"]["ollama"]["baseURL"] == "http://localhost:11434/v1"
     assert config["compaction"]["auto"] is True
-    # And the sweave block is added.
-    assert config["mcp"]["sweave"]["_sweave_managed"] is True
+    # And the sweave block is added (marker-free; sidecar-owned).
+    assert "_sweave_managed" not in config["mcp"]["sweave"]
+    sidecar = json.loads(
+        (project_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "mcp.sweave" in sidecar["owned"]
+
+
+def test_ensure_mcp_config_migrates_legacy_markers(tmp_path: Path):
+    """A pre-sidecar project carries ``_sweave_managed: true`` INSIDE
+    its managed entries. The next ensure adopts ownership into the
+    sidecar and STRIPS the keys from opencode.json (the Console Go
+    body-leak fix): unknown entry keys reach the upstream request
+    body, so no sweave-written key may remain in the file."""
+    from sweave.runtime.mcp_config import ensure_mcp_config
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    legacy = {
+        "mcp": {
+            "sweave": {
+                "type": "local",
+                "command": ["pythonw", "-m", "sweave.mcp"],
+                "enabled": True,
+                "_sweave_managed": True,
+            }
+        },
+        "agent": {
+            "sweave-specialist": {
+                "description": "old",
+                "mode": "primary",
+                "prompt": "old prompt",
+                "_sweave_managed": True,
+            }
+        },
+    }
+    (project_dir / "opencode.json").write_text(
+        json.dumps(legacy, indent=2), encoding="utf-8"
+    )
+    config = ensure_mcp_config(project_dir)
+    assert "_sweave_managed" not in json.dumps(config)
+    on_disk = json.loads(
+        (project_dir / "opencode.json").read_text(encoding="utf-8")
+    )
+    assert "_sweave_managed" not in json.dumps(on_disk)
+    # The migrated specialist entry was refreshed (not left stale).
+    assert (
+        "Sweave specialist"
+        in on_disk["agent"]["sweave-specialist"]["description"]
+    )
+    sidecar = json.loads(
+        (project_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "mcp.sweave" in sidecar["owned"]
+    assert "agent.sweave-specialist" in sidecar["owned"]
 
 
 def test_ensure_mcp_config_dry_run_does_not_write(tmp_path: Path, monkeypatch):
@@ -259,7 +328,13 @@ def test_activate_project_writes_opencode_config(client: TestClient, tmp_path: P
     config_path = proj_dir / "opencode.json"
     assert config_path.exists(), f"opencode.json not written to {config_path}"
     data = json.loads(config_path.read_text(encoding="utf-8"))
-    assert data["mcp"]["sweave"]["_sweave_managed"] is True
+    assert "_sweave_managed" not in json.dumps(data)
+    sidecar = json.loads(
+        (proj_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "mcp.sweave" in sidecar["owned"]
 
 
 # ---------------------------------------------------------------------------

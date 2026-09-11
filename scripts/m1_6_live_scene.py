@@ -83,8 +83,14 @@ async def main() -> int:
     opencode_json = proj_dir / "opencode.json"
     assert opencode_json.exists(), f"opencode.json missing at {opencode_json}"
     cfg = json.loads(opencode_json.read_text(encoding="utf-8"))
-    assert cfg["mcp"]["sweave"]["_sweave_managed"] is True
-    print(f"per-project opencode.json: {opencode_json} (managed=True)")
+    assert "_sweave_managed" not in json.dumps(cfg), (
+        "marker keys must not be rendered into opencode.json (body-leak fix)"
+    )
+    sidecar = proj_dir / ".sweave" / "opencode-managed.json"
+    assert sidecar.exists(), f"ownership sidecar missing at {sidecar}"
+    owned = json.loads(sidecar.read_text(encoding="utf-8"))["owned"]
+    assert "mcp.sweave" in owned
+    print(f"per-project opencode.json: {opencode_json} (sidecar-owned)")
 
     # Step 2: create the parent (orchestrator) delegation.
     # We submit via /api/v2/tasks with no parent_task_id (top-level).

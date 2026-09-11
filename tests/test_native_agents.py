@@ -46,7 +46,8 @@ def test_agent_map_names_modes_and_markers():
     assert set(agents) == {ORCHESTRATOR_AGENT_NAME, SPECIALIST_AGENT_NAME}
     for name, entry in agents.items():
         assert entry["mode"] == "primary"
-        assert entry["_sweave_managed"] is True
+        # Body-leak fix: no ownership marker inside rendered entries.
+        assert "_sweave_managed" not in entry
         assert entry["description"]
 
 
@@ -108,13 +109,21 @@ def test_ensure_mcp_config_merges_agents_and_preserves_user_ones(tmp_path: Path)
 
     config = ensure_mcp_config(project_dir)
     agents = config["agent"]
-    # User-owned sweave-specialist (no marker) is left alone...
+    # User-owned sweave-specialist (no marker, no sidecar record) is
+    # left alone...
     assert agents["sweave-specialist"]["description"] == "mine"
     # ...the user's own agent is untouched...
     assert agents["my-helper"]["mode"] == "subagent"
-    # ...and the managed orchestrator agent is added.
-    assert agents["sweave-orchestrator"]["_sweave_managed"] is True
+    # ...and the managed orchestrator agent is added (marker-free;
+    # ownership recorded in the sidecar).
+    assert "_sweave_managed" not in agents["sweave-orchestrator"]
     assert agents["sweave-orchestrator"]["mode"] == "primary"
+    sidecar = json.loads(
+        (project_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "agent.sweave-orchestrator" in sidecar["owned"]
 
 
 def test_ensure_mcp_config_refreshes_managed_agents(tmp_path: Path):
@@ -271,7 +280,8 @@ def test_ensure_mcp_config_writes_managed_permission_policy(tmp_path: Path):
     assert (
         f"{str(project_dir / '.worktrees')}{os.sep}**" in ed
     )
-    assert on_disk["permission"]["_sweave_managed"] is True
+    # Body-leak fix: the rendered permission block is marker-free.
+    assert "_sweave_managed" not in on_disk["permission"]
     assert config["permission"]["external_directory"]["*"] == "ask"
 
 
@@ -308,3 +318,12 @@ def test_ensure_mcp_config_refreshes_managed_permission_keys(tmp_path: Path):
     ed = on_disk["permission"]["external_directory"]
     assert isinstance(ed, dict) and ed["*"] == "ask"
     assert on_disk["permission"]["bash"] == "deny"
+    # Legacy marker migrated: stripped from the file, ownership in
+    # the sidecar.
+    assert "_sweave_managed" not in on_disk["permission"]
+    sidecar = json.loads(
+        (project_dir / ".sweave" / "opencode-managed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "permission" in sidecar["owned"]
