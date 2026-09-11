@@ -77,6 +77,22 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
+  session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
+  the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the
+  good first-turn reply (by design, `loop.py` — only the final answer
+  persisted). Now one assistant message per orchestrator round (round
+  0 persists before the child wait, synthesis is round 1; failed
+  synthesis keeps round 0 intact). Round-scoped streaming
+  (`chat.delta` carries `round`, mid-turn coalescer flush for exact
+  attribution), snapshot carries `round`, UI collapses intermediates
+  (RoundBlock) with lanes on the final message only. Commits
+  `076b5cc` (backend) + `746eef3` (UI). Gates: backend round tests +
+  updated synthesis tests, 251/251 vitest (+13), build green. Also
+  fixed en route: a self-inflicted `streaming.py` line-join (no-op
+  edit guard: never edit without a content change) and the
+  `SWEAVE_MOCK_OPENCODE=1` module fixture (GOTCHAS-known) missing
+  from the new test file.
 - ✅ **Turn timers hardened after the 2026-09-11 incident (3 slices)** —
   session `Sweave-20260911-124817-6d6851`: backend child hung 17 min
   silent (out-of-scope `external_directory` ask never ferried), died on
