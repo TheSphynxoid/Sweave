@@ -110,23 +110,39 @@ async def get_harnesses():
 
 
 @router.post("/api/models/regenerate")
-async def api_regenerate_models():
-    from sweave.platform import run_no_window
+def api_regenerate_models(state: AppState = Depends(get_state)):
+    """Regenerate models.yaml from models.dev + the serve overlay.
 
+    Fast-track 2026-09-11: this calls ``sync_registry`` in-process
+    (the same path as ``sweave models sync``) — the old implementation
+    shelled out to ``scripts/generate_models.py`` WITHOUT ``--write``,
+    so it printed the registry to its own stdout and never touched
+    the file. Sync output is providers-only; the user's default in
+    config.yaml survives by construction (nothing here reads it).
+
+    Plain ``def`` (not ``async``) so FastAPI runs the blocking fetch
+    + scratch-serve boot in the threadpool instead of stalling the
+    event loop. Still slow (models.dev fetch + serve boot) — the UI
+    should treat it as a long action.
+    """
+    from pathlib import Path
+
+    from sweave.models_sync import sync_registry
+
+    registry_path = Path(state.config_manager.get().models.registry_path)
     try:
-        result = run_no_window(
-            ["python", "scripts/generate_models.py"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return {
-            "success": result.returncode == 0,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        }
-    except Exception as e:
-        raise HTTPException(500, f"Failed to regenerate models: {e}")
+        report = sync_registry(registry_path)
+    except RuntimeError as e:
+        raise HTTPException(500, f"models regenerate failed: {e}")
+    return {
+        "success": True,
+        "providers": report["providers"],
+        "models": report["models"],
+        "added": report["added"],
+        "removed": report["removed"],
+        "source": report["source"],
+        "path": report["path"],
+    }
 
 
 @router.post("/api/memory/init")

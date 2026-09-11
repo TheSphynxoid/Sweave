@@ -191,11 +191,9 @@ def _sync_models(include_all_upstream: bool = False, include_variant_rows: bool 
             console.print(f"    - {row}")
         if len(change["removed"]) > 5:
             console.print(f"    - ... ({len(change['removed']) - 5} more)")
-    if not report["default_kept"]:
-        console.print(
-            f"[yellow]warning: previous default {report['default']!r} is gone "
-            f"from the new registry (kept on disk anyway)[/yellow]"
-        )
+    # NOTE (fast-track 2026-09-11): sync output is providers-only —
+    # the user's default lives in config.yaml and no sync can touch
+    # it, so there is no default-kept warning anymore.
     console.print("[yellow]restart the server to pick up the new registry[/yellow]")
 
 

@@ -442,8 +442,15 @@ def ensure_nonempty(registry: dict[str, list[str]]) -> None:
         )
 
 
-def write_registry(path: Path, providers: dict[str, list[str]], default: str | None) -> None:
+def write_registry(path: Path, providers: dict[str, list[str]]) -> None:
     """Write models.yaml (UTF-8, no BOM; header comment + payload).
+
+    Providers ONLY — no ``default`` key. The user's selection lives
+    in config.yaml (fast-track 2026-09-11); the generator must never
+    read or write it, so a sync can never clobber the selection
+    again. Legacy ``default`` keys still on disk are simply dropped
+    from the next sync output (the load-time migration adopted the
+    value into config.yaml first).
 
     Never via shell redirection (UTF-16 LE + BOM breaks PyYAML) —
     always through this writer.
@@ -451,8 +458,6 @@ def write_registry(path: Path, providers: dict[str, list[str]], default: str | N
     import yaml
 
     payload: dict[str, Any] = {"models": {"providers": providers}}
-    if default:
-        payload["models"]["default"] = default
     text = HEADER_COMMENT + yaml.safe_dump(
         payload, sort_keys=False, allow_unicode=True
     )
@@ -490,7 +495,7 @@ def sync_registry(
     always carries the full variant lists either way.
 
     Returns a report dict (providers, models, variant_rows, added,
-    removed, upstream_only flag, default_kept, pid). Raises on
+    removed, source, overlay, meta). Raises on
     binary/serve failures; the registry file is only touched after
     a successful fetch + build + non-empty guard. When models.dev
     is unreachable, falls back to serve-only generation (the old
@@ -517,7 +522,11 @@ def sync_registry(
         provider: list(models or [])
         for provider, models in (current_models.get("providers") or {}).items()
     }
-    old_default = current_models.get("default")
+    # NOTE (fast-track 2026-09-11): the legacy ``default`` key is
+    # deliberately NOT read here. The user's selection lives in
+    # config.yaml; sync output is providers-only so no writer can
+    # clobber it. Whatever ``default`` is on disk passes through the
+    # load-time migration, not the generator.
 
     try:
         emit("fetching models.dev upstream (4-5 MB)")
@@ -553,16 +562,7 @@ def sync_registry(
     added = sum(len(v["added"]) for v in diff.values())
     removed = sum(len(v["removed"]) for v in diff.values())
 
-    default_kept = True
-    if old_default:
-        flat = {row for rows in new_registry.values() for row in rows}
-        # The default may be stored qualified (provider/model) while
-        # the registry holds bare ids; compare both shapes.
-        bare_default = old_default.split("/", 1)[1] if "/" in old_default else old_default
-        if old_default not in flat and bare_default not in flat:
-            default_kept = False
-
-    write_registry(registry_path, new_registry, old_default)
+    write_registry(registry_path, new_registry)
     meta_path = registry_path.with_name(META_FILENAME)
     write_metadata(meta_path, meta)
     n_variants = sum(
@@ -579,8 +579,6 @@ def sync_registry(
         "diff": diff,
         "overlay_rows": overlay_rows,
         "overlay": overlay,
-        "default": old_default,
-        "default_kept": default_kept,
         "source": source,
         "meta_path": str(meta_path),
         "meta_entries": len(meta),

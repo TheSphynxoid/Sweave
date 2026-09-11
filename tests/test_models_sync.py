@@ -118,10 +118,13 @@ def test_diff_reports_added_removed():
 def test_write_reload_round_trip(tmp_path: Path):
     registry = build_registry(PAYLOAD)
     target = tmp_path / "models.yaml"
-    write_registry(target, registry, "openrouter/thinkingmachines/inkling:free+low")
+    write_registry(target, registry)
 
     data = yaml.safe_load(target.read_text(encoding="utf-8"))
-    assert data["models"]["default"] == "openrouter/thinkingmachines/inkling:free+low"
+    # Fast-track 2026-09-11: sync output is providers-only — no
+    # ``default`` key is ever written (the user default lives in
+    # config.yaml).
+    assert "default" not in data["models"]
     assert data["models"]["providers"] == registry
 
 
