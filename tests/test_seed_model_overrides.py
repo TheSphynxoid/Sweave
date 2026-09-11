@@ -175,7 +175,6 @@ def test_fold_migration_materialized_seed_copy(tmp_path: Path, monkeypatch):
     assert rec.scope == "seed"
     assert rec.model_ref == parse_model_ref("zai-coding-plan/glm-5.3-flash+high")  # model kept
     assert rec.public_model() == "zai-coding-plan/glm-5.3-flash+high"
-    assert rec.model_ref == parse_model_ref("zai-coding-plan/glm-5.3-flash+high")
     # The stale full-record copy is dropped
     assert rec.system_prompt == ""
     assert rec.description == ""
