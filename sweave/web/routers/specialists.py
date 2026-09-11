@@ -98,6 +98,36 @@ def _orchestrator_409(name: str | None = None) -> HTTPException:
     return HTTPException(409, msg)
 
 
+def _seed_read_only_400(name: str) -> HTTPException:
+    return HTTPException(
+        400,
+        f"'{name}' is a seed view; its prompt/description/harness live in "
+        "sweave/agents/*/config.yaml and cannot be edited here",
+    )
+
+
+async def _apply_seed_model(
+    state: AppState,
+    name: str,
+    model: str,
+) -> dict:
+    """Persist a per-seed model override and publish ``model.changed``.
+
+    Uses the resolver's :meth:`set_seed_model` (a minimal model-only
+    override in the global store; the derived seed view merges it at
+    resolve time). Returns the merged seed view's public dict.
+    """
+    from sweave.runtime.specialist_store import parse_model_ref as _pmr
+
+    resolver = _resolver(state)
+    merged = resolver.set_seed_model(name, _pmr(model))
+    await state.publish(
+        "model.changed",
+        {"name": name, "model": model, "scope": "seed"},
+    )
+    return merged.public_dict()
+
+
 # ---------------------------------------------------------------------------
 # List / get
 # ---------------------------------------------------------------------------
@@ -198,6 +228,30 @@ async def update_specialist(
     existing = resolver.resolve(name, project_dir=proj_dir if target_scope == "project" else None)
     if existing is None:
         raise HTTPException(404, f"specialist '{name}' not found")
+    # Seed gate (2026-09-11): seeds are read-only views over
+    # sweave/agents/*/config.yaml. Writing a seed view into a store
+    # would materialize a full shadow copy that hides the seed (this
+    # is exactly how the backend-specialist seed got demoted to
+    # "global"). Model-only changes route through the seed override;
+    # prompt/description/harness edits are refused.
+    if existing.scope == "seed":
+        model_only = (
+            body.role_ref is None
+            and body.description is None
+            and body.system_prompt is None
+            and body.harness is None
+        )
+        if not model_only:
+            raise _seed_read_only_400(name)
+        if body.current_model is None:
+            raise _seed_read_only_400(name)
+        if "/" not in body.current_model:
+            raise HTTPException(
+                400,
+                f"model must be qualified as 'provider/model' "
+                f"(got {body.current_model!r})",
+            )
+        return await _apply_seed_model(state, name, body.current_model)
     # Patch the existing record (preserves created_at, session_id, etc.)
     if body.role_ref is not None:
         existing.role_ref = body.role_ref
@@ -262,11 +316,6 @@ async def set_specialist_model(
     existing = resolver.resolve(name, project_dir=proj_dir)
     if existing is None:
         raise HTTPException(404, f"specialist '{name}' not found")
-    # Resolve the scope from which the record was found (project vs global)
-    # The Specialist.scope field is already set (project/global/seed).
-    # PUT here only mutates persistent records; the seed view is read-only.
-    if existing.scope == "seed":
-        raise HTTPException(400, f"'{name}' is a seed view; edit the config.yaml")
     # Reject bare provider names ("gmi") and other unqualified values:
     # they parse to an incomplete ModelRef, silently drop the model
     # override (wire None), and confuse the picker. The UI only offers
@@ -276,6 +325,13 @@ async def set_specialist_model(
             400,
             f"model must be qualified as 'provider/model' (got {body.model!r})",
         )
+    # Resolve the scope from which the record was found (project vs global)
+    # The Specialist.scope field is already set (project/global/seed).
+    # PUT here mutates persistent records; for seeds it writes the
+    # per-seed model override (2026-09-11) -- the seed view itself
+    # stays read-only.
+    if existing.scope == "seed":
+        return await _apply_seed_model(state, name, body.model)
     # Persist the structured ModelRef (M1.13 step 3, ruling
     # 2026-09-10): set_model_ref stores the JSON-encoded ref so
     # provider/model/variant survive round-trip. A bare-string

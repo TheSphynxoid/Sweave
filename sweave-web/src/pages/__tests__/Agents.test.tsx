@@ -1,0 +1,107 @@
+/**
+ * Agents page: per-scope card gating (2026-09-11 seed model overrides).
+ *
+ * Pins: the model picker is editable for seed cards (a seed override
+ * is persistable via setSpecialistModel) but Edit/Delete stay hidden
+ * for seeds; orchestrator cards keep everything locked; project cards
+ * keep the full edit affordances.
+ */
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AgentsPage } from "../Agents";
+import { api } from "@/api/client";
+import type { SpecialistSummary } from "@/types";
+
+vi.mock("@/api/client", () => ({
+  api: {
+    listSpecialists: vi.fn(),
+    listHarnesses: vi.fn().mockResolvedValue([]),
+    getModels: vi.fn().mockResolvedValue({ default: "opencode-go/glm-5.3-flash" }),
+    setSpecialistModel: vi.fn(),
+    deleteSpecialist: vi.fn(),
+  },
+}));
+
+const pushNotification = vi.fn();
+vi.mock("@/context/AppProvider", () => ({
+  useApp: () => ({ pushNotification }),
+}));
+
+const listMock = vi.mocked(api.listSpecialists);
+
+function spec(overrides?: Partial<SpecialistSummary>): SpecialistSummary {
+  return {
+    name: "backend-specialist",
+    scope: "seed",
+    is_orchestrator: false,
+    role_ref: "backend",
+    description: "Backend engineering",
+    system_prompt: "You are a backend specialist",
+    harness: "opencode",
+    current_model: null,
+    session_id: null,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  listMock.mockResolvedValue([
+    spec(), // seed
+    spec({
+      name: "sql-expert",
+      scope: "project",
+      role_ref: null,
+      description: "",
+      system_prompt: "",
+    }), // project
+    spec({
+      name: "orchestrator",
+      scope: "project",
+      is_orchestrator: true,
+      role_ref: "orchestrator",
+      description: "Supervisor",
+      system_prompt: "You are the orchestrator",
+    }), // orchestrator group
+  ]);
+});
+
+function renderPage() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <AgentsPage />
+    </QueryClientProvider>,
+  );
+}
+
+function waitForPicker(name: string, scope: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const el = document.querySelector(
+      `[data-testid="model-picker-${scope}-${name}"]`,
+    );
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+}
+
+describe("AgentsPage seed model overrides", () => {
+  it("enables the model picker on a seed card", async () => {
+    renderPage();
+    const seedPicker = await waitForPicker("backend-specialist", "seed");
+    expect(seedPicker.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps the orchestrator model picker disabled", async () => {
+    renderPage();
+    const orch = await waitForPicker("orchestrator", "project");
+    expect(orch.hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows Edit/Delete only on the project card (seed + orchestrator hide them)", async () => {
+    renderPage();
+    await waitForPicker("sql-expert", "project");
+    expect(screen.getAllByText("Edit").length).toBe(1);
+  });
+});

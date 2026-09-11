@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     Specialist,
+    parse_model_ref,
 )
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -268,6 +269,33 @@ async def update_agent(
     existing = resolver.resolve(name, project_dir=proj_dir)
     if existing is None:
         raise HTTPException(404, f"Dynamic agent '{name}' not found")
+    # Seed gate (2026-09-11): never materialize a seed view into a
+    # persistent store (that shadow copy is what demoted the
+    # backend-specialist seed to "global"). Model-only updates go
+    # through the seed override; prompt/description/harness edits on
+    # a seed are refused (config.yaml is the source of truth).
+    if existing.scope == "seed":
+        prompt_edits = (
+            update.system_prompt is not None
+            or update.description is not None
+            or update.harness is not None
+            or update.tools is not None
+        )
+        if prompt_edits:
+            raise HTTPException(
+                400,
+                f"'{name}' is a seed view; its prompt/description live in "
+                "sweave/agents/*/config.yaml and cannot be edited here",
+            )
+        if update.model is not None:
+            merged = resolver.set_seed_model(name, parse_model_ref(update.model))
+            await state.publish(
+                "model.changed",
+                {"name": name, "model": merged.public_model(), "scope": "seed"},
+            )
+        await state.publish("specialist.updated", {"name": name, "scope": "seed"})
+        await state.publish("agent_updated", {"name": name})
+        return {"success": True, "agent": name}
     # Each field is patched independently; description NEVER overwrites
     # system_prompt (the M1.prep bug at routers/agents.py:131-134).
     if update.model is not None:

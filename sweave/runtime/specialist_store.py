@@ -184,8 +184,11 @@ class Specialist:
 
     ``scope`` is one of ``"project" | "global" | "seed"``. Seeds are
     derived views over the on-disk ``sweave/agents/*/config.yaml``
-    files; they're never persisted through the store, so
-    ``scope="seed"`` records are read-only via the public API.
+    files; they're read-only via the public API (a persisted
+    ``scope="seed"`` record in the global store is a *seed override*:
+    a minimal model-only record merged into the derived view at
+    resolve time -- never a full copy; see
+    :class:`GlobalSpecialistStore`).
 
     Schema history:
     * v1 (M1.2): ``current_model: str | None`` (a bare model name).
@@ -324,6 +327,7 @@ class _BaseSpecialistStore:
         self.file_path = Path(file_path)
         self._lock = threading.Lock()
         self._records: dict[str, Specialist] = {}
+        self._persistence_changed = False
         self._load()
 
     def _load(self) -> None:
@@ -362,10 +366,23 @@ class _BaseSpecialistStore:
                     self.file_path, e,
                 )
                 continue
-            # Seed records never come from a file; defensive guard.
-            if rec.scope == "seed":
-                rec.scope = "global"  # fold seeds to global if persisted (shouldn't happen)
-            self._records[rec.name] = rec
+            rec = self._normalize_loaded_record(rec)
+            if rec is not None:
+                self._records[rec.name] = rec
+        if self._persistence_changed:
+            self._persist()
+
+    def _normalize_loaded_record(self, rec: Specialist) -> Specialist | None:
+        """Per-store record normalisation hook (called inside ``_load``).
+
+        Base behaviour (project store): a persisted ``scope="seed"``
+        record is a leak -- fold it to "global" (pre-2026-09-11 shape
+        guard; seed overrides only ever live in the global store).
+        """
+        # Seed records never come from a project file; defensive guard.
+        if rec.scope == "seed":
+            rec.scope = "global"  # fold seeds to global if persisted (shouldn't happen)
+        return rec
 
     def _persist(self) -> None:
         payload = {
@@ -403,7 +420,24 @@ class _BaseSpecialistStore:
 
 class GlobalSpecialistStore(_BaseSpecialistStore):
     """``~/.sweave/agents.yaml`` (new anchored path; replaces the M1.prep
-    CWD-relative ``agents.yaml``)."""
+    CWD-relative ``agents.yaml``).
+
+    Two record kinds may live here for a seed-named specialist:
+
+    * a **seed override** (``scope="seed"``): a minimal record carrying
+      ONLY ``current_model`` (+ identity/role_ref hints). It never
+      shadows the seed -- ``SpecialistResolver`` merges its model into
+      the derived seed view.
+    * an **explicit specialist** (``scope="global"``): a full
+      user-created record that shadows the seed by name.
+
+    On load, a *materialized* seed copy (a ``scope="global"`` full
+    record whose name matches a real seed name -- created by the old
+    ungated update path, e.g. the 2026-09-03 ``backend-specialist``) is
+    fold-migrated into a seed override: its ``current_model`` is kept,
+    the prompt/description/session copy is dropped, and the file is
+    re-persisted so the migration is one-time. Idempotent on reload.
+    """
 
     @staticmethod
     def default_path() -> Path:
@@ -411,6 +445,28 @@ class GlobalSpecialistStore(_BaseSpecialistStore):
 
     def __init__(self, file_path: Path | None = None) -> None:
         super().__init__(Path(file_path) if file_path else self.default_path())
+
+    def _normalize_loaded_record(self, rec: Specialist) -> Specialist | None:
+        # A persisted seed override is allowed here (model-only record).
+        if rec.scope == "seed":
+            return rec
+        seed_roles = _seed_name_to_role()
+        if rec.name not in seed_roles:
+            return rec
+        # Materialized seed copy -> fold-migrate to a seed override,
+        # preserving the user's model choice and dropping the stale
+        # full-record copy (prompt/description/session_id).
+        logger.info(
+            "GlobalSpecialistStore: fold-migrating materialized seed copy "
+            "'%s' (scope=global) to a seed override",
+            rec.name,
+        )
+        self._persistence_changed = True
+        return _make_seed_override(
+            name=rec.name,
+            role_ref=rec.role_ref or seed_roles[rec.name],
+            model_ref=rec.model_ref,
+        )
 
 
 class ProjectSpecialistStore(_BaseSpecialistStore):
@@ -432,6 +488,22 @@ class ProjectSpecialistStore(_BaseSpecialistStore):
 # ---------------------------------------------------------------------------
 
 
+def _seed_name_to_role() -> dict[str, str]:
+    """Map seed specialist names (``defn.name``) -> seed roles (dir names).
+
+    Used by :class:`GlobalSpecialistStore._load` to recognise *leaked*
+    materialized seed copies: a global record whose name matches a real
+    seed name is a full copy that shadows the derived seed view (the
+    2026-09-10 ``backend-specialist`` incident; results from a PUT
+    through the old ungated update path). Tests may monkeypatch
+    :func:`load_seed_agents` via this helper's source.
+    """
+    try:
+        return {d.name: d.role for d in load_seed_agents().values()}
+    except Exception:  # pragma: no cover - defensive
+        return {}
+
+
 def _seed_as_specialist(defn: AgentDefinition) -> Specialist:
     """Map an :class:`AgentDefinition` to a seed-view :class:`Specialist`.
 
@@ -449,6 +521,34 @@ def _seed_as_specialist(defn: AgentDefinition) -> Specialist:
         current_model=None,  # seeds don't pin a model; resolve() does
         session_id=None,
     )
+
+
+def _make_seed_override(
+    *,
+    name: str,
+    role_ref: str | None,
+    model_ref: ModelRef | None,
+) -> Specialist:
+    """Build a minimal **seed override** record for the global store.
+
+    An override carries ONLY the user's per-seed model choice (via
+    :meth:`Specialist.set_model_ref`, the JSON ModelRef shape) plus
+    identity metadata. It deliberately does NOT copy prompt,
+    description or session state from the seed: ``sweave/agents/*/
+    config.yaml`` stays the single source of truth for those. It is
+    merged into the derived seed view at resolve time; an explicit
+    project/global record with the same name still shadows the seed.
+    """
+    ov = Specialist(
+        name=name,
+        scope="seed",
+        is_orchestrator=False,
+        role_ref=role_ref,
+        description="",
+        system_prompt="",
+    )
+    ov.set_model_ref(model_ref)
+    return ov
 
 
 class SpecialistResolver:
@@ -497,6 +597,37 @@ class SpecialistResolver:
         key = str(Path(project_dir).resolve())
         return self._project_stores.pop(key, None) is not None
 
+    def _find_seed_def(self, name: str) -> AgentDefinition | None:
+        """Find a seed definition by specialist *name*.
+
+        Seeds are indexed by directory (role) in ``_seed_defs``, but a
+        config.yaml may declare ``name: backend-specialist`` (differs
+        from the dir key). First try the exact key, then fall back to
+        a scan on ``defn.name``.
+        """
+        d = self._seed_defs.get(name)
+        if d is None:
+            for cand in self._seed_defs.values():
+                if cand.name == name:
+                    return cand
+        return d
+
+    def _seed_view(self, name: str) -> Specialist | None:
+        """Derived seed view for *name* with the stored seed override
+        (if any) merged in. """
+        seed_def = self._find_seed_def(name)
+        if seed_def is None:
+            return None
+        view = _seed_as_specialist(seed_def)
+        ov = self.global_store.get(seed_def.name)
+        if (
+            ov is not None
+            and ov.scope == "seed"
+            and ov.current_model
+        ):
+            view.current_model = ov.current_model
+        return view
+
     # ---- resolution -----------------------------------------------------
 
     def resolve(
@@ -504,7 +635,8 @@ class SpecialistResolver:
         name: str,
         project_dir: Path | None = None,
     ) -> Specialist | None:
-        """project -> global -> seed. Returns None if no match."""
+        """project -> global -> seed (seed view = yaml + model override).
+        Returns None if no match."""
         if name == ORCHESTRATOR_NAME:
             # Orchestrator is only resolved via resolve_orchestrator().
             return None
@@ -515,10 +647,7 @@ class SpecialistResolver:
         rec = self.global_store.get(name)
         if rec is not None:
             return rec
-        seed_def = self._seed_defs.get(name)
-        if seed_def is not None:
-            return _seed_as_specialist(seed_def)
-        return None
+        return self._seed_view(name)
 
     def resolve_orchestrator(
         self,
@@ -594,7 +723,9 @@ class SpecialistResolver:
             for seed_name in sorted(self._seed_defs):
                 if seed_name == ORCHESTRATOR_NAME:
                     continue  # orchestrator isn't a routing-pool member
-                _add(_seed_as_specialist(self._seed_defs[seed_name]))
+                view = self._seed_view(seed_name)
+                if view is not None:
+                    _add(view)
         return out
 
     # ---- write API (gated) -----------------------------------------------
@@ -612,6 +743,11 @@ class SpecialistResolver:
             )
         if rec.name == ORCHESTRATOR_NAME:
             raise ValueError(f"name '{ORCHESTRATOR_NAME}' is reserved for the orchestrator")
+        if rec.scope == "seed":
+            raise ValueError(
+                "scope 'seed' records cannot be created; seeds are derived views "
+                "over sweave/agents/*/config.yaml"
+            )
         store = self._project_store(project_dir) if project_dir is not None else None
         if store is None:
             if rec.scope == "project":
@@ -633,6 +769,15 @@ class SpecialistResolver:
                 "cannot overwrite an is_orchestrator=True record via update(); "
                 "use resolve_orchestrator() to access the singleton"
             )
+        if rec.scope == "seed":
+            # Defence in depth: a seed VIEW must never be written back to
+            # a persistent store (that materializes a shadow copy that
+            # hides the seed -- the 2026-09-03 backend-specialist leak).
+            # Per-seed model choices go through set_seed_model().
+            raise ValueError(
+                "'seed' is a read-only view; edit the config.yaml, or use "
+                "set_seed_model() for the per-seed model choice"
+            )
         store = self._project_store(project_dir) if project_dir is not None else None
         if store is None:
             if rec.scope == "project":
@@ -640,6 +785,28 @@ class SpecialistResolver:
             store = self.global_store
         store.upsert(rec)
         return rec
+
+    def set_seed_model(
+        self,
+        name: str,
+        ref: ModelRef | None,
+    ) -> Specialist:
+        """Persist the per-seed model choice for seed *name* and return
+        the merged seed view.
+
+        Writes a minimal seed override (model-only) into the global
+        store; the derived seed view picks it up at resolve time. The
+        returned record is a transient merged view (scope stays
+        "seed"); it must never be re-persisted via :meth:`update`.
+        """
+        seed_def = self._find_seed_def(name)
+        if seed_def is None:
+            raise ValueError(f"'{name}' is not a seed specialist")
+        ov = _make_seed_override(
+            name=seed_def.name, role_ref=seed_def.role, model_ref=ref
+        )
+        self.global_store.upsert(ov)
+        return self._seed_view(seed_def.name) or ov
 
     def delete(
         self,

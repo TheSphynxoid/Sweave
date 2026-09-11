@@ -202,7 +202,11 @@ function SpecialistCard({
   onEdit: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const locked = specialist.is_orchestrator || specialist.scope === "seed";
+  // Seeds keep a read-only prompt/description (config.yaml is the
+  // source of truth) but their model picker IS editable: it persists a
+  // minimal per-seed override via PUT /api/specialists/{name}/model.
+  const locked = specialist.is_orchestrator;
+  const editable = !locked && specialist.scope !== "seed";
 
   return (
     <Card className="overflow-hidden hover:shadow-md transition-shadow">
@@ -255,7 +259,7 @@ function SpecialistCard({
             />
             Details
           </button>
-          {!locked && (
+          {editable && (
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"

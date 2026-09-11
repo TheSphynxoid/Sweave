@@ -77,6 +77,26 @@
 - **Logs**: `web.log` / `web_err.log`
 
 ### M1 progress (after M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5)
+- ✅ **Per-seed model overrides + seed materialization-leak fix
+  (2026-09-11)** — seeds are granted a per-seed model choice:
+  `PUT /api/specialists/{name}/model` now accepts seed-scoped records
+  by persisting a minimal **seed override** (`scope="seed"`,
+  model-only, JSON ModelRef via `set_model_ref`) in the global store;
+  `SpecialistResolver._seed_view()` merges it into the derived seed
+  view at resolve/list time (`set_seed_model()` is the write path).
+  Resolution order unchanged (project → global → seed); explicit
+  records still shadow seeds. The materialization leak
+  (`resolver.update()` writing a seed view into a persistent store —
+  how `backend-specialist` got demoted to "global" on 2026-09-03) is
+  closed: `update()`/`create()` refuse `scope="seed"` records, and
+  PUT/PUT-with-prompt on seeds is refused 400 while
+  `GlobalSpecialistStore._load()` fold-migrates any leaked materialized
+  seed copy back to a model-only override (idempotent, preserves the
+  user's model). UI: seed cards' model picker unlocked; Edit/Delete
+  stay hidden; orchestrator stays fully locked. Note: seeds are
+  indexed by dir name in `_seed_defs` but `resolve()` now also matches
+  `defn.name` (previously `resolve("backend-specialist")` missed the
+  seed entirely because config.yaml `name:` differs from the dir key).
 - ✅ **Tracking Phase A — read-only /plan board (2026-09-11)** — plan of
   record `docs/TRACKING_PLAN.md` (validated same day: new `/plan` tab,
   schedule = visual due-dates+reminders, Phase D; scheduled runs
