@@ -305,6 +305,27 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `data.get("...", default)` in `Session.from_dict` so legacy files load without a
    helper. Check both before adding a field.
 
+2. **M1.13 archive sub-state (2026-09-11 ruling, ARCHIVE-not-delete).** Delegation
+   records carry an additive `archived: bool` + `archived_at` timestamp (schema v6,
+   `_migrate_v5_to_v6` defaults False/None; v4 records pass through BOTH v4->v5 and
+   v5->v6 migration steps â€” the chain is per-version, not just `if < SCHEMA_VERSION`).
+   The boot sweep (`sweave/runtime/delegation_archive.py::sweep_archive_delegations`,
+   wired in the lifespan right after `_recover_interrupted_delegations`) archive-flags
+   every record whose `project_name` is unregistered or whose workdir is gone;
+   records with `project_name=None` (the fallback store's own rows) are NEVER swept.
+   The project/session delete endpoints cascade the same flags
+   (`archive_project_scope` / `archive_session_scope`) â€” hooks run BEFORE the
+   registry entry is removed so the workdir is still resolvable. Per-project
+   aggregates persist at `~/.sweave/archived/{slug}.json`; `source` is derived at
+   READ time ("store" rows win over "index" rows), never written into the index.
+   GET /api/delegations: `?archived=false|true|all` (default false = archived
+   hidden) + `?include_archived=true` adds the `archived_projects` aggregate rows.
+   Idempotency gotcha: a second server process (e.g. `run.py --check`) sweeps and
+   archives, but the LIVE server still holds its own in-memory copy of the same
+   `delegations.json` and rewrites the un-archived records on its next persist â€”
+   the flags re-apply on the next real server restart. Don't "fix" this by
+   restarting the live server mid-flight.
+
 ## Lifecycle & engine contracts
 
 1. **Chat-loop auto-done is the chat path's job, not JobRunner's** (M1.7 step 3).

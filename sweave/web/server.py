@@ -148,6 +148,33 @@ async def lifespan(app: FastAPI):
             "as failed (interrupted by server restart)",
             _recovered,
         )
+    # M1.13 cleanup (ruling 2026-09-11, ARCHIVE-not-delete): dead-scope
+    # delegation archive sweep. Runs alongside the recovery reaper,
+    # BEFORE any turn can be accepted, so no live delegation can race
+    # it. Records whose project is no longer registered (deleted /
+    # unregistered) or whose workdir is gone are marked ``archived``
+    # in place (status + stats preserved, never deleted); per-project
+    # aggregates are persisted to ~/.sweave/archived so the Children
+    # tab's compact Archived group keeps its counts even after cleanup.
+    from sweave.runtime.delegation_archive import (
+        ArchiveIndexStore,
+        sweep_archive_delegations,
+    )
+
+    state.archive_index = ArchiveIndexStore()
+    _swept = await sweep_archive_delegations(
+        state.delegation_stores,
+        state.archive_index,
+        fallback_dir=Path.home() / ".sweave",
+    )
+    if _swept["archived_records"]:
+        logger.info(
+            "Boot sweep: archived %d delegation(s) of dead project "
+            "scopes (unregistered or deleted workdir); %d index "
+            "entries refreshed",
+            _swept["archived_records"],
+            _swept["index_entries"],
+        )
     state.subagent_runs = SubAgentRunStore()
     # M1.2 step 2: build the specialist resolver first so the JobRunner
     # can be wired with the specialist factory + saver closures below.

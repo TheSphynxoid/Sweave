@@ -115,6 +115,13 @@ class AppState:
     # when handling ``POST /api/delegations/{id}/escalate`` and
     # ``POST /api/delegations/{id}/answer``. ``None`` before lifespan.
     escalation_store: Any = None  # type: ignore[assignment]
+    # M1.13 cleanup (ruling 2026-09-11): persisted archive aggregate
+    # index (``~/.sweave/archived``). Built in the lifespan boot sweep
+    # so the Children tab's compact Archived group survives disk
+    # cleanup / unreachable stores. May be ``None`` in tests that
+    # build the AppState directly — the routers fall back to building
+    # one at call time.
+    archive_index: Any = None  # type: ignore[assignment]
 
     @classmethod
     def build(cls, config_manager: ConfigManager) -> "AppState":
