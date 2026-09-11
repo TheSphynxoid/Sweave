@@ -47,7 +47,28 @@ runtime-driven reunion v1 (needs M2.1+M2.2), training env API +
 trajectory export, audit/provenance export, postmortems, replay
 debugger, skills-with-tests, topology gen, onboard metric.
 
-## 2. M2.0 — Estimation records (execution-ready spec)
+## 2. Fast-track (pre-M2): user default out of models.yaml
+
+Accepted defect 2026-09-11 (user proposal, verified against code).
+Three writers share one file today: `set_default_model` persists the
+user's selection INTO models.yaml (`config/manager.py:265-320` via
+`_persist_models`, which rewrites providers+default at `:343-358`);
+`sync_registry` reads `old_default` from the same file and rewrites it
+(`models_sync.py:520,565`); any stale read (fresh checkout, parallel
+session, competing writer) silently replaces the user's selection —
+the stray `default: opencode/muse-spark-...` M seen 2026-09-11 is the
+live exhibit. Generated artifact + user state in one file is the bug.
+Fix shape: the user default moves to `config.yaml` (`models.default`
+already exists on the config schema and already wins on the read path
+— `manager.py:228-230,90`); `set_default_model` writes there and never
+touches models.yaml; `write_registry`/sync stop reading/writing
+`default`; one migration adopts a legacy models.yaml default into
+config.yaml iff config is unset; `_persist_models` stops rewriting the
+registry from memory (second clobber vector). Half-step, no behavior
+change except the write path; goes before M2.0 (removes a live footgun
+the series would otherwise keep tripping over).
+
+## 3. M2.0 — Estimation records (execution-ready spec)
 
 ### Starting point (executor: verify before touching code)
 
@@ -81,9 +102,9 @@ only: no planner, no UI, no enforcement, no calibration.
    disk; all prior migrations keep passing (gotcha: Delegation &
    Session schema discipline).
 2. Submit-path plumbing: `POST /api/v2/tasks` accepts optional
-   `estimate`; MCP `defer` accepts optional `blocking`... NO —
-   out of scope (M2.1). `defer` accepts optional `estimate` and
-   passes it through; rejected-chain rules unchanged.
+   `estimate`; MCP `defer` accepts optional `estimate` and passes it
+   through (`blocking` is M2.1 — out of scope here); rejected-chain
+   rules unchanged.
 3. Actuals projection: `GET /api/delegations/{id}/estimate` (or fold
    into the detail projection — executor decides with justification;
    detail-view pattern preferred over a new endpoint if it stays
@@ -110,8 +131,8 @@ only: no planner, no UI, no enforcement, no calibration.
 - Estimate gaming later (callers low-balling to dodge future caps):
   noted, not solved — M2.0 records, nothing enforces.
 
-## 3. Later phases (sketched; each gets its own execution-ready
-## section before it runs — a re-scope against what M2.0 actually built)
+## 4. Later phases (sketched; each gets its own execution-ready
+section before it runs — a re-scope against what M2.0 actually built)
 
 - **M2.1** implements the locked wait-set + review-request semantics
   (`docs/PLUGGABLES_PLAN.md` §3): `blocking` flag on `defer`,
@@ -135,27 +156,6 @@ only: no planner, no UI, no enforcement, no calibration.
 - **M2.5**: fit calibration on accumulated records (even heuristic
   per-specialist estimate correction counts) + a calibration report
   endpoint. Bridge into R6; no neural training in M2.
-
-## 4. Fast-track (pre-M2): user default out of models.yaml
-
-Accepted defect 2026-09-11 (user proposal, verified against code).
-Three writers share one file today: `set_default_model` persists the
-user's selection INTO models.yaml (`config/manager.py:265-320` via
-`_persist_models`, which rewrites providers+default at `:343-358`);
-`sync_registry` reads `old_default` from the same file and rewrites it
-(`models_sync.py:520,565`); any stale read (fresh checkout, parallel
-session, competing writer) silently replaces the user's selection —
-the stray `default: opencode/muse-spark-...` M seen 2026-09-11 is the
-live exhibit. Generated artifact + user state in one file is the bug.
-Fix shape: the user default moves to `config.yaml` (`models.default`
-already exists on the config schema and already wins on the read path
-— `manager.py:228-230,90`); `set_default_model` writes there and never
-touches models.yaml; `write_registry`/sync stop reading/writing
-`default`; one migration adopts a legacy models.yaml default into
-config.yaml iff config is unset; `_persist_models` stops rewriting the
-registry from memory (second clobber vector). Half-step, no behavior
-change except the write path; goes before M2.0 (removes a live footgun
-the series would otherwise keep tripping over).
 
 ## 5. Gates for the series
 
