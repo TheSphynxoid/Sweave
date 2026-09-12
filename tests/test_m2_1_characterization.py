@@ -7,15 +7,16 @@ it. Steps 4-5 will amend the behavior (and update the tests that pin
 the old rule — each update cites the step).
 
 Current behavior pinned here:
-* ChatLoop._wait_for_children joins ALL children (no wait-set scoping)
-  and treats ``review`` as settled (loop.py:365-372).
-* JobRunner._wait_for_children joins ALL children and settles ONLY on
-  ``done``/``failed`` — a child sitting in ``review`` wedges the
-  parent until ``turn_timeout`` (job_runner.py:891/:898 — the
-  mismatch M2.1 reconciles).
-* Submit carries no ``blocking`` flag; MCP ``defer`` passes no
-  ``blocking`` key; schema is v7 with no ``blocking``/``review_request``
-  fields; ``promote`` has no review-request to preserve.
+* ChatLoop._wait_for_children joins only BLOCKING children (M2.1
+  step 4: wait-set scoping) and treats ``review`` as settled
+  (loop.py shared JOIN_SETTLED_STATUSES rule).
+* JobRunner._wait_for_children joins only BLOCKING children and
+  settles on ``done``/``failed``/``review`` (M2.1 step 5: the :898
+  fix — pre-M2.1 only done/failed settled, wedging the parent).
+* Submit carries optional ``blocking`` (M2.1 step 3, default
+  False); MCP ``defer`` passes it through only when supplied;
+  schema is v8 with ``blocking``/``review_request`` fields (M2.1
+  step 2); ``promote`` preserves the request (ruling 3).
 """
 
 from __future__ import annotations
@@ -70,8 +71,12 @@ async def _store_for(stores: PerProjectDelegationStores, project_dir: Path):
 
 @pytest.mark.asyncio
 async def test_jobrunner_gate_wedges_on_review_child():
-    """Pin the :898 mismatch: a child in ``review`` does NOT settle
-    the JobRunner parent gate — the wait burns the full timeout."""
+    """M2.1 step 5 update (the :898 fix): a BLOCKING child in
+    ``review`` now SETTLES the JobRunner parent gate — the wait
+    returns fast with ``children_settled`` (review count 1), no
+    timeout. Pre-M2.1 this wedged the parent until ``turn_timeout``
+    (only done/failed settled); the full matrix lives in
+    tests/test_m2_1_waitset.py."""
     runner, stores, project_dir = _runner_with_store(turn_timeout=2.0)
     store = await _store_for(stores, project_dir)
 
@@ -81,6 +86,7 @@ async def test_jobrunner_gate_wedges_on_review_child():
         Delegation(
             agent="beta", task="child", project_name="p",
             parent_task_id=parent.delegation_id, status="review",
+            blocking=True,
         )
     )
 
@@ -90,20 +96,24 @@ async def test_jobrunner_gate_wedges_on_review_child():
     t0 = time.monotonic()
     await runner._wait_for_children(parent, store, trace)
     elapsed = time.monotonic() - t0
-    assert 1.5 <= elapsed <= 4.0, f"gate took {elapsed:.2f}s; expected ~2.0s timeout"
+    assert elapsed < 1.5, f"gate took {elapsed:.2f}s; review should settle fast"
     events = [
         json.loads(line)
         for line in trace.path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert [e for e in events if e.get("event") == "children_settle_timeout"]
-    assert not [e for e in events if e.get("event") == "children_settled"]
+    assert [e for e in events if e.get("event") == "children_settled"]
+    assert not [e for e in events if e.get("event") == "children_settle_timeout"]
 
 
 @pytest.mark.asyncio
 async def test_chat_wait_settles_on_review_child():
     """Chat loop side of the mismatch: ``review`` already counts as
-    settled in ChatLoop._wait_for_children (loop.py:372)."""
+    settled in ChatLoop._wait_for_children (loop.py:372).
+
+    M2.1 step 4 update: only JOIN-SET (``blocking=True``) children
+    are waited on — the review child below opts in, so it still
+    settles fast and is returned as synthesis input."""
     from sweave.chat.loop import ChatLoop
 
     project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-char-chat-"))
@@ -124,6 +134,7 @@ async def test_chat_wait_settles_on_review_child():
         Delegation(
             agent="backend", task="child", project_name="p",
             parent_task_id=parent_id, status="review",
+            blocking=True,
         )
     )
     t0 = time.monotonic()
@@ -136,8 +147,11 @@ async def test_chat_wait_settles_on_review_child():
 
 @pytest.mark.asyncio
 async def test_chat_wait_joins_every_child_unscoped():
-    """Pre-M2.1: the chat wait has no wait-set — a still-running
-    child gates the turn even though nothing opted into joining."""
+    """M2.1 step 4 update: the chat wait is now wait-set-scoped — a
+    still-running NON-BLOCKING child no longer gates the turn (the
+    join set is empty, so the wait returns immediately with no
+    deadline burn). A still-running BLOCKING child still gates
+    (full matrix in tests/test_m2_1_waitset.py)."""
     from sweave.chat.loop import ChatLoop
 
     project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-char-chat2-"))
@@ -163,13 +177,15 @@ async def test_chat_wait_joins_every_child_unscoped():
     t0 = time.monotonic()
     children = await chat._wait_for_children(store, parent_id)
     elapsed = time.monotonic() - t0
-    assert 1.5 <= elapsed <= 4.0, f"wait took {elapsed:.2f}s; expected timeout burn"
-    assert len(children) == 1
+    assert elapsed < 1.5, f"wait took {elapsed:.2f}s; fire-and-forget must not gate"
+    assert children == []
 
 
 @pytest.mark.asyncio
 async def test_defer_sends_no_blocking_key(monkeypatch):
-    """Pre-M2.1: MCP defer passes no ``blocking`` key to /api/v2/tasks."""
+    """MCP defer passes no ``blocking`` key when the caller omits it
+    (M2.1 step 3: absent = fire-and-forget default; the key is only
+    sent when explicitly supplied)."""
     captured: list[tuple[str, dict]] = []
 
     async def fake_post(path: str, body: dict, token: str) -> dict:
@@ -196,7 +212,11 @@ async def test_defer_sends_no_blocking_key(monkeypatch):
 
 
 def test_submit_model_has_no_blocking():
-    """Pre-M2.1: TaskSubmitV2 carries no blocking field."""
+    """M2.1 step 3 update: TaskSubmitV2 now carries optional
+    ``blocking`` (default False — ruling 1). Absent flag =
+    fire-and-forget, same as the pre-M2.1 behavior this test used
+    to pin by absence."""
     from sweave.web.routers.delegations import TaskSubmitV2
 
-    assert "blocking" not in TaskSubmitV2.model_fields
+    assert "blocking" in TaskSubmitV2.model_fields
+    assert TaskSubmitV2.model_fields["blocking"].default is False

@@ -365,7 +365,10 @@ async def test_parent_gating_waits_for_children_to_finish():
         turn_timeout=2.0,
     )
 
-    # Create a parent + one child.
+    # Create a parent + one child. M2.1 step 5: the gate joins
+    # only BLOCKING children, so the child opts in (a
+    # fire-and-forget child would never gate — covered in
+    # tests/test_m2_1_waitset.py).
     parent = Delegation(
         agent="alpha", task="parent", project_name="p",
         parent_task_id=None, depth=0, chain_root_id=None,
@@ -375,6 +378,7 @@ async def test_parent_gating_waits_for_children_to_finish():
         agent="beta", task="child", project_name="p",
         parent_task_id=parent.delegation_id, depth=1,
         chain_root_id=parent.delegation_id, status="running",
+        blocking=True,
     )
     await store.add(child)
 
@@ -422,11 +426,14 @@ async def test_parent_gating_resolves_when_all_children_terminal():
         parent_task_id=None, depth=0, chain_root_id=None,
     )
     await store.add(parent)
+    # M2.1 step 5: the gate joins only BLOCKING children — both
+    # opt in so the settle path still fires children_settled.
     await store.add(
         Delegation(
             agent="beta", task="c1", project_name="p",
             parent_task_id=parent.delegation_id, depth=1,
             chain_root_id=parent.delegation_id, status="done",
+            blocking=True,
         ),
     )
     await store.add(
@@ -434,6 +441,7 @@ async def test_parent_gating_resolves_when_all_children_terminal():
             agent="gamma", task="c2", project_name="p",
             parent_task_id=parent.delegation_id, depth=1,
             chain_root_id=parent.delegation_id, status="failed",
+            blocking=True,
         ),
     )
 

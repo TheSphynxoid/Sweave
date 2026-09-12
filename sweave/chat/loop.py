@@ -55,7 +55,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sweave.projects import ProjectManager, Session
-from sweave.runtime.delegation_store import Delegation, PerProjectDelegationStores
+from sweave.runtime.delegation_store import (
+    Delegation,
+    PerProjectDelegationStores,
+    in_join_set,
+    is_join_settled,
+)
 from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
 
@@ -344,35 +349,78 @@ class ChatLoop:
                 logger.warning("ChatLoop: event_bus publish failed for %s: %s", event, e)
 
     async def _wait_for_children(
-        self, store: Any, parent_delegation_id: str
+        self, store: Any, parent_delegation_id: str, trace: Any = None
     ) -> list:
-        """Wait until every delegation with parent_task_id ==
-        *parent_delegation_id* reaches a terminal state, or the
-        turn timeout elapses.
+        """Wait until every JOIN-SET child (``blocking == True``) with
+        parent_task_id == *parent_delegation_id* reaches a join-settled
+        state, or the turn timeout elapses.
+
+        M2.1 wait-set: ``blocking=false`` children are fire-and-forget
+        into the Children lane — excluded from the gate (still listed
+        in Children, still in the trace) and named in a
+        ``wait_set_scoped`` trace event so the scoping is auditable.
+        An empty join set returns immediately (no deadline burn on
+        all-fire-and-forget turns). ``review`` counts as settled
+        (promotion is explicit and may lag) — the shared
+        ``JOIN_SETTLED_STATUSES`` rule, same as the JobRunner parent
+        gate.
 
         Bounded by ``self.turn_timeout`` (the same cap the runtime
-        uses) so a wedged child can't stall the chat forever. Late-
-        arriving children are silently absorbed -- whatever is
-        terminal when the deadline hits is what we synthesise on.
+        uses) so a wedged join-set child can't stall the chat
+        forever. Late-arriving children are silently absorbed --
+        whatever is terminal when the deadline hits is what we
+        synthesise on.
 
-        Returns the list of child records (in completion order).
+        Returns the list of JOIN-SET child records (in completion
+        order) — the synthesis input.
         """
         deadline = asyncio.get_running_loop().time() + self.turn_timeout
         poll_interval = 0.25
         children_found = False
-        while True:
-            all_records = store.list()
-            children = [
-                r for r in all_records
+        scoped_logged = False
+
+        def _split() -> tuple[list, list]:
+            all_children = [
+                r for r in store.list()
                 if r.parent_task_id == parent_delegation_id
             ]
-            if children:
+            join = [r for r in all_children if in_join_set(r)]
+            skipped = [r for r in all_children if not in_join_set(r)]
+            return join, skipped
+
+        while True:
+            join, skipped = _split()
+            if join:
                 children_found = True
+            if skipped and trace is not None and not scoped_logged:
+                # Audit the scoping once per wait (the skip is always
+                # visible; never silently absorbed).
+                try:
+                    trace.append(
+                        "wait_set_scoped",
+                        {
+                            "parent": parent_delegation_id,
+                            "joined": [r.delegation_id for r in join],
+                            "skipped": [r.delegation_id for r in skipped],
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "ChatLoop: wait_set_scoped trace append failed for %s",
+                        parent_delegation_id,
+                    )
+                scoped_logged = True
+            if not join and not children_found:
+                # No join-set children ever existed (leaf, or all
+                # fire-and-forget): no gate needed. When skipped
+                # children exist the scoping event above is the
+                # audit record.
+                return []
             if children_found and all(
-                r.status in {"done", "failed", "review"} for r in children
+                is_join_settled(r.status) for r in join
             ):
                 return sorted(
-                    children,
+                    join,
                     key=lambda c: c.completed_at or c.updated_at,
                 )
             now = asyncio.get_running_loop().time()
@@ -382,10 +430,10 @@ class ChatLoop:
                     "proceeding with %d children (some may not be terminal)",
                     parent_delegation_id,
                     self.turn_timeout,
-                    len(children),
+                    len(join),
                 )
                 return sorted(
-                    children,
+                    join,
                     key=lambda c: c.completed_at or c.updated_at,
                 )
             await asyncio.sleep(poll_interval)
@@ -1211,9 +1259,11 @@ class ChatLoop:
             # 7) Children and/or blocking question: wait for children,
             # then run a synthesis turn carrying both. Child waits
             # stay bounded by turn_timeout; the question wait above
-            # is unbounded (M1.11).
+            # is unbounded (M1.11). M2.1: the wait joins only
+            # blocking children; the trace carries the
+            # wait_set_scoped audit event naming the skipped set.
             children = await self._wait_for_children(
-                store, delegation.delegation_id
+                store, delegation.delegation_id, trace
             )
             # Re-compose the prompt for the synthesis turn; the
             # synthesis section is now populated from the children's

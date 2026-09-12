@@ -75,6 +75,32 @@ SCHEMA_VERSION_V7 = 7  # M2.0 records (estimate)
 VALID_STATUSES = {"queued", "running", "review", "done", "failed"}
 
 
+#: Join-settled statuses (M2.1) — the ONE settled rule both waits
+#: share (ChatLoop synthesis join + JobRunner parent gate; no second
+#: drift). ``review`` is join-terminal by design: promotion is
+#: explicit and may lag, so a never-promoted child must not wedge
+#: its parent — the pending review-request stays auditable via the
+#: ``review_requested`` / ``wait_set_scoped`` trace events + the
+#: Children lane, never silently absorbed.
+JOIN_SETTLED_STATUSES = frozenset({"done", "failed", "review"})
+
+
+def is_join_settled(status: str | None) -> bool:
+    """True when a child in *status* counts as settled for the join."""
+    return status in JOIN_SETTLED_STATUSES
+
+
+def in_join_set(record: Any) -> bool:
+    """True when *record* belongs to the synthesis join set.
+
+    The wait-set flag is opt-in at submit (``blocking=True``);
+    ``False`` (the default) = fire-and-forget into the Children
+    lane. ``getattr``-based so pre-M2.1 records (or duck-typed
+    doubles) without the field read as non-blocking.
+    """
+    return bool(getattr(record, "blocking", False))
+
+
 def _now() -> datetime:
     return datetime.now()
 

@@ -85,28 +85,36 @@ def _minimal_record(version: int, **extra) -> dict:
 
 def test_v1_record_loads_as_v7_with_estimate_none():
     """Full chain: a v1 record passes through every migration
-    (v1->v2->v3->v4->v5->v6->v7) and lands with estimate None."""
+    (v1->v2->...->v8) and lands with estimate None.
+
+    M2.1 step 2 update: schema is now v8 (blocking + review_request
+    land on the same chain); the v1->v8 matrix lives in
+    tests/test_m2_1_schema.py."""
     d = Delegation.from_dict(_minimal_record(1))
-    assert d.schema_version == 7
+    assert d.schema_version == 8
     assert d.estimate is None
     assert d.kind == "task"
     assert d.needs_attention is False
     assert d.archived is False
+    assert d.blocking is False
+    assert d.review_request is None
 
 
 def test_v6_record_loads_as_v7_with_estimate_none():
+    """M2.1 step 2 update: lands at v8 now (see above)."""
     d = Delegation.from_dict(_minimal_record(6))
-    assert d.schema_version == 7
+    assert d.schema_version == 8
     assert d.estimate is None
 
 
 def test_v7_estimate_round_trips():
+    """M2.1 step 2 update: round-trips at v8 now (see above)."""
     d = Delegation(agent="a", task="t", estimate={"tokens": 1500, "seconds": 90.5})
     data = d.to_dict()
     assert data["estimate"] == {"tokens": 1500, "seconds": 90.5}
     back = Delegation.from_dict(data)
     assert back.estimate == {"tokens": 1500, "seconds": 90.5}
-    assert back.schema_version == 7
+    assert back.schema_version == 8
 
 
 def test_estimate_defaults_to_none():

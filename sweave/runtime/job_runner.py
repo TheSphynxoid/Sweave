@@ -43,6 +43,8 @@ from sweave.runtime.delegation_store import (
     Delegation,
     Estimate,
     PerProjectDelegationStores,
+    in_join_set,
+    is_join_settled,
 )
 from sweave.runtime.trace_log import TraceLog
 
@@ -923,12 +925,24 @@ class JobRunner:
     async def _wait_for_children(
         self, delegation: Delegation, store: Any, trace: TraceLog
     ) -> None:
-        """M1.6 step 3: parent gating.
+        """M1.6 step 3: parent gating (M2.1 step 5: wait-set-scoped).
 
-        Wait until every delegation whose ``parent_task_id`` equals
-        this delegation's id has reached a terminal state (done or
-        failed). The wait is bounded by ``self.turn_timeout`` (the
-        same cap as the agent turn) so a stuck child can't wedge the
+        Wait until every JOIN-SET child (``blocking == True``) whose
+        ``parent_task_id`` equals this delegation's id reaches a
+        join-settled state — the shared ``JOIN_SETTLED_STATUSES``
+        rule (``done``/``failed``/``review``), same as the ChatLoop
+        synthesis join. ``blocking=false`` children are
+        fire-and-forget: they never gate (named once in a
+        ``wait_set_scoped`` trace event so the skip is auditable).
+        An empty join set (leaf, or all fire-and-forget) returns
+        immediately. ``review`` counts as settled: promotion is
+        explicit and may lag, so a never-promoted child must not
+        wedge its parent (the :898 fix — pre-M2.1 only
+        ``done``/``failed`` settled, wedging the parent until
+        ``turn_timeout``).
+
+        The wait is bounded by ``self.turn_timeout`` (the same cap
+        as the agent turn) so a stuck join-set child can't wedge the
         parent forever -- if the timeout hits we proceed and the
         parent transitions normally; the late-arriving child is
         silently absorbed (the parent's record is the audit
@@ -943,24 +957,42 @@ class JobRunner:
         deadline = asyncio.get_running_loop().time() + self.turn_timeout
         poll_interval = 0.25
         children_found = False
+        scoped_logged = False
         while True:
-            all_records = store.list()
-            children = [r for r in all_records if r.parent_task_id == delegation.delegation_id]
-            if children:
+            all_children = [
+                r for r in store.list()
+                if r.parent_task_id == delegation.delegation_id
+            ]
+            join = [r for r in all_children if in_join_set(r)]
+            skipped = [r for r in all_children if not in_join_set(r)]
+            if join:
                 children_found = True
-            if not children_found:
-                # No children ever existed (e.g. a leaf delegation).
-                # No gate needed.
+            if skipped and not scoped_logged:
+                # Audit the scoping once per wait (the skip is always
+                # visible; never silently absorbed).
+                trace.append(
+                    "wait_set_scoped",
+                    {
+                        "parent": delegation.delegation_id,
+                        "joined": [r.delegation_id for r in join],
+                        "skipped": [r.delegation_id for r in skipped],
+                    },
+                )
+                scoped_logged = True
+            if not join and not children_found:
+                # No join-set children ever existed (e.g. a leaf
+                # delegation, or all fire-and-forget). No gate needed.
                 return
-            if all(r.status in {"done", "failed"} for r in children):
-                # All children terminal -- parent can advance.
+            if children_found and all(is_join_settled(r.status) for r in join):
+                # All join-set children settled -- parent can advance.
                 trace.append(
                     "children_settled",
                     {
                         "parent": delegation.delegation_id,
-                        "count": len(children),
-                        "done": sum(1 for r in children if r.status == "done"),
-                        "failed": sum(1 for r in children if r.status == "failed"),
+                        "count": len(join),
+                        "done": sum(1 for r in join if r.status == "done"),
+                        "failed": sum(1 for r in join if r.status == "failed"),
+                        "review": sum(1 for r in join if r.status == "review"),
                     },
                 )
                 return
@@ -970,7 +1002,7 @@ class JobRunner:
                     "children_settle_timeout",
                     {
                         "parent": delegation.delegation_id,
-                        "count": len(children),
+                        "count": len(join),
                         "timeout": self.turn_timeout,
                     },
                 )
