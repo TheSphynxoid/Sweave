@@ -125,6 +125,18 @@ fixture (read→edit→bash→grep) green on both harnesses with byte-identical
 trace event names; permission ask→allow-once→content and deny→loud-abort
 live scenes (mirror of `scripts/m1_12_live_gate.py`).
 
+Execution model (2026-09-12): in-process asyncio tasks (structured
+concurrency) for orchestration; blocking tool calls offloaded to
+worker threads with per-tool timeouts. No fibers — asyncio covers
+cooperative scheduling and threads cover true IO parallelism; a
+third model adds nothing. Specialists share the parent session's
+trust domain (worktree-scoped), so process isolation buys less than
+it costs here — but shares fate by construction: a wedged native
+call must trip its tool timeout, never the loop (a stuck loop wedges
+EVERY session, the failure mode subprocesses never had). Untrusted
+code still wants a boundary — sandbox stays deferred per plan, and
+opencode specialists stay subprocess-isolated regardless.
+
 Tool-context budget (standing, from the 2026-09-12 audit: MCP surface
 2,880 chars, defer alone 1,152 — descriptions are the fat). Native
 advantages the MCP wire cannot match: (1) short schemas by default —
