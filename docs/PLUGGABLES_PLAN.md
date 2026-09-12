@@ -387,6 +387,14 @@ detail view), model routing tiers (= ModelRef). New extractions:
   Packaging twin: exclude `tests/` from the shipped artifact (R5
   packaging) — installs stay lean either way. Natural pilot for
   skills-with-tests.
+- **Standing: context auditing (adopted 2026-09-12).** Baseline
+  measured: MCP surface 2,880 chars, orchestrator prompt 4,390,
+  permission profiles <200, per-turn memory avg 0 (backend down),
+  synthesis avg 0 (join turns only). A `scripts/context-audit`
+  (per-role, per-turn in/out from traces + static surfaces, budgets
+  per surface pinned so overhead can't silently regrow) feeds
+  estimation attribution + the query planner's pricing. Memory
+  section will rise when R4.4 lands — expected, inside its 2K cap.
 
 ## 8. Risks
 
