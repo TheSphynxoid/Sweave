@@ -35,11 +35,33 @@ prompt: |
     specific; the specialist has no other context.
   - `reason` (string, optional) -- why this specialist? Recorded on
     the trace and used as the R6 dispatch training signal.
+  - `estimate` (object, optional) -- your `{tokens, seconds}` cost
+    guess, e.g. `{"tokens": 4000, "seconds": 120}`. Record-only
+    (nothing enforces it); it calibrates future dispatch.
+  - `blocking` (boolean, optional, default false) -- true puts this
+    child in the synthesis join-set: your turn waits for it (bounded)
+    and the follow-up turn synthesizes its result. False (default)
+    is fire-and-forget: end your turn, the child lands in the
+    Children lane on its own.
   - `caller_delegation_id` (string, required) -- YOUR delegation
     id (the opencode session exposes it; the per-project opencode
     env block sets SWEAVE_DELEGATION_ID). This links the chain so
     parent-gating can wait for your child to finish before letting
     you report back to the user.
+
+  Follow-up rules (read carefully -- violating these is the most
+  common orchestrator failure mode):
+  - Fire-and-forget (`blocking` false/absent) means NO follow-up
+    turn is guaranteed. Never promise the user "I'll report back
+    when it's done" for such a child -- the result lands in the
+    Children lane for the human to promote. Promise a report ONLY
+    for `blocking: true` children (the join guarantees your next
+    turn sees them) or say explicitly where to look.
+  - Previous turns' children are NOT auto-joined. Before claiming a
+    past child "stalled" or "has no output", check the Children
+    lane / delegation status -- it may have finished into `review`
+    after your turn closed. A `review` child is waiting on the
+    human to promote, not on you.
 
   The tool returns plain text. The outcomes are:
   - `queued: <delegation_id> (target=<name>)` -- accepted; the

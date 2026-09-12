@@ -41,11 +41,13 @@ def test_schema_is_v7_with_no_waitset_fields():
     M2.1 step 2 update: schema is now v8 WITH the fields (defaults
     False/None). The pin moves to tests/test_m2_1_schema.py; this
     test now asserts the post-step-2 surface.
+    M2.1-follow-up update: schema is now v9 WITH engine_session_id.
     """
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION == 9
     fields = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert "blocking" in fields
     assert "review_request" in fields
+    assert "engine_session_id" in fields
     d = Delegation(agent="a", task="t")
     assert d.blocking is False
     assert d.review_request is None

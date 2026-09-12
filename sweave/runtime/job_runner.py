@@ -829,11 +829,14 @@ class JobRunner:
                     {"error": wire_error},
                 )
 
-            # Persist result + transition.
+            # Persist result + transition. The engine session id the
+            # runtime resolved in run() rides the same write (M2.1
+            # follow-up: per-delegation display + forensics).
             await store.update(
                 delegation.delegation_id,
                 output=result.output or "",
                 error=result.error,
+                engine_session_id=getattr(delegation, "engine_session_id", None),
             )
             # M1.3 step 4: on stream success the delegation enters
             # 'review' (not 'done') -- human / cross-review promotes to

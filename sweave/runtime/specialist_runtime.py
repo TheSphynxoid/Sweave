@@ -334,6 +334,10 @@ class SpecialistRuntime:
         the **Specialist** record. When None, the runtime reads/writes
         ``specialist.session_id`` (the M1.3 default).
         """
+        # Turn-start clock for truthful stall errors (follow-up
+        # hardening, incident Sweave-20260911-213619-096e65): passed
+        # as ``t0`` so "stalled after Ns" also names the total age.
+        t_start = asyncio.get_running_loop().time()
         # Trace + log + worktree_set event
         trace.append("worktree_set", {"worktree": str(worktree_path)})
         await self._emit(
@@ -376,6 +380,17 @@ class SpecialistRuntime:
                 session_id_getter=session_id_getter,
                 session_id_setter=session_id_setter,
             )
+
+            # M2.1-follow-up: record which engine session runs this
+            # delegation (display + forensics without trace-digging).
+            # The id is resolved here; JobRunner persists it with the
+            # result write. Best-effort: never fail a turn on it.
+            try:
+                _engine_sid = getattr(process, "_session_id", "") or ""
+                if _engine_sid:
+                    delegation.engine_session_id = _engine_sid
+            except Exception:  # noqa: BLE001
+                pass
 
             # M1.12 amendment 1: register (session → serve, worktree,
             # delegation) with the in-band permission bridge so the
@@ -427,7 +442,18 @@ class SpecialistRuntime:
                     model=model_str,
                 )
                 rendered = render_prompt_template(specialist.system_prompt, context)
-                await process.send(_system_message(rendered))
+                # Follow-up hardening (incident
+                # Sweave-20260911-213619-096e65): the legacy bare
+                # ``process.send`` hung 16m40s unwatched (httpx 1000s
+                # only, result ignored) while the watchdog covered
+                # just the main send. Bound + checked like every
+                # other send; a failed identity prompt fails loudly
+                # instead of running the turn anonymous.
+                sys_err = await self._bounded_system_send(
+                    process, rendered, trace, t0=t_start
+                )
+                if sys_err is not None:
+                    return sys_err
                 trace.append(
                     "prompt_template_rendered",
                     {
@@ -474,6 +500,7 @@ class SpecialistRuntime:
                 on_chunk=on_chunk,
                 on_reasoning=on_reasoning,
                 delegation_id=delegation.delegation_id,
+                t0=t_start,
             )
             # Record which model was actually used for this delegation
             # (M1.4+M1.5 step 1: surface the resolved ModelRef on the
@@ -493,6 +520,64 @@ class SpecialistRuntime:
                 },
             )
             return result
+
+    async def _bounded_system_send(
+        self,
+        process: OpenCodeProcess,
+        message_text: str,
+        trace: TraceLog,
+        t0: float | None = None,
+    ) -> str | None:
+        """Send a system message under the stall bound.
+
+        The harness ``process.send`` path carries only the httpx
+        timeout (1000s) and swallows failures into ``AgentResult``
+        (incident Sweave-20260911-213619-096e65: 16m40s of silence
+        on the templated-prompt send, then the turn proceeded
+        anonymous). Returns None on delivery, or a ``[chat error:``
+        string the caller must return (fail loudly, never anonymous).
+
+        ``t0`` names the total turn age beside the silence window,
+        like :meth:`_send_message`.
+        """
+        try:
+            result = await asyncio.wait_for(
+                process.send(_system_message(message_text)),
+                timeout=STALL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            try:
+                trace.append(
+                    "stalled",
+                    {
+                        "phase": "system_prompt",
+                        "stall_seconds": STALL_TIMEOUT_SECONDS,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            age_suffix = ""
+            if t0 is not None:
+                try:
+                    age_suffix = (
+                        f"; turn age {asyncio.get_running_loop().time() - t0:.0f}s"
+                    )
+                except RuntimeError:
+                    pass
+            return (
+                f"[chat error: stalled after {STALL_TIMEOUT_SECONDS:.0f}s "
+                f"without data (system-prompt send hung; the turn may "
+                f"still be running server-side; retry starts a fresh "
+                f"session{age_suffix})]"
+            )
+        if not getattr(result, "success", True):
+            err = getattr(result, "error", None) or "unknown error"
+            try:
+                trace.append("system_prompt_failed", {"error": str(err)})
+            except Exception:  # noqa: BLE001
+                pass
+            return f"[chat error: system-prompt send failed: {err}]"
+        return None
 
     async def _build_process(
         self, runner: ServeRunner, delegation: Delegation
@@ -578,6 +663,7 @@ class SpecialistRuntime:
         on_reasoning: "Callable[[str], Any] | None" = None,
         stall_seconds: float | None = None,
         delegation_id: str | None = None,
+        t0: float | None = None,
     ) -> str:
         """Send one message and return the agent's text output.
 
@@ -607,6 +693,13 @@ class SpecialistRuntime:
         dead serve) fails fast with a truthful message instead of
         riding out ``turn_timeout`` -- or losing the race to httpx
         with a bare ``ReadTimeout``.
+
+        ``t0`` (optional ``loop.time()`` captured by the caller at
+        turn start) lets the stall errors name the total turn age
+        beside the silence window -- "stalled after 300s" for a
+        21-minute hang must read as such (incident
+        Sweave-20260911-213619-096e65). Absent ``t0`` the legacy
+        exact strings are preserved.
         """
         if stall_seconds is None:
             stall_seconds = STALL_TIMEOUT_SECONDS
@@ -705,10 +798,16 @@ class SpecialistRuntime:
                     await raw_cm.__aexit__(asyncio.TimeoutError, asyncio.TimeoutError(), None)
                 except Exception:
                     pass
+                age_suffix = (
+                    f"; turn age {loop.time() - t0:.0f}s"
+                    if t0 is not None
+                    else ""
+                )
                 return (
                     f"[chat error: stalled after {stall_seconds:.0f}s without "
                     f"data (response headers never arrived; the turn may "
-                    f"still be running server-side; retry starts a fresh session)]"
+                    f"still be running server-side; retry starts a fresh session"
+                    f"{age_suffix})]"
                 )
             if trace is not None:
                 try:
@@ -899,10 +998,15 @@ class SpecialistRuntime:
                     )
                     if resolved is not None:
                         return resolved
+            age_suffix = (
+                f"; turn age {loop.time() - t0:.0f}s"
+                if t0 is not None
+                else ""
+            )
             return (
                 f"[chat error: stalled after {stall_seconds:.0f}s without "
                 f"data (the turn may still be running server-side; retry "
-                f"starts a fresh session)]"
+                f"starts a fresh session{age_suffix})]"
             )
         if info_error:
             # Upstream rejection carried on a 200 stream (401

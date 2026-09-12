@@ -458,6 +458,9 @@ async def get_delegation_detail(
     M2.1: the record's ``review_request`` rides the same fold (echoed
     verbatim, None when absent) — the read side of the review
     seam, no new endpoint.
+
+    M2.1-follow-up: the record's ``engine_session_id`` rides the
+    same fold (per-delegation display + forensics).
     """
     from sweave.web.detail_view import render_detail_view
 
@@ -473,6 +476,9 @@ async def get_delegation_detail(
         created_at=record.created_at if record is not None else None,
         completed_at=record.completed_at if record is not None else None,
         review_request=record.review_request if record is not None else None,
+        engine_session_id=(
+            record.engine_session_id if record is not None else None
+        ),
     )
 
 

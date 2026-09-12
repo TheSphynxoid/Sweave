@@ -243,6 +243,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     {tokens, seconds} (record only).
     M2.1 added the v8 fields (blocking + review_request) for the
     wait-set flag + review-request record.
+    M2.1-follow-up added the v9 field (engine_session_id) for the
+    engine session that ran the delegation.
     """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -264,6 +266,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         # M2.1 additions: wait-set flag + review-request record
         "blocking",
         "review_request",
+        # M2.1-follow-up addition: engine session that ran the delegation
+        "engine_session_id",
     }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -272,12 +276,12 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
     )
 
 
-def test_schema_version_is_v8():
-    """M2.1: the current schema is v8 (blocking + review_request on
-    top of v7's estimate)."""
+def test_schema_version_is_v9():
+    """M2.1-follow-up: the current schema is v9 (engine_session_id
+    on top of v8's blocking + review_request)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 8
+    assert SCHEMA_VERSION == 9
 
 
 def test_v5_record_loads_as_v6_with_archive_defaults():

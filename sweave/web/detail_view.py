@@ -24,6 +24,9 @@ sections the UI detail view patches into place (and the same data the
   echoed verbatim (None = no review requested: pre-M2.1 records,
   failed delegations, unknown ids). Read side of the M2.0
   detail-fold precedent; no new endpoint.
+* ``engine_session_id`` -- M2.1-follow-up: the opencode session id
+  that ran this delegation (display + forensics without
+  trace-digging). None for pre-change records.
 
 The trace is the source of truth (the JSONL is appended on every
 state change). This module is the read-side projector: it never
@@ -130,6 +133,7 @@ def render_detail_view(
     created_at: Any = None,
     completed_at: Any = None,
     review_request: dict[str, Any] | None = None,
+    engine_session_id: str | None = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
@@ -213,4 +217,5 @@ def render_detail_view(
             completed_at=completed_at,
         ),
         "review_request": dict(review_request) if review_request else None,
+        "engine_session_id": engine_session_id,
     }

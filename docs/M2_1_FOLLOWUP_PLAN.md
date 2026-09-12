@@ -109,3 +109,37 @@ server; HEAD's router passes it through. Dies on restart.)
 Backend steps ship first with API contracts + pytest (R4-parallel
 discipline); UI binds when driven. PROJECT_STATE + DESIGN §4 rows for
 the backend half; GOTCHAS for the needs_attention widening.
+
+## Executed (2026-09-12) — incident round (no restart)
+
+Live incident Sweave-20260911-213619-096e65 drove three backend
+items ahead of the spec above (spec sections A/B still stand as
+written; UI half untouched):
+
+* Template-send stall bound (`specialist_runtime._bounded_system_send`):
+  the 16m40s unwatched harness send now trips at 300s traced as
+  phase=system_prompt, and a failed send fails loudly instead of
+  running anonymous. Forensics: opencode logged no `asking` event in
+  the window (permission-hang disfavored); the serve answered session
+  setup at 03:27:04 then produced zero bytes (serve/model-side wedge
+  class, same as 2026-09-10). Also noted: serve was 1.18.30, not the
+  pinned 1.18.29 (drift watch, not chased).
+* Stall errors carry turn age (`t0` param; legacy strings preserved
+  without it) — the "300s" message for a 21-minute hang.
+* Per-delegation `engine_session_id` (schema v9 + migration +
+  run-time set + JobRunner persist + detail fold + CLI skipped
+  deliberately: `sweave log` stays trace-only per the M2.0
+  precedent; HTTP endpoint carries it).
+* Orchestrator prompt: `blocking`/`estimate` documented + follow-up
+  rules (no promises for fire-and-forget; previous turns' children
+  checked, not assumed).
+* Correction to the session's own [23]: `blocking: true` DID hold
+  the turn (22 min); the child transport failed underneath it, and
+  the "reviewer stalled" claim was a cross-turn scoping misread
+  (reviewer belonged to the previous turn, completed 03:23 WITH
+  output). The prompt's cross-turn rule covers both misreads.
+* Gates: 8 new tests (`test_m2_1_followup_hardening.py`) + schema-pin
+  updates across M2.0/M2.1 suites; 754 pytest 3× green. `run.py
+  --check` skipped deliberately (second sweeper vs live server,
+  GOTCHAS M1.13). Live pickup needs a server restart (not done —
+  user's call).

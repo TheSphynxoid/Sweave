@@ -57,7 +57,7 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
@@ -65,6 +65,7 @@ SCHEMA_VERSION_V4 = 4  # M1.7 records (chat kind)
 SCHEMA_VERSION_V5 = 5  # M1.9 records (needs_attention)
 SCHEMA_VERSION_V6 = 6  # M1.13 records (archived / archived_at)
 SCHEMA_VERSION_V7 = 7  # M2.0 records (estimate)
+SCHEMA_VERSION_V8 = 8  # M2.1 records (blocking + review_request)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -248,6 +249,11 @@ class Delegation:
     # lands in ``review``. None = no review requested (pre-M2.1
     # records, failed delegations). Kept as history on promote.
     review_request: ReviewRequest | None = None
+    # M2.1-follow-up: engine session that ran this delegation (the
+    # opencode ``ses_*`` id resolved in ``run()``). Display +
+    # forensics without trace-digging; None for pre-change records
+    # and paths that never reached a session (e.g. legacy runs).
+    engine_session_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -279,8 +285,10 @@ class Delegation:
             d = _migrate_v5_to_v6(d)
         if schema_version < SCHEMA_VERSION_V7:
             d = _migrate_v6_to_v7(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V8:
             d = _migrate_v7_to_v8(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v8_to_v9(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh record
@@ -390,6 +398,18 @@ def _migrate_v7_to_v8(d: dict[str, Any]) -> dict[str, Any]:
     """
     d.setdefault("blocking", False)
     d.setdefault("review_request", None)
+    return d
+
+
+def _migrate_v8_to_v9(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v8 record forward to the v9 field set (M2.1-follow-up).
+
+    v8 records predate per-delegation engine-session tracking: no
+    ``engine_session_id`` field. Every pre-change delegation ran
+    without recording which engine session ran it — default None
+    (the roster-level ``Specialist.session_id`` is unaffected).
+    """
+    d.setdefault("engine_session_id", None)
     return d
 
 
