@@ -22,7 +22,7 @@ M1.1 step 4:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -161,6 +161,48 @@ async def _has_pending_escalation(state: AppState, delegation_id: str) -> bool:
     except Exception:
         return False
     return rec is not None and rec.get("status") == "pending"
+
+
+def _review_owes_promotion(rec: Any) -> bool:
+    """True when the delegation still owes promotion (status review).
+
+    Review Phase 1: the single rule behind every attention-clear
+    site — the router answer/skip loops AND the production store
+    flagger below. A question resolving (answer/skip/timeout) must
+    not clear ``needs_attention`` while the review is unpromoted;
+    only promote clears (unless a question is still pending, which
+    is the promote path's own check).
+    """
+    return rec is not None and getattr(rec, "status", None) == "review"
+
+
+def make_attention_flagger(state: AppState):
+    """Build the production ``needs_attention`` flagger.
+
+    Injected into the ``EscalationStore`` so EVERY creator (ask_human
+    router, permission bridge, stall branch) fulfils the flag
+    contract at the store boundary — and every resolver (answer,
+    skip, force_timeout) clears through the SAME review-aware rule
+    as the router loops. Without the review guard here, a
+    store-level clear would wipe the flag on a review-owed
+    delegation BEFORE the router's review-aware loop runs (the
+    router breaks early without restoring it).
+    """
+
+    async def _flag(delegation_id: str, value: bool) -> None:
+        for store in _all_stores(state):
+            rec = store.get(delegation_id)
+            if rec is None:
+                continue
+            if not value and _review_owes_promotion(rec):
+                break
+            try:
+                await store.update(delegation_id, needs_attention=value)
+            except Exception:
+                pass
+            break
+
+    return _flag
 
 
 def _filter_delegations(
@@ -624,12 +666,14 @@ async def answer_delegation(
     # Clear the asking delegation's needs_attention flag — unless the
     # delegation still owes attention elsewhere (M2.1 follow-up §A
     # step 1: an unpromoted review keeps the flag; the answer only
-    # resolves the question).
+    # resolves the question). Same rule as the store flagger
+    # (``_review_owes_promotion``) — the store fires first, the loop
+    # is defense in depth.
     for store in _all_stores(state):
         d = store.get(delegation_id)
         if d is None:
             continue
-        if d.status == "review":
+        if _review_owes_promotion(d):
             break
         try:
             await store.update(delegation_id, needs_attention=False)
@@ -671,7 +715,7 @@ async def skip_delegation(
         d = store.get(delegation_id)
         if d is None:
             continue
-        if d.status == "review":
+        if _review_owes_promotion(d):
             break
         try:
             await store.update(delegation_id, needs_attention=False)

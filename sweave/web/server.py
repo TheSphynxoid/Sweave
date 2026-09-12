@@ -361,31 +361,16 @@ async def lifespan(app: FastAPI):
     # store module computes from its base_dir arg). timeout None =
     # questions wait indefinitely until answered or skipped.
     from sweave.runtime.escalation import EscalationStore
-    from sweave.web.routers.delegations import _all_stores
-
-    async def _flag_delegation_needs_attention(
-        delegation_id: str, value: bool
-    ) -> None:
-        """Flip ``needs_attention`` on the asking delegation.
-
-        Injected into the EscalationStore so EVERY creator (ask_human
-        router, permission bridge, stall branch) fulfils the flag
-        contract at the store boundary. Same best-effort loop the
-        ask_human endpoint uses.
-        """
-        for store in _all_stores(state):
-            if store.get(delegation_id) is not None:
-                try:
-                    await store.update(delegation_id, needs_attention=value)
-                except Exception:  # noqa: BLE001
-                    pass
-                break
+    from sweave.web.routers.delegations import (
+        _all_stores,
+        make_attention_flagger,
+    )
 
     state.escalation_store = EscalationStore(
         base_dir=Path.home() / ".sweave",
         timeout_seconds=None,
         event_bus=state.event_bus,
-        delegation_flagger=_flag_delegation_needs_attention,
+        delegation_flagger=make_attention_flagger(state),
     )
     # M1.11: the chat turn holds open on blocking questions, so the
     # loop needs the store (constructed above, after the loop).
