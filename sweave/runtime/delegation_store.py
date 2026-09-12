@@ -39,6 +39,13 @@ Schema history
   ``review_request`` (embedded review-request record attached when a
   delegation lands in ``review``; pre-M2.1 records default to
   None).
+* **v9** (M2.1 follow-up): adds ``engine_session_id`` (the engine
+  session that ran the delegation; None for pre-change records and
+  paths that never reached a session).
+* **v10** (review deepening Phase 1): adds ``review_bundle``
+  (pointer ``{path, bytes, truncated, scope}`` at the transition-
+  time diff artifact; None for pre-change records and degraded
+  captures without a diff file).
 """
 
 from __future__ import annotations
@@ -57,7 +64,7 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
@@ -66,6 +73,7 @@ SCHEMA_VERSION_V5 = 5  # M1.9 records (needs_attention)
 SCHEMA_VERSION_V6 = 6  # M1.13 records (archived / archived_at)
 SCHEMA_VERSION_V7 = 7  # M2.0 records (estimate)
 SCHEMA_VERSION_V8 = 8  # M2.1 records (blocking + review_request)
+SCHEMA_VERSION_V9 = 9  # M2.1-follow-up records (engine_session_id)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -176,6 +184,26 @@ class ReviewRequest(TypedDict, total=False):
     requested_at: str
 
 
+class ReviewBundle(TypedDict, total=False):
+    """Pointer at the transition-time review artifact (Phase 1).
+
+    The artifact itself (unified diff + file list + stats) lives at
+    ``{project}/.sweave/reviews/{id}.diff`` — a file, not inline, so
+    ``delegations.json`` stays small. The pointer is small and stable:
+
+    * ``path`` — project-relative artifact path (None when the
+      capture degraded without a diff file).
+    * ``bytes`` — stored artifact bytes (0 when degraded).
+    * ``truncated`` — True when the diff body hit the cap.
+    * ``scope`` — worktree / paths / unscoped / missing:<reason>.
+    """
+
+    path: str | None
+    bytes: int
+    truncated: bool
+    scope: str
+
+
 @dataclass
 class Delegation:
     """One unit of work delegated to a specialist agent.
@@ -254,6 +282,13 @@ class Delegation:
     # forensics without trace-digging; None for pre-change records
     # and paths that never reached a session (e.g. legacy runs).
     engine_session_id: str | None = None
+    # Review deepening Phase 1: pointer at the transition-time diff
+    # artifact (the file lives under ``{project}/.sweave/reviews/``).
+    # None = pre-change record. A degraded capture (worktree gone,
+    # not a repo, no base) stores a pointer WITHOUT a file
+    # (``path`` None, ``scope`` ``missing:<reason>``) so the detail
+    # surface can say why instead of showing nothing.
+    review_bundle: ReviewBundle | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -287,8 +322,10 @@ class Delegation:
             d = _migrate_v6_to_v7(d)
         if schema_version < SCHEMA_VERSION_V8:
             d = _migrate_v7_to_v8(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V9:
             d = _migrate_v8_to_v9(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v9_to_v10(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh record
@@ -410,6 +447,19 @@ def _migrate_v8_to_v9(d: dict[str, Any]) -> dict[str, Any]:
     (the roster-level ``Specialist.session_id`` is unaffected).
     """
     d.setdefault("engine_session_id", None)
+    return d
+
+
+def _migrate_v9_to_v10(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v9 record forward to the v10 field set (review
+    deepening Phase 1).
+
+    v9 records predate transition-time review artifacts: no
+    ``review_bundle`` pointer. Every pre-change delegation finished
+    without capturing a diff — default None (a degraded pointer is
+    only written by the live transition, never fabricated here).
+    """
+    d.setdefault("review_bundle", None)
     return d
 
 

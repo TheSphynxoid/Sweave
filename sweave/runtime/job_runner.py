@@ -46,6 +46,10 @@ from sweave.runtime.delegation_store import (
     in_join_set,
     is_join_settled,
 )
+from sweave.runtime.review_bundle import (
+    build_review_bundle,
+    write_bundle_artifact,
+)
 from sweave.runtime.trace_log import TraceLog
 
 if TYPE_CHECKING:
@@ -197,16 +201,22 @@ class JobRunner:
 
     async def _store_for(self, delegation: Delegation) -> Any:
         """Return the :class:`DelegationStore` for *delegation*'s project."""
+        return await self.stores.for_project(self._project_dir_for(delegation))
+
+    def _project_dir_for(self, delegation: Delegation) -> Path:
+        """Resolve the project dir for *delegation* (same fallback as
+        the store: unknown project pins to the global
+        ``~/.sweave`` dir so the record — and the review artifact —
+        is never lost)."""
+        project_dir: Path | None = None
         if self.project_dir_resolver is not None:
             project_dir = self.project_dir_resolver(delegation.project_name)
-        else:
-            project_dir = None
         if project_dir is None:
             # No project context (or unknown project name): pin to the
             # global store at ~/.sweave/delegations-global.json so the
             # record is never lost.
             project_dir = Path.home() / ".sweave"
-        return await self.stores.for_project(project_dir)
+        return project_dir
 
     # ------------------------------------------------------------------
     # Public API
@@ -898,6 +908,14 @@ class JobRunner:
                         "source": "review_entry",
                     },
                 )
+                # REVIEW Phase 1 step 1: capture the transition-time
+                # review bundle synchronously (the worktree may move
+                # on; later is never). Never fails the transition:
+                # capture errors degrade to a pointer-less record +
+                # a traced reason.
+                await self._capture_review_bundle(
+                    delegation, store, trace
+                )
             trace.append(
                 "output_chunk" if result.success else "error",
                 {
@@ -1029,6 +1047,108 @@ class JobRunner:
                 )
                 return
             await asyncio.sleep(poll_interval)
+
+    async def _capture_review_bundle(
+        self, delegation: Delegation, store: Any, trace: TraceLog
+    ) -> None:
+        """Capture the transition-time review bundle (Phase 1 step 1).
+
+        Builds the diff material, persists
+        ``{project}/.sweave/reviews/{id}.diff``, and stores the
+        ``review_bundle`` pointer on the record. Degraded captures
+        (worktree gone, not a repo, no base) store a pointer WITHOUT
+        a file (``path`` None, ``scope`` ``missing:<reason>``) so the
+        detail surface can say why. Never raises — a capture error
+        degrades the same way with ``scope`` ``missing:capture_error``.
+        """
+        try:
+            manifest = delegation.manifest
+            manifest = manifest if isinstance(manifest, dict) else {}
+            touched = manifest.get("files_touched")
+            project_dir = self._project_dir_for(delegation)
+            bundle = build_review_bundle(
+                delegation_id=delegation.delegation_id,
+                worktree_path=delegation.worktree_path,
+                manifest_files=(
+                    list(touched)
+                    if isinstance(touched, list)
+                    else None
+                ),
+                project_dir=project_dir,
+            )
+            if bundle["scope"].startswith("missing"):
+                await store.update(
+                    delegation.delegation_id,
+                    review_bundle={
+                        "path": None,
+                        "bytes": 0,
+                        "truncated": False,
+                        "scope": bundle["scope"],
+                    },
+                )
+                trace.append(
+                    "review_bundle_degraded",
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "scope": bundle["scope"],
+                    },
+                )
+                return
+            art_path, nbytes = write_bundle_artifact(
+                project_dir=project_dir,
+                delegation_id=delegation.delegation_id,
+                agent=delegation.agent,
+                bundle=bundle,
+            )
+            try:
+                rel = art_path.relative_to(project_dir).as_posix()
+            except ValueError:
+                rel = str(art_path)
+            await store.update(
+                delegation.delegation_id,
+                review_bundle={
+                    "path": rel,
+                    "bytes": nbytes,
+                    "truncated": bool(bundle["truncated"]),
+                    "scope": bundle["scope"],
+                },
+            )
+            trace.append(
+                "review_bundled",
+                {
+                    "delegation_id": delegation.delegation_id,
+                    "scope": bundle["scope"],
+                    "bytes": nbytes,
+                    "truncated": bool(bundle["truncated"]),
+                    "files": len(bundle.get("files", [])),
+                    "redactions": bundle.get("redactions", 0),
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "JobRunner: review bundle capture failed for %s: %s",
+                delegation.delegation_id, e,
+            )
+            try:
+                await store.update(
+                    delegation.delegation_id,
+                    review_bundle={
+                        "path": None,
+                        "bytes": 0,
+                        "truncated": False,
+                        "scope": "missing:capture_error",
+                    },
+                )
+                trace.append(
+                    "review_bundle_degraded",
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "scope": "missing:capture_error",
+                        "error": f"{type(e).__name__}: {e}",
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _transition(
         self,
