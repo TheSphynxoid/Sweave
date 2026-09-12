@@ -93,7 +93,10 @@ def test_pythonw_executable_prefers_windowless_on_windows(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_routes_unknown_tool_to_text_error():
+async def test_dispatcher_routes_unknown_tool_to_text_error(monkeypatch):
+    # Managed session (provisioned env token — unprovisioned calls
+    # are rejected before routing; see test_m1_6_step1_mcp_server).
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from mcp.types import CallToolRequestParams
 
     from sweave.mcp import _call_tool_dispatcher
@@ -126,7 +129,9 @@ async def test_dispatcher_routes_list_specialists(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_defer_validates_before_http():
+async def test_dispatcher_defer_validates_before_http(monkeypatch):
+    # Managed session (provisioned env token — see above).
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from mcp.types import CallToolRequestParams
 
     import sweave.mcp as mcp_mod

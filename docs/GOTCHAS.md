@@ -282,6 +282,17 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    timeout is irrelevant by design). Skip is `POST …/skip
    {confirmed: true}` (409 when unconfirmed); the UI's
    `window.confirm` is the system-issued guard, never LLM text.
+7. **Unprovisioned MCP servers list zero tools** (2026-09-12:
+   standalone opencode discovers the same per-project opencode.json
+   via upward resolution and paid full tool-schema context for tools
+   that cannot work without the Sweave API). `_managed_session()`
+   (`SWEAVE_MCP_TOKEN` env present-nonempty) gates `tools/list`
+   (empty, silent — no MCP-error spam) + `tools/call` (clean
+   rejection). Managed spawns always carry the env (lifespan export
+   -> opencode.json `environment` block); `{env:...}` expanding to
+   empty still gates correctly via `bool()`. Tests asserting the
+   managed surface must `monkeypatch.setenv` (never bare
+   `os.environ` — leaks mask the unprovisioned pins).
 
 ## Windows console flashes + locale I/O
 

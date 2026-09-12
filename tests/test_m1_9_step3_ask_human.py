@@ -41,10 +41,13 @@ def home_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_ask_human_tool_is_registered():
+def test_ask_human_tool_is_registered(monkeypatch):
     """The sweave MCP server registers ``ask_human`` alongside
     ``defer`` and ``list_specialists``. The tool is on the same
     auth / wire surface."""
+    # Managed session: listing requires the provisioned env token
+    # (unprovisioned servers list nothing — context-overhead gate).
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
     from mcp.types import PaginatedRequestParams
 
@@ -58,11 +61,12 @@ def test_ask_human_tool_is_registered():
     assert "list_specialists" in names
 
 
-def test_ask_human_tool_schema():
+def test_ask_human_tool_schema(monkeypatch):
     """``ask_human(question, options?, caller_delegation_id?)`` is the
     schema. ``options`` is optional (free-form vs multiple-choice);
     ``caller_delegation_id`` is required (the asking delegation id,
     same pattern as ``defer``)."""
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
     from mcp.types import PaginatedRequestParams
 

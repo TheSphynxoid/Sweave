@@ -479,6 +479,21 @@ async def _escalate(ctx: Any, params: types.CallToolRequestParams) -> types.Call
 # ---------------------------------------------------------------------------
 
 
+def _managed_session() -> bool:
+    """True iff this server was launched by a Sweave-managed serve.
+
+    Standalone opencode sessions discover the same per-project
+    ``opencode.json`` via upward config resolution and would
+    otherwise pay full MCP-tool context overhead for tools that can
+    only work against the Sweave API anyway. Managed spawns always
+    carry ``SWEAVE_MCP_TOKEN`` (lifespan export -> opencode.json
+    ``environment`` block -> serve env, empty-string when absent so
+    ``bool()`` stays False); standalone sessions never do.
+    Unprovisioned servers list zero tools AND reject calls.
+    """
+    return bool(os.environ.get("SWEAVE_MCP_TOKEN"))
+
+
 def build_server() -> Server:
     # NOTE: handlers are registered against the *params* models, not
     # the full request models. The runner validates the incoming
@@ -501,6 +516,12 @@ def build_server() -> Server:
 async def _list_tools_handler(
     ctx: Any, params: types.PaginatedRequestParams
 ) -> types.ListToolsResult:
+    # Outside a Sweave-managed session the tool schemas are pure
+    # context overhead (they cannot work without the Sweave API +
+    # token), so list nothing. Silent by design: exiting non-zero
+    # would spam every standalone launch with MCP errors.
+    if not _managed_session():
+        return types.ListToolsResult(tools=[])
     return types.ListToolsResult(
         tools=[
             types.Tool(
@@ -621,6 +642,15 @@ async def _list_tools_handler(
 async def _call_tool_dispatcher(
     ctx: Any, params: types.CallToolRequestParams
 ) -> types.CallToolResult:
+    # Belt-and-braces with the empty tools/list above: a client that
+    # cached tool names (or calls blind) gets a clean rejection,
+    # never an authenticated call.
+    if not _managed_session():
+        return _result_text(
+            "sweave tools are unavailable outside Sweave-managed "
+            "sessions (no SWEAVE_MCP_TOKEN). Launch via Sweave.",
+            is_error=True,
+        )
     if params.name == "defer":
         return await _defer(ctx, params)
     if params.name == "list_specialists":

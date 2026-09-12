@@ -322,7 +322,9 @@ async def test_defer_unknown_target_message_surfaces_4xx(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tools_list_exposes_both_tools():
+async def test_tools_list_exposes_both_tools(monkeypatch):
+    # Provisioned session (Sweave-managed serve): full tool surface.
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
     from mcp.types import PaginatedRequestParams
 
@@ -339,6 +341,37 @@ async def test_tools_list_exposes_both_tools():
     assert "caller_delegation_id" in defer_tool.input_schema["required"]
     assert "target" in defer_tool.input_schema["required"]
     assert "task" in defer_tool.input_schema["required"]
+
+
+@pytest.mark.asyncio
+async def test_tools_list_empty_outside_managed_sessions(monkeypatch):
+    """Standalone opencode discovers the same per-project opencode.json
+    via upward config resolution. Without SWEAVE_MCP_TOKEN the tools
+    cannot work (no Sweave API + token) and their schemas are pure
+    context overhead — list nothing, silently (no MCP-error spam)."""
+    monkeypatch.delenv("SWEAVE_MCP_TOKEN", raising=False)
+    from sweave.mcp import _list_tools_handler
+    from mcp.types import PaginatedRequestParams
+
+    result = await _list_tools_handler(ctx=None, params=PaginatedRequestParams())
+    assert result.tools == []
+
+
+@pytest.mark.asyncio
+async def test_tool_call_rejected_outside_managed_sessions(monkeypatch):
+    """Belt-and-braces with the empty list: cached/blind calls get a
+    clean rejection, never an authenticated call."""
+    monkeypatch.delenv("SWEAVE_MCP_TOKEN", raising=False)
+    from sweave.mcp import _call_tool_dispatcher
+    from mcp.types import CallToolRequestParams
+
+    req = CallToolRequestParams(
+        name="defer",
+        arguments={"target": "backend", "task": "x", "caller_delegation_id": "p1"},
+    )
+    result = await _call_tool_dispatcher(ctx=None, params=req)
+    assert result.is_error is True
+    assert "outside Sweave-managed sessions" in result.content[0].text
 
 
 # ---------------------------------------------------------------------------

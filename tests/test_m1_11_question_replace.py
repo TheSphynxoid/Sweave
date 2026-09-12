@@ -127,7 +127,8 @@ def test_get_backfills_kind_audience_for_legacy_records(home_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_toolset_includes_escalate():
+def test_mcp_toolset_includes_escalate(monkeypatch):
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
     from mcp.types import PaginatedRequestParams
 

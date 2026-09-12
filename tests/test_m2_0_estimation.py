@@ -275,11 +275,14 @@ async def test_defer_rejects_nondict_estimate():
     assert "estimate" in result.content[0].text
 
 
-def test_defer_schema_advertises_estimate():
+def test_defer_schema_advertises_estimate(monkeypatch):
     """The tool schema carries the optional estimate property so
     orchestrators know the slot exists (blocking is M2.1 — out)."""
     import asyncio
 
+    # Managed session: the provisioned env token (unprovisioned
+    # servers list nothing — context-overhead gate).
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
 
     # Sync test: no loop running, so asyncio.run is safe.

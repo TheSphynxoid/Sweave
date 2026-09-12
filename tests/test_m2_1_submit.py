@@ -125,11 +125,14 @@ async def test_defer_rejects_nonbool_blocking():
     assert "blocking" in result.content[0].text
 
 
-def test_defer_schema_advertises_blocking():
+def test_defer_schema_advertises_blocking(monkeypatch):
     """The tool schema carries the optional blocking property so
     orchestrators know the slot exists."""
     import asyncio
 
+    # Managed session: the provisioned env token (unprovisioned
+    # servers list nothing — context-overhead gate).
+    monkeypatch.setenv("SWEAVE_MCP_TOKEN", "test-token")
     from sweave.mcp import _list_tools_handler
 
     result = asyncio.run(_list_tools_handler(ctx=None, params=None))
