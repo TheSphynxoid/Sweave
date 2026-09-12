@@ -111,6 +111,17 @@
     Versioning: no V1 was ever cut (`pyproject` still `0.1.0`, R5
     unshipped) — proposal is `0.2.0` for the M2 thread, `1.0` at first
     public cut. Not locked.
+  - Timeout-rate finding (2026-09-12, trace-measured over 6,432 trace
+    files): failure MODE flipped 09-10→09-12 from total-budget trips
+    (30–39/day on 250–320-turn days) to header-silence deaths (3+3 on
+    09-11, 2+2 on 09-12, all phase=headers at exactly 300s) as volume
+    collapsed (324→6 turns/day) and the model mix went 100% to the
+    free tier (`muse-spark-1.3-contributor-free`, incl. explicit rate
+    limits 09-11). Small denominators + 5–22 min waits explain why it
+    feels like "always". Fix direction, not tuning: liveness probe
+    (silence → serve-state check → wait-with-progress vs abort) +
+    progress heartbeats + provider fallback on slowness; bounds stay
+    differentiated (chat snappy, execution patient).
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
