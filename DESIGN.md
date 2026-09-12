@@ -272,6 +272,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **pytest suite** | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 295 tests across 27 files; `pytest` is the source of truth |
 | **User default in config.yaml (not models.yaml)** | ✅ | Fast-track 2026-09-11 — `set_default_model` writes `models.default` into config.yaml (surgical line edit, comments preserved, atomic); models.yaml is providers-only (`write_registry` dropped the `default` param, `sync_registry` never reads it). Precedence: config > customs overlay > legacy models.yaml key (adopted once into config on load iff selectable and no customs default; legacy key left in place, ignored). `POST /api/models/regenerate` calls `sync_registry` in-process (the old shell-out to `generate_models.py` never wrote the file). |
 | **Estimation records (record-only)** | ✅ | M2.0 2026-09-11 — Delegation schema v7 (`estimate: {tokens, seconds} | None`, `_migrate_v6_to_v7`); `POST /api/v2/tasks` + MCP `defer` accept optional estimate (non-negative, unknown keys ignored, all-null normalises to None); estimate-vs-actual folded into the detail projection (`estimate_vs_actual`: estimate echo + trace `tokens_used` summed + created→completed seconds; nulls on missing trace/record) + `sweave log` panel. No enforcement, no calibration (M2.5), no chat-turn estimates. |
+| **Wait-set flag + review-request** | ✅ | M2.1 2026-09-12 — schema v8 (`blocking: bool = False`, `review_request: ReviewRequest | None`, `_migrate_v7_to_v8`); `POST /api/v2/tasks` + MCP `defer` accept optional `blocking` (non-bool via defer → `rejected:` line); success→`review` transition attaches the request (reviewer hint, diff pointer, manifest summary/confidence) + `review_requested` trace event, failure attaches nothing, `promote` keeps it as history; both waits share one rule (`JOIN_SETTLED_STATUSES` + `in_join_set`/`is_join_settled`): only `blocking` children join, `review` counts as settled, empty join set returns immediately, `wait_set_scoped` names the skipped set; synthesis surfaces pending requests (resolve explicitly via `defer(target=reviewer)` — no verdict payload, M2.2); `review_request` folded into the detail projection. No UI changes, no `blocking` on chat turns. |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
@@ -522,7 +523,7 @@ M1.0→M1.3→M1.4/5→M1.6→M1.7.
   follow-up chat shows durable specialist context; model switched while idle between
   tasks.
 
-### M2 — Backend capabilities (started 2026-09-11; fast-track + M2.0 done)
+### M2 — Backend capabilities (started 2026-09-11; fast-track + M2.0 + M2.1 done)
 
 Ruling locked 2026-09-11: M2 proceeds NOW on the backend; the R4
 remainder runs as a parallel user-driven UI track (UI has been
@@ -540,8 +541,11 @@ enforcement): `docs/PLUGGABLES_PLAN.md` §3.
 - **M2.0 estimation records (done 2026-09-11)**: record-only
   `estimate` + estimate-vs-actual projection (see §4 row). Seeds the
   query planner, velocity, and denser training rewards.
+- **M2.1 wait-set + review-request (done 2026-09-12)**: `blocking`
+  join flag + embedded review-request (see §4 row); both waits share
+  one settled rule (the :898 fix). Seeds the M2.2 contract record.
 - Next (each gets its own execution-ready section before it runs):
-  M2.1 wait-set + review-request → M2.2 contract record → M2.3
+  M2.2 contract record → M2.3
   per-specialist tool policy (defaults lock at the M2.3 detailing
   round: proposed default-off new servers, locked reviewer,
   allow/deny-only) → M2.4 golden-set v0 → M2.5 dogfood-minimal into

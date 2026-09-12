@@ -91,9 +91,10 @@
     pytest so UI binds later without rework. Return condition: R4.4
     local memory backend comes back when group-memory/lore work starts
     (M3 at earliest).
-  - **M2 thread — FAST-TRACK + M2.0 DONE (2026-09-11).**
-    M2.0 estimation records (execution-ready spec) → M2.1 wait-set +
-    review-request → M2.2 contract record → M2.3 per-specialist tool
+  - **M2 thread — FAST-TRACK + M2.0 + M2.1 DONE (2026-09-12).**
+    M2.0 estimation records → M2.1 wait-set + review-request (done,
+    execution-ready spec at `docs/M2_1_PLAN.md`) → M2.2 contract
+    record → M2.3 per-specialist tool
     policy → M2.4 golden-set v0 → M2.5 dogfood-minimal into R6.
     Beyond M2 (out): planner, group memory, reunion runtime, training
     env/export, audit export. Locks resolved: R4-deferral ruling locked
@@ -142,6 +143,31 @@
   Rulings (execution Q&A 2026-09-11): scope fast-track+M2.0;
   regenerate repointed (not preserved); fold-in (not new endpoint);
   stray default adopted via migration.
+- ✅ **M2.1 wait-set + review-request (2026-09-12)** — schema v7→v8
+  (`blocking: bool = False`, `review_request: ReviewRequest | None`,
+  `_migrate_v7_to_v8`, v1→v8 chain pinned); `POST /api/v2/tasks` +
+  MCP `defer` accept optional `blocking` (default false; non-bool
+  via defer → `rejected:` line); success→`review` attaches the
+  request (reviewer hint + diff pointer + manifest summary/
+  confidence, `review_requested` trace event), failure attaches
+  nothing, `promote` keeps it as history (no verdict payload —
+  M2.2); both waits share one rule (`JOIN_SETTLED_STATUSES` +
+  `in_join_set`/`is_join_settled` — the :898 fix: `review` settles
+  both gates, only `blocking` children join, empty join set returns
+  immediately, `wait_set_scoped` names the skipped set); synthesis
+  surfaces pending requests (resolve explicitly via
+  `defer(target=reviewer)`); `review_request` folded into the
+  detail projection (unknown id keeps 200 + nulls). No UI, no
+  `blocking` on chat turns, config/models hunks stay dirty per
+  ruling 5. Commits `cd18fcc` (char tests) + `1d60ae9` (schema) +
+  `7d83506` (submit) + `07331a5` (producer) + `c498d09` (waits) +
+  `fd4aaa3` (resolution). Gates: 746 pytest green, 13/13 run.py
+  --check, M2.1 subset green 3×, :8100 healthy (read-only probe;
+  behavioral live check needs a restart — open). Note: a prior
+  execution session (`Sweave-20260911-213619-096e65`) timed out at
+  the 300s chat-transport stall but left its file writes in the
+  working tree (transport timeout ≠ work rollback); this session
+  resumed from those files.
 - ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
   session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
   the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the

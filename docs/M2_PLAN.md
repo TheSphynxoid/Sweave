@@ -1,6 +1,7 @@
 # M2 — Backend capabilities (ordered series)
 
-Status: fast-track + M2.0 DONE (2026-09-11); M2.1+ still planned
+Status: fast-track + M2.0 DONE (2026-09-11); M2.1 planned
+(see `docs/M2_1_PLAN.md`); M2.2+ still sketched (§4)
 (see §6 execution record). Plan of record for the next execution
 session(s). Thread: M2-started (see PROJECT_STATE "Threads
 (2026-09-11)"); R4 continues as the sidelined parallel thread.
@@ -218,6 +219,10 @@ step; no step reshapes an earlier step's records without a migration
 and a justification citing this file.
 
 ## 6. Execution record: fast-track + M2.0 (done 2026-09-11)
+
+M2.1 detailing (2026-09-11): execution-ready spec at
+`docs/M2_1_PLAN.md` (7 steps, ~1 session, 5 user-locked rulings);
+no code, no commits — detailing only.
 
 Commits: `9e701a7` (fast-track steps 1–3), `ccedbfd` (steps 4–5),
 `2cd150e` (M2.0 steps 1–3). Gates: 707 pytest (674 + 12 fast-track

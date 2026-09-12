@@ -373,6 +373,17 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    the ask's request id; exactly one finder owns the reply POST
    (the other waits + recovers). Never add a third `create()`
    caller on the permission path without the reuse key.
+5. **Two waits, one rule — never let the settled-sets drift again**
+   (M2.1, the `job_runner.py:898` mismatch: `ChatLoop.
+   _wait_for_children` settled on done/failed/review while
+   `JobRunner._wait_for_children` settled only on done/failed, so a
+   child sitting in `review` wedged its parent until
+   `turn_timeout`). Both waits now share `JOIN_SETTLED_STATUSES` +
+   `in_join_set` / `is_join_settled` (`runtime/delegation_store.
+   py`) — the wait-set flag (`blocking`) scopes the JOIN set and
+   `review` is join-terminal in both. Any future change to what
+   counts as "settled" goes in the shared helpers, never in one
+   call site.
 
 ## Paths & config
 
