@@ -125,6 +125,20 @@ fixture (read→edit→bash→grep) green on both harnesses with byte-identical
 trace event names; permission ask→allow-once→content and deny→loud-abort
 live scenes (mirror of `scripts/m1_12_live_gate.py`).
 
+Tool-context budget (standing, from the 2026-09-12 audit: MCP surface
+2,880 chars, defer alone 1,152 — descriptions are the fat). Native
+advantages the MCP wire cannot match: (1) short schemas by default —
+the orchestrator prompt already teaches the contract, so tool text
+stays reference-tight; (2) dynamic pruning per turn state (hide
+`defer` at depth cap instead of describing the rejection; hide
+orchestration tools from specialists structurally, not via
+deny-lists); (3) endgame is a native `delegate` op in the turn
+grammar, not a tool call at all — zero schema overhead, typed
+errors, server-side chain enforcement before the model spends a
+token; (4) the context audit becomes native telemetry (per-tool,
+per-turn in/out tokens on the trace). Budgets per surface pinned in
+tests so overhead can't silently regrow.
+
 ### Step 3 — `build_context()` extension point (~0.5 session)
 Pre-turn hook owned by the orchestrator: memory/embedder retrieval runs
 server-side with section budget + `context.built {sections, tokens,

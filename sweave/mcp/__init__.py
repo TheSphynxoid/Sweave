@@ -536,37 +536,35 @@ async def _list_tools_handler(
             types.Tool(
                 name="defer",
                 description=(
-                    "Hand a task to a named specialist. The new delegation is a "
-                    "child of the caller's delegation (parent_task_id is set "
-                    "from caller_delegation_id). Returns the new delegation id "
-                    "on success, or a 'rejected: <reason>' line on loop/depth/"
-                    "budget violations (the orchestrator should pick a different "
-                    "target or wait for a child to complete)."
+                    "Hand work to a named specialist as a child "
+                    "delegation. Returns `queued: <id>` (end your turn; "
+                    "a follow-up turn synthesizes blocking children) "
+                    "or `rejected: <reason>` (depth/loop/budget — pick "
+                    "another target or wrap up)."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "target": {"type": "string", "description": "Specialist name."},
-                        "task": {"type": "string", "description": "The work for the specialist."},
-                        "reason": {"type": "string", "description": "Why this specialist? (recorded on the trace.)"},
+                        "target": {"type": "string", "description": "Specialist name (list_specialists if unsure)."},
+                        "task": {"type": "string", "description": "The work. Be specific; the specialist has no other context."},
+                        "reason": {"type": "string", "description": "Why this specialist (trace + training signal)."},
                         "caller_delegation_id": {
                             "type": "string",
-                            "description": "The orchestrator's own delegation id; links the chain.",
+                            "description": "Your delegation id; links the chain.",
                         },
                         "estimate": {
                             "type": "object",
                             "description": (
-                                "Optional {tokens, seconds} estimate "
-                                "(record only, no enforcement)."
+                                "Optional {tokens, seconds} cost guess "
+                                "(record-only)."
                             ),
                         },
                         "blocking": {
                             "type": "boolean",
                             "description": (
-                                "Wait-set opt-in (default false). True = "
-                                "this child joins the synthesis join set "
-                                "(the turn waits on it); false/absent = "
-                                "fire-and-forget into the Children lane."
+                                "True = your turn waits for it and "
+                                "synthesizes the result; false = "
+                                "fire-and-forget to Children."
                             ),
                         },
                     },
