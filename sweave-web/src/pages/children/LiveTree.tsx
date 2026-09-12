@@ -6,7 +6,10 @@
  *   * status pills (queued / running / review / done / failed)
  *   * depth = tree indent (parent_task_id)
  *   * promote button on every ``review`` record
- *   * answer input on every ``needs_attention`` record
+ *   * answer input on every ``needs_attention`` record **with a pending
+ *     escalation** (M2.2 fix: the flag means "answer OR promote", so a
+ *     review-only row has the flag with no escalation — the Answer
+ *     button verifies a pending record first instead of 404ing)
  *   * click row -> open the detail modal
  *
  * WS events update the list: ``delegation.status_changed`` pulses
@@ -21,11 +24,12 @@
  * group is pinned on top and expanded, ghost/unknown groups
  * collapse by default.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ChevronDown, Send, X, AlertCircle } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
+import { useWS } from "@/context/WSProvider";
 import {
   buildDelegationTree,
   findEscalatingNodes,
@@ -35,7 +39,7 @@ import {
 } from "./tree";
 import { formatRelativeTime, truncate } from "@/utils/cn";
 import { cn } from "@/utils/cn";
-import type { Delegation, DelegationStatus } from "@/types";
+import type { Delegation, DelegationStatus, EscalationRecord } from "@/types";
 
 const STATUS_CLASS: Record<DelegationStatus, string> = {
   queued: "bg-muted text-muted-foreground",
@@ -317,14 +321,70 @@ function PromoteButton({ delegationId }: { delegationId: string }) {
 function AnswerInline({ delegationId }: { delegationId: string }) {
   const [value, setValue] = useState("");
   const [showInput, setShowInput] = useState(false);
+  // M2.2 fix: ``needs_attention`` means "answer OR promote" (review
+  // entry sets the flag with NO escalation record), so the Answer
+  // button must verify a *pending* escalation exists first.
+  // ``undefined`` = loading, ``null`` = none (or fetch failed) —
+  // both render nothing, leaving review-only rows with just Mark done.
+  // A resolved record (answered/skipped while a review is still owed)
+  // also renders nothing: the remaining action is promotion.
+  const [esc, setEsc] = useState<EscalationRecord | null | undefined>(undefined);
   const qc = useQueryClient();
   const { pushNotification } = useApp();
+
+  const loadEsc = useCallback(async () => {
+    try {
+      setEsc(await api.getEscalation(delegationId));
+    } catch {
+      setEsc(null);
+    }
+  }, [delegationId]);
+
+  useEffect(() => {
+    setEsc(undefined);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rec = await api.getEscalation(delegationId);
+        if (!cancelled) setEsc(rec);
+      } catch {
+        if (!cancelled) setEsc(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [delegationId]);
+
+  // Late-arriving questions (M1.12: a permission ask can land minutes
+  // after the row mounted with the review flag) must light the button
+  // up without a full list refetch.
+  let subscribe: ((event: string, handler: () => void) => () => void) | null = null;
+  try {
+    subscribe = useWS().subscribe;
+  } catch {
+    subscribe = null;
+  }
+  useEffect(() => {
+    if (!subscribe) return;
+    const offs = [
+      subscribe("specialist.escalated", () => {
+        void loadEsc();
+      }),
+      subscribe("specialist.escalation_resolved", () => {
+        void loadEsc();
+      }),
+    ];
+    return () => offs.forEach((off) => off());
+  }, [subscribe, loadEsc]);
+
   const m = useMutation({
     mutationFn: (response: string) => api.answerEscalation(delegationId, response),
     onSuccess: () => {
       pushNotification("success", "Answer sent");
       setValue("");
       setShowInput(false);
+      void loadEsc();
       void qc.invalidateQueries({ queryKey: ["delegations"] });
       void qc.invalidateQueries({ queryKey: ["escalation", delegationId] });
     },
@@ -336,6 +396,8 @@ function AnswerInline({ delegationId }: { delegationId: string }) {
     mutationFn: () => api.skipEscalation(delegationId),
     onSuccess: () => {
       pushNotification("success", "Question skipped — agent proceeds with best judgment");
+      setShowInput(false);
+      void loadEsc();
       void qc.invalidateQueries({ queryKey: ["delegations"] });
       void qc.invalidateQueries({ queryKey: ["escalation", delegationId] });
     },
@@ -353,6 +415,10 @@ function AnswerInline({ delegationId }: { delegationId: string }) {
       return;
     skip.mutate();
   };
+  // No pending escalation (review-only flag, or an already-resolved
+  // question with a review still owed) → no Answer affordance. The
+  // row's Mark-done button (review) or nothing remains.
+  if (esc === undefined || esc === null || esc.status !== "pending") return null;
   if (!showInput) {
     return (
       <button

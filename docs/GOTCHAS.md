@@ -496,6 +496,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    universal margin/padding reset — keep global element rules out of
    unlayered CSS unless they are meant to beat every utility.
 
+4. **`needs_attention` means "answer OR promote" — gate Answer buttons
+    on a pending escalation** (2026-09-12). Review entry sets the flag
+    with NO escalation record, so `AnswerInline` (`LiveTree.tsx`) used
+    to render a dead Answer button next to Mark done on every review
+    row (click → `POST …/answer` → 404). The button now GETs the
+    escalation first and renders only for `status === "pending"`
+    (resolved-but-unpromoted also hides: the remaining action is
+    promotion), refetching on `specialist.escalated/resolved` for
+    late-arriving permission asks. Rule: any new attention affordance
+    must verify its backing record exists; never render from the flag
+    alone.
+
 ## Opencode harness & wire protocol
 
 1. **The mock must match the real v2 wire** (R4.0, 2026-09-05). The
