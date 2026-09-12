@@ -64,6 +64,47 @@ def test_run_no_window_respects_explicit_flags(monkeypatch):
     assert seen.get("creationflags") == 1234
 
 
+def test_spawn_scratch_serve_is_windowless(monkeypatch):
+    """The models-sync scratch serve must not flash/park a visible
+    console for the whole sync (user-visible CMD on `sweave models
+    sync` and the Settings Sync button)."""
+    import sweave.models_sync as msync
+    import sweave.platform as plat
+
+    seen: dict = {}
+
+    class _FakeProc:
+        pid = 99999
+
+    def fake_popen(*args, **kwargs):
+        seen.update(kwargs)
+        return _FakeProc()
+
+    monkeypatch.setattr(msync.subprocess, "Popen", fake_popen)
+    msync.spawn_scratch_serve("opencode", 18792)
+    assert seen.get("creationflags") == plat.creationflags_no_window()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="taskkill tree-kill is Windows-only")
+def test_stop_scratch_serve_tree_kill_is_windowless(monkeypatch):
+    """The taskkill reaper flashes too without the discipline."""
+    import sweave.models_sync as msync
+    import sweave.platform as plat
+
+    seen: dict = {}
+
+    class _FakeProc:
+        pid = 99999
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(msync.subprocess, "run", fake_run)
+    msync.stop_scratch_serve(_FakeProc())
+    assert seen.get("creationflags") == plat.creationflags_no_window()
+
+
 def test_check_output_no_window_injects_creationflags(monkeypatch):
     import sweave.platform as plat
 

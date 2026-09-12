@@ -44,6 +44,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from sweave.platform import creationflags_no_window
+
 logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
@@ -89,11 +91,15 @@ def pick_free_port(start: int = SCRATCH_PORT_START, tries: int = SCRATCH_PORT_TR
 def spawn_scratch_serve(opencode_bin: str, port: int) -> "subprocess.Popen":
     """Start an isolated ``opencode serve`` (scratch cwd, no project config)."""
     workdir = tempfile.mkdtemp(prefix="sweave-models-sync-")
+    # Windowless: a bare Popen flashes (or parks) a visible console
+    # for the whole sync (GOTCHAS: Windows console flashes — every
+    # spawn goes through the no-window discipline).
     return subprocess.Popen(
         [opencode_bin, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         cwd=workdir,
+        creationflags=creationflags_no_window(),
     )
 
 
@@ -110,6 +116,7 @@ def stop_scratch_serve(proc: "subprocess.Popen") -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=15,
+                creationflags=creationflags_no_window(),
             )
         else:
             proc.terminate()
