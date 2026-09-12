@@ -527,9 +527,8 @@ async def _list_tools_handler(
             types.Tool(
                 name="list_specialists",
                 description=(
-                    "List the resolved specialists (name + one-line description). "
-                    "No secrets, no system prompts. Use this to pick a target "
-                    "for the defer tool."
+                    "Resolved specialists (name + one line). No secrets "
+                    "or prompts. Pick a defer target."
                 ),
                 inputSchema={"type": "object", "properties": {}, "required": []},
             ),
@@ -575,12 +574,10 @@ async def _list_tools_handler(
                 name="ask_human",
                 description=(
                     "Ask the human a blocking question (replaces the "
-                    "native question tool, which is denied). No "
-                    "deadline: the turn holds until answered or "
-                    "skipped (skip is guarded by a system confirm). "
-                    "The answer path is POST /api/delegations/{id}/answer; "
-                    "skip is POST /api/delegations/{id}/skip. The "
-                    "synthesis turn carries the outcome."
+                    "native question tool). No deadline: the turn holds "
+                    "until answered or skipped. Answer: POST "
+                    "/api/delegations/{id}/answer; skip: POST "
+                    "/api/delegations/{id}/skip."
                 ),
                 inputSchema={
                     "type": "object",
@@ -593,14 +590,13 @@ async def _list_tools_handler(
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "Optional list of choices. When present, the UI "
-                                "renders them as buttons; when absent, a free-"
-                                "form text input."
+                                "Optional choices (rendered as buttons; "
+                                "absent = free-form input)."
                             ),
                         },
                         "caller_delegation_id": {
                             "type": "string",
-                            "description": "The asking delegation's id; the escalation is keyed to it.",
+                            "description": "Your delegation id; keys the escalation.",
                         },
                     },
                     "required": ["question", "caller_delegation_id"],
@@ -609,12 +605,10 @@ async def _list_tools_handler(
             types.Tool(
                 name="escalate",
                 description=(
-                    "Escalate a notice to the orchestrator "
-                    "(specialist -> orchestrator, non-blocking). Use "
-                    "when blocked or needing a re-plan; your turn "
-                    "continues and you should still state the block "
-                    "in your summary. The notice lands in the global "
-                    "audit log with needs-attention until acknowledged."
+                    "Notice to the orchestrator (non-blocking). Use when "
+                    "blocked or needing a re-plan; your turn continues — "
+                    "state the block in your summary too. Lands in the "
+                    "audit log needing attention."
                 ),
                 inputSchema={
                     "type": "object",
@@ -625,7 +619,7 @@ async def _list_tools_handler(
                         },
                         "caller_delegation_id": {
                             "type": "string",
-                            "description": "The escalating delegation's id; the escalation is keyed to it.",
+                            "description": "Your delegation id; keys the escalation.",
                         },
                     },
                     "required": ["message", "caller_delegation_id"],
