@@ -678,6 +678,24 @@ def log(delegation_id: str = typer.Argument(..., help="Delegation id to render")
                 border_style="green",
             )
         )
+    # Review Phase 1: bundle pointer line ONLY (the CLI has no
+    # store, so record-side inputs are null here — same M2.0
+    # precedent as estimate; the HTTP endpoint joins them). Never
+    # the diff body.
+    bundle = detail.get("review_bundle")
+    if bundle:
+        scope = bundle.get("scope") or "(unknown)"
+        if bundle.get("path"):
+            bundle_line = (
+                f"review: scope={scope} bytes={bundle.get('bytes')} "
+                f"truncated={bundle.get('truncated')} "
+                f"path={bundle.get('path')}"
+            )
+        else:
+            bundle_line = f"review: no diff captured ({scope})"
+        console.print(
+            Panel(bundle_line, title="Review bundle", border_style="yellow")
+        )
     if not any(
         [
             detail["composed_prompt"],

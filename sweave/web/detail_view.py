@@ -27,6 +27,15 @@ sections the UI detail view patches into place (and the same data the
 * ``engine_session_id`` -- M2.1-follow-up: the opencode session id
   that ran this delegation (display + forensics without
   trace-digging). None for pre-change records.
+* ``record`` -- review deepening Phase 1 (follow-up spec B,
+  subsumed): the record header the modal needs — status, agent,
+  task (+140-char snippet, the TurnDelegations card rule),
+  output summary (2000 chars, truncated with marker), error,
+  created/completed stamps, blocking, needs_attention. None when
+  the record is missing (same degrade contract as the trace).
+* ``review_bundle`` -- Phase 1: the ``{path, bytes, truncated,
+  scope}`` pointer echoed verbatim (None = pre-change record or
+  unknown id; ``path`` None = degraded capture, scope says why).
 
 The trace is the source of truth (the JSONL is appended on every
 state change). This module is the read-side projector: it never
@@ -125,6 +134,52 @@ def render_estimate_vs_actual(
     }
 
 
+#: Task snippet length (Phase 1 record header). Matches the
+#: TurnDelegations card rule (``TASK_SNIPPET_CHARS``) so the modal
+#: header and the inline card truncate identically.
+TASK_SNIPPET_CHARS = 140
+
+#: Output summary length (Phase 1 record header). The modal needs
+#: substance (response + verdict context), but the payload stays
+#: bounded — longer output truncates with a marker.
+OUTPUT_SUMMARY_CHARS = 2000
+
+
+def _snippet(text: Any, limit: int) -> str | None:
+    """Truncate *text* to *limit* chars with a marker. None in →
+    None out (missing output is not empty output)."""
+    if text is None:
+        return None
+    s = str(text)
+    if len(s) <= limit:
+        return s
+    return s[:limit] + f"… [truncated {len(s) - limit} chars]"
+
+
+def render_record_header(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Project the record header for the detail payload (Phase 1).
+
+    Status/agent/task/output/error/stamps/blocking/attention — what
+    the modal needs without a second round-trip. Never raises;
+    missing record → None (same degrade contract as a missing
+    trace).
+    """
+    if not record:
+        return None
+    return {
+        "status": record.get("status"),
+        "agent": record.get("agent"),
+        "task": record.get("task"),
+        "task_snippet": _snippet(record.get("task") or "", TASK_SNIPPET_CHARS),
+        "output_summary": _snippet(record.get("output"), OUTPUT_SUMMARY_CHARS),
+        "error": record.get("error"),
+        "created_at": record.get("created_at"),
+        "completed_at": record.get("completed_at"),
+        "blocking": record.get("blocking"),
+        "needs_attention": record.get("needs_attention"),
+    }
+
+
 def render_detail_view(
     delegation_id: str,
     *,
@@ -134,6 +189,8 @@ def render_detail_view(
     completed_at: Any = None,
     review_request: dict[str, Any] | None = None,
     engine_session_id: str | None = None,
+    record: dict[str, Any] | None = None,
+    review_bundle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
@@ -218,4 +275,6 @@ def render_detail_view(
         ),
         "review_request": dict(review_request) if review_request else None,
         "engine_session_id": engine_session_id,
+        "record": render_record_header(record),
+        "review_bundle": dict(review_bundle) if review_bundle else None,
     }

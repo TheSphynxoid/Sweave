@@ -478,6 +478,11 @@ async def get_delegation_detail(
 
     M2.1-follow-up: the record's ``engine_session_id`` rides the
     same fold (per-delegation display + forensics).
+
+    Review Phase 1 (follow-up spec B, subsumed): the record header
+    (status/agent/task/output/error/stamps/blocking/attention) +
+    the ``review_bundle`` pointer ride the same fold. Unknown id
+    keeps the degrade contract (200 + nulls).
     """
     from sweave.web.detail_view import render_detail_view
 
@@ -496,6 +501,8 @@ async def get_delegation_detail(
         engine_session_id=(
             record.engine_session_id if record is not None else None
         ),
+        record=record.to_dict() if record is not None else None,
+        review_bundle=record.review_bundle if record is not None else None,
     )
 
 
