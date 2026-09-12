@@ -105,6 +105,78 @@ async def _lock_for(key: tuple[str, str]) -> asyncio.Lock:
         return lock
 
 
+async def _attempt_engine_stop(
+    process: Any, session_id: str, trace: Any | None
+) -> str:
+    """Best-effort ``POST /session/{id}/abort``. Returns a message
+    suffix naming the outcome. NEVER raises.
+
+    Incident Sweave-20260911-213619-096e65: every Sweave timeout is
+    client-side (``asyncio.wait_for`` around stream reads). Tripping
+    one abandons the HTTP stream while the serve keeps running the
+    turn — status=failed with a live process: a paradoxical,
+    untracked ghost (still spending tokens, still able to write
+    files). The abort call exists on the serve (verified in the
+    reference clone); not calling it was the bug. An acknowledged
+    stop resolves the paradox; anything else stays LOUD
+    (UNCONFIRMED) instead of silent.
+    """
+    if not session_id:
+
+        def _trace(event: str, payload: dict[str, Any]) -> None:
+            if trace is not None:
+                try:
+                    trace.append(event, payload)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _trace("abort_skipped", {"reason": "no engine session"})
+        return "; stop not attempted (no engine session)"
+    client = getattr(process, "_client", None)
+    post = getattr(client, "post", None)
+    if not callable(post):
+
+        def _trace(event: str, payload: dict[str, Any]) -> None:
+            if trace is not None:
+                try:
+                    trace.append(event, payload)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _trace("abort_skipped", {"reason": "no abort channel"})
+        return "; stop UNCONFIRMED — orphaned run possible (no abort channel)"
+    try:
+        headers_fn = getattr(process, "_default_headers", None)
+        headers = headers_fn() if callable(headers_fn) else {}
+        resp = await post(
+            f"/session/{session_id}/abort", headers=headers, timeout=10.0
+        )
+        status = getattr(resp, "status_code", None)
+        ok = isinstance(status, int) and 200 <= status < 300
+        if trace is not None:
+            try:
+                trace.append(
+                    "abort_sent",
+                    {"status_code": status, "acknowledged": ok},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        if ok:
+            return "; serve acknowledged stop"
+        return "; stop UNCONFIRMED — orphaned run possible (abort rejected)"
+    except Exception as e:  # noqa: BLE001
+
+        def _trace(event: str, payload: dict[str, Any]) -> None:
+            if trace is not None:
+                try:
+                    trace.append(event, payload)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _trace("abort_failed", {"error": f"{type(e).__name__}: {e}"})
+        return "; stop UNCONFIRMED — orphaned run possible"
+
+
 class SpecialistRuntime:
     """Orchestrates one delegation through a ServeRunner.
 
@@ -564,11 +636,14 @@ class SpecialistRuntime:
                     )
                 except RuntimeError:
                     pass
+            stop_suffix = await _attempt_engine_stop(
+                process, getattr(process, "_session_id", "") or "", trace
+            )
             return (
                 f"[chat error: stalled after {STALL_TIMEOUT_SECONDS:.0f}s "
                 f"without data (system-prompt send hung; the turn may "
                 f"still be running server-side; retry starts a fresh "
-                f"session{age_suffix})]"
+                f"session{age_suffix}{stop_suffix})]"
             )
         if not getattr(result, "success", True):
             err = getattr(result, "error", None) or "unknown error"
@@ -803,11 +878,14 @@ class SpecialistRuntime:
                     if t0 is not None
                     else ""
                 )
+                stop_suffix = await _attempt_engine_stop(
+                    process, wire_session_id, trace
+                )
                 return (
                     f"[chat error: stalled after {stall_seconds:.0f}s without "
                     f"data (response headers never arrived; the turn may "
                     f"still be running server-side; retry starts a fresh session"
-                    f"{age_suffix})]"
+                    f"{age_suffix}{stop_suffix})]"
                 )
             if trace is not None:
                 try:
@@ -1003,10 +1081,13 @@ class SpecialistRuntime:
                 if t0 is not None
                 else ""
             )
+            stop_suffix = await _attempt_engine_stop(
+                process, wire_session_id, trace
+            )
             return (
                 f"[chat error: stalled after {stall_seconds:.0f}s without "
                 f"data (the turn may still be running server-side; retry "
-                f"starts a fresh session{age_suffix})]"
+                f"starts a fresh session{age_suffix}{stop_suffix})]"
             )
         if info_error:
             # Upstream rejection carried on a 200 stream (401

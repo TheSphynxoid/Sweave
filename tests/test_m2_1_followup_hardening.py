@@ -190,7 +190,7 @@ def _hanging_proc(tmp_path: Path):
     from sweave.runtime.trace_log import TraceLog
 
     proc = _LocalMockProcess(client=_HangingStreamClient())
-    return proc, TraceLog("d-hang", base_dir=tmp_path)
+    return proc, TraceLog("d-hang", base_dir=tmp_path / "traces")
 
 
 @pytest.mark.asyncio
@@ -217,7 +217,8 @@ async def test_stall_message_carries_turn_age(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_stall_message_unchanged_without_t0(tmp_path: Path):
     """Without t0 the legacy exact string is preserved (existing
-    callers + pinned assertions are unaffected)."""
+    callers + pinned assertions are unaffected) — plus the abort
+    outcome suffix (this fake has no abort channel, so UNCONFIRMED)."""
     from sweave.runtime.serve_runner import ServeRunnerRegistry
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
@@ -230,8 +231,78 @@ async def test_stall_message_unchanged_without_t0(tmp_path: Path):
     assert out == (
         "[chat error: stalled after 0s without data "
         "(response headers never arrived; the turn may still be "
-        "running server-side; retry starts a fresh session)]"
+        "running server-side; retry starts a fresh session"
+        "; stop UNCONFIRMED — orphaned run possible (no abort channel))]"
     )
+    events = [e["event"] for e in _trace_events("d-hang", tmp_path)]
+    assert "abort_skipped" in events
+
+
+@pytest.mark.asyncio
+async def test_stall_attempts_abort_acknowledged(tmp_path: Path):
+    """The stall trip POSTs /session/{id}/abort; a 2xx names the
+    acknowledged stop in the message (paradox resolved)."""
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+
+    posted: list[str] = []
+
+    class _AbortClient(_HangingStreamClient):
+        async def post(self, url: str, **kwargs):
+            posted.append(url)
+
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    from sweave.runtime.trace_log import TraceLog
+
+    class _Proc:
+        _session_id = "ses_abortme"
+        _client = _AbortClient()
+
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    trace = TraceLog("d-abort", base_dir=tmp_path)
+    out = await runtime._send_message(
+        _Proc(), {"parts": [{"type": "text", "text": "hi"}]}, trace,
+        stall_seconds=0.05,
+    )
+    assert posted == ["/session/ses_abortme/abort"]
+    assert "serve acknowledged stop" in out, out
+    from sweave.runtime.trace_log import read_trace
+
+    events = {e["event"]: e for e in read_trace("d-abort", base_dir=tmp_path)}
+    assert events["abort_sent"]["acknowledged"] is True
+
+
+@pytest.mark.asyncio
+async def test_stall_abort_rejection_stays_loud(tmp_path: Path):
+    """A rejected/failed abort is UNCONFIRMED in the message — never
+    silent (the orphaned-run case stays visible)."""
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+    from sweave.runtime.trace_log import TraceLog
+
+    class _RefusingClient(_HangingStreamClient):
+        async def post(self, url: str, **kwargs):
+            raise RuntimeError("connection reset")
+
+    class _Proc:
+        _session_id = "ses_nope"
+        _client = _RefusingClient()
+
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    trace = TraceLog("d-abortfail", base_dir=tmp_path)
+    out = await runtime._send_message(
+        _Proc(), {"parts": [{"type": "text", "text": "hi"}]}, trace,
+        stall_seconds=0.05,
+    )
+    assert "stop UNCONFIRMED" in out, out
+    from sweave.runtime.trace_log import read_trace
+
+    events = [e["event"] for e in read_trace("d-abortfail", base_dir=tmp_path)]
+    assert "abort_failed" in events
 
 
 def test_engine_session_id_migrates_to_none():
