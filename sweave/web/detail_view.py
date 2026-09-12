@@ -20,6 +20,10 @@ sections the UI detail view patches into place (and the same data the
   ``{tokens, seconds}`` estimate echoed beside actuals (trace
   ``tokens_used`` summed across turns + created->completed wall
   seconds). Missing trace/record degrades to nulls, never raises.
+* ``review_request`` -- M2.1: the stored review-request record
+  echoed verbatim (None = no review requested: pre-M2.1 records,
+  failed delegations, unknown ids). Read side of the M2.0
+  detail-fold precedent; no new endpoint.
 
 The trace is the source of truth (the JSONL is appended on every
 state change). This module is the read-side projector: it never
@@ -125,6 +129,7 @@ def render_detail_view(
     estimate: dict[str, Any] | None = None,
     created_at: Any = None,
     completed_at: Any = None,
+    review_request: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
@@ -207,4 +212,5 @@ def render_detail_view(
             created_at=created_at,
             completed_at=completed_at,
         ),
+        "review_request": dict(review_request) if review_request else None,
     }

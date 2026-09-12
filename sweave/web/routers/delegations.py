@@ -454,6 +454,10 @@ async def get_delegation_detail(
     M2.0: the record (estimate + created/completed stamps) is joined
     in for the ``estimate_vs_actual`` section; an id with no record
     (or no trace) still degrades to nulls, never a 500.
+
+    M2.1: the record's ``review_request`` rides the same fold (echoed
+    verbatim, None when absent) — the read side of the review
+    seam, no new endpoint.
     """
     from sweave.web.detail_view import render_detail_view
 
@@ -468,6 +472,7 @@ async def get_delegation_detail(
         estimate=record.estimate if record is not None else None,
         created_at=record.created_at if record is not None else None,
         completed_at=record.completed_at if record is not None else None,
+        review_request=record.review_request if record is not None else None,
     )
 
 

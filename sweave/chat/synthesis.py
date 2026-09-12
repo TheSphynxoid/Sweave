@@ -15,6 +15,11 @@ truncated first.
 Children with status ``failed`` are still included (with their error
 text) -- the orchestrator needs to know the failure so the synthesis
 can acknowledge it.
+
+M2.1 step 6: join-set children carrying a pending ``review_request``
+are surfaced per-child plus a "Pending Review Requests" section
+naming the resolve-via-defer contract (explicit defer to the
+reviewer hint; specialists never spawn reviewers).
 """
 
 from __future__ import annotations
@@ -110,6 +115,46 @@ def build_synthesis_prompt(
             lines.append(f"- error: {error}")
         else:
             lines.append(f"- output: {truncated}")
+        request = getattr(c, "review_request", None)
+        if isinstance(request, dict) and request:
+            # M2.1 step 6: the wait-set settle surfaces pending
+            # review-requests of join-set children (the request rides
+            # to_dict, no new endpoint — the M2.0 detail-fold
+            # precedent). The orchestrator resolves each request
+            # explicitly; specialists never spawn reviewers
+            # (one-authority rule).
+            hint = request.get("reviewer_hint") or "reviewer"
+            diff_ref = request.get("diff_ref") or {}
+            branch = diff_ref.get("branch") or "(no branch)"
+            pr_url = diff_ref.get("pr_url") or "(no PR)"
+            lines.append(
+                f"- review_requested: reviewer_hint={hint} "
+                f"branch={branch} pr={pr_url}"
+            )
+        lines.append("")
+
+    pending = [
+        c for c in children_list
+        if isinstance(getattr(c, "review_request", None), dict)
+        and getattr(c, "review_request", None)
+    ]
+    if pending:
+        names = ", ".join(
+            f"{c.agent} (reviewer_hint="
+            f"{(c.review_request or {}).get('reviewer_hint') or 'reviewer'})"
+            for c in pending
+        )
+        lines.append("## Pending Review Requests")
+        lines.append(
+            f"The following join-set children finished into `review` "
+            f"and request explicit review: {names}. To resolve, hand "
+            f"each one to its reviewer via defer(target=<reviewer_hint>, "
+            f"task=<what to review>, caller_delegation_id=<the review "
+            f"child's delegation_id>), or batch the reviews now. "
+            f"Promotion stays explicit (POST "
+            f"/api/delegations/{{id}}/promote); never mark review work "
+            f"done without a review."
+        )
         lines.append("")
 
     lines.append("## Original User Message")
