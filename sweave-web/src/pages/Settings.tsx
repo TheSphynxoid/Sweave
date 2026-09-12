@@ -248,10 +248,11 @@ function ProjectSettings() {
   );
 }
 
-function ModelsSettings({ models }: { models?: ModelsConfig }) {
+export function ModelsSettings({ models }: { models?: ModelsConfig }) {
   const qc = useQueryClient();
   const { pushNotification } = useApp();
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const setDefault = async (model: string) => {
     setSaving(true);
@@ -263,6 +264,22 @@ function ModelsSettings({ models }: { models?: ModelsConfig }) {
       pushNotification("error", `Failed to set default model: ${(err as Error).message}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const syncModels = async () => {
+    setSyncing(true);
+    try {
+      const report = await api.regenerateModels();
+      await qc.invalidateQueries({ queryKey: ["models"] });
+      pushNotification(
+        "success",
+        `Models synced: +${report.added}/−${report.removed} across ${report.providers} providers (${report.source}).`,
+      );
+    } catch (err) {
+      pushNotification("error", `Model sync failed: ${(err as Error).message}`);
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -299,7 +316,19 @@ function ModelsSettings({ models }: { models?: ModelsConfig }) {
                 Used by the orchestrator and any specialist without an explicit model.
               </CardDescription>
             </div>
-            {models.default && <Badge variant="secondary" className="font-mono text-[10px]">{models.default}</Badge>}
+            <div className="flex items-center gap-2">
+              {models.default && <Badge variant="secondary" className="font-mono text-[10px]">{models.default}</Badge>}
+              <button
+                type="button"
+                onClick={() => void syncModels()}
+                disabled={syncing || saving}
+                data-testid="models-sync"
+                title="Regenerate the model registry from models.dev + the live serve overlay. Takes a minute; your default is preserved."
+                className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+              >
+                {syncing ? "Syncing…" : "Sync models"}
+              </button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>

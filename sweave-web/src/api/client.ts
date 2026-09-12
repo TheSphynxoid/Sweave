@@ -388,6 +388,32 @@ class ApiClient {
     return r.data;
   }
 
+  /**
+   * Regenerate models.yaml from models.dev + the serve overlay.
+   * Slow (network fetch + scratch-serve boot, often past the 30s
+   * default timeout), so this call carries its own 5-minute budget.
+   */
+  async regenerateModels(): Promise<{
+    success: boolean;
+    providers: number;
+    models: number;
+    added: number;
+    removed: number;
+    source: string;
+    path: string;
+  }> {
+    const r = await this.client.post<{
+      success: boolean;
+      providers: number;
+      models: number;
+      added: number;
+      removed: number;
+      source: string;
+      path: string;
+    }>("/models/regenerate", {}, { timeout: 300_000 });
+    return r.data;
+  }
+
   async listHarnesses(): Promise<HarnessInfo[]> {
     const r = await this.client.get<{ harnesses: HarnessInfo[] }>("/harnesses");
     return r.data.harnesses;
