@@ -137,6 +137,34 @@ EVERY session, the failure mode subprocesses never had). Untrusted
 code still wants a boundary — sandbox stays deferred per plan, and
 opencode specialists stay subprocess-isolated regardless.
 
+Timeout mitigation requirements (2026-09-12 — every 300s-class
+incident to date was transport-phase, not work-phase: headers never
+arrived, zero bytes, root cause always opencode/model-side and
+unobservable from Sweave). In-process eliminates the whole class
+(no HTTP, no headers, no httpx races), and the engine must additionally
+guarantee no silent death ever again:
+
+1. No transport phases exist: a stuck tool is directly observable
+   (thread state + timing), never inferred from byte silence.
+2. Per-tool timeouts with partial-output capture (a timed-out tool
+   keeps what it produced; the turn degrades, it doesn't vanish).
+3. Progress heartbeats from the executor (tool started / first
+   output): silence is measured against expected progress, and the
+   watchdog trips on stalled progress, not on a flat clock.
+4. Graceful abort: stop generation, keep partials + trace — never
+   kill-and-lose-everything (the 300s transport loss pattern).
+5. Resume-from-partial: tool results checkpoint incrementally (the
+   event-sourced trace already supports this), so a retried turn
+   continues past completed tools instead of redoing them.
+6. Provider timeout + fallback (multi-provider registry already
+   exists): a hung provider fails over instead of hanging the turn.
+
+What in-process does NOT fix (still needed): zero-byte model hangs
+(loop detector, planned), genuinely slow work (budgets + estimation,
+M2.0 landed), admission control. Name: `sweave-engine` (matches
+`sweave-orchestrator` / `sweave-specialist`; Step 4 already uses it
+as the `specialist.harness` default).
+
 Tool-context budget (standing, from the 2026-09-12 audit: MCP surface
 2,880 chars, defer alone 1,152 — descriptions are the fat). Native
 advantages the MCP wire cannot match: (1) short schemas by default —
