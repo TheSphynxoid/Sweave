@@ -56,6 +56,49 @@ def truncate_to_tokens(text: str, token_cap: int) -> str:
     return " ".join(words[:keep]) + " ... [truncated]"
 
 
+#: Task-snippet width for the fire-and-forget handoff note — the
+#: TurnDelegations snippet precedent (140 chars), pinned by test.
+HANDOFF_TASK_SNIPPET_CHARS = 140
+
+#: Statuses that count as "still running" for the handoff note.
+HANDOFF_RUNNING_STATUSES = frozenset({"queued", "running"})
+
+
+def fire_and_forget_handoff(skipped: Iterable[Delegation]) -> str | None:
+    """Handoff note for an empty join set with running fire-and-forget
+    children (M2.1 follow-up §A step 3, backend half).
+
+    When the wait-set join is empty, the synthesis turn would
+    otherwise see an empty result set that reads as a stall. The
+    note names the still-running non-join children (agent + task
+    snippet), states the settle-time delivery contract (results land
+    in the Children lane; review arrivals raise ``needs_attention``),
+    and bars promised follow-ups in this turn. Returns None when
+    nothing is still running — settled fire-and-forget children sit
+    in the Children lane with their results and need no handoff.
+    """
+    running = [c for c in skipped if c.status in HANDOFF_RUNNING_STATUSES]
+    if not running:
+        return None
+    lines = [
+        f"Fire-and-forget handoff: {len(running)} deferred "
+        f"child{'ren' if len(running) != 1 else ''} still running "
+        f"outside this turn's join set:",
+    ]
+    for c in running:
+        task = (c.task or "").strip().replace("\n", " ")
+        if len(task) > HANDOFF_TASK_SNIPPET_CHARS:
+            task = task[:HANDOFF_TASK_SNIPPET_CHARS] + "…"
+        lines.append(f"- {c.agent}: {task} (status={c.status})")
+    lines.append(
+        "They will land in the Children lane when they settle "
+        "(settle-time delivery; review arrivals raise needs_attention) "
+        "— do not promise their results or follow-up SHAs in this "
+        "reply; close the turn on what is known."
+    )
+    return "\n".join(lines)
+
+
 def build_synthesis_prompt(
     *,
     children: Iterable[Delegation],

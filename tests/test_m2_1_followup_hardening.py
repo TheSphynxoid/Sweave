@@ -611,3 +611,215 @@ async def test_promote_keeps_flag_with_pending_question(tmp_path: Path):
     done = await promote_delegation(d.delegation_id, state)  # type: ignore[arg-type]
     assert done["status"] == "done"
     assert store.get(d.delegation_id).needs_attention is True
+
+
+# ---------------------------------------------------------------------------
+# M2.1 follow-up §A step 3 (backend half): synthesis handoff note.
+#
+# When the wait-set join is empty but fire-and-forget children are
+# still running, the synthesis turn must carry a server-built handoff
+# note naming them — otherwise the orchestrator sees an empty result
+# set that reads as a stall (and, pre-prompt-rule, promised
+# follow-ups the machinery cannot keep). Step-2 audit note: the
+# late-settle WS pulse already re-renders TurnDelegations rows online
+# (pulse + refetch, no payload read), so step 2's remainder is pure
+# R4 UI (row state + inline review hint) — no backend change here.
+# ---------------------------------------------------------------------------
+
+
+def test_handoff_note_none_without_skipped():
+    """No fire-and-forget children → no note (leaf fast path unchanged)."""
+    from sweave.chat.synthesis import fire_and_forget_handoff
+
+    assert fire_and_forget_handoff([]) is None
+
+
+def test_handoff_note_none_when_skipped_all_settled():
+    """Skipped children that already settled need no handoff — they
+    sit in the Children lane with their results; nothing is running."""
+    from sweave.chat.synthesis import fire_and_forget_handoff
+    from sweave.runtime.delegation_store import Delegation
+
+    skipped = [
+        Delegation(agent="w1", task="a", status="done"),
+        Delegation(agent="w2", task="b", status="review"),
+        Delegation(agent="w3", task="c", status="failed"),
+    ]
+    assert fire_and_forget_handoff(skipped) is None
+
+
+def test_handoff_note_names_running_children():
+    """Running fire-and-forget children are named (agent + task) with
+    the settle-time delivery contract and the no-promises rule."""
+    from sweave.chat.synthesis import fire_and_forget_handoff
+    from sweave.runtime.delegation_store import Delegation
+
+    skipped = [
+        Delegation(agent="worker", task="build the widget",
+                   status="running"),
+        Delegation(agent="scout", task="probe the api",
+                   status="queued"),
+        Delegation(agent="old", task="finished work", status="done"),
+    ]
+    note = fire_and_forget_handoff(skipped)
+    assert note is not None
+    assert "worker" in note and "build the widget" in note
+    assert "scout" in note and "probe the api" in note
+    assert "old" not in note
+    assert "Children" in note
+    assert "do not promise" in note
+
+
+def test_handoff_note_truncates_long_tasks():
+    """Task snippet rule: 140 chars (the TurnDelegations snippet
+    precedent), pinned with an ellipsis marker."""
+    from sweave.chat.synthesis import fire_and_forget_handoff
+    from sweave.runtime.delegation_store import Delegation
+
+    long_task = "x" * 300
+    note = fire_and_forget_handoff(
+        [Delegation(agent="w", task=long_task, status="running")]
+    )
+    assert note is not None
+    assert "x" * 300 not in note
+    assert "…" in note
+
+
+def _handoff_chat_loop(pm, stores, runtime, capture: list):
+    """ChatLoop wiring for the handoff tests (self-contained mirror
+    of the M1.7 pipeline seam — deliberately not imported)."""
+    from sweave.chat.loop import ChatLoop
+
+    factories = {
+        "orchestrator": _handoff_orchestrator(),
+    }
+
+    def resolver(name):
+        if name is None:
+            return None
+        proj = pm.get_project(name)
+        return proj.path if proj else None
+
+    return ChatLoop(
+        project_manager=pm,
+        specialist_runtime=runtime,
+        specialist_factory=lambda agent_name: factories.get(agent_name),
+        project_dir_resolver=resolver,
+        delegation_stores=stores,
+        event_bus=None,
+        turn_timeout=10.0,
+        model_resolver=lambda agent: "deepseek-flash",
+    )
+
+
+def _handoff_orchestrator():
+    from sweave.runtime.specialist_store import Specialist
+
+    return Specialist(
+        name="orchestrator",
+        scope="project",
+        is_orchestrator=True,
+        system_prompt="seed",
+        harness="opencode",
+        current_model=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesis_carries_handoff_for_running_fire_and_forget(
+    tmp_path: Path,
+):
+    """Wiring: a running fire-and-forget child present at scan time
+    (empty join set) lands a handoff note in the synthesis-turn
+    message the orchestrator sees."""
+    import re
+
+    from sweave.projects import ProjectManager
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    pm.create_project("demo", path=tmp_path)
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(tmp_path)
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    session = pm.create_session("demo", session_name="s1")
+    messages: list[str] = []
+
+    async def fake_send(self, body=None, trace=None, on_chunk=None,
+                        on_reasoning=None, **kwargs):
+        text = body["parts"][0]["text"] if body else ""
+        messages.append(text)
+        if len(messages) == 1:
+            # First turn: the orchestrator "defers" a fire-and-forget
+            # child — injected directly (the scan reads the store).
+            m = re.search(r"caller_delegation_id=([^\]\s]+)", text)
+            assert m is not None
+            await store.add(Delegation(
+                agent="worker", task="build the widget",
+                project_name="demo", parent_task_id=m.group(1),
+                status="running",
+            ))
+            return "kicked off background work"
+        return "turn closed on what is known"
+
+    runtime._send_message = fake_send  # type: ignore[assignment]
+    chat = _handoff_chat_loop(pm, stores, runtime, messages)
+
+    result = await chat.run_turn(session_id=session.id, user_content="go")
+    assert result["role"] == "assistant"
+    assert len(messages) == 2, messages
+    synth = messages[1]
+    assert "worker" in synth and "build the widget" in synth
+    assert "Children" in synth
+
+
+@pytest.mark.asyncio
+async def test_synthesis_omits_handoff_when_fire_and_forget_settled(
+    tmp_path: Path,
+):
+    """Control: a settled fire-and-forget child (empty join set)
+    produces no handoff note — nothing is running."""
+    import re
+
+    from sweave.projects import ProjectManager
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    pm.create_project("demo", path=tmp_path)
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(tmp_path)
+    runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+    session = pm.create_session("demo", session_name="s1")
+    messages: list[str] = []
+
+    async def fake_send(self, body=None, trace=None, on_chunk=None,
+                        on_reasoning=None, **kwargs):
+        text = body["parts"][0]["text"] if body else ""
+        messages.append(text)
+        if len(messages) == 1:
+            m = re.search(r"caller_delegation_id=([^\]\s]+)", text)
+            assert m is not None
+            await store.add(Delegation(
+                agent="worker", task="already done",
+                project_name="demo", parent_task_id=m.group(1),
+                status="done",
+            ))
+            return "kicked off background work"
+        return "turn closed"
+
+    runtime._send_message = fake_send  # type: ignore[assignment]
+    chat = _handoff_chat_loop(pm, stores, runtime, messages)
+
+    await chat.run_turn(session_id=session.id, user_content="go")
+    assert len(messages) == 2, messages
+    assert "Fire-and-forget" not in messages[1]

@@ -1265,6 +1265,40 @@ class ChatLoop:
             children = await self._wait_for_children(
                 store, delegation.delegation_id, trace
             )
+            # M2.1 follow-up §A step 3 (backend half): empty join set
+            # with still-running fire-and-forget children. The
+            # synthesis turn would otherwise see an empty result set
+            # that reads as a stall, so a server-built handoff note
+            # names the running children + the settle-time delivery
+            # contract (the wait_set_scoped event above is the audit
+            # record; this is the orchestrator-facing half).
+            handoff_note: str | None = None
+            if not children:
+                from sweave.chat.synthesis import fire_and_forget_handoff
+
+                skipped = [
+                    r for r in store.list()
+                    if r.parent_task_id == delegation.delegation_id
+                    and not in_join_set(r)
+                ]
+                handoff_note = fire_and_forget_handoff(skipped)
+                if handoff_note is not None:
+                    try:
+                        trace.append(
+                            "handoff_note",
+                            {
+                                "parent": delegation.delegation_id,
+                                "running": len([
+                                    r for r in skipped
+                                    if r.status in {"queued", "running"}
+                                ]),
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "ChatLoop: handoff_note trace append failed for %s",
+                            delegation.delegation_id,
+                        )
             # Re-compose the prompt for the synthesis turn; the
             # synthesis section is now populated from the children's
             # results, the "what's new" anchors haven't moved yet
@@ -1280,6 +1314,8 @@ class ChatLoop:
             extra_sections: list[str] = []
             if escalation_note is not None:
                 extra_sections.append(escalation_note)
+            if handoff_note is not None:
+                extra_sections.append(handoff_note)
             if self.escalation_store is not None and children:
                 for child in children:
                     try:
