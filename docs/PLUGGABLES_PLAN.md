@@ -344,6 +344,39 @@ parallel side-direction, not a minor — tracked alongside, not after.
   project's) and belong written in DESIGN.md — but stance alone is not
   differentiation; the moat must come from capabilities. Candidate for
   a DESIGN.md principles list; no behavior change.
+
+### Prior session extraction (Sweave-20260910-053752-57e465, "Themes",
+## 2026-09-10 — 30 msgs, explored, NOT locked)
+
+Already covered elsewhere (no action): roster self-upgrade loop
+(= refine), embedder delegation ladder A–C (= R6 dispatch + dogfood),
+diff review gate (= R2 cross-review), timeline visualizer (= M1.9
+detail view), model routing tiers (= ModelRef). New extractions:
+- **Chain-state injection** (agent-side, cheap, high-value): runtime
+  knows depth/budget/siblings/elapsed — the child doesn't. One
+  `chain-context` line per turn ("depth 1/2, budget 40% left, 3
+  siblings active") so agents wrap up instead of tripping blind caps.
+  Single-file change in `SpecialistRuntime` prompt assembly.
+- **Verified gate vocabulary**: per-turn prompt instructs run-gate +
+  report-exact-counts; synthesis flags unverified claims. Turns the
+  audit-trust-per-claim rule into infrastructure. Pairs with
+  postmortems (unverified → suspect).
+- **Reasoning-loop detector** (user's embedder idea #2): signature is
+  failure-streak + semantic sameness of intent across *varying*
+  attempts — not repeated identical calls. Intervention at turn
+  boundaries only (no mid-turn inject seam; `reject` aborts).
+  Dogfood acceptance gate: run the detector on the trace log of the
+  session that built it — must flag its own loops. M1.12 incident
+  traces are seed data. Nudge-only mode first.
+- **Tripwire badges** (UI): live delegation cards showing tokens
+  spent, depth, elapsed from existing server-side fires.
+- **R4-thread UI backlog**: semantic icon indirection over lucide
+  (4th token family after fonts/radius); curated layout list MVP
+  (not customizable — bounded test matrix); focus mode + browser
+  fullscreen; Electron wrappability (backend+SPA already ideal);
+  keyboard-first pane nav (Ctrl+pages/panes, arrows+enter, no modal
+  state). Theme engine/fonts work is partly landed (37 tokens);
+  the rest waits on the R4 thread.
 - **Self-diagnose skill (explored 2026-09-11, NOT locked).** A skill
   that pulls a small HERMITIC diagnose-suite from git (pinned to the
   installed version's tag/commit, hash-checked, fail-closed on skew)
