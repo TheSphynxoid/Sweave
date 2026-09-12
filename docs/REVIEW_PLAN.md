@@ -13,8 +13,11 @@ delivery + record header, still unbuilt except the incident round).
 ### Starting point (executor: verify before touching code)
 
 - `review_request` attaches on the review transition
-  (`job_runner.py:872-884`); `needs_attention` is NOT set there
-  (follow-up spec A, unbuilt).
+  (`sweave/runtime/job_runner.py:876-884`); entering `review` also
+  sets `needs_attention=True` (follow-up spec A step 1, built
+  2026-09-12 in commit 9168050 — cleared on promote, review-aware
+  on answer/skip). Only the record-header fold (follow-up spec B)
+  is still unbuilt.
 - Record header fold (follow-up spec B, unbuilt): detail payload
   has no status/agent/task/output/error. Build it here instead of
   there (this plan subsumes it — note the supersede in the

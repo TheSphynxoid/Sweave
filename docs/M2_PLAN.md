@@ -1,6 +1,6 @@
 # M2 — Backend capabilities (ordered series)
 
-Status: fast-track + M2.0 DONE (2026-09-11); M2.1 planned
+Status: fast-track + M2.0 DONE (2026-09-11); M2.1 done (2026-09-12)
 (see `docs/M2_1_PLAN.md`); M2.2+ still sketched (§4)
 (see §6 execution record). Plan of record for the next execution
 session(s). Thread: M2-started (see PROJECT_STATE "Threads
