@@ -304,3 +304,310 @@ def test_orchestrator_prompt_documents_blocking_followup_rules():
         "Children",
     ):
         assert phrase in prompt, f"orchestrator prompt missing: {phrase!r}"
+
+
+# ---------------------------------------------------------------------------
+# M2.1 follow-up §A step 1: review-entry attention.
+#
+# Entering ``review`` sets ``needs_attention=True`` (traced with source);
+# ``promote`` clears it. ``answer``/``skip`` clear only when no other
+# attention source remains (an unpromoted review still owes promotion;
+# a pending question still owes an answer). Step-0 consumer audit:
+# escalate/answer/skip/promote endpoints (routers/delegations.py),
+# EscalationStore docstring (runtime/escalation.py), the M1.12
+# server.py flagger (unchanged — question arrival still sets), and the
+# UI readers (TurnDelegations badge + ChildEscalationPreview 404-hide,
+# DetailView EscalationSection 404-hide, LiveTree ring, plan board bugs
+# lane) — all 404-safe today, so no wrong answer buttons appear on
+# promotions; R4-thread adds the review hint inline (contracts only).
+# ---------------------------------------------------------------------------
+
+
+def _stub_job_runner(stores, succeed: bool, project_dir: Path):
+    """JobRunner with a fake delegate tool (self-contained mirror of
+    the step-4 suite's seam — deliberately not imported)."""
+    from sweave.runtime.job_runner import JobRunner
+    from sweave.tools import DelegationResult
+
+    class _StubDelegateTool:
+        async def execute(self, agent, task, model=None, task_id=None):
+            if succeed:
+                return DelegationResult(
+                    success=True, agent=agent, task_id=task_id or "stub",
+                    output="did the work", error=None,
+                )
+            return DelegationResult(
+                success=False, agent=agent, task_id=task_id or "stub",
+                output="", error="boom",
+            )
+
+    return JobRunner(
+        delegate_tool=_StubDelegateTool(),  # type: ignore[arg-type]
+        delegation_stores=stores,
+        project_dir_resolver=lambda name: project_dir,
+        turn_timeout=10.0,
+    )
+
+
+def _run_trace_events(project_dir: Path, delegation_id: str) -> list[dict]:
+    import json
+
+    from sweave.runtime.trace_log import TraceLog
+
+    path = TraceLog(delegation_id, base_dir=project_dir).path
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_review_entry_sets_needs_attention_with_source(tmp_path: Path):
+    """The success branch lands in review WITH the attention flag set
+    and a sourced trace event (the §A ruling: review awaits human
+    promotion, so it must join the attention surfaces)."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.runtime.trace_log import TraceLog
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    runner = _stub_job_runner(stores, succeed=True, project_dir=project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p")
+    await store.add(d)
+    await runner._run(d, TraceLog(d.delegation_id, base_dir=project_dir))
+
+    rec = store.get(d.delegation_id)
+    assert rec is not None and rec.status == "review"
+    assert rec.needs_attention is True
+    flags = [
+        e for e in _run_trace_events(project_dir, d.delegation_id)
+        if e.get("event") == "attention_flag"
+    ]
+    assert len(flags) == 1
+    assert flags[0]["value"] is True
+    assert flags[0]["source"] == "review_entry"
+
+
+@pytest.mark.asyncio
+async def test_failed_run_leaves_attention_flag_clear(tmp_path: Path):
+    """The failure branch attaches no flag and no attention event
+    (failed work owes no promotion; a pending question's flag — set
+    by the ask path, not the runner — is untouched)."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.runtime.trace_log import TraceLog
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-fail-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    runner = _stub_job_runner(stores, succeed=False, project_dir=project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p")
+    await store.add(d)
+    await runner._run(d, TraceLog(d.delegation_id, base_dir=project_dir))
+
+    rec = store.get(d.delegation_id)
+    assert rec is not None and rec.status == "failed"
+    assert rec.needs_attention is False
+    assert not [
+        e for e in _run_trace_events(project_dir, d.delegation_id)
+        if e.get("event") == "attention_flag"
+    ]
+
+
+def _endpoint_state(tmp_path: Path, stores, project_dir: Path):
+    """Minimal router state: real stores, no app (direct coroutine
+    calls — deterministic, no background runner)."""
+    import types
+
+    from sweave.runtime.escalation import EscalationStore
+
+    return types.SimpleNamespace(
+        delegation_stores=stores,
+        escalation_store=EscalationStore(base_dir=tmp_path / "esc"),
+        event_bus=None,
+        traces_dir=tmp_path / "traces",
+    )
+
+
+@pytest.mark.asyncio
+async def test_answer_keeps_flag_while_review_owed(tmp_path: Path):
+    """Answering the question on a review-owed delegation resolves
+    the question but keeps the flag (promotion still owed)."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.web.routers.delegations import (
+        AnswerRequest,
+        answer_delegation,
+    )
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-ans-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    state = _endpoint_state(tmp_path, stores, project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p",
+                   status="review", needs_attention=True)
+    await store.add(d)
+    await state.escalation_store.create(
+        delegation_id=d.delegation_id, question="q?",
+        options=None, kind="question", audience="human",
+    )
+
+    rec = await answer_delegation(d.delegation_id, AnswerRequest(response="yes"),
+                                  state)  # type: ignore[arg-type]
+    assert rec["status"] == "answered"
+    assert store.get(d.delegation_id).needs_attention is True
+
+
+@pytest.mark.asyncio
+async def test_answer_clears_flag_when_no_review_owed(tmp_path: Path):
+    """The pre-follow-up behavior is preserved: answering the only
+    attention source clears the flag."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.web.routers.delegations import (
+        AnswerRequest,
+        answer_delegation,
+    )
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-ans2-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    state = _endpoint_state(tmp_path, stores, project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p",
+                   status="running", needs_attention=True)
+    await store.add(d)
+    await state.escalation_store.create(
+        delegation_id=d.delegation_id, question="q?",
+        options=None, kind="question", audience="human",
+    )
+
+    await answer_delegation(d.delegation_id, AnswerRequest(response="yes"),
+                            state)  # type: ignore[arg-type]
+    assert store.get(d.delegation_id).needs_attention is False
+
+
+@pytest.mark.asyncio
+async def test_skip_keeps_flag_while_review_owed(tmp_path: Path):
+    """Skip resolves the question; the unpromoted review keeps the flag."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.web.routers.delegations import (
+        SkipRequest,
+        skip_delegation,
+    )
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-skip-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    state = _endpoint_state(tmp_path, stores, project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p",
+                   status="review", needs_attention=True)
+    await store.add(d)
+    await state.escalation_store.create(
+        delegation_id=d.delegation_id, question="q?",
+        options=None, kind="question", audience="human",
+    )
+
+    rec = await skip_delegation(d.delegation_id, SkipRequest(confirmed=True),
+                                state)  # type: ignore[arg-type]
+    assert rec["status"] == "skipped"
+    assert store.get(d.delegation_id).needs_attention is True
+
+
+@pytest.mark.asyncio
+async def test_promote_clears_flag_without_pending_question(tmp_path: Path):
+    """Promote flips review → done, clears the flag (traced), and
+    keeps the review_request as history (ruling 3 intact)."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.web.routers.delegations import promote_delegation
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-prom-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    state = _endpoint_state(tmp_path, stores, project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p",
+                   status="review", needs_attention=True,
+                   review_request={"reviewer_hint": "reviewer",
+                                   "diff_ref": None,
+                                   "manifest_summary": None,
+                                   "confidence": None,
+                                   "requested_at": "2026-09-12T00:00:00"})
+    await store.add(d)
+
+    done = await promote_delegation(d.delegation_id, state)  # type: ignore[arg-type]
+    assert done["status"] == "done"
+    assert done["review_request"] is not None
+    assert store.get(d.delegation_id).needs_attention is False
+    flags = [
+        e for e in _run_trace_events(state.traces_dir, d.delegation_id)
+        if e.get("event") == "attention_flag"
+    ]
+    assert len(flags) == 1
+    assert flags[0]["value"] is False
+    assert flags[0]["source"] == "human_promote"
+
+
+@pytest.mark.asyncio
+async def test_promote_keeps_flag_with_pending_question(tmp_path: Path):
+    """Promoting a review that still has a pending question resolves
+    the review but keeps the flag (the answer is still owed)."""
+    import tempfile
+
+    from sweave.runtime.delegation_store import (
+        Delegation,
+        PerProjectDelegationStores,
+    )
+    from sweave.web.routers.delegations import promote_delegation
+
+    project_dir = Path(tempfile.mkdtemp(prefix="sweave-m21-attn-prom2-"))
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(project_dir)
+    state = _endpoint_state(tmp_path, stores, project_dir)
+
+    d = Delegation(agent="backend", task="t", project_name="p",
+                   status="review", needs_attention=True)
+    await store.add(d)
+    await state.escalation_store.create(
+        delegation_id=d.delegation_id, question="q?",
+        options=None, kind="question", audience="human",
+    )
+
+    done = await promote_delegation(d.delegation_id, state)  # type: ignore[arg-type]
+    assert done["status"] == "done"
+    assert store.get(d.delegation_id).needs_attention is True

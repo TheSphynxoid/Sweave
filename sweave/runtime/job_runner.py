@@ -872,17 +872,30 @@ class JobRunner:
             # ``review``), attach the review-request record + a
             # ``review_requested`` trace event. The failure branch
             # attaches nothing (failed work has nothing to review).
+            # M2.1 follow-up §A step 1: entering ``review`` also sets
+            # ``needs_attention`` (a review awaits human promotion, so
+            # it joins the attention surfaces) + a sourced
+            # ``attention_flag`` trace event.
             if final_status == "review":
                 review_request = build_review_request(delegation)
                 await store.update(
                     delegation.delegation_id,
                     review_request=review_request,
+                    needs_attention=True,
                 )
                 trace.append(
                     "review_requested",
                     {
                         "delegation_id": delegation.delegation_id,
                         "reviewer_hint": review_request["reviewer_hint"],
+                    },
+                )
+                trace.append(
+                    "attention_flag",
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "value": True,
+                        "source": "review_entry",
                     },
                 )
             trace.append(

@@ -29,7 +29,10 @@ explicit skip). The handler:
 
 * Records the response on the escalation.
 * Publishes ``specialist.escalation_resolved``.
-* Clears the asking delegation's ``needs_attention`` flag.
+* Clears the asking delegation's ``needs_attention`` flag — unless
+  the delegation still owes attention elsewhere (M2.1 follow-up §A
+  step 1: an unpromoted ``review`` keeps the flag; the answer only
+  resolves the question).
 
 Legacy timeout records (``status=timeout``, ``response="no answer
 received"``) are still readable; new questions are created without

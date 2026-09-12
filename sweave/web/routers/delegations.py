@@ -146,6 +146,23 @@ def _all_stores(state: AppState) -> list:
     return state.delegation_stores.known_projects_stores()
 
 
+async def _has_pending_escalation(state: AppState, delegation_id: str) -> bool:
+    """True when the delegation still has a pending escalation record.
+
+    M2.1 follow-up §A step 1: ``needs_attention`` now means "answer
+    OR promote", so clearing the flag must check the OTHER source —
+    promote keeps the flag while a question is pending, and
+    answer/skip keep it while a review is unpromoted.
+    """
+    if state.escalation_store is None:
+        return False
+    try:
+        rec = await state.escalation_store.get(delegation_id=delegation_id)
+    except Exception:
+        return False
+    return rec is not None and rec.get("status") == "pending"
+
+
 def _filter_delegations(
     records: list, *,
     project_name: Optional[str],
@@ -597,14 +614,21 @@ async def answer_delegation(
         raise HTTPException(
             404, f"escalation for delegation '{delegation_id}' not found"
         )
-    # Clear the asking delegation's needs_attention flag.
+    # Clear the asking delegation's needs_attention flag — unless the
+    # delegation still owes attention elsewhere (M2.1 follow-up §A
+    # step 1: an unpromoted review keeps the flag; the answer only
+    # resolves the question).
     for store in _all_stores(state):
-        if store.get(delegation_id) is not None:
-            try:
-                await store.update(delegation_id, needs_attention=False)
-            except Exception:
-                pass
+        d = store.get(delegation_id)
+        if d is None:
+            continue
+        if d.status == "review":
             break
+        try:
+            await store.update(delegation_id, needs_attention=False)
+        except Exception:
+            pass
+        break
     return rec
 
 
@@ -634,13 +658,19 @@ async def skip_delegation(
         raise HTTPException(
             404, f"escalation for delegation '{delegation_id}' not found"
         )
+    # Same review-aware rule as answer: the skip resolves the
+    # question, but an unpromoted review still owes promotion.
     for store in _all_stores(state):
-        if store.get(delegation_id) is not None:
-            try:
-                await store.update(delegation_id, needs_attention=False)
-            except Exception:
-                pass
+        d = store.get(delegation_id)
+        if d is None:
+            continue
+        if d.status == "review":
             break
+        try:
+            await store.update(delegation_id, needs_attention=False)
+        except Exception:
+            pass
+        break
     return rec
 
 
@@ -676,6 +706,11 @@ async def promote_delegation(
     ``delegation.status_changed`` is published on the WS event bus,
     and the bridged ``ChildSession.status`` (if any) is updated to
     ``done`` so the UI's Children tab reflects the new state.
+
+    M2.1 follow-up §A step 1: promotion clears ``needs_attention``
+    (the review no longer owes anything) — unless a question is
+    still pending, which keeps the flag. The ``review_request`` is
+    preserved as history (M2.1 ruling 3).
     """
     # Find the delegation across all known per-project stores.
     for store in _all_stores(state):
@@ -690,12 +725,18 @@ async def promote_delegation(
             )
         # Update the store. Use the same field set the runner uses
         # for its own _transition: status, completed_at, updated_at.
+        # M2.1 follow-up §A step 1: promotion also clears
+        # ``needs_attention`` (set on review entry) unless a question
+        # is still pending — the flag means "answer OR promote".
         from datetime import datetime as _dt
         await store.update(
             delegation_id,
             status="done",
             completed_at=_dt.now(),
         )
+        cleared = not await _has_pending_escalation(state, delegation_id)
+        if cleared:
+            await store.update(delegation_id, needs_attention=False)
         # Trace + WS: mirror the runner's _transition vocabulary so
         # observers (UI, R6) get the same shape they already consume.
         if state.event_bus is not None:
@@ -716,6 +757,15 @@ async def promote_delegation(
             "status_changed",
             {"status": "done", "agent": rec.agent, "source": "human_promote"},
         )
+        if cleared:
+            trace.append(
+                "attention_flag",
+                {
+                    "delegation_id": delegation_id,
+                    "value": False,
+                    "source": "human_promote",
+                },
+            )
         trace.close()
         # UI v1 compat bridge: update the ChildSession.status in the
         # parent session so the Children tab re-renders. The bridge
