@@ -91,9 +91,13 @@
     pytest so UI binds later without rework. Return condition: R4.4
     local memory backend comes back when group-memory/lore work starts
     (M3 at earliest).
-  - **M2 thread — FAST-TRACK + M2.0 + M2.1 DONE (2026-09-12).**
+  - **M2 thread — FAST-TRACK + M2.0 + M2.1 + REVIEW Phase 1 DONE
+    (2026-09-12).**
     M2.0 estimation records → M2.1 wait-set + review-request (done,
-    execution-ready spec at `docs/M2_1_PLAN.md`) → M2.2 contract
+    execution-ready spec at `docs/M2_1_PLAN.md`) → Review deepening
+    Phase 1 (done, spec at `docs/REVIEW_PLAN.md`: transition-time
+    diff bundle + detail record header + answer-OR-promote trigger;
+    subsumes follow-up §B) → M2.2 contract
     record → M2.3 per-specialist tool
     policy → M2.4 golden-set v0 → M2.5 dogfood-minimal into R6.
     Beyond M2 (out): planner, group memory, reunion runtime, training
@@ -174,11 +178,37 @@
   `7d83506` (submit) + `07331a5` (producer) + `c498d09` (waits) +
   `fd4aaa3` (resolution). Gates: 746 pytest green, 13/13 run.py
   --check, M2.1 subset green 3×, :8100 healthy (read-only probe;
-  behavioral live check needs a restart — open). Note: a prior
-  execution session (`Sweave-20260911-213619-096e65`) timed out at
-  the 300s chat-transport stall but left its file writes in the
-  working tree (transport timeout ≠ work rollback); this session
-  resumed from those files.
+   behavioral live check needs a restart — open). Note: a prior
+   execution session (`Sweave-20260911-213619-096e65`) timed out at
+   the 300s chat-transport stall but left its file writes in the
+   working tree (transport timeout ≠ work rollback); this session
+   resumed from those files.
+- ✅ **Review deepening Phase 1 — bundle + header + trigger
+  (2026-09-12)** per `docs/REVIEW_PLAN.md` (subsumes follow-up §B).
+  Schema v9→v10 (`review_bundle` pointer + `_migrate_v9_to_v10`,
+  v1→v10 chain pinned); entering `review` captures the diff
+  artifact synchronously to `{project}/.sweave/reviews/{id}.diff`
+  (worktree-vs-base + untracked files as marked sections;
+  manifest-files / honest-unscoped in-tree fallbacks; degraded
+  captures store a pointer without a file, `missing:<reason>`);
+  all bodies pass the Phase-1 redaction boundary (known shapes →
+  `[REDACTED:<kind>]`, 256KB cap, truncation recorded — full vault
+  still R4.4). Detail payload gains the `record` header
+  (status/agent/task+140-char snippet/output summary 2000
+  chars/error/stamps/blocking/attention) + bundle pointer echo
+  (unknown id keeps 200 + nulls); `sweave log` prints a pointer
+  line only. Trigger: production store flagger shares the single
+  `_review_owes_promotion` rule (audit found store-level
+  answer/skip/timeout clears bypassing the router guards — fixed,
+  pinned with the real factory wired). R4 consumers need no
+  changes (all question branches already gate on pending
+  escalation). No verdict payload (M2.2), no auto-assignment
+  (Phase 2), no UI changes. Commits `da4a1c4` (doc fixes) +
+  `5d4df56` (bundle+v10) + `2403dfc` (fold) + `66522d9`
+  (trigger). Gates: 799 pytest 3× green (+30), 13/13 run.py
+  --check, ephemeral-server live probe (real review record →
+  header + null-bundle degrade). Live :8100 NOT restarted (would
+  kill the running turn — owed, user's call).
 - ✅ **Multi-message chat turns — no narration loss (2026-09-11)** —
   session `Sweave-20260911-030606-d1bbdb`: defer turn persisted ONLY
   the failed synthesis (`[chat error: ReadTimeout: ]`), erasing the

@@ -73,6 +73,12 @@ in the system. The orchestrator additionally promises follow-ups
 
 ## B. Detail record fold (backend) + modal sections (R4-thread)
 
+> SUPERSEDED (backend half, 2026-09-12): built by REVIEW Phase 1
+> (`docs/REVIEW_PLAN.md` — record header + bundle pointer in the
+> detail payload, endpoint pass-through, CLI pointer line). The R4
+> modal contracts below still stand as written; implementation
+> remains user-driven.
+
 Problem: `GET .../detail` returns a pure trace projection — no record
 header — so the modal cannot show status/agent/task/output/error, and
 renders only 5 of the 7 shipped sections (`estimate_vs_actual` and

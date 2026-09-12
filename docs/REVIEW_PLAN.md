@@ -1,6 +1,7 @@
 # Review deepening — material + assignment + actions
 
-Status: planned (2026-09-12). Problem verified live by the user:
+Status: done (2026-09-12). Phase 1 landed (4 commits, gates green —
+see Execution summary); Phases 2–3 still sketched. Problem verified live by the user:
 a delegation sits in `review` with nothing to review — no diff
 (`diff_ref` null, and no diff surface exists anywhere: no endpoint,
 no builder), no response text in the modal, no session link, no
@@ -102,3 +103,46 @@ Diff view + file list, response + manifest + confidence, engine
 session link, actions (approve / request changes with comment /
 escalate), needs_attention clearance on action. Builds on the
 Phase-1 payload — no new endpoints. Implementation user-driven.
+
+## Execution summary (Phase 1, 2026-09-12)
+
+Commits: `da4a1c4` (pre-exec doc fixes) + `5d4df56` (step 1:
+bundle + v10) + `2403dfc` (step 2: fold) + `66522d9` (step 3:
+trigger). This docs commit closes the phase.
+
+* Step 1 landed `sweave/runtime/review_bundle.py` (redaction
+  boundary + scope builder + artifact writer), schema v9→v10,
+  and synchronous capture on the review transition
+  (`JobRunner._capture_review_bundle` + `review_bundled` /
+  `review_bundle_degraded` trace events). 16 tests.
+* Step 2 landed the `record` header + `review_bundle` echo in
+  `render_detail_view`, endpoint pass-through, and the CLI
+  pointer line (subsumes follow-up §B — supersede noted there).
+  8 tests; snippet lengths pinned (task 140 = card rule, output
+  2000).
+* Step 3 hardened the entry trigger: the production store
+  flagger shares the single `_review_owes_promotion` rule
+  (`make_attention_flagger`, also used by the router answer/skip
+  loops), closing the audit-found gap where store-level
+  answer/skip/timeout clears wiped the flag on review-owed
+  delegations. 6 tests with the real factory wired. R4 consumers
+  need no changes (verified: AnswerInline, TurnQuestions,
+  ChildEscalationPreview, EscalationSection all gate on pending
+  escalation, not the bare flag).
+* Amendments (executor-justified): (1) Phase-1 regex redactor
+  instead of the R4.4 tag-and-vault (unbuilt; non-goal forbids
+  the R4.4 dependency); (2) untracked files appended as marked
+  sections (`git diff <base>` never shows them — the truncation
+  probe caught it); (3) degraded captures store a pointer
+  WITHOUT a file so the surface says why.
+* Gates: 799 pytest 3× green (+30: 16 bundle + 8 fold + 6
+  trigger), 13/13 `run.py --check` (ephemeral :9091, new code),
+  ephemeral-server live probe on :9092 (real v9 review record →
+  header present + `review_bundle: null` degrade; live state
+  untouched, 180 records before/after). Live :8100 NOT restarted
+  (would kill the running turn — owed, user's call); the M2.1
+  behavioral check (blocking defer → gated synthesis) stays open
+  for the same reason (already live-gated in its own milestone).
+* Docs: DESIGN §4 new row + M2 section bullet; PROJECT_STATE
+  Threads bullet + Phase-1 entry; GOTCHAS Lifecycle §6 (untracked
+  diff) + §7 (store-boundary clears); follow-up §B superseded.

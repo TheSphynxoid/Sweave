@@ -395,6 +395,30 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `review` is join-terminal in both. Any future change to what
    counts as "settled" goes in the shared helpers, never in one
    call site.
+6. **`git diff <base>` never shows untracked files — a review built
+   on it alone reads as "nothing to review" for exactly the
+   delegations that created new files** (review Phase 1: the
+   truncation probe caught an empty bundle on a new-file-only
+   change). The bundle builder appends `??` entries as marked
+   `/dev/null`-vs-file sections (binary → one-line note, never
+   content; per-file 32KB cap, global 256KB cap). Staged-but-
+   uncommitted tracked content DOES show (worktree vs base) —
+   only fully untracked paths are invisible. Any future diff
+   surface must cover the untracked set, not just the diff.
+7. **Store-boundary side effects bypass router guards — the
+   endpoint tests can't see it** (review Phase 1: `EscalationStore.
+   answer/skip/force_timeout` clear `needs_attention` through the
+   injected flagger, and the production flagger cleared blindly —
+   wiping the flag on a review-owed delegation before the
+   router's review-aware loop ran, which breaks early without
+   restoring it; the endpoint tests pass because their store
+   wires no flagger). The production rule is now one function
+   (`make_attention_flagger` + `_review_owes_promotion` in
+   `web/routers/delegations.py`) shared by the flagger and the
+   router loops, pinned by `tests/test_review_trigger.py` (real
+   factory + real `answer/skip/force_timeout`). When adding a new
+   clear site, route it through the same rule — and wire the
+   flagger in the test state, or the test proves nothing.
 
 ## Paths & config
 
