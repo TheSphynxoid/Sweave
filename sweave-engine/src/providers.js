@@ -1,16 +1,12 @@
 // Provider table + credential resolution for sweave-engine.
 //
-// Step-1 design constraint (user-locked): the engine must reach EVERY
-// provider in the catalog, never a subset. "OpenAI-compatible" is
-// transport convenience, not a coverage bar. Every catalog provider
-// resolves to either a working OpenAI-compatible endpoint or a NAMED
-// auth_missing failure at turn start — never a mid-turn cryptic error.
-//
-// Credential order: explicit per-provider env (SWEAVE_ENGINE_KEY_<NAME>)
-// -> conventional env (<NAME>_API_KEY, see ENV_KEYS) -> opencode
-// auth-store bootstrap (auth.json: the isolated data-dir copy first,
-// then the user's real store). Base-URL override per provider via
-// SWEAVE_ENGINE_BASE_<NAME> (tests point this at a localhost stub).
+// Credential ownership (user ruling 2026-09-14): Sweave owns keys in
+// ~/.sweave/credentials.json. Resolution order: explicit per-provider
+// env (SWEAVE_ENGINE_KEY_<NAME>) -> conventional env (<NAME>_API_KEY,
+// see ENV_KEYS) -> Sweave store -> opencode auth-store bootstrap
+// (legacy import source; converges via server-side adopt prompts).
+// Base-URL override per provider via SWEAVE_ENGINE_BASE_<NAME>
+// (tests point this at a localhost stub).
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -87,6 +83,22 @@ function bootstrapKey(provider) {
   return null;
 }
 
+function sweaveStoreKey(provider) {
+  try {
+    const p = join(homedir(), ".sweave", "credentials.json");
+    if (!existsSync(p)) return null;
+    const store = JSON.parse(readFileSync(p, "utf8"));
+    const entry = store && store.providers && store.providers[provider];
+    if (entry && entry.type === "api_key" && typeof entry.key === "string" && entry.key.length > 0) {
+      return { key: entry.key, via: "sweave-store" };
+    }
+  } catch {
+    // Unreadable own-store: fall through to the legacy bootstrap
+    // (which may still hold an adopted copy), never crash the turn.
+  }
+  return null;
+}
+
 /**
  * Resolve how to call `provider` for `modelId`. Returns
  * { ok, baseURL, key, via } or { ok: false, code, reason }.
@@ -132,6 +144,8 @@ export function resolveProvider(provider, modelId) {
   for (const k of spec.envKeys) {
     if (process.env[k]) return { ok: true, baseURL, key: process.env[k], via: `env:${k}` };
   }
+  const own = sweaveStoreKey(provider);
+  if (own) return { ok: true, baseURL, key: own.key, via: own.via };
   const boot = bootstrapKey(provider);
   if (boot) return { ok: true, baseURL, key: boot.key, via: boot.via };
   return {
@@ -139,7 +153,7 @@ export function resolveProvider(provider, modelId) {
     code: "auth_missing",
     reason:
       `no credential for provider ${JSON.stringify(provider)} ` +
-      `(checked SWEAVE_ENGINE_KEY_*, ${spec.envKeys.join("/")} , opencode auth-store)`,
+      `(checked SWEAVE_ENGINE_KEY_*, ${spec.envKeys.join("/")} , sweave store, opencode auth-store)`,
   };
 }
 

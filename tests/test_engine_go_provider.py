@@ -279,3 +279,74 @@ async def test_go_explicit_key_beats_store(sidecar, stub_url, tmp_path):
     assert result.success, result.error
     # The module sidecar env carries SWEAVE_ENGINE_KEY_OPENCODE_GO.
     assert HITS and HITS[0]["auth"] == "Bearer test-go-key"
+
+
+@needs_node
+async def test_go_sweave_store_tier(stub_url, tmp_path):
+    """~/.sweave/credentials.json feeds the sidecar (owned credentials).
+
+    No key in env anywhere; the ONLY credential is the Sweave store
+    under the sidecar's HOME. Proves the ownership tier end to end.
+    """
+    import tempfile
+
+    from sweave.harness.engine import SweaveEngineHarness
+
+    HITS.clear()
+    home = Path(tempfile.mkdtemp(prefix="go-store-home-"))
+    (home / ".sweave").mkdir()
+    (home / ".sweave" / "credentials.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "opencode-go": {
+                        "type": "api_key",
+                        "key": "store-tier-key",
+                        "fingerprint": "sha256:x",
+                        "key_suffix": "-key",
+                        "source": "manual",
+                    }
+                },
+                "adopted_from_opencode": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "SWEAVE_ENGINE_BASE_OPENCODE_GO": stub_url,
+        "SWEAVE_API_URL": stub_url,
+        "SWEAVE_MCP_TOKEN": "stub-token",
+    }
+    env.pop("SWEAVE_ENGINE_KEY_OPENCODE_GO", None)
+    env.pop("OPENCODE_GO_API_KEY", None)
+    proc = subprocess.Popen(
+        ["node", str(repo_root / "sweave-engine" / "src" / "serve.js"), "--port", "0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=env,
+    )
+    saved = os.environ.get("SWEAVE_ENGINE_URL")
+    try:
+        assert proc.stdout is not None
+        line = proc.stdout.readline().strip()
+        assert line.startswith("SWEAVE_ENGINE_PORT="), line
+        os.environ["SWEAVE_ENGINE_URL"] = (
+            f"http://127.0.0.1:{line.split('=', 1)[1]}"
+        )
+        engine_proc = await SweaveEngineHarness().spawn(
+            _spec("opencode-go/ox-alpha-free")
+        )
+        result = await engine_proc.send(_message("hi"), trace=_Trace())
+    finally:
+        if saved is None:
+            os.environ.pop("SWEAVE_ENGINE_URL", None)
+        else:
+            os.environ["SWEAVE_ENGINE_URL"] = saved
+        proc.kill()
+    assert result.success, result.error
+    assert HITS and HITS[0]["auth"] == "Bearer store-tier-key"

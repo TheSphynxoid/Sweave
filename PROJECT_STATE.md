@@ -202,7 +202,11 @@
        user proven right, plan note corrected); chat/completions live
        (`ox-alpha-free` probe model), responses/messages fail loud
        naming the pending transport; loop-path `resolved.ok` gap
-       closed; 5 hermetic tests green. Next: live Go probe ($0 free
+       closed; 5 hermetic tests green. Credential ownership DONE backend
+       2026-09-14 (user ruling): `credentials.json` canonical, adopt-once +
+       drift prompts + reverse-sync (backup), `GET /api/providers` universe
+       × availability, sidecar Sweave tier, local/custom-endpoints out of
+       scope; keychain UI next. Next: live Go probe ($0 free
        model, needs approval — spends Go quota) → responses transport
        (unlocks muse-spark-contributor) → fallback removal → step 5.
        Remaining: step 5 (parity gates + docs, incl. the live

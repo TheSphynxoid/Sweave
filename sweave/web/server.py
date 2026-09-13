@@ -411,6 +411,27 @@ async def lifespan(app: FastAPI):
     _prev_mcp_token = os.environ.get("SWEAVE_MCP_TOKEN")
     os.environ["SWEAVE_MCP_TOKEN"] = get_or_create_token()
 
+    # Credentials owned by Sweave (user ruling 2026-09-14): adopt
+    # opencode-store keys once (ledgered, idempotent), push ours
+    # back where missing (backup kept). Best-effort, logged, never
+    # fatal to boot.
+    try:
+        from sweave.credentials import sync_with_opencode
+
+        _cred_sync = sync_with_opencode()
+        if _cred_sync["adopted"] or _cred_sync["pushed"]:
+            logger.info(
+                "Credentials sync: adopted %s, pushed %s",
+                _cred_sync["adopted"], _cred_sync["pushed"],
+            )
+        if _cred_sync["pending"]:
+            logger.info(
+                "Credentials pending import: %s",
+                [p["provider"] for p in _cred_sync["pending"]],
+            )
+    except Exception as sync_err:  # noqa: BLE001
+        logger.warning("credentials boot sync failed: %s", sync_err)
+
     # Periodic idle-TTL enforcement for opencode serves (the 30-min TTL
     # otherwise never fires -- nothing called sweep_idle before).
     import asyncio
@@ -557,6 +578,7 @@ async def websocket_endpoint(websocket: WebSocket):
 from sweave.web.routers import (
     agents as _agents_router,
     config as _config_router,
+    credentials as _credentials_router,
     delegations as _delegations_router,
     engine as _engine_router,
     fs as _fs_router,
@@ -571,6 +593,7 @@ from sweave.web.routers import (
 for _r in (
     _agents_router.router,
     _config_router.router,
+    _credentials_router.router,
     _delegations_router.router,
     _engine_router.router,
     _fs_router.router,
