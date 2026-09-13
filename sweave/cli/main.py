@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -510,6 +511,12 @@ def web(
         border_style="purple"
     ))
     
+    # Step 4: tell in-process children (notably the sweave-engine
+    # sidecar) where THIS server listens. sweave.js prefers
+    # SWEAVE_API_URL over SWEAVE_HOST/PORT, so an explicit operator
+    # export always wins (setdefault, never overwrite).
+    os.environ.setdefault("SWEAVE_API_URL", f"http://{bind_host}:{bind_port}")
+
     import uvicorn
     uvicorn.run(
         "sweave.web.server:app",

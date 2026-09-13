@@ -146,6 +146,12 @@ class JobRunner:
         turn_timeout: float | None = None,
         specialist_saver: "Callable[[Specialist, str | None], None] | None" = None,
         delegation_manager: "DelegationManager | None" = None,
+        # Step 4: resolves a project name to its human-declared
+        # permission roots (for the engine-turn permission map).
+        # The AppState supplies a closure over the ProjectManager,
+        # mirroring project_dir_resolver. None = engine turns render
+        # the map without user roots (fail-safe: ask, never allow).
+        permission_roots_resolver: Callable[[str | None], Any | None] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -197,6 +203,13 @@ class JobRunner:
         # is over). Best-effort: failures are logged, never raised --
         # the delegation result stands on its own.
         self.delegation_manager = delegation_manager
+        self.permission_roots_resolver = permission_roots_resolver
+        # Step 4: transient per-task harness overrides
+        # (submit(harness=...) -> _run pops). In-memory only: a
+        # restart mid-flight loses the override and the recovered
+        # turn resolves via the specialist record (documented, never
+        # persisted — no Delegation schema change).
+        self._harness_overrides: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
     async def _store_for(self, delegation: Delegation) -> Any:
@@ -238,6 +251,10 @@ class JobRunner:
         kind: str = "task",
         estimate: Estimate | None = None,
         blocking: bool = False,
+        # Step 4: per-task harness override (transient — see
+        # _harness_overrides; validated by the caller when it comes
+        # from HTTP).
+        harness: str | None = None,
     ) -> Delegation:
         """Submit *task* to *agent*. Returns the freshly-created delegation.
 
@@ -300,6 +317,8 @@ class JobRunner:
         )
         store = await self._store_for(delegation)
         await store.add(delegation)
+        if harness:
+            self._harness_overrides[delegation.delegation_id] = harness
 
         # UI v1 compat bridge: write a ChildSession entry into the
         # parent session so the Children tab keeps rendering without
@@ -699,7 +718,7 @@ class JobRunner:
                         scope="project" if delegation.project_name else "global",
                         is_orchestrator=False,
                         system_prompt="",
-                        harness="opencode",
+                        harness="sweave-engine",
                         current_model=delegation.model or None,
                     )
                 from sweave.runtime.specialist_store import ModelRef, parse_model_ref
@@ -707,6 +726,20 @@ class JobRunner:
                 model_ref: ModelRef | None = None
                 if delegation.model:
                     model_ref = parse_model_ref(delegation.model)
+                # Step 4: transient per-task harness override (popped —
+                # each delegation consumes its own) + engine-turn
+                # context for the permission map.
+                harness_override = self._harness_overrides.pop(
+                    delegation.delegation_id, None
+                )
+                permission_roots = None
+                if self.permission_roots_resolver is not None:
+                    try:
+                        permission_roots = self.permission_roots_resolver(
+                            delegation.project_name
+                        )
+                    except Exception:  # noqa: BLE001 — fail-safe map
+                        permission_roots = None
                 ok, output = await self._bounded_turn(
                     self.specialist_runtime.run(
                         specialist=specialist,
@@ -715,6 +748,9 @@ class JobRunner:
                         message=delegation.task,
                         trace=trace,
                         model_ref=model_ref,
+                        harness=harness_override,
+                        project_dir=worktree_path,
+                        permission_roots=permission_roots,
                     ),
                     delegation,
                     trace,

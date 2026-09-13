@@ -251,6 +251,12 @@ class _StubSpecialistRuntime:
         message,
         trace,
         model_ref=None,
+        # Step-4 additions (selection + engine context). Accepted
+        # and ignored — this double pins the opencode-path contract.
+        # (Same rule as GOTCHAS: doubles must track run's kwargs.)
+        harness=None,
+        project_dir=None,
+        permission_roots=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"

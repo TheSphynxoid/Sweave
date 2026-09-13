@@ -5,7 +5,7 @@ description: Backend engineering (APIs, databases, auth, server architecture, te
 executor:
   type: omnigent
   config:
-    harness: opencode
+    harness: sweave-engine
 
 prompt: |
   You are a Backend Engineering Specialist. You excel at:

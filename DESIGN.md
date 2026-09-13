@@ -279,18 +279,22 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Engine harness adapter** | ✅ | Custom-engine step 1, 2026-09-13 — `sweave/harness/engine.py` (`SweaveEngineHarness`, registered in `harness_registry` alongside opencode): mirrors `OpenCodeProcess.send` (per-message model wins, optional `on_chunk` per token, frozen-vocab trace parity), lazy sidecar spawn with port discovery, loud `ProtocolMismatch` on version drift |
 | **build_context() + basics standards** | ✅ | Custom-engine step 3, 2026-09-13 — `sweave/chat/context.py` (engine-agnostic, server-side): AGENTS.md chain (LF standard: global→project→worktree, 32 KiB cap, session-cached content-gated) + SKILL.md index/body (agentskills.io spec, read-not-run v1) + cross-section budget with `context.built` audit; `transcript.py` gains the standing sections, `loop.py` the trace site. Compaction mechanics adopted (opencode, MIT — prompt lifts with the engine compactor + `THIRD_PARTY_NOTICES`); todo shape mirrors opencode `todowrite` |
 | **Engine permission endpoint** | ✅ | Custom-engine step 2, 2026-09-13 — `POST /api/engine/permission` (`sweave/web/routers/engine.py`, same MCP-token guard): engine `ask` → blocking human escalation (kind=permission, no timeout) → once\|always\|reject (skip/timeout fail closed). No scope re-evaluation (the rendered map already encodes scope); the opencode bridge plugin + hijack endpoint are not transferred |
+| **Per-specialist harness selection + fallback** | ✅ | Custom-engine step 4, 2026-09-13 — `resolve_harness_name()` (`harness/base.py`: override > mock > specialist > config > opencode, `harness_selected` trace); defaults flipped (Specialist field, seed YAMLs, transients, API/UI create); `SpecialistRuntime.run()` dispatches engine-attempt vs opencode path, fallback only before any work (`fallback_used`, else `engine_failed_after_work`); per-task override (`POST /api/v2/tasks {harness}`, transient); Agents `HarnessBadge`; CLI exports `SWEAVE_API_URL` for sidecar callbacks |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
 
 1. **Standalone, Polly-style** — no omnigent dependency (remove `omnigent[hindsight]` from
    pyproject). Keep Omnigent agent-YAML *shape* as our agent spec.
-2. **OpenCode first, engine opt-in** — opencode is the default harness
-   (amended 2026-09-13: `sweave-engine` is spawn-capable since custom-engine
-   steps 1–2 — true-streaming chat + 6-tool executor, versioned protocol,
-   registered in `harness_registry` — but stays opt-in until the step-4
-   parity flip; claude/codex adapters remain documented roadmap (R3),
-   not day-one code).
+2. **Engine default, opencode fallback** — `sweave-engine` is the default harness
+   since the step-4 parity flip (2026-09-13: per-specialist selection via
+   `resolve_harness_name` — override > mock > specialist > config > opencode —
+   with automatic per-delegation opencode fallback before any work,
+   `fallback_used` trace). Records that never chose follow the new default;
+   stored `opencode` values are respected as explicit. Pre-flip history:
+   opencode was the default harness through custom-engine steps 1–2
+   (opt-in engine until the flip); claude/codex adapters remain
+   documented roadmap (R3), not day-one code.
 3. **Docs split** — this file = architecture/design; AGENTS.md = how agents work in this
    repo; PROJECT_STATE.md = runtime state + session history.
 4. Vanilla-JS no-build SPA; FastAPI serves static + REST + WS.

@@ -20,7 +20,9 @@ def test_each_role_has_required_fields():
     for role, d in defs.items():
         assert d.name, f"{role} missing name"
         assert len(d.prompt) > 100, f"{role} prompt too short ({len(d.prompt)} chars)"
-        assert d.harness == "opencode", f"{role} harness {d.harness!r}"
+        # Step-4 parity flip: seeds default to the native engine
+        # (opencode is the per-delegation fallback).
+        assert d.harness == "sweave-engine", f"{role} harness {d.harness!r}"
         assert "hindsight_recall" in d.tools, f"{role} missing hindsight_recall"
         # Seeds do NOT pin a model (models.yaml is a catalog; users pick in
         # the UI, per-role defaults were ruled out). model_template must be

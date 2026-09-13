@@ -5,7 +5,7 @@ description: Frontend engineering (components, styling, client state, browser AP
 executor:
   type: omnigent
   config:
-    harness: opencode
+    harness: sweave-engine
 
 prompt: |
   You are a Frontend Engineering Specialist. You excel at:

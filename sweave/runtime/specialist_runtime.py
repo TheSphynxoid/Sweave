@@ -47,6 +47,18 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import httpx
 
 from sweave.harness.opencode import OpenCodeProcess
+from sweave.engine.protocol import (
+    ENGINE_HARNESS_NAME,
+    OPENCODE_HARNESS_NAME,
+    ROLE_ORCHESTRATOR,
+    ROLE_SPECIALIST,
+)
+from sweave.harness.base import (
+    AgentSpec as EngineAgentSpec,
+    Message as EngineMessage,
+    harness_registry,
+    resolve_harness_name,
+)
 from sweave.runtime.delegation_store import Delegation
 from sweave.runtime.prompt_template import (
     build_template_context,
@@ -57,6 +69,7 @@ from sweave.runtime.prompt_template import (
 from sweave.runtime.mcp_config import (
     ORCHESTRATOR_AGENT_NAME,
     SPECIALIST_AGENT_NAME,
+    render_external_directory,
 )
 from sweave.runtime.serve_runner import ServeRunner, ServeRunnerRegistry
 from sweave.runtime.specialist_store import (
@@ -201,6 +214,30 @@ async def _attempt_engine_stop(
         return "; stop UNCONFIRMED — orphaned run possible"
 
 
+class _ToolActivityProbe:
+    """Trace wrapper counting engine ``tool.started`` events.
+
+    Step-4 fallback guard: the opencode fallback re-runs the whole
+    turn from scratch, so it must engage ONLY when the engine did no
+    work yet (no tool executed, no text produced). Re-running after
+    side effects (file edits, defers, escalations) would execute
+    them twice. Duck-types :class:`TraceLog` (``append`` +
+    attribute passthrough) so doubles work in tests.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.tool_started = 0
+
+    def append(self, event: str, payload: dict[str, Any] | None = None) -> Any:
+        if event == "tool.started":
+            self.tool_started += 1
+        return self._inner.append(event, payload)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class SpecialistRuntime:
     """Orchestrates one delegation through a ServeRunner.
 
@@ -216,6 +253,11 @@ class SpecialistRuntime:
         runners: ServeRunnerRegistry,
         event_bus: "WSEventBus | None" = None,
         escalation_store: Any = None,
+        # Step 4: operator global harness default (wired from
+        # config ``harness.default`` in the lifespan). Used only
+        # when neither the per-task override nor the specialist
+        # record names a registered harness.
+        harness_default: str | None = None,
     ) -> None:
         self.runners = runners
         self.event_bus = event_bus
@@ -225,6 +267,7 @@ class SpecialistRuntime:
         # question (kind="permission", no timeout) and posts the
         # answer back to the serve. Wire-only (no sqlite).
         self.escalation_store = escalation_store
+        self.harness_default = harness_default
 
     async def _emit(self, event: str, data: dict[str, Any]) -> None:
         if self.event_bus is not None:
@@ -403,6 +446,291 @@ class SpecialistRuntime:
         trace: TraceLog,
         model_ref: ModelRef | None = None,
         fresh: bool = False,
+        session_id_getter: Callable[[], str | None] | None = None,
+        session_id_setter: Callable[[str], None] | None = None,
+        on_chunk: Callable[[str], Any] | None = None,
+        on_reasoning: Callable[[str], Any] | None = None,
+        # Step 4: per-task harness override (beats the specialist
+        # record — and the test mock. Explicit is explicit).
+        harness: str | None = None,
+        # Step 4: engine-turn context for the orchestrator-rendered
+        # permission map (blindly enforced by the engine). Opencode
+        # turns ignore both (the map lives in opencode.json there).
+        project_dir: Path | None = None,
+        permission_roots: Any = None,
+    ) -> str:
+        """Run one delegation on the selected harness.
+
+        Resolution (``harness_selected`` trace event): per-task
+        override > test mock > specialist record > operator default
+        > opencode. The native engine is the default for records
+        that never chose (step-4 flip); opencode is the automatic
+        per-delegation fallback when the engine fails before doing
+        any work (``fallback_used`` trace event).
+        """
+        selected, source = resolve_harness_name(
+            harness, specialist.harness, self.harness_default
+        )
+        trace.append(
+            "harness_selected",
+            {
+                "requested": harness,
+                "specialist_harness": specialist.harness,
+                "selected": selected,
+                "source": source,
+            },
+        )
+        if selected == ENGINE_HARNESS_NAME:
+            output, fallback_reason = await self._run_engine_attempt(
+                specialist=specialist,
+                delegation=delegation,
+                worktree_path=worktree_path,
+                message=message,
+                trace=trace,
+                model_ref=model_ref,
+                fresh=fresh,
+                session_id_getter=session_id_getter,
+                session_id_setter=session_id_setter,
+                on_chunk=on_chunk,
+                project_dir=project_dir,
+                permission_roots=permission_roots,
+            )
+            if fallback_reason is None:
+                return output  # type: ignore[return-value]
+            logger.warning(
+                "SpecialistRuntime: engine turn failed before any "
+                "work (%s); falling back to opencode for %s",
+                fallback_reason,
+                delegation.delegation_id,
+            )
+            trace.append(
+                "fallback_used",
+                {
+                    "from": ENGINE_HARNESS_NAME,
+                    "to": OPENCODE_HARNESS_NAME,
+                    "reason": fallback_reason,
+                    "delegation_id": delegation.delegation_id,
+                },
+            )
+        return await self._run_opencode(
+            specialist=specialist,
+            delegation=delegation,
+            worktree_path=worktree_path,
+            message=message,
+            trace=trace,
+            model_ref=model_ref,
+            fresh=fresh,
+            session_id_getter=session_id_getter,
+            session_id_setter=session_id_setter,
+            on_chunk=on_chunk,
+            on_reasoning=on_reasoning,
+        )
+
+    async def _run_engine_attempt(
+        self,
+        *,
+        specialist: Specialist,
+        delegation: Delegation,
+        worktree_path: Path,
+        message: str,
+        trace: TraceLog,
+        model_ref: ModelRef | None = None,
+        fresh: bool = False,
+        session_id_getter: Callable[[], str | None] | None = None,
+        session_id_setter: Callable[[str], None] | None = None,
+        on_chunk: Callable[[str], Any] | None = None,
+        project_dir: Path | None = None,
+        permission_roots: Any = None,
+    ) -> tuple[str | None, str | None]:
+        """Attempt one turn on the native engine.
+
+        Returns ``(output, None)`` when the turn settled (success or
+        honest failure); ``(None, reason)`` when the caller must run
+        the opencode fallback — i.e. the engine raised, was never
+        reached (not registered, version drift), or failed with no
+        tool executed and no text produced. Anything the engine
+        actually did (tools, partial text) is returned as-is, never
+        re-run. Cancellation propagates (never swallowed into a
+        fallback — the outer bound owns that decision).
+        """
+        probe = _ToolActivityProbe(trace)
+        try:
+            harness_obj = harness_registry.get(ENGINE_HARNESS_NAME)
+            if harness_obj is None:
+                return None, "engine harness not registered"
+
+            used_ref = model_ref or specialist.model_ref
+            if used_ref is not None:
+                _provider = used_ref.get("provider")
+                _model_id = used_ref.get("model_id")
+                _variant = used_ref.get("variant")
+                model_str = (
+                    f"{_provider}/{_model_id}"
+                    if _provider and _model_id
+                    else (_model_id or "")
+                )
+                if _variant and _provider and _model_id:
+                    model_str = f"{model_str}+{_variant}"
+            else:
+                model_str = ""
+
+            # Session binding: same rule as _ensure_session —
+            # external getter wins, else the specialist record. The
+            # engine owns durable sessions; attach resumes, spawn
+            # starts. A turn that mints the binding is a new session.
+            if session_id_getter is not None:
+                stored = session_id_getter() or ""
+            else:
+                stored = specialist.session_id or ""
+            new_session = fresh or not stored
+
+            prompt_text = message
+            if new_session:
+                # Role charter, new sessions only (reused sessions
+                # remember it — same session-memory rule as the
+                # opencode path, minus the per-message agent pin the
+                # protocol has no field for). Specialists render
+                # {{var}} templates fresh like the opencode path.
+                charter = specialist.system_prompt or ""
+                if (
+                    charter
+                    and not specialist.is_orchestrator
+                    and has_template_vars(charter)
+                ):
+                    context = build_template_context(
+                        specialist=specialist,
+                        delegation=delegation,
+                        worktree_path=worktree_path,
+                        model=model_str,
+                    )
+                    charter = render_prompt_template(charter, context)
+                    trace.append(
+                        "prompt_template_rendered",
+                        {
+                            "specialist": specialist.name,
+                            "vars": sorted(
+                                set(template_var_names(charter)) & set(context)
+                            ),
+                        },
+                    )
+                if charter.strip():
+                    prompt_text = charter.strip() + "\n\n" + message
+
+            scope_dir = project_dir or worktree_path
+            permission_map = {
+                "external_directory": render_external_directory(
+                    scope_dir, permission_roots
+                )
+            }
+            spec = EngineAgentSpec(
+                name=specialist.name,
+                role=(
+                    ROLE_ORCHESTRATOR
+                    if specialist.is_orchestrator
+                    else ROLE_SPECIALIST
+                ),
+                model=model_str,
+                system_prompt="",
+                worktree_path=Path(worktree_path),
+                memory_bank="",
+                tools=(
+                    []
+                    if specialist.is_orchestrator
+                    else list(harness_obj.get_default_tools())
+                ),
+                env={},
+                harness=ENGINE_HARNESS_NAME,
+            )
+            if stored and not fresh:
+                process = await harness_obj.attach(stored, spec)
+            else:
+                process = await harness_obj.spawn(spec)
+            msg = EngineMessage(
+                type="user",
+                content=prompt_text,
+                metadata={
+                    "permission_map": permission_map,
+                    "delegation_id": delegation.delegation_id,
+                    "role": (
+                        ROLE_ORCHESTRATOR
+                        if specialist.is_orchestrator
+                        else ROLE_SPECIALIST
+                    ),
+                },
+                model=used_ref,
+            )
+            result = await process.send(msg, on_chunk=on_chunk, trace=probe)
+
+            # Persist the engine session binding (best-effort, like
+            # the opencode path) + record it on the delegation.
+            try:
+                engine_sid = (
+                    getattr(process, "_session_id", "")
+                    or getattr(process, "session_id", "")
+                    or ""
+                )
+                if engine_sid:
+                    if session_id_setter is not None:
+                        session_id_setter(engine_sid)
+                    else:
+                        specialist.session_id = engine_sid
+                    delegation.engine_session_id = engine_sid
+                    trace.append(
+                        "session_created" if new_session else "session_resumed",
+                        {"session_id": engine_sid},
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            trace.append(
+                "model_used",
+                {
+                    "model_ref": dict(used_ref) if used_ref is not None else None,
+                    "model_wire": model_str or None,
+                    "source": (
+                        "task_override"
+                        if model_ref
+                        else "specialist.current_model"
+                        if specialist.model_ref
+                        else "none"
+                    ),
+                },
+            )
+            if result.success:
+                return result.output, None
+            if probe.tool_started == 0 and not (result.output or "").strip():
+                return (
+                    None,
+                    f"engine error before any work: "
+                    f"{(result.error or 'unknown')[:200]}",
+                )
+            return (
+                result.error
+                or result.output
+                or "[chat error: engine_empty_error]"
+            ), None
+        except Exception as e:  # noqa: BLE001 — fall back, never fail cryptic
+            if probe.tool_started > 0:
+                # The engine died AFTER tools ran (kill mid-turn with
+                # partial work). Falling back would re-run those side
+                # effects — surface the failure loudly instead.
+                return (
+                    f"[chat error: engine_failed_after_work: "
+                    f"{type(e).__name__}: {str(e)[:200]} "
+                    f"({probe.tool_started} tool(s) already ran; not "
+                    f"falling back to avoid double-execution)]"
+                ), None
+            return None, f"{type(e).__name__}: {str(e)[:200]}"
+
+    async def _run_opencode(
+        self,
+        *,
+        specialist: Specialist,
+        delegation: Delegation,
+        worktree_path: Path,
+        message: str,
+        trace: TraceLog,
+        model_ref: ModelRef | None = None,
+        fresh: bool = False,
         session_id_getter: "Callable[[], str | None] | None" = None,
         session_id_setter: "Callable[[str], None] | None" = None,
         # M1.8: optional streaming callback. Default None
@@ -418,7 +746,12 @@ class SpecialistRuntime:
         # Reasoning never pollutes the returned text output.
         on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> str:
-        """Run one delegation. Returns the agent's text output.
+        """Run one delegation on the opencode harness. Returns the
+        agent's text output.
+
+        Step 4: this is the fallback path. :meth:`run` dispatches
+        here when opencode is selected — or when the native engine
+        failed before doing any work (``fallback_used`` trace).
         
         The single-active-task queue per (specialist, worktree) is
         enforced by a per-key asyncio.Lock: concurrent calls for the

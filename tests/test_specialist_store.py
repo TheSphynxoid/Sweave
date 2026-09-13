@@ -37,7 +37,8 @@ def test_specialist_default_status():
     assert s.role_ref is None
     assert s.description == ""
     assert s.system_prompt == ""
-    assert s.harness == "opencode"
+    # Step-4 parity flip: new records default to the native engine.
+    assert s.harness == "sweave-engine"
     assert s.current_model is None
     assert s.session_id is None
 

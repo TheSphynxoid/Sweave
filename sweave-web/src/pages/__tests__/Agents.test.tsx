@@ -133,6 +133,21 @@ describe("AgentsPage delete confirmation", () => {
   });
 });
 
+describe("AgentsPage harness badge", () => {
+  it("marks the native engine distinctly from opencode", async () => {
+    listMock.mockResolvedValue([
+      spec({ name: "native-one", harness: "sweave-engine" }),
+      spec({ name: "legacy-one", harness: "opencode" }),
+    ]);
+    renderPage();
+    const native = await screen.findByTestId("harness-badge-native-one");
+    const legacy = await screen.findByTestId("harness-badge-legacy-one");
+    expect(native.textContent).toBe("sweave-engine");
+    expect(legacy.textContent).toBe("opencode");
+    expect(native.className).not.toBe(legacy.className);
+  });
+});
+
 describe("AgentsPage search filter", () => {
   it("narrows cards by name and restores on clear", async () => {
     renderPage();

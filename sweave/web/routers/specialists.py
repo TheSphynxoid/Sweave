@@ -54,7 +54,9 @@ class SpecialistCreate(BaseModel):
     role_ref: Optional[str] = None
     description: str = ""
     system_prompt: str = ""
-    harness: str = "opencode"
+    # Step-4 parity flip: API-created specialists default to the
+    # native engine (opencode stays one PUT away, per-card).
+    harness: str = "sweave-engine"
     current_model: Optional[str] = None
     scope: str = "project"  # project | global
 

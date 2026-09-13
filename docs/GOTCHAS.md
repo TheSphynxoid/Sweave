@@ -213,14 +213,25 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    turn into ``[chat error: TypeError...]``. When adding a callback
    to ``_send_message``, update all ``fake_send*`` stubs in the
    same change (grep ``async def fake_send`` under ``tests/``).
-   3b. **System-send doubles must invoke ``on_chunk``** (2026-09-13).
-   ``_bounded_system_send`` waits for the first streamed byte
-   (``PRE_MODEL_TIMEOUT_SECONDS``, prod 950s, conftest shrunk to
-   1s) before letting the send run on — a double that never calls
-   ``on_chunk`` (early ``test_prompt_template.spy_send`` returning a
-   bare ``MagicMock``) trips the bound and reads as a stall. The
-   real harness invokes ``on_chunk`` on text parts; doubles should
-   too (call it once then return).
+    3b. **System-send doubles must invoke ``on_chunk``** (2026-09-13).
+    ``_bounded_system_send`` waits for the first streamed byte
+    (``PRE_MODEL_TIMEOUT_SECONDS``, prod 950s, conftest shrunk to
+    1s) before letting the send run on — a double that never calls
+    ``on_chunk`` (early ``test_prompt_template.spy_send`` returning a
+    bare ``MagicMock``) trips the bound and reads as a stall. The
+    real harness invokes ``on_chunk`` on text parts; doubles should
+    too (call it once then return).
+    3c. **``run()`` doubles must accept the step-4 kwargs + every
+    ``run()`` caller resolves the harness FIRST** (2026-09-13).
+    ``run(harness=, project_dir=, permission_roots=)`` broke the
+    narrow ``_StubSpecialistRuntime.run`` double in
+    ``test_job_runner.py`` (same rule as 3: update doubles in the
+    same change). And files driving ``run()`` without the item-1
+    mock (e.g. ``test_specialist_runtime.py``) silently routed at
+    the REAL sidecar after the default flip — green-but-slow via
+    fallback, except the timing-sensitive parallel test which went
+    red. Symptom: unexpected `harness_selected`/`fallback_used`
+    warnings in captured logs + suite slowdown.
 
 4. **Test answerers for escalation flows must be gated, never
    fire-once** (2026-09-11: a fire-once answerer answered the

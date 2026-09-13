@@ -242,6 +242,16 @@ async def lifespan(app: FastAPI):
         # callback; the ChatLoop is constructed AFTER this from
         # state.job_runner.turn_timeout and shares the same value.
         turn_timeout=config_manager.get_routing().turn_timeout_s,
+        # Step 4: human-declared permission roots per project (for
+        # the engine-turn permission map). Mirrors the
+        # project_dir_resolver pattern above.
+        permission_roots_resolver=lambda name: (
+            list(
+                project_manager.get_project(name).permission_roots or []
+            )
+            if project_manager.get_project(name) is not None
+            else None
+        ),
     )
     # One-time legacy import: if the anchored file is absent but the
     # in-memory dynamic_agents dict has entries (from the legacy CWD-
@@ -278,6 +288,9 @@ async def lifespan(app: FastAPI):
     specialist_runtime = SpecialistRuntime(
         runners=serve_registry,
         event_bus=state.event_bus,
+        # Step 4: operator global harness default (selection tier
+        # below the specialist record; the record wins when set).
+        harness_default=config_manager.get().harness.default,
     )
     state.job_runner.specialist_runtime = specialist_runtime
 

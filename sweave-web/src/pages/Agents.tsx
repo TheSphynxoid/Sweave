@@ -237,6 +237,20 @@ export function AgentsPage() {
   );
 }
 
+function HarnessBadge({ harness, name }: { harness: string; name: string }) {
+  const native = harness === "sweave-engine";
+  return (
+    <Badge
+      variant={native ? "success" : "muted"}
+      className="mr-1 align-middle"
+      data-testid={`harness-badge-${name}`}
+      title={native ? "Runs on the native Sweave engine (opencode fallback)" : "Runs on opencode"}
+    >
+      {harness || "opencode"}
+    </Badge>
+  );
+}
+
 function SpecialistCard({
   specialist,
   modelOptions,
@@ -267,10 +281,10 @@ function SpecialistCard({
       <CardHeader className="pb-2">
         <div className="min-w-0">
           <p className="font-medium truncate">{specialist.name}</p>
-          <p className="text-xs text-muted-foreground truncate">
-            {specialist.harness}
+          <div className="text-xs text-muted-foreground truncate">
+            <HarnessBadge harness={specialist.harness} name={specialist.name} />
             {specialist.role_ref ? ` · ${specialist.role_ref}` : ""}
-          </p>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">

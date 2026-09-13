@@ -185,12 +185,18 @@
       freeze) + 3 (`build_context()` + basics standards) + 1 (zero-dep
       sidecar, true-streaming chat, live free-tier proof) + 2 (6-tool
       executor, permission enforcement, `POST /api/engine/permission`,
-      hermetic 29 + live allow/deny scenes green) all DONE — 900 pytest
-      green (1 deselected: `test_chat_surface_files_present`, a pre-existing
-      UI-thread failure — SessionPicker.tsx refactored away, not engine-related). View probe 0 done inline (bus silent mid-tool →
-      plugin-ferried `tool-started`-only sensor, unblocking step 2).
-      Remaining: step 4 (selection+fallback, no schema — field exists)
-      + step 5 (parity gates + docs). Verdict:
+       hermetic 29 + live allow/deny scenes green) all DONE — 900 pytest
+       green (1 deselected: `tests/test_m1_9_step2_chat.py::
+       test_chat_surface_files_present`, a pre-existing
+       UI-thread failure — SessionPicker.tsx refactored away, not engine-related). View probe 0 done inline (bus silent mid-tool →
+       plugin-ferried `tool-started`-only sensor, unblocking step 2).
+       Step 4 DONE 2026-09-13 (execution session): selection +
+       fallback (`resolve_harness_name`, defaults flipped, per-task
+       override, fallback-only-before-work guard, Agents badge,
+       `SWEAVE_API_URL` export, 18 new tests) — 918 pytest green
+       (same 1 deselected), 311 vitest, build green, 13/13 run.py.
+       Remaining: step 5 (parity gates + docs, incl. the live
+       mixed-fleet scene — needs an auth'd server window). Verdict:
      run both — with a coupling discipline, not just good intentions.
      Shared seams have single owners (trace vocabulary + detail payload →
      transparency track, engine adopts; permission semantics → orchestrator).

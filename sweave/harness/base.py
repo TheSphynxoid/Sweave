@@ -188,3 +188,40 @@ class HarnessRegistry:
 
 # Global registry
 harness_registry = HarnessRegistry()
+
+
+def resolve_harness_name(
+    override: str | None = None,
+    specialist_harness: str | None = None,
+    config_default: str | None = None,
+) -> tuple[str, str]:
+    """Resolve which harness runs one turn. Returns ``(name, source)``.
+
+    Step-4 selection semantics (custom-engine plan; no schema — the
+    ``Specialist.harness`` field predates both tracks):
+
+    1. ``override`` (per-task, e.g. ``POST /api/v2/tasks {harness}``)
+       wins — even under the test mock. Explicit is explicit.
+    2. ``SWEAVE_MOCK_OPENCODE=1`` pins ``"opencode"`` so the suite
+       stays hermetic (the engine sidecar is a real subprocess +
+       real LLM; no test may spawn it implicitly).
+    3. The specialist's own ``harness`` when it names a registered
+       harness (unknown names fall through, never crash a turn).
+    4. The operator's config default when registered.
+    5. ``"opencode"`` — the guaranteed fallback, always registered.
+
+    ``source`` names the winning tier (``override`` | ``mock`` |
+    ``specialist`` | ``config`` | ``fallback``) for the
+    ``harness_selected`` trace event.
+    """
+    import os
+
+    if override:
+        return override, "override"
+    if os.environ.get("SWEAVE_MOCK_OPENCODE") == "1":
+        return "opencode", "mock"
+    if specialist_harness and harness_registry.get(specialist_harness) is not None:
+        return specialist_harness, "specialist"
+    if config_default and harness_registry.get(config_default) is not None:
+        return config_default, "config"
+    return "opencode", "fallback"

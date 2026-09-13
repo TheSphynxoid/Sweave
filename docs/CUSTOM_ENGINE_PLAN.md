@@ -1,8 +1,8 @@
 # Custom Engine Plan — sweave-native execution layer (best-offer harness)
 
-Status: planned (2026-09-11; refreshed 2026-09-13 for parallel execution
-with the transparency track) — **Step 0 done 2026-09-13** (protocol freeze:
-`sweave/engine/protocol.py` + `tests/test_engine_protocol.py`, 27 green).
+Status: in progress (2026-09-11; refreshed 2026-09-13 for parallel execution
+with the transparency track) — steps 0–4 done 2026-09-13 (step 4: selection
++ fallback, this session); remaining: step 5 (parity gates + docs).
 Deepening of the M1.7 side-project note
 (`docs/M1_7_PLAN.md` "Side-projects: Custom agent engine" + "Branch notes:
 engine driver conversation is side-project-scoped, not R-numbered").
@@ -327,6 +327,34 @@ reason. Agents UI badge shows engine per specialist;
 no global flag-day. Done-gate: mixed-fleet live scene (native chat +
 opencode specialist + native specialist) all `done`; fallback path
 covered by killing the engine mid-turn in test.
+DONE 2026-09-13 (execution session): `resolve_harness_name()` in
+`harness/base.py` (override > mock > specialist > config > opencode,
+`harness_selected` trace); `Specialist.harness` + seed YAMLs ×4 +
+transients + API/UI create defaults flipped to `sweave-engine`;
+`SpecialistRuntime.run()` dispatches (`_run_engine_attempt` vs
+`_run_opencode`), per-task override (`POST /api/v2/tasks {harness}`,
+400 on unknown, transient side-channel, never persisted);
+`POST /api/engine/permission` map rendered per turn
+(`render_external_directory` + user roots via ChatLoop/JobRunner);
+Agents badge (`HarnessBadge`, success/muted); CLI exports
+`SWEAVE_API_URL` so sidecar callbacks hit the right port;
+`tests/test_engine_selection.py` 18 green; full suite 918 green
+(1 deselected pre-existing UI failure). Amendments (executor,
+justified): (1) no stored-record migration — pre-flip `opencode`
+values are respected as explicit (a write path always existed via
+PUT), only defaults flip; (2) config `harness.default` stays
+`opencode` (legacy DelegateTaskTool path frozen; runtime prefers
+the record); (3) MCP `defer` takes no harness arg (per-defer
+engine choice is scope creep; record selection covers it);
+(4) fallback engages ONLY before any work (no tool ran, no text)
+— after side effects the error surfaces as
+`engine_failed_after_work` (re-running would double-execute);
+(5) engine emits no reasoning events (protocol-frozen gap —
+thinking blocks stay quiet on native turns, tokens still count);
+(6) `Project.default_harness` is write-only display state (nothing
+dispatches on it — future tier candidate). Live-scene half of the
+done-gate rides step 5 (needs an auth'd server window; hermetic
+mixed-fleet + kill-mid-turn pins are green here).
 
 ### Step 5 — Parity gates + docs (~0.5 session)
 Full pytest + vitest + `run.py --check` + `npm run build` 2× green; live

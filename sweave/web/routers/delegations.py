@@ -39,6 +39,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _validate_harness_override(value: Optional[str]) -> Optional[str]:
+    """Validate a per-task ``harness`` override (step 4).
+
+    None/empty passes through (no override); a name that resolves
+    in the harness registry passes through; anything else is a 400
+    — a typo must fail fast at submit, never become a mystery
+    default three layers down.
+    """
+    if not value:
+        return None
+    from sweave.harness.base import harness_registry
+
+    if harness_registry.get(value) is None:
+        known = ", ".join(sorted(harness_registry.list())) or "(none)"
+        raise HTTPException(
+            400, f"unknown harness {value!r} (known: {known})"
+        )
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -73,6 +93,10 @@ class TaskSubmitV2(BaseModel):
     # join set; False (default) = fire-and-forget into the Children
     # lane (ruling 1).
     blocking: bool = False
+    # Step 4: per-task harness override (transient — resolved at
+    # turn start, never persisted on the record). Unknown names are
+    # a 400 (fail fast on operator typos, never silently default).
+    harness: Optional[str] = None
 
 
 class TaskSubmitV2Response(BaseModel):
@@ -372,6 +396,10 @@ async def submit_task_v2(
         ),
         # M2.1: wait-set flag (default False — fire-and-forget).
         blocking=request.blocking,
+        # Step 4: per-task harness override (transient). Unknown
+        # names fail fast here so a typo never becomes a mystery
+        # default three layers down.
+        harness=_validate_harness_override(request.harness),
     )
 
     # M1.2 step 3: append an override log entry if the user supplied an

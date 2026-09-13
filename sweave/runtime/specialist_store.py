@@ -52,6 +52,7 @@ from typing import Any
 import yaml
 
 from sweave.agents.loader import AGENTS_DIR, AgentDefinition, load_seed_agents
+from sweave.engine.protocol import ENGINE_HARNESS_NAME
 from sweave.harness.base import ModelRef, model_ref_to_wire
 from sweave.runtime.locking import atomic_write_json_sync
 
@@ -206,7 +207,11 @@ class Specialist:
     role_ref: str | None = None  # optional hint to model resolve
     description: str = ""
     system_prompt: str = ""
-    harness: str = "opencode"
+    # Step-4 parity flip: new records default to the native engine;
+    # opencode is the per-delegation fallback (never a flag-day:
+    # records that already persist "opencode" keep it — only the
+    # default for records that never chose changes).
+    harness: str = ENGINE_HARNESS_NAME
     current_model: str | None = None
     session_id: str | None = None  # M1.3 fills
     created_at: datetime = field(default_factory=_now)

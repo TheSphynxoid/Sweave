@@ -25,6 +25,26 @@ from sweave.runtime.specialist_store import (
 from sweave.runtime.trace_log import TraceLog, read_trace
 
 
+# Step 4: this file drives SpecialistRuntime.run end-to-end on the
+# opencode path. The step-4 default flip would otherwise route every
+# unpinned Specialist at the REAL engine sidecar (node + LLM);
+# the mock seam pins opencode — the path under test — exactly as
+# before the flip (GOTCHAS: runtime-path tests must set this).
+@pytest.fixture(autouse=True, scope="module")
+def _mock_opencode_env():
+    import os
+
+    old = os.environ.get("SWEAVE_MOCK_OPENCODE")
+    os.environ["SWEAVE_MOCK_OPENCODE"] = "1"
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("SWEAVE_MOCK_OPENCODE", None)
+        else:
+            os.environ["SWEAVE_MOCK_OPENCODE"] = old
+
+
 # ---------------------------------------------------------------------------
 # Mock OpenCodeProcess
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ def main() -> int:
     for role, d in sorted(defs.items()):
         check(f"{role}: has name", bool(d.name))
         check(f"{role}: has prompt", len(d.prompt) > 100, f"len={len(d.prompt)}")
-        check(f"{role}: harness", d.harness == "opencode", d.harness)
+        check(f"{role}: harness", d.harness == "sweave-engine", d.harness)
         check(f"{role}: hindsight tools", "hindsight_recall" in d.tools)
         check(f"{role}: model template", d.model_template and "{{" in d.model_template)
 

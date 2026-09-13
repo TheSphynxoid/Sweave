@@ -545,7 +545,7 @@ class ChatLoop:
             scope="project" if project_dir else "global",
             is_orchestrator=True,
             system_prompt="",
-            harness="opencode",
+            harness="sweave-engine",
             current_model=None,
         )
 
@@ -1420,6 +1420,20 @@ class ChatLoop:
         model_ref: ModelRef | None = None
         if model_str:
             model_ref = parse_model_ref(model_str)
+        # Step 4: engine-turn context for the permission map. The
+        # chat turn runs in the project dir; user roots come from
+        # the project record (fail-safe None when unresolvable).
+        permission_roots = None
+        try:
+            proj = (
+                self.project_manager.get_project(delegation.project_name)
+                if delegation.project_name
+                else None
+            )
+            if proj is not None:
+                permission_roots = list(proj.permission_roots or [])
+        except Exception:  # noqa: BLE001
+            permission_roots = None
         inner = self.runtime.run(
             specialist=specialist,
             delegation=delegation,
@@ -1431,6 +1445,8 @@ class ChatLoop:
             session_id_setter=session_id_setter,
             on_chunk=on_chunk,
             on_reasoning=on_reasoning,
+            project_dir=worktree_path,
+            permission_roots=permission_roots,
         )
         task = asyncio.ensure_future(inner)
         remaining = self.turn_timeout

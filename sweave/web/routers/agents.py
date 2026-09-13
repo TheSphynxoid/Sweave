@@ -56,7 +56,7 @@ class AgentCreate(BaseModel):
     system_prompt: str = Field("", description="System prompt for the agent")
     description: str = Field("", description="Human-readable description (label)")
     tools: list[str] = Field(default_factory=list, description="Additional tools")
-    harness: str = Field("opencode", description="Harness to use")
+    harness: str = Field("sweave-engine", description="Harness to use")
 
 
 class AgentUpdate(BaseModel):

@@ -38,7 +38,7 @@ export function CreateSpecialistDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [harness, setHarness] = useState("opencode");
+  const [harness, setHarness] = useState("sweave-engine");
   const [scope, setScope] = useState<"project" | "global">("project");
   const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
