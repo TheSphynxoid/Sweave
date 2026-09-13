@@ -869,6 +869,7 @@ runtimes). Every adoption gets recorded here.
 | 3-way merge simulation | `merge3` | diff3 merge without touching git — resolution-queue payload + Stage-0 overlap checks | R2 |
 | Harness tests w/o live opencode | `respx` | httpx mocking; test spawn/send logic deterministically | M1 tests |
 | MCP server SDK | `mcp` (modelcontextprotocol python SDK) | official SDK for the sweave defer/list_specialists stdio server the orchestrator's opencode session calls (M1.6) — MIT, small, no loop ownership | M1.6 |
+| UI fonts (Inter + JetBrains Mono) | `@fontsource-variable/inter` + `@fontsource-variable/jetbrains-mono` (npm, MIT packages; OFL font data) | self-hosted variable woff2, `font-display: swap` + unicode-range subsets, system stacks stay as fallback so first paint never blocks; no CDN, offline-friendly | 2026-09-13 |
 
 ### Deliberately NOT adopted (and why)
 | Category | Candidates | Why not |
