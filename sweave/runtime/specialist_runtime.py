@@ -79,6 +79,12 @@ logger = logging.getLogger(__name__)
 # now the failure names the symptom instead of "ReadTimeout".
 STALL_TIMEOUT_SECONDS = 300.0
 
+# Kill-on-silence gate — see _attempt_engine_stop. OFF by default
+# after the 2026-09-13 regression (healthy slow turns were being
+# aborted mid-work); the abort mechanism stays implemented, tested,
+# and one flag away when the liveness probe lands.
+KILL_ON_SILENCE = False
+
 # Pre-model bound (incident 2026-09-13, session
 # Sweave-20260912-214940-2f4ca6): the serve does LEGITIMATE pre-model
 # work before the first byte — tool-loop warmup steps, compaction,
@@ -120,16 +126,25 @@ async def _attempt_engine_stop(
     """Best-effort ``POST /session/{id}/abort``. Returns a message
     suffix naming the outcome. NEVER raises.
 
-    Incident Sweave-20260911-213619-096e65: every Sweave timeout is
-    client-side (``asyncio.wait_for`` around stream reads). Tripping
-    one abandons the HTTP stream while the serve keeps running the
-    turn — status=failed with a live process: a paradoxical,
-    untracked ghost (still spending tokens, still able to write
-    files). The abort call exists on the serve (verified in the
-    reference clone); not calling it was the bug. An acknowledged
-    stop resolves the paradox; anything else stays LOUD
-    (UNCONFIRMED) instead of silent.
+    INCIDENT OFF (2026-09-13, user-identified regression): kill-on-
+    silence converted previously-survivable slow turns into kills —
+    the 05:20 frontend trip aborted an alive, 9-patches-deep turn
+    mid-work. Byte-silence cannot classify patient-vs-wedged. Until
+    a liveness probe exists, Sweave trips the bound, records the
+    failure loudly, rotates for retry — and lets the specialist
+    continue server-side (the pre-watchdog semantics that "used to
+    work": late-failed but completed). When the probe ships, set
+    KILL_ON_SILENCE=True (the mechanism below stays live and tested
+    via the flag); an acknowledged stop then resolves the paradox,
+    anything else stays LOUD (UNCONFIRMED) instead of silent.
     """
+    if not KILL_ON_SILENCE:
+        if trace is not None:
+            try:
+                trace.append("abort_skipped", {"reason": "kill_on_silence_off"})
+            except Exception:  # noqa: BLE001
+                pass
+        return "; stop not attempted (kill-on-silence off; work may continue server-side)"
     if not session_id:
 
         def _trace(event: str, payload: dict[str, Any]) -> None:

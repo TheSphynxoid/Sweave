@@ -249,16 +249,30 @@ async def test_stall_message_unchanged_without_t0(tmp_path: Path):
         "[chat error: stalled after 0s without data "
         "(response headers never arrived; the turn may still be "
         "running server-side; retry starts a fresh session"
-        "; stop UNCONFIRMED — orphaned run possible (no abort channel))]"
+        "; stop not attempted (kill-on-silence off; work may continue server-side))]"
     )
     events = [e["event"] for e in _trace_events("d-hang", tmp_path)]
     assert "abort_skipped" in events
 
 
+def test_kill_on_silence_default_off():
+    """The 2026-09-13 regression: kill-on-silence aborted healthy
+    slow turns mid-work (frontend trip at 9 patches deep). Default
+    is OFF until a liveness probe can classify; the flag, not a
+    code rewrite, re-enables."""
+    import sweave.runtime.specialist_runtime as rt
+
+    assert rt.KILL_ON_SILENCE is False
+
+
 @pytest.mark.asyncio
-async def test_stall_attempts_abort_acknowledged(tmp_path: Path):
+async def test_stall_attempts_abort_acknowledged(tmp_path: Path, monkeypatch):
     """The stall trip POSTs /session/{id}/abort; a 2xx names the
-    acknowledged stop in the message (paradox resolved)."""
+    acknowledged stop in the message (paradox resolved). Runs with
+    KILL_ON_SILENCE on — the mechanism stays testable while the
+    default stays off (see test_kill_on_silence_default_off)."""
+    import sweave.runtime.specialist_runtime as rt
+    monkeypatch.setattr(rt, "KILL_ON_SILENCE", True)
     from sweave.runtime.serve_runner import ServeRunnerRegistry
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
@@ -294,9 +308,11 @@ async def test_stall_attempts_abort_acknowledged(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_stall_abort_rejection_stays_loud(tmp_path: Path):
+async def test_stall_abort_rejection_stays_loud(tmp_path: Path, monkeypatch):
     """A rejected/failed abort is UNCONFIRMED in the message — never
-    silent (the orphaned-run case stays visible)."""
+    silent (the orphaned-run case stays visible). Flag on."""
+    import sweave.runtime.specialist_runtime as rt
+    monkeypatch.setattr(rt, "KILL_ON_SILENCE", True)
     from sweave.runtime.serve_runner import ServeRunnerRegistry
     from sweave.runtime.specialist_runtime import SpecialistRuntime
     from sweave.runtime.trace_log import TraceLog

@@ -126,6 +126,21 @@
     (silence → serve-state check → wait-with-progress vs abort) +
     progress heartbeats + provider fallback on slowness; bounds stay
     differentiated (chat snappy, execution patient).
+  - REGRESSION found + pulled back (2026-09-13, user-identified):
+    kill-on-silence (the abort wire-up) converted healthy slow turns
+    into kills — the 05:20 frontend trip aborted an ALIVE turn 25
+    model-steps deep with 9 file patches (serve DB proof). Rescue:
+    `KILL_ON_SILENCE=False` default — the trip records the failure
+    loudly, rotates for retry, and the specialist continues
+    server-side (the pre-watchdog semantics: late-failed but
+    completed). Abort mechanism intact behind the flag, re-enable
+    the day the liveness probe lands. Session handoff: restart
+    server to pick up this round + incident round 2 (v2 specialist-
+    model precedence FIX — user paid picks reach the wire now; the
+    09-13 "paid tier didn't help" was this precedence gap, never the
+    zombie); supersede-via-revert spec (undo/redo, native opencode
+    revert probed live, file-state restore confirmed);
+    scripts/probe_revert_*.py stay as drift gates.
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
