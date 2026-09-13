@@ -79,7 +79,7 @@ export function EffortSelect({
         data-testid={testId}
         aria-label="Reasoning effort"
         title="Reasoning effort for this model (provider default when unset)"
-        className={cn("w-32 shrink-0 font-mono text-xs", className)}
+        className={cn("w-32 shrink-0 font-mono text-xs [&>span]:truncate", className)}
       >
         <SelectValue placeholder="Effort" />
       </SelectTrigger>
@@ -105,6 +105,8 @@ export interface ModelWithEffortProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  /** Extra classes for the effort trigger (match the picker height, e.g. "h-8 text-xs"). */
+  effortClassName?: string;
   testId?: string;
 }
 
@@ -122,6 +124,7 @@ export function ModelWithEffort({
   placeholder,
   disabled,
   className,
+  effortClassName,
   testId,
 }: ModelWithEffortProps) {
   const { variant } = splitModelVariant(value);
@@ -137,14 +140,18 @@ export function ModelWithEffort({
   };
 
   return (
-    <div className="flex items-center gap-2">
+    // items-start: tops stay level — the provider caption flows under
+    // the picker button without pushing the effort trigger down. The
+    // caller matches heights via className/effortClassName (twMerge
+    // lets the caller's h-* win over each control's default).
+    <div className="flex min-w-0 flex-1 items-start gap-2">
       <ModelPicker
         value={base}
         onValueChange={handleModel}
         options={options}
         placeholder={placeholder}
         disabled={disabled}
-        className={cn("flex-1", className)}
+        className={cn("min-w-0 flex-1", className)}
         testId={testId}
       />
       <EffortSelect
@@ -152,6 +159,7 @@ export function ModelWithEffort({
         variants={efforts}
         onChange={handleEffort}
         disabled={disabled}
+        className={effortClassName}
         testId={testId ? `${testId}-effort` : undefined}
       />
     </div>

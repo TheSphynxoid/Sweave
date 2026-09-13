@@ -128,3 +128,60 @@ describe("ModelWithEffort", () => {
     expect(screen.queryByTestId("model-effort-effort")).toBeNull();
   });
 });
+
+describe("ModelPicker trigger + provider caption (closed shell)", () => {
+  const options = ["opencode/moonshotai/kimi-k2.5", "ollama/qwen3:8b"];
+
+  it("shows the model half in the trigger, provider on its own caption line", () => {
+    render(
+      <ModelWithEffort
+        value="opencode/moonshotai/kimi-k2.5"
+        onValueChange={vi.fn()}
+        options={options}
+        testId="model-cap"
+      />,
+    );
+    const trigger = screen.getByTestId("model-cap");
+    expect(trigger.textContent).toContain("moonshotai/kimi-k2.5");
+    expect(trigger.textContent).not.toContain("opencode/");
+    expect(screen.getByTestId("model-cap-provider").textContent).toBe("via opencode");
+  });
+
+  it("shows no caption for a bare id or an empty value", () => {
+    const { rerender } = render(
+      <ModelWithEffort
+        value="qwen3:8b"
+        onValueChange={vi.fn()}
+        options={options}
+        testId="model-cap"
+      />,
+    );
+    expect(screen.getByTestId("model-cap").textContent).toContain("qwen3:8b");
+    expect(screen.queryByTestId("model-cap-provider")).toBeNull();
+    rerender(
+      <ModelWithEffort
+        value=""
+        onValueChange={vi.fn()}
+        options={options}
+        testId="model-cap"
+      />,
+    );
+    expect(screen.queryByTestId("model-cap-provider")).toBeNull();
+  });
+
+  it("levels the effort trigger with the picker via effortClassName", () => {
+    render(
+      <ModelWithEffort
+        value="openrouter/thinkingmachines/inkling:free+low"
+        onValueChange={vi.fn()}
+        options={["openrouter/thinkingmachines/inkling:free", "ollama/qwen3:8b"]}
+        variantsMap={VARIANTS}
+        effortClassName="h-8 text-xs"
+        testId="model-level"
+      />,
+    );
+    const trigger = screen.getByTestId("model-level-effort");
+    expect(trigger.className).toContain("h-8");
+    expect(trigger.className).not.toContain("h-10");
+  });
+});

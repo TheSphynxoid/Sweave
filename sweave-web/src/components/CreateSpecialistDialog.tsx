@@ -171,6 +171,7 @@ export function CreateSpecialistDialog({
               variantsMap={models?.variants ?? {}}
               placeholder="Global default"
               className="h-9"
+              effortClassName="h-9 text-xs"
               testId="model-picker-new-specialist"
             />
           </div>

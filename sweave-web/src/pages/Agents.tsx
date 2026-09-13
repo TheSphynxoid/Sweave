@@ -278,8 +278,8 @@ function SpecialistCard({
           {specialist.description || "No description."}
         </p>
 
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground w-12 shrink-0">Model</span>
+        <div className="flex items-start gap-2">
+          <span className="w-12 shrink-0 pt-2 text-xs text-muted-foreground">Model</span>
           <ModelWithEffort
             value={specialist.current_model ?? ""}
             onValueChange={onModel}
@@ -287,6 +287,7 @@ function SpecialistCard({
             variantsMap={variantsMap}
             disabled={locked}
             className="h-8 text-xs flex-1"
+            effortClassName="h-8 text-xs"
             testId={`model-picker-${specialist.scope}-${specialist.name}`}
           />
           <EffectiveDefaultNote

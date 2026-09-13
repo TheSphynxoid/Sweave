@@ -62,6 +62,28 @@ export interface ModelPickerPanelProps {
   testId?: string;
 }
 
+/**
+ * A `provider/model` id rendered so the MODEL half survives narrow
+ * containers (panel rows): the dimmed provider prefix shrinks first
+ * (`flex-shrink: 3` vs the default 1), the model tail truncates last.
+ * Long ids read `openc…/kimi-k2.5` instead of losing the distinctive
+ * tail — pair with `title={fullId}` on the interactive parent for
+ * hover reveal. Pure spans, unit-tested directly. (The closed trigger
+ * below deliberately does NOT use this: it shows the model half only
+ * and puts the provider on its own caption line.)
+ */
+export function ModelIdText({ id }: { id: string }) {
+  const { provider, model } = splitModelId(id);
+  return (
+    <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap">
+      {provider && (
+        <span className="truncate text-muted-foreground [flex-shrink:3]">{provider}/</span>
+      )}
+      <span className="truncate">{model}</span>
+    </span>
+  );
+}
+
 export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPickerPanelProps) {
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => filterModelOptions(options, query), [options, query]);
@@ -98,6 +120,7 @@ export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPick
           // The model half may carry the +variant suffix; strip it
           // for display (the badge below shows it instead).
           const modelBase = variant ? model.slice(0, model.length - variant.length - 1) : model;
+          const displayId = provider ? `${provider}/${modelBase}` : modelBase;
           const selected = m === value;
           return (
             <button
@@ -105,6 +128,7 @@ export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPick
               type="button"
               role="option"
               aria-selected={selected}
+              title={m}
               onClick={() => onSelect(m)}
               className={cn(
                 "relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-8 pr-2 text-left font-mono text-xs outline-none hover:bg-accent hover:text-accent-foreground",
@@ -114,10 +138,7 @@ export function ModelPickerPanel({ options, value, onSelect, testId }: ModelPick
               <span className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
                 {selected && <Check size={13} />}
               </span>
-              <span className="truncate">
-                {provider && <span className="text-muted-foreground">{provider}/</span>}
-                {modelBase}
-              </span>
+              <ModelIdText id={displayId} />
               {variant && (
                 <span className="ml-1.5 shrink-0 rounded bg-primary/15 px-1 py-px font-mono text-[10px] text-primary">
                   {variant}
@@ -161,42 +182,57 @@ export function ModelPicker({
   testId,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
+  // The trigger shows the MODEL half only (full width for the
+  // distinctive tail); the provider gets its own legible caption line
+  // under the button instead of sharing the truncated text area.
+  const { provider, model } = value ? splitModelId(value) : { provider: null, model: "" };
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={(o) => setOpen(o)}
-    >
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          disabled={disabled}
-          data-testid={testId}
-          className={cn(
-            "flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 font-mono text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1",
-            !value && "text-muted-foreground",
-            className,
-          )}
-        >
-          <span className="truncate">{value || placeholder}</span>
-          <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        sideOffset={4}
-        className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0"
+    <div className="min-w-0 flex-1">
+      <Popover
+        open={open}
+        onOpenChange={(o) => setOpen(o)}
       >
-        <ModelPickerPanel
-          options={options}
-          value={value}
-          onSelect={(m) => {
-            onValueChange(m);
-            setOpen(false);
-          }}
-          testId={testId}
-        />
-      </PopoverContent>
-    </Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            disabled={disabled}
+            data-testid={testId}
+            title={value || placeholder}
+            className={cn(
+              "flex h-10 w-full min-w-0 items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 font-mono text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
+              !value && "text-muted-foreground",
+              className,
+            )}
+          >
+            <span className="min-w-0 truncate">{value ? model : placeholder}</span>
+            <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          sideOffset={4}
+          className="w-[var(--radix-popover-trigger-width)] min-w-56 p-0"
+        >
+          <ModelPickerPanel
+            options={options}
+            value={value}
+            onSelect={(m) => {
+              onValueChange(m);
+              setOpen(false);
+            }}
+            testId={testId}
+          />
+        </PopoverContent>
+      </Popover>
+      {provider && (
+        <p
+          data-testid={testId ? `${testId}-provider` : undefined}
+          className="mt-1 truncate pl-px font-mono text-[10px] text-muted-foreground"
+        >
+          via {provider}
+        </p>
+      )}
+    </div>
   );
 }

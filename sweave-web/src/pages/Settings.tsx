@@ -424,6 +424,7 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
             placeholder="Select default model"
             disabled={saving}
             className="h-9 font-mono text-xs"
+            effortClassName="h-9 text-xs"
             testId="model-picker-default"
           />
         </CardContent>

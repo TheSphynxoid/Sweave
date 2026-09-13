@@ -10,6 +10,7 @@ import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
   MODEL_PICKER_MAX_SHOWN,
+  ModelIdText,
   ModelPickerPanel,
   filterModelOptions,
   splitModelId,
@@ -157,5 +158,32 @@ describe("ModelPickerPanel", () => {
     expect(screen.getByTestId("model-picker-count").textContent).toBe(
       `Showing ${MODEL_PICKER_MAX_SHOWN} of ${many.length} matches — refine the search`,
     );
+  });
+
+  it("titles each option with the full model id (truncated tails stay identifiable)", () => {
+    renderPanel({ options: ["opencode/moonshotai/kimi-k2.5", "gmi/MiniMaxAI/MiniMax-M3"] });
+    const rows = screen.getByTestId("model-picker-list").querySelectorAll('[role="option"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute("title")).toBe("opencode/moonshotai/kimi-k2.5");
+    expect(rows[1].getAttribute("title")).toBe("gmi/MiniMaxAI/MiniMax-M3");
+  });
+});
+
+describe("ModelIdText", () => {
+  it("renders provider + model with the provider shrinking first", () => {
+    render(<ModelIdText id="opencode/moonshotai/kimi-k2.5" />);
+    const provider = screen.getByText("opencode/");
+    const model = screen.getByText("moonshotai/kimi-k2.5");
+    // The provider prefix yields space before the model tail does.
+    expect(provider.className).toContain("[flex-shrink:3]");
+    expect(model.className).not.toContain("[flex-shrink:3]");
+    expect(provider.className).toContain("truncate");
+    expect(model.className).toContain("truncate");
+  });
+
+  it("renders bare ids without a provider half", () => {
+    const { container } = render(<ModelIdText id="qwen3:8b" />);
+    expect(screen.getByText("qwen3:8b")).toBeTruthy();
+    expect(container.querySelectorAll("span")).toHaveLength(2);
   });
 });
