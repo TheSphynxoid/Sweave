@@ -97,6 +97,16 @@ turn_timeout}` → SSE `{token, tool.started|updated|completed|failed,
 step.boundary, permission.asked, done|error}` + `tokens_used` terminal
 shape identical to the M1.9 audit anchor. `GET /health`, protocol version
 header, per-specialist `harness` selection semantics (default + fallback).
+Control verbs (2026-09-13 — both are load-bearing for the transparency
+track, so they are protocol, not later additions): `POST /abort
+{session_id}` (consented engine-stop; acknowledged vs UNCONFIRMED outcome,
+serves the view track's abort endpoint) and `POST /revert
+{session_id, to_message}` (engine rewind for supersede-via-revert §C —
+the `revert(to_message)` contract verb; opencode's pointer + shadow-git
+semantics are the reference behavior). Session attach/resume is part of
+the freeze too (ruling 3: restarts without dropping sessions — the engine
+needs a durable session store from day one, which doubles as the
+resume-from-partial journal).
 Done-gate: protocol doc in this file's appendix + contract tests against
 the mock (no engine binary yet); pytest green.
 
@@ -315,3 +325,27 @@ re-implementation of settled semantics, never a parallel invention.
 | Permission ask | bridge plugin → hijack endpoint | `permission.asked` event → escalation store |
 | Session | `ses_*` id + 404-recreate | engine session id, orchestrator still binds per Session/Specialist |
 | Trace | harness reader projects events | engine emits, runtime projects identically |
+
+## Appendix — opencode capability coverage (2026-09-13)
+
+What "clean/seamless" has to cover, seam by seam — opencode capability on
+the left, engine disposition on the right. Anything below the line stays
+on opencode (specialists stay there until step-2 parity per ruling 6).
+
+| Opencode surface Sweave depends on | Engine disposition |
+|---|---|
+| Session create / resume / recreate; per-Session + per-specialist binding | Planned (step 0: session attach/resume in protocol; durable store doubles as partials journal) |
+| Per-message model (structured provider/model) + agent pin | Planned (step 1; same provider catalog, model in `POST /run`) |
+| Token streaming + reasoning parts (honest granularity) | Planned (step 1 native SSE; block-mode providers stay block-mode, timeout stays honest) |
+| 6 tools (read / write+edit / bash / glob / grep / todo) + lifecycle + partial-output capture | Planned (step 2) |
+| Permission enforcement (scoped roots, ask → escalation, once/always) | Planned (step 2, orchestrator-rendered map enforced blindly) |
+| Sweave tools (defer / list / ask / escalate), identical strings | Planned (steps 1–2, native calls, no MCP hop) |
+| Consented abort (acknowledged vs UNCONFIRMED) | Planned (step 0 control verb; serves the view abort endpoint) |
+| Revert / rewind (`revert(to_message)` per §C spec) | Planned (step 0 control verb; opencode pointer + shadow-git semantics are the reference) |
+| Per-turn `tokens_used` + cost (M1.9 anchor, usage ledger) | Planned (terminal shape identical; per-tool telemetry native) |
+| Compaction + AGENTS.md / instruction loading + memory `build_context()` | Planned (step 3) |
+| Per-specialist selection + opencode fallback | Planned (step 4) |
+| `lsp` / `skill` / `plan` / `webfetch` / `websearch` / `patch` tools | Deferred non-goal (demand-proven only; opencode covers meanwhile) |
+| SubAgentRun ephemeral runs | No engine work (store + endpoints sit above the harness) |
+| MCP server | Opencode-adapter only; engine speaks native calls |
+| Permission bridge plugin + hijack endpoint | Not transferred (in-engine `permission.asked` replaces the ferry) |

@@ -189,6 +189,18 @@
      4 (`specialist.harness` field) coordinates with the view live-block
      work (same record, one migration). Stale facts corrected (timers now
      300s body + 950s pre-model + 1800s soft total, KILL_ON_SILENCE off).
+     Coverage appendix added (every opencode seam Sweave depends on mapped
+     to planned / deferred / not-transferred); protocol step 0 now includes
+     the abort + revert control verbs and session resume (both load-bearing
+     for the view track, so they are protocol, not later additions).
+   - ⚠️ **Live-threads flag (2026-09-13, do not derive — read): three
+     threads are live: (a) user-driven UI polish (dirty tree), (b) the
+     transparency track above, (c) the custom engine.** Rules: additive
+     paths only until each track's schema step; one concern per commit
+     (cross-thread edits in a single commit are the serialization signal —
+     if they appear, stop paralleling and sequence); seam-ownership table
+     in engine plan §7 binds both threads; opencode contract stays green
+     every step.
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
