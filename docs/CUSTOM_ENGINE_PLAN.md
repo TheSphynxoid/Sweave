@@ -472,11 +472,11 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | Consented abort (acknowledged vs UNCONFIRMED) | Planned (step 0 control verb; serves the view abort endpoint) |
 | Revert / rewind (`revert(to_message)` per §C spec) | Planned (step 0 control verb; opencode pointer + shadow-git semantics are the reference) |
 | Per-turn `tokens_used` + cost (M1.9 anchor, usage ledger) | Planned (terminal shape identical; per-tool telemetry native) |
-| Provider auth for the FULL catalog (no provider left behind) | Planned (step 1 design constraint: config → env → opencode-store bootstrap → engine OAuth; `auth_missing` fails loud at turn start; native protocol where no OpenAI-compatible surface exists) |
+| Provider auth for the FULL catalog (no provider left behind) | Partial (step-1 constraint live for openrouter/zai/ollama/gmicloud/nvidia; 2026-09-14 Go slice: `opencode-go` mapped — public `/zen/go/v1` endpoints, pasted-key auth via env/bootstrap, chat/completions live; responses/messages flavors fail loud `bad_request` naming the pending transport; loop-path `resolved.ok` gate closed. Still open: responses transport (unlocks muse-spark-contributor), Zen slice, thinkingmachines/gmi endpoint probes, copilot deferred, engine OAuth long-term) |
 | AGENTS.md / instruction auto-load (session-scoped, change-gated) | Planned (step 3; automatic with no opt-in, but cached per session — re-inject on new session / worktree / file change / post-compaction only) |
 | Skills reads (`skills/{name}/SKILL.md`, read-not-run v1) | Planned (step 3, same budgeted traced path, native read) |
 | Compaction + memory `build_context()` | Planned (step 3) |
-| Per-specialist selection + opencode fallback | Planned (step 4) |
+| Per-specialist selection + opencode fallback | Step 4 done (default flipped, per-task override, fallback-only-before-work). AMENDED 2026-09-14 (user ruling): no automatic cross-harness fallback — fail loud across harnesses, fail over within. Removal queued after the Go slice (gateway models must run natively first, else the flip-period fleet breaks); doctrine: selection sticks, reliability is per-harness (health gate + in-harness provider failover) |
 | `lsp` / `plan` / `webfetch` / `websearch` / `patch` tools + `skill` tool-execution | Deferred non-goal (demand-proven only; opencode covers meanwhile — loading/reads are NOT deferred, see above) |
 | SubAgentRun ephemeral runs | No engine work (store + endpoints sit above the harness) |
 | MCP server | Opencode-adapter only; engine speaks native calls |

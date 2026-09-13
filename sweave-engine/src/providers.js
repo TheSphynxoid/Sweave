@@ -24,12 +24,41 @@ const TABLE = {
   ollama: { baseURL: "http://localhost:11434/v1", key: false, envKeys: [] },
   gmicloud: { baseURL: "https://api.gmi-serving.com/v1", envKeys: ["GMI_API_KEY"] },
   nvidia: { baseURL: "https://integrate.api.nvidia.com/v1", envKeys: ["NVIDIA_API_KEY"] },
+  // OpenCode Go ($10/mo subscription, API key from the Zen console):
+  // public endpoints under /zen/go/v1 (opencode.ai/docs/go). The
+  // engine speaks chat/completions only — models on the sibling
+  // flavors fail loud in resolveProvider (named, at turn start),
+  // never as a mid-turn provider 400. Flavor source: the Go docs
+  // endpoint table; unknown future ids are ATTEMPTED on
+  // chat/completions (a Go 4xx then surfaces loudly anyway).
+  "opencode-go": {
+    baseURL: "https://opencode.ai/zen/go/v1",
+    envKeys: ["OPENCODE_GO_API_KEY"],
+    flavors: {
+      responses: new Set([
+        "grok-4.6",
+        "gpt-5.6-luna",
+        "muse-spark-1.3-contributor",
+        "muse-spark-1.2-contributor",
+      ]),
+      messages: new Set([
+        "minimax-m3",
+        "minimax-m2.7",
+        "minimax-m2.5",
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+      ]),
+    },
+  },
   // Catalog providers WITHOUT an OpenAI-compatible surface (honest
-  // auth_missing, never attempted): github-copilot (SDK device flow),
-  // cloudflare-workers-ai (workers binding, no HTTP key surface),
-  // opencode / opencode-go (builtin gateway endpoints live inside the
-  // opencode binary — unresolved from out here), thinkingmachines /
-  // gmi / others (endpoint unknown until proven).
+  // auth_missing, never attempted): github-copilot (SDK device flow,
+  // deferred by user ruling), cloudflare-workers-ai (workers binding,
+  // no HTTP key surface), opencode (Zen pay-as-you-go — same key
+  // shape as Go, own flavor map, own slice), thinkingmachines / gmi
+  // (endpoint unknown until proven).
 };
 
 function authStorePaths() {
@@ -59,10 +88,15 @@ function bootstrapKey(provider) {
 }
 
 /**
- * Resolve how to call `provider`. Returns { ok, baseURL, key, via } or
- * { ok: false, code: "auth_missing", reason }.
+ * Resolve how to call `provider` for `modelId`. Returns
+ * { ok, baseURL, key, via } or { ok: false, code, reason }.
+ *
+ * `modelId` selects the wire flavor on multi-flavor gateways
+ * (opencode-go): chat/completions is attempted, responses/messages
+ * models fail loud here with code "bad_request" naming the pending
+ * transport — a vocabulary-frozen code, never a new event shape.
  */
-export function resolveProvider(provider) {
+export function resolveProvider(provider, modelId) {
   const spec = TABLE[provider];
   const baseOverride = process.env[`SWEAVE_ENGINE_BASE_${provider.toUpperCase().replace(/[^A-Z0-9]/gi, "_")}`];
   if (!spec) {
@@ -71,6 +105,23 @@ export function resolveProvider(provider) {
       code: "auth_missing",
       reason: `provider ${JSON.stringify(provider)} has no OpenAI-compatible surface mapped (native protocol pending)`,
     };
+  }
+  // Wire-flavor gate FIRST (before credentials): a model on a flavor
+  // the engine doesn't speak must fail here even when a key exists —
+  // otherwise it dies mid-turn as a provider 400.
+  if (spec.flavors && modelId) {
+    for (const [flavor, ids] of Object.entries(spec.flavors)) {
+      if (ids.has(modelId)) {
+        return {
+          ok: false,
+          code: "bad_request",
+          reason:
+            `model ${JSON.stringify(modelId)} on ${JSON.stringify(provider)} ` +
+            `needs the ${flavor} transport (pending; engine speaks ` +
+            `chat/completions only)`,
+        };
+      }
+    }
   }
   const baseURL = baseOverride || spec.baseURL;
   if (spec.key === false) {

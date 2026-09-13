@@ -195,6 +195,16 @@
        override, fallback-only-before-work guard, Agents badge,
        `SWEAVE_API_URL` export, 18 new tests) — 918 pytest green
        (same 1 deselected), 311 vitest, build green, 13/13 run.py.
+       2026-09-14 rulings (user): (1) no automatic cross-harness
+       fallback — fail loud across, fail over within; removal queued
+       AFTER the Go slice (no outage window). (2) Go slice: `opencode-go`
+       is a plain API-key gateway (public `/zen/go/v1` endpoints —
+       user proven right, plan note corrected); chat/completions live
+       (`ox-alpha-free` probe model), responses/messages fail loud
+       naming the pending transport; loop-path `resolved.ok` gap
+       closed; 5 hermetic tests green. Next: live Go probe ($0 free
+       model, needs approval — spends Go quota) → responses transport
+       (unlocks muse-spark-contributor) → fallback removal → step 5.
        Remaining: step 5 (parity gates + docs, incl. the live
        mixed-fleet scene — needs an auth'd server window). Verdict:
      run both — with a coupling discipline, not just good intentions.

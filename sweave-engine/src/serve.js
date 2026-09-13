@@ -106,13 +106,26 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer) {
     }
   };
   try {
+    const resolved = resolveProvider(body.model.provider, body.model.model_id);
+    if (!resolved.ok) {
+      // Same named turn-start gate as the single-shot path: a failed
+      // resolution (auth_missing, pending-transport flavor) surfaces
+      // here, never cryptically inside the first loop fetch.
+      emit({ event: "error", code: resolved.code, message: resolved.reason, provider: body.model.provider });
+      clearTimeout(timer);
+      finish();
+      try {
+        res.end();
+      } catch {}
+      return;
+    }
     const { output, usage } = await runLoop({
       session,
       saveSession: () => store.save(),
       store,
       emit,
       body,
-      resolved: resolveProvider(body.model.provider),
+      resolved,
       cwd: body.cwd || ".",
       signal: turn.controller.signal,
       isAborted: () => turn.finished,
@@ -160,7 +173,7 @@ async function runTurn(sessionId, body, res) {
   const model = body.model;
   const turnTimeoutMs = Math.max(1, body.turn_timeout) * 1000;
 
-  const resolved = resolveProvider(model.provider);
+  const resolved = resolveProvider(model.provider, model.model_id);
   if (!resolved.ok) {
     // Named turn-start failure (auth_missing) — loud, before any token.
     sseEvent(res, { event: "error", code: resolved.code, message: resolved.reason, provider: model.provider });
