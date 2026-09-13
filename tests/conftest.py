@@ -87,3 +87,21 @@ def _isolate_project_manager_singleton(tmp_home, monkeypatch) -> Iterator[Projec
         yield fresh
     finally:
         shutil.rmtree(fresh.base_path, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _fast_system_send_bound(monkeypatch):
+    """System-prompt first-byte bound shrunk for the whole suite.
+
+    ``SpecialistRuntime._bounded_system_send`` (2026-09-13) waits for
+    the first streamed byte before letting the send run on. A test
+    double that never invokes ``on_chunk`` would otherwise stall the
+    suite for the PRODUCTION bound (950s) before tripping —
+    deterministic 16-minute per-test hangs. Every test that
+    specifically exercises the bound patches it explicitly anyway
+    (see tests/test_m2_1_followup_hardening.py). Tests that need the
+    real 950s value patch it back inside the test.
+    """
+    import sweave.runtime.specialist_runtime as rt
+
+    monkeypatch.setattr(rt, "PRE_MODEL_TIMEOUT_SECONDS", 1.0)

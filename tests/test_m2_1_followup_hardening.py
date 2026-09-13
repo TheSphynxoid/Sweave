@@ -39,6 +39,15 @@ def _mock_opencode_env():
             os.environ["SWEAVE_MOCK_OPENCODE"] = old
 
 
+@pytest.fixture(autouse=True)
+def _fast_system_bound(monkeypatch):
+    """System-send first-byte bound patched small so hang tests run
+    fast; restored per test."""
+    import sweave.runtime.specialist_runtime as rt
+
+    monkeypatch.setattr(rt, "PRE_MODEL_TIMEOUT_SECONDS", 0.05)
+
+
 def _make_runtime(monkeypatch, tmp_path: Path):
     """Real runtime on a mock serve; task sends faked.
 
@@ -63,9 +72,12 @@ def _make_runtime(monkeypatch, tmp_path: Path):
 
 async def _passthrough_send(self, message, on_chunk=None, trace=None,
                             trace_reasoning=False):
-    """Default system-send double: instant success (replaces per-test)."""
+    """Default system-send double: streams a byte then succeeds
+    (mirrors the real harness, which invokes on_chunk on text)."""
     from sweave.harness.base import AgentResult
 
+    if on_chunk is not None:
+        on_chunk("ok")
     return AgentResult(success=True, output="", metadata={})
 
 
@@ -96,20 +108,21 @@ def _trace_events(delegation_id: str, tmp_path: Path) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_template_send_hang_fails_fast_with_phase(monkeypatch, tmp_path: Path):
-    """A hung templated system-prompt send trips the stall bound fast.
+    """A zero-byte hung templated system-prompt send trips the
+    first-byte bound fast.
 
     Live shape: 16m40s of silence on the harness send path while the
-    watchdog watched only the main send. The bound must cover the
-    system send too, traced as phase=system_prompt.
+    watchdog watched only the main send. The first-byte bound must
+    cover the system send too, traced as phase=system_prompt.
     """
     import sweave.runtime.specialist_runtime as rt
     from sweave.harness.opencode import OpenCodeProcess
 
-    monkeypatch.setattr(rt, "STALL_TIMEOUT_SECONDS", 0.05)
     runtime = _make_runtime(monkeypatch, tmp_path)
 
     async def hanging_send(self, message, on_chunk=None, trace=None,
                            trace_reasoning=False):
+        # Zero bytes from the start — the live hang shape.
         await asyncio.sleep(3600)
         raise AssertionError("unreachable")
 
@@ -142,6 +155,10 @@ async def test_template_send_failure_is_loud(monkeypatch, tmp_path: Path):
 
     async def failing_send(self, message, on_chunk=None, trace=None,
                            trace_reasoning=False):
+        # Streams a byte, then the turn fails (e.g. swallowed
+        # provider ReadTimeout mid-turn).
+        if on_chunk is not None:
+            on_chunk("partial")
         return AgentResult(success=False, output="", error="ReadTimeout: boom")
 
     monkeypatch.setattr(OpenCodeProcess, "send", failing_send)

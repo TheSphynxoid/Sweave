@@ -251,8 +251,27 @@ async def submit_task_v2(
     routed_agent: str | None = None
     routed_model: str | None = None
     if request.agent:
+        from pathlib import Path as _P
+
         agent = request.agent
-        model = request.model or state.config_manager.resolve_model(agent)
+        # Model precedence (the documented M1.2/M1.4 chain):
+        # task_override > specialist.current_model > default. The
+        # specialist tier was missing here — chat-dispatched defers
+        # always got the config default, silently shadowing the
+        # user's per-specialist pick (incident 2026-09-13: paid-tier
+        # specialist pick never reached the wire).
+        model = request.model
+        if model is None:
+            from sweave.projects import project_manager
+
+            active = project_manager.get_active_project()
+            specialist_rec = state.ensure_specialist_resolver().resolve(
+                agent, _P(active.path) if active else None
+            )
+            if specialist_rec is not None and specialist_rec.current_model:
+                model = specialist_rec.public_model()
+        if model is None:
+            model = state.config_manager.resolve_model(agent)
         # Compute what the router would have picked (for the override log)
         try:
             decision = state.router.route(request.task)

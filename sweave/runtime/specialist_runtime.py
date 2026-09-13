@@ -79,6 +79,15 @@ logger = logging.getLogger(__name__)
 # now the failure names the symptom instead of "ReadTimeout".
 STALL_TIMEOUT_SECONDS = 300.0
 
+# Pre-model bound (incident 2026-09-13, session
+# Sweave-20260912-214940-2f4ca6): the serve does LEGITIMATE pre-model
+# work before the first byte — tool-loop warmup steps, compaction,
+# provider admission. Header-phase silence is therefore NOT the same
+# signal as body-phase silence; it gets a generous bound under the
+# httpx 1000s cap. The 300s body-phase clock arms at the first byte,
+# where silence really does mean wedged.
+PRE_MODEL_TIMEOUT_SECONDS = 950.0
+
 
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
 # different specialists + worktrees don't block each other. The
@@ -611,19 +620,41 @@ class SpecialistRuntime:
 
         ``t0`` names the total turn age beside the silence window,
         like :meth:`_send_message`.
+
+        Two-phase bound (incident 2026-09-13: a system send may run a
+        FULL agent turn legitimately — tool calls, thinking — so a
+        flat total cap kills honest work; and the hang that started
+        this was zero-bytes-from-the-start):
+        * first-byte bound: PRE_MODEL_TIMEOUT_SECONDS. Byte-silence
+          from the very start is always wedged (httpx's own 1000s
+          would kill it seconds later, invisibly).
+        * after the first streamed byte the send runs on — the
+          delegation's outer ``turn_timeout`` governs the rest, and
+          harness-level bytes (tools, reasoning) keep it alive even
+          when no text part has landed yet.
         """
+        first_activity: asyncio.Event = asyncio.Event()
+
+        def _touch(_part: str) -> None:
+            first_activity.set()
+
+        send_task = asyncio.create_task(
+            process.send(_system_message(message_text), on_chunk=_touch)
+        )
+
         try:
-            result = await asyncio.wait_for(
-                process.send(_system_message(message_text)),
-                timeout=STALL_TIMEOUT_SECONDS,
+            await asyncio.wait_for(
+                first_activity.wait(), timeout=PRE_MODEL_TIMEOUT_SECONDS
             )
+            result = await send_task
         except asyncio.TimeoutError:
+            send_task.cancel()
             try:
                 trace.append(
                     "stalled",
                     {
                         "phase": "system_prompt",
-                        "stall_seconds": STALL_TIMEOUT_SECONDS,
+                        "stall_seconds": PRE_MODEL_TIMEOUT_SECONDS,
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -640,10 +671,10 @@ class SpecialistRuntime:
                 process, getattr(process, "_session_id", "") or "", trace
             )
             return (
-                f"[chat error: stalled after {STALL_TIMEOUT_SECONDS:.0f}s "
-                f"without data (system-prompt send hung; the turn may "
-                f"still be running server-side; retry starts a fresh "
-                f"session{age_suffix}{stop_suffix})]"
+                f"[chat error: stalled after {PRE_MODEL_TIMEOUT_SECONDS:.0f}s "
+                f"without data (system-prompt send hung with zero bytes; "
+                f"the turn may still be running server-side; retry starts "
+                f"a fresh session{age_suffix}{stop_suffix})]"
             )
         if not getattr(result, "success", True):
             err = getattr(result, "error", None) or "unknown error"
@@ -833,6 +864,12 @@ class SpecialistRuntime:
                 headers=headers,
             )
             t_open = loop.time()
+            # Pre-model phase: legit serve warmup (tool-loop steps,
+            # compaction, provider admission) can take minutes of
+            # header silence. Bound it generously (PRE_MODEL), not at
+            # the body-silence 300s — the 02:05 retry died exactly
+            # this way (never reached the serve-side model).
+            header_bound = PRE_MODEL_TIMEOUT_SECONDS
 
             class _AlreadyOpen:
                 """Re-wrap a manually-entered stream CM for ``async with``.
@@ -854,7 +891,7 @@ class SpecialistRuntime:
 
             try:
                 _resp = await asyncio.wait_for(
-                    raw_cm.__aenter__(), timeout=stall_seconds
+                    raw_cm.__aenter__(), timeout=header_bound
                 )
             except asyncio.TimeoutError:
                 if trace is not None:
@@ -863,7 +900,7 @@ class SpecialistRuntime:
                             "stalled",
                             {
                                 "phase": "headers",
-                                "stall_seconds": stall_seconds,
+                                "stall_seconds": header_bound,
                                 "wait_s": round(loop.time() - t_open, 1),
                             },
                         )
@@ -882,7 +919,7 @@ class SpecialistRuntime:
                     process, wire_session_id, trace
                 )
                 return (
-                    f"[chat error: stalled after {stall_seconds:.0f}s without "
+                    f"[chat error: stalled after {header_bound:.0f}s without "
                     f"data (response headers never arrived; the turn may "
                     f"still be running server-side; retry starts a fresh session"
                     f"{age_suffix}{stop_suffix})]"

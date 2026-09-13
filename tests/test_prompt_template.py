@@ -118,6 +118,12 @@ def _make_runtime(monkeypatch, tmp_path: Path):
 
     async def spy_send(self, message, on_chunk=None, trace=None, trace_reasoning=False):
         system_sends.append(f"{message.type}:{message.content}")
+        # The real harness invokes on_chunk on streamed text parts;
+        # the runtime's first-byte bound (2026-09-13) now depends on
+        # it. A double that never touches on_chunk trips the bound
+        # after PRE_MODEL_TIMEOUT_SECONDS (16-minute suite hangs).
+        if on_chunk is not None:
+            on_chunk("ok")
         from unittest.mock import MagicMock
 
         return MagicMock()

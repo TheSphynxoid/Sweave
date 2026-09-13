@@ -203,6 +203,14 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    turn into ``[chat error: TypeError...]``. When adding a callback
    to ``_send_message``, update all ``fake_send*`` stubs in the
    same change (grep ``async def fake_send`` under ``tests/``).
+   3b. **System-send doubles must invoke ``on_chunk``** (2026-09-13).
+   ``_bounded_system_send`` waits for the first streamed byte
+   (``PRE_MODEL_TIMEOUT_SECONDS``, prod 950s, conftest shrunk to
+   1s) before letting the send run on — a double that never calls
+   ``on_chunk`` (early ``test_prompt_template.spy_send`` returning a
+   bare ``MagicMock``) trips the bound and reads as a stall. The
+   real harness invokes ``on_chunk`` on text parts; doubles should
+   too (call it once then return).
 
 4. **Test answerers for escalation flows must be gated, never
    fire-once** (2026-09-11: a fire-once answerer answered the
