@@ -1,7 +1,9 @@
 # Custom Engine Plan — sweave-native execution layer (best-offer harness)
 
 Status: planned (2026-09-11; refreshed 2026-09-13 for parallel execution
-with the transparency track). Deepening of the M1.7 side-project note
+with the transparency track) — **Step 0 done 2026-09-13** (protocol freeze:
+`sweave/engine/protocol.py` + `tests/test_engine_protocol.py`, 27 green).
+Deepening of the M1.7 side-project note
 (`docs/M1_7_PLAN.md` "Side-projects: Custom agent engine" + "Branch notes:
 engine driver conversation is side-project-scoped, not R-numbered").
 Roadmap slot: extends R3 (multi-harness) — the native engine registers as
@@ -12,10 +14,15 @@ transcript parity on the opencode wire). Parallel-execution discipline:
 
 ## 1. Starting point (re-verified 2026-09-11 against code, not older bullets)
 
-- Harness contract is small and ready: `Harness.spawn/send/wait/terminate`,
-  `Message.model: ModelRef | None`, optional `on_chunk`
-  (`sweave/harness/base.py:110-168`). `AgentSpec.harness` already selects
-  per task; `harness_registry` (`base.py:170-186`) lists offers.
+- Harness contract is small and ready: `Harness.spawn` / `Harness.attach`
+  (+ `get_default_tools` / `health_check`) with `AgentProcess.send` /
+  `wait` / `terminate` on the process handle, `Message.model: ModelRef |
+  None`, optional `on_chunk` (`sweave/harness/base.py:110-190`).
+  `AgentSpec.harness` already selects per task; `harness_registry`
+  (`base.py:170-190`) lists offers. `Specialist.harness` already exists
+  (default `"opencode"`, `sweave/runtime/specialist_store.py:209`) — step
+  4 is selection + fallback semantics only, no schema change (solo
+  ruling 2026-09-13: bump iff the field is missing; it is not).
 - Opencode is the only spawn-capable harness (DESIGN §5 item 2, §6 R3:
   claude/codex are detect-only). `OpenCodeHarness.spawn` = real subprocess
   + log-file port discovery + v2 HTTP (`sweave/harness/opencode.py:964-1042`).
@@ -50,10 +57,20 @@ transcript parity on the opencode wire). Parallel-execution discipline:
   orchestrator binding, trace JSONL, `TurnDelegations`/`DetailView` all sit
   above the harness and are engine-agnostic — provided both harnesses emit
   identical trace events.
-- Working tree is dirty with the parallel session's turn-recovery WIP
-  (2026-09-11). This plan creates no conflicts: new dir `sweave-engine/`
-  + additive registry entry only. Shared-doc link edits (M1.7 pointer,
-  DESIGN R3 row, PROJECT_STATE entry) are deferred to a clean tree.
+- Working tree is clean except the user's own config hunks (`config.yaml`,
+  `models.yaml`, `models.meta.json` — ruling 5 dirt, not ours). Step 0
+  landed the new dir `sweave/engine/` (protocol only) + contract tests.
+  Shared-doc link edits (M1.7 pointer, DESIGN R3 row, PROJECT_STATE
+  entry) ride with the step-5 docs pass.
+- Solo-execution re-order (user-locked 2026-09-13 — exclusive event, no
+  parallel worker): shared/collision-risk seams first. Order is now
+  step 0 (protocol, done) → steps 1 + 3 (free: chat skeleton,
+  `build_context`) → view probe step 0 inline (free-tier models only,
+  unblocks step 2) → step 2 (tool executor) → step 4
+  (selection + fallback, no schema bump) → step 5 (gates + docs).
+  Ecosystem baseline first: opencode's own tool/permission/abort/revert
+  semantics are adopted verbatim (sources in the Step-0 appendix), never
+  re-designed.
 
 ## 2. Goal state
 
@@ -247,9 +264,12 @@ extended, engine-agnostic by construction (R4.4 "custom-engine memory API"
 note satisfied).
 
 ### Step 4 — Per-specialist selection + fallback (~0.5 session)
-`specialist.harness` field (default `sweave-engine` once step 2 lands,
-per-task override + automatic fallback to `opencode` on engine failure with
-`fallback_used` trace reason). Agents UI badge shows engine per specialist;
+`specialist.harness` field ALREADY EXISTS (default `"opencode"` —
+verified 2026-09-13, so no schema bump, no migration: solo ruling,
+executor discretion). Step 4 is selection semantics only: default flips
+to `sweave-engine` once step 2 lands, per-task override + automatic
+fallback to `opencode` on engine failure with `fallback_used` trace
+reason. Agents UI badge shows engine per specialist;
 no global flag-day. Done-gate: mixed-fleet live scene (native chat +
 opencode specialist + native specialist) all `done`; fallback path
 covered by killing the engine mid-turn in test.
@@ -303,10 +323,12 @@ orchestrator — policy holds).
 - Test matrix doubling — capped by the identical-trace-events invariant;
   any divergence is a P0 contract bug, not a second suite. Vocabulary
   owner is the transparency track (§7).
-- Parallel-session conflicts — this plan touches only new paths until
-  step 4's `specialist.harness` field (schema bump + migration per gotcha
-  #12 rule); coordinate that step with the turn-recovery WIP owner AND the
-  transparency track (its live block reads the same record).
+- Shared-record coordination — step 4 touches the `Specialist` record
+  (the view track's live block reads the same record): additive
+  selection semantics only, no schema change (the `harness` field
+  predates both tracks). Solo update 2026-09-13: no parallel worker,
+  so step 4 lands whenever step 2 does; the §7 gate still binds any
+  future second thread.
 
 ## 7. Parallel execution with the transparency track (2026-09-13)
 
@@ -377,3 +399,31 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | SubAgentRun ephemeral runs | No engine work (store + endpoints sit above the harness) |
 | MCP server | Opencode-adapter only; engine speaks native calls |
 | Permission bridge plugin + hijack endpoint | Not transferred (in-engine `permission.asked` replaces the ferry) |
+
+## Appendix — Step-0 protocol freeze (done 2026-09-13)
+
+Frozen in `sweave/engine/protocol.py`, pinned by
+`tests/test_engine_protocol.py` (27 green, hermetic — zero I/O).
+Baselines adopted verbatim (user ruling: no re-design):
+
+| Decision | Baseline source |
+|---|---|
+| 6-tool names + `edit`-covers-`write` permission key + `external_directory` + once/always/reject + last-match-wins + per-agent override | opencode tools + permissions docs (fetched 2026-09-13) |
+| AbortSignal per tool call; busy-guard 409 mid-turn | opencode `Tool.Context.abort` + `assertNotBusy` (DeepWiki tool-system reference, fetched 2026-09-13) |
+| `POST /revert {messageID}` pointer (listing untruncated, next prompt replaces tail) + shadow-git restore + git-only + `unrevert` | `docs/M2_1_FOLLOWUP_PLAN.md` §C live probes on 1.18.30 (`scripts/probe_revert_*.py`, free-tier only) |
+| `tool.started/updated/completed/failed {callID, tool, state}` + `step.boundary {reason, cost, tokens{input,output,reasoning,cache{read,write}}}` + terminal `tokens_used {input,output,reasoning,cache_read,cache_write,cost}` | M1.9 audit anchor (`sweave/harness/opencode.py:181-239,508-579`); parity-pinned against the real helper, not a copy |
+| `queued:/rejected:/escalated:` contract strings | `sweave/mcp/__init__.py` (defer/ask_human/escalate surfaces) |
+
+Frozen wire (protocol version `"1"`, header
+`X-Sweave-Engine-Protocol` on everything; mismatch refuses at
+connect via `ProtocolMismatch`, never fails turns cryptically):
+`POST /run {session_id, composed_prompt, tools[], permission_map,
+model, turn_timeout, cwd}` → SSE `{token, tool.started|updated|
+completed|failed, step.boundary, permission.asked, done|error}` +
+terminal `tokens_used`; `GET /health` (handshake `{protocol_version,
+...}`); `POST /abort {session_id}` → `acknowledged | UNCONFIRMED`
+(consented, never gated by `KILL_ON_SILENCE`; 409 when no live turn);
+`POST /revert {session_id, to_message}` (whole-message v1, busy-409).
+`auth_missing` is a named turn-start failure (full-catalog auth is the
+step-1 constraint). `Specialist.harness` predates the freeze — step 4
+needs no schema work.
