@@ -49,11 +49,47 @@ const TABLE = {
       ]),
     },
   },
+  // OpenCode Zen (pay-as-you-go; same gateway family as Go, key
+  // from the Zen console): public endpoints under /zen/v1. Flavor
+  // source: the Zen gateway table (gpt → responses, claude →
+  // messages, gemini → google, compatible → chat/completions).
+  // Unknown ids are ATTEMPTED on chat/completions (loud on mismatch).
+  // LIVE 2026-09-14: Bearer accepted, key valid; deepseek-v4-flash-free
+  // → 400 "Model is unavailable", muse-spark-1.3-contributor-free →
+  // 500 (both $0, pre-generation) — server-side availability, not a
+  // client bug. Full native turn still unproven live; needs a
+  // servable model (TUI /models is ground truth, or one paid
+  // micro-turn on glm-5.3-flash with approval).
+  "opencode": {
+    baseURL: "https://opencode.ai/zen/v1",
+    envKeys: ["OPENCODE_API_KEY"],
+    flavors: {
+      responses: new Set([
+        "gpt-5", "gpt-5-codex", "gpt-5-nano", "gpt-5.1",
+        "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
+        "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex",
+        "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini",
+        "gpt-5.4-nano", "gpt-5.4-pro", "gpt-5.5", "gpt-5.5-pro",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra",
+      ]),
+      messages: new Set([
+        "claude-3-5-haiku", "claude-fable-5", "claude-fable-5-1",
+        "claude-haiku-4-5", "claude-opus-4-1", "claude-opus-4-5",
+        "claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8",
+        "claude-opus-5", "claude-sonnet-4", "claude-sonnet-4-5",
+        "claude-sonnet-4-6", "claude-sonnet-5",
+      ]),
+      google: new Set([
+        "gemini-3-flash", "gemini-3-pro", "gemini-3.1-pro",
+        "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash",
+        "gemini-3.7-flash", "gemini-3.8-flash",
+      ]),
+    },
+  },
   // Catalog providers WITHOUT an OpenAI-compatible surface (honest
   // auth_missing, never attempted): github-copilot (SDK device flow,
   // deferred by user ruling), cloudflare-workers-ai (workers binding,
-  // no HTTP key surface), opencode (Zen pay-as-you-go — same key
-  // shape as Go, own flavor map, own slice), thinkingmachines / gmi
+  // no HTTP key surface), thinkingmachines / gmi
   // (endpoint unknown until proven).
 };
 

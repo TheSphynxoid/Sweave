@@ -206,7 +206,13 @@
        2026-09-14 (user ruling): `credentials.json` canonical, adopt-once +
        drift prompts + reverse-sync (backup), `GET /api/providers` universe
        × availability, sidecar Sweave tier, local/custom-endpoints out of
-       scope; keychain UI next. Next: live Go probe ($0 free
+       scope; keychain UI next. Zen mapped too (user: same gateway family
+       — proven: public /zen/v1, separate key, flavor table; hermetic green;
+       live 2026-09-14: key valid/Bearer accepted, but free models fail
+       server-side — deepseek-free 400 unavailable, muse-free 500, $0 spent;
+       full native turn unproven). Found live: isolated vs real auth stores
+       hold DIFFERENT opencode keys (fp-diverged silently — the drift-prompt
+       earns its keep; boot sync converges going forward). Next: live Go probe ($0 free
        model, needs approval — spends Go quota) → responses transport
        (unlocks muse-spark-contributor) → fallback removal → step 5.
        Remaining: step 5 (parity gates + docs, incl. the live
