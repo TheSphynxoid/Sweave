@@ -35,6 +35,16 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `stop_server.py`. Concurrent second servers are safe (live-owner entries are
    skipped). Your own `opencode` TUI / `:4123` serve are never touched (only
    tracked PIDs are ever killed).
+6. **Ephemeral test servers: isolated home + never the user's port**
+   (2026-09-13). A scratch server for live gates boots with an
+   ISOLATED home (`$env:HOME`/`$env:USERPROFILE` = tmp dir — the
+   child inherits process env; a hashtable built but never passed to
+   `Start-Process` does nothing, and the server silently uses the
+   REAL home, sweeping real state). Verify isolation by effect
+   (token file appears under the tmp home), never by assumption.
+   Never bind the user's live port; never `start_server.py` for a
+   scratch instance (it shares `web.pid`/`web.log`); PID-scope every
+   kill and confirm the user's server answers after.
 
 ## Opencode harness & wire protocol
 
@@ -477,6 +487,19 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    `ParserError: expected '<document start>'`. Allowlist-match
    plain-safe values and emit them verbatim; dump-and-take-
    first-line only as a fallback.
+
+5. **config.yaml / models.yaml / models.meta.json are LIVE user
+   state — never stash, checkout, or restore them** (2026-09-13:
+   a `git stash` + `pop` round-trip collided with the user's live
+   edits — the models default switched mid-session — and a
+   `checkout -- config.yaml` destroyed the live default; recovery
+   was byte-compare against a TEMP backup). With
+   `core.autocrlf=true` the merge friction is worse (phantom-dirty
+   files abort the pop while partial changes stay applied).
+   Rules: treat these three as read-only; back them up to TEMP
+   before any git operation that could touch them; verify with
+   byte hashes, never `git status` alone; conflicting content
+   always resolves in favor of the live file, never HEAD.
 
 ## sweave-web UI
 

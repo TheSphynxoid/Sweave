@@ -206,6 +206,23 @@ DetailView work unchanged for both engines. Done-gate: scripted tool-turn
 fixture (read→edit→bash→grep) green on both harnesses with byte-identical
 trace event names; permission ask→allow-once→content and deny→loud-abort
 live scenes (mirror of `scripts/m1_12_live_gate.py`).
+DONE 2026-09-13 (sidecar `tools.js` + `sweave.js` + `loop.js`, `POST
+/api/engine/permission`, adapter delegation_id/role passthrough,
+`tests/test_engine_tools.py` 12 + `test_engine_permission_endpoint.py`
+17 green; full suite 900 green). Deltas from the plan, all locked by
+build evidence: (1) ask needs NO scope re-evaluation — the
+orchestrator-rendered map already encodes scope (blind enforcement);
+(2) ask_human BLOCKS inside the engine tool call (the engine owns the
+ChatLoop's hold-open) and returns the human's answer as the result;
+(3) doom-loop degrades to a typed rejection, not a permission ask;
+(4) role gating is structural (unoffered tools reject as unknown —
+never reach the API). Live proof, free-tier $0
+(`scripts/engine_permission_live.py`, ephemeral isolated-home server
+so the user's live :8100 was never touched): allow-once → real tool
+content; deny → loud failure, no content. Bug found live, fixed +
+pinned: loop history slicing dropped the current prompt (provider
+400) — the loop now maps the live store every iteration; the hermetic
+stub rejects messageless requests like the live provider.
 
 Execution model (2026-09-12): in-process asyncio tasks (structured
 concurrency) for orchestration; blocking tool calls offloaded to
