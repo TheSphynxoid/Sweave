@@ -1,10 +1,14 @@
 # Custom Engine Plan — sweave-native execution layer (best-offer harness)
 
-Status: planned (2026-09-11). Deepening of the M1.7 side-project note
+Status: planned (2026-09-11; refreshed 2026-09-13 for parallel execution
+with the transparency track). Deepening of the M1.7 side-project note
 (`docs/M1_7_PLAN.md` "Side-projects: Custom agent engine" + "Branch notes:
 engine driver conversation is side-project-scoped, not R-numbered").
 Roadmap slot: extends R3 (multi-harness) — the native engine registers as
 a second `Harness` alongside opencode, not as a replacement flag-day.
+Companion: `docs/SPECIALIST_VIEW_PLAN.md` (transparency: live pane +
+transcript parity on the opencode wire). Parallel-execution discipline:
+§7 — read before staffing the second thread.
 
 ## 1. Starting point (re-verified 2026-09-11 against code, not older bullets)
 
@@ -18,10 +22,20 @@ a second `Harness` alongside opencode, not as a replacement flag-day.
 - "Streaming" today is single-block delivery: `send` concatenates text parts
   and fires `on_chunk` per part (`opencode.py:461-477`); the serve typically
   emits one end-of-turn text object, so `chat.delta` is effectively
-  single-shot. The 300s stall watchdog (`specialist_runtime.py:80`) and the
-  900s turn bound exist because the wire goes silent for minutes then dumps
-  a finished block. ACP is strictly worse today (no message/thought chunks —
-  DESIGN §R4.2 "ACP verdict").
+  single-shot. The stall watchdog watches message-stream bytes only
+  (`specialist_runtime.py:963-964`): 300s body silence, 950s pre-model
+  header bound (2026-09-13 — headers vs body are different signals),
+  1800s soft outer total, `KILL_ON_SILENCE=False` (2026-09-13 regression:
+  byte-silence cannot classify patient-vs-wedged, so the watchdog records
+  loudly and lets work continue instead of killing). ACP is strictly worse
+  today (no message/thought chunks — DESIGN §R4.2 "ACP verdict").
+- Transparency track (2026-09-13, `docs/SPECIALIST_VIEW_PLAN.md`) owns the
+  trace vocabulary + detail payload + read-only subchat projection on the
+  opencode wire, including the record-side transcript capture (per-turn
+  sent-prompt events, `tool.*` parsing in the runtime) and ruling 4B:
+  fetch-side engine-truth is deferred to THIS engine, which owns its
+  transcript. The engine adopts that vocabulary verbatim (§7) — the
+  identical-trace-events invariant now has a named owner.
 - Sweave tools (`defer/list_specialists/ask_human/escalate`,
   `sweave/mcp/__init__.py:475-567`) are MCP-stdio only because that is all
   opencode understands. Native opencode tools
@@ -119,7 +133,8 @@ delegation worktree cwd. Permission map rendered by the orchestrator
 (`agent_permission.py` + `render_external_directory` semantics) enforced
 in-engine; `ask` → native `permission.asked` event → existing escalation
 flow (answer/skip=deny); no plugin, no hijack endpoint. Identical trace
-events (`tool.*`, `step.boundary`, `tokens_used`) so `sweave log` and
+events (`tool.*`, `step.boundary`, `tokens_used` — vocabulary adopted
+verbatim per §7, never invented here) so `sweave log` and
 DetailView work unchanged for both engines. Done-gate: scripted tool-turn
 fixture (read→edit→bash→grep) green on both harnesses with byte-identical
 trace event names; permission ask→allow-once→content and deny→loud-abort
@@ -243,15 +258,51 @@ orchestrator — policy holds).
   reintroducing fake streaming; liveness timeout stays honest.
 - Permission parity drift between engines — mitigated by the orchestrator
   rendering one map and both engines enforcing it blindly; any new `ask`
-  class gets its own entry, never a wildcard (M1.12 rule).
+  class gets its own entry, never a wildcard (M1.12 rule). Hardened by §7:
+  the engine's tool executor (step 2) starts only after the transparency
+  track's sensor decision lands, so it enforces stable semantics, not
+  shifting ones.
 - Scope creep on tools — the 6-tool list is the parity bar; everything
   else needs a user ruling with a trace-use audit (count `tool.completed`
   by name from `~/.sweave/traces/*.jsonl` first).
 - Test matrix doubling — capped by the identical-trace-events invariant;
-  any divergence is a P0 contract bug, not a second suite.
+  any divergence is a P0 contract bug, not a second suite. Vocabulary
+  owner is the transparency track (§7).
 - Parallel-session conflicts — this plan touches only new paths until
   step 4's `specialist.harness` field (schema bump + migration per gotcha
-  #12 rule); coordinate that step with the turn-recovery WIP owner.
+  #12 rule); coordinate that step with the turn-recovery WIP owner AND the
+  transparency track (its live block reads the same record).
+
+## 7. Parallel execution with the transparency track (2026-09-13)
+
+Verdict: run both threads side by side — but they share three seams, so
+parallelism gets a coupling discipline, not just good intentions.
+
+| Shared seam | Owner | Rule |
+|---|---|---|
+| Trace event vocabulary (`tool.*`, activity, per-turn prompt, `tokens_used` shapes) | transparency track | engine adopts verbatim; new shapes are proposed to the view plan first, never invented engine-side |
+| Detail payload + subchat projection | transparency track | engine turns render through the same projector; engine work that needs a new field extends the payload, never a second surface |
+| Permission map + per-tool budget semantics | orchestrator (`agent_permission.py` + view step 1) | engine enforces blindly; step 2 starts after the view sensor decision |
+
+Sequence gates (everything else runs fully parallel):
+
+1. Engine steps 0–1 (protocol + chat skeleton) are free — new dir +
+   registry + docs only. May start immediately, alongside any view step.
+2. Engine step 2 (tool executor) waits for the view step-1 sensor decision
+   (stable tool/activity semantics before building the second enforcer).
+3. Engine step 3 (`build_context`) is free (server-side, additive).
+4. Engine step 4 (`specialist.harness` field + fallback) coordinates with
+   the view live-block work — same record, one migration, ideally one
+   session. Neither thread bumps the Delegation/Specialist schema without
+   the other reviewing.
+5. Opencode contract stays green throughout (ruling 4, 2026-09-11): the
+   fallback path runs the full gate every step; a green engine that broke
+   opencode is a failed step.
+
+The challenge this answers: building a second tool executor while the
+first path's permission model is still being fixed is how two subtly
+different sandboxes are born. The gates above make the second executor a
+re-implementation of settled semantics, never a parallel invention.
 
 ## Appendix — transport map (contract identical, transport differs)
 

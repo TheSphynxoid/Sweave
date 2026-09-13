@@ -179,6 +179,16 @@
      `tool.*` events, so the timeline is structurally empty for
      specialist turns. Steps 0–5: probe → activity liveness → transcript
      → live block + abort → pane UI → gates.
+   - ▶ **Custom engine thread (2026-09-13): `docs/CUSTOM_ENGINE_PLAN.md`
+     refreshed for side-by-side execution with the view track.** Verdict:
+     run both — with a coupling discipline, not just good intentions.
+     Shared seams have single owners (trace vocabulary + detail payload →
+     transparency track, engine adopts; permission semantics → orchestrator).
+     Sequence gates: engine steps 0–1 + 3 free immediately; engine step 2
+     (tool executor) waits for the view step-1 sensor decision; engine step
+     4 (`specialist.harness` field) coordinates with the view live-block
+     work (same record, one migration). Stale facts corrected (timers now
+     300s body + 950s pre-model + 1800s soft total, KILL_ON_SILENCE off).
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
