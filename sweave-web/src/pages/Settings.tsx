@@ -14,6 +14,7 @@ import {
   applyThemeToDocument,
   type ActiveTheme,
 } from "@/lib/theme";
+import { useFontScale, FONT_SCALE_OPTIONS } from "@/lib/theme/fontScale";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -187,6 +188,51 @@ function AppearanceSettings() {
           />
         </CardContent>
       </Card>
+
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle className="text-sm">Font size</CardTitle>
+          <CardDescription>
+            Scales the whole interface (chrome, chat, and messages) relative to your
+            browser default. Respects OS/browser zoom too.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <FontScaleControl />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function FontScaleControl() {
+  const [scaleId, setScaleId] = useFontScale();
+  return (
+    <div
+      className="inline-flex rounded-lg border p-1"
+      role="group"
+      aria-label="Font size"
+      data-testid="settings-font-scale"
+    >
+      {FONT_SCALE_OPTIONS.map((opt) => {
+        const isActive = scaleId === opt.id;
+        return (
+          <button
+            key={opt.id}
+            type="button"
+            data-testid={`settings-font-scale-${opt.id}`}
+            aria-pressed={isActive}
+            title={`${opt.label} · ~${opt.basePx}px base`}
+            onClick={() => setScaleId(opt.id)}
+            className={cn(
+              "rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
+              isActive ? "bg-primary text-primary-foreground" : "hover:bg-muted",
+            )}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
