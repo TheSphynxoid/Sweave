@@ -13,7 +13,7 @@ Standards adopted verbatim (never re-designed here; sources in
   Discovery mirrors Codex: global file -> project root -> worktree
   walk (root-down, at most one file per dir, blank-joined, empty
   skipped, 32 KiB total cap). Session-scoped cache: re-inject only
-  on new session, worktree change, file change (mtime/size-gated),
+  on new session, worktree change, file change (content-gated),
   or explicit invalidate (post-compaction / post-revert rewind).
 * Skills: SKILL.md (agentskills.io open spec). ``skills/{name}/
   SKILL.md`` with required ``name`` + ``description`` frontmatter;
@@ -256,7 +256,8 @@ class InstructionCache:
 
     The hook runs pre-turn but the section is re-injected only on:
     new session key, worktree-identity change, file change
-    (mtime + size fingerprint), or explicit :meth:`invalidate`
+    (content hash — same-tick rewrites included), or explicit
+    :meth:`invalidate`
     (post-compaction / post-revert rewind). The trace records
     cached-vs-injected + hash, so staleness is auditable.
     """
@@ -271,17 +272,19 @@ class InstructionCache:
         worktree_dir: Path | None,
         files: list[Path],
     ) -> str:
+        # Content-hashed, not mtime-gated: same-tick rewrites (same
+        # mtime_ns + size) are real on coarse filesystems and a
+        # stat-only fingerprint would serve stale instructions. Chain
+        # candidates are a handful of KB-scale files, so hashing per
+        # turn is microseconds out of OS cache.
         h = hashlib.sha256()
         h.update(f"project={project_dir}".encode("utf-8"))
         h.update(f"worktree={worktree_dir}".encode("utf-8"))
         for path in files:
             try:
-                stat = path.stat()
-                h.update(
-                    f"{path}:{stat.st_mtime_ns}:{stat.st_size};".encode(
-                        "utf-8"
-                    )
-                )
+                content = path.read_bytes()
+                digest = hashlib.sha256(content).hexdigest()[:16]
+                h.update(f"{path}:{digest};".encode("utf-8"))
             except OSError:
                 h.update(f"{path}:missing;".encode("utf-8"))
         return h.hexdigest()[:16]
