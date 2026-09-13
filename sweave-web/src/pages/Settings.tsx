@@ -13,7 +13,6 @@ import {
 } from "@/lib/theme";
 import { useFontScale, FONT_SCALE_OPTIONS } from "@/lib/theme/fontScale";
 import { PageHeader } from "@/components/PageHeader";
-import { EmptyState } from "@/components/EmptyState";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -35,14 +34,19 @@ export function SettingsPage() {
     queryFn: () => api.listHarnesses(),
   });
 
+  // Appearance (theme + font size) is global — persisted in localStorage,
+  // not per-project — so it renders even with no active project. The
+  // Project/Models/System tabs need a project or a registry and keep
+  // their own empty states.
   if (!activeProject) {
     return (
-      <div className="p-6" data-testid="page-settings">
-        <EmptyState
+      <div className="p-6 space-y-6" data-testid="page-settings">
+        <PageHeader
+          title="Settings"
+          description="Appearance lives here. Activate a project for project, model, and system settings."
           icon={<SettingsIcon size={20} />}
-          title="No project active"
-          description="Activate a project to see its settings."
         />
+        <AppearanceSettings />
       </div>
     );
   }
@@ -93,6 +97,8 @@ export function SettingsPage() {
 
 function AppearanceSettings() {
   const { theme, setPreset, setCustom, resetCustom } = useTheme();
+  const [customOpen, setCustomOpen] = useState(false);
+  const customCount = Object.keys(theme.custom).length;
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -112,14 +118,14 @@ function AppearanceSettings() {
               data-testid="settings-preset-system"
               title="Follow the operating system"
               className={cn(
-                "flex w-full items-center gap-2 rounded-lg border p-3 text-left transition-colors",
+                "flex w-full items-center gap-2 rounded-lg border p-2.5 text-left transition-colors",
                 theme.preset === SYSTEM_PRESET_NAME
                   ? "border-primary ring-1 ring-primary"
                   : "hover:bg-muted",
               )}
             >
               <span
-                className="grid h-9 w-9 shrink-0 rounded-md"
+                className="grid h-7 w-7 shrink-0 rounded-md"
                 style={{
                   background: "linear-gradient(135deg, #0f172a 0 50%, #f8fafc 50% 100%)",
                 }}
@@ -139,7 +145,7 @@ function AppearanceSettings() {
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                 {mode === "light" ? "Light" : "Dark"} · {presetsByMode(mode).length}
               </p>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
                 {presetsByMode(mode).map((preset) => {
                   const primary = `rgb(${preset.tokens.primary})`;
                   const bg = `rgb(${preset.tokens.background})`;
@@ -152,20 +158,20 @@ function AppearanceSettings() {
                       type="button"
                       onClick={() => setPreset(preset.name)}
                       data-testid={`settings-preset-${preset.name}`}
-                      title={preset.description}
+                      title={`${preset.label} — ${preset.description}`}
                       className={cn(
-                        "flex items-center gap-2 rounded-lg border p-3 text-left transition-colors",
+                        "flex items-center gap-2 rounded-lg border p-2.5 text-left transition-colors",
                         isActive ? "border-primary ring-1 ring-primary" : "hover:bg-muted",
                       )}
                     >
                       <span
-                        className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-xs font-semibold"
+                        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[11px] font-semibold"
                         style={{ background: primary, color: `rgb(${preset.tokens["primary-foreground"]})` }}
                       >
                         A
                       </span>
                       <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium">{preset.label}</span>
+                        <span className="block truncate text-[13px] font-medium">{preset.label}</span>
                         <span
                           className="mt-1 flex gap-1"
                           aria-hidden
@@ -191,11 +197,27 @@ function AppearanceSettings() {
           <CardDescription>Fine-tune individual surface colors.</CardDescription>
         </CardHeader>
         <CardContent>
-          <CustomColorEditor
-            theme={theme}
-            onChange={(next) => setCustom(next.custom)}
-            onReset={resetCustom}
-          />
+          <button
+            type="button"
+            onClick={() => setCustomOpen((o) => !o)}
+            aria-expanded={customOpen}
+            data-testid="settings-customize-toggle"
+            className="flex w-full items-center justify-between rounded-lg border border-border px-3 py-2 text-sm transition-colors hover:bg-muted"
+          >
+            <span>
+              {customCount > 0 ? `${customCount} override${customCount === 1 ? "" : "s"} active` : "Per-token color overrides"}
+            </span>
+            <span className="text-xs text-muted-foreground">{customOpen ? "Hide" : "Show"}</span>
+          </button>
+          {customOpen && (
+            <div className="pt-2">
+              <CustomColorEditor
+                theme={theme}
+                onChange={(next) => setCustom(next.custom)}
+                onReset={resetCustom}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -218,31 +240,37 @@ function AppearanceSettings() {
 function FontScaleControl() {
   const [scaleId, setScaleId] = useFontScale();
   return (
-    <div
-      className="inline-flex rounded-lg border p-1"
-      role="group"
-      aria-label="Font size"
-      data-testid="settings-font-scale"
-    >
-      {FONT_SCALE_OPTIONS.map((opt) => {
-        const isActive = scaleId === opt.id;
-        return (
-          <button
-            key={opt.id}
-            type="button"
-            data-testid={`settings-font-scale-${opt.id}`}
-            aria-pressed={isActive}
-            title={`${opt.label} · ~${opt.basePx}px base`}
-            onClick={() => setScaleId(opt.id)}
-            className={cn(
-              "rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
-              isActive ? "bg-primary text-primary-foreground" : "hover:bg-muted",
-            )}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
+    <div className="space-y-3">
+      <div
+        className="inline-flex rounded-lg border p-1"
+        role="group"
+        aria-label="Font size"
+        data-testid="settings-font-scale"
+      >
+        {FONT_SCALE_OPTIONS.map((opt) => {
+          const isActive = scaleId === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              data-testid={`settings-font-scale-${opt.id}`}
+              aria-pressed={isActive}
+              title={`${opt.label} · ~${opt.basePx}px base`}
+              onClick={() => setScaleId(opt.id)}
+              className={cn(
+                "rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
+                isActive ? "bg-primary text-primary-foreground" : "hover:bg-muted",
+              )}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="space-y-1 rounded-lg border border-border bg-muted/40 px-3 py-2.5" aria-hidden>
+        <p className="text-sm">The quick brown fox jumps over the lazy dog 0123456789</p>
+        <p className="font-mono text-xs">const answer = await orchestrator.ask("ship it");</p>
+      </div>
     </div>
   );
 }
@@ -267,7 +295,7 @@ function ProjectSettings() {
         {rows.map(([k, v]) => (
           <div key={k} className="flex items-start justify-between gap-4 border-b border-border pb-2 last:border-0">
             <span className="text-sm text-muted-foreground">{k}</span>
-            <span className="max-w-[60%] truncate text-right font-mono text-xs">{v}</span>
+            <span className="max-w-[60%] truncate text-right font-mono text-xs" title={v}>{v}</span>
           </div>
         ))}
         <div>
@@ -409,14 +437,22 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
               <Badge variant="secondary">{modelList.length} models</Badge>
             </div>
           </CardHeader>
-          <CardContent className="space-y-1.5 text-xs">
-            <div className="flex flex-wrap gap-1">
-              {modelList.map((model) => (
-                <Badge key={model} variant="outline" className="font-mono text-[10px]">
-                  {provider}/{model}
-                </Badge>
-              ))}
-            </div>
+          <CardContent className="text-xs">
+            <details>
+              <summary
+                data-testid={`models-provider-${provider}`}
+                className="cursor-pointer text-muted-foreground hover:text-foreground"
+              >
+                Show {modelList.length} models
+              </summary>
+              <div className="flex flex-wrap gap-1 pt-2">
+                {modelList.map((model) => (
+                  <Badge key={model} variant="outline" className="font-mono text-[10px]">
+                    {provider}/{model}
+                  </Badge>
+                ))}
+              </div>
+            </details>
           </CardContent>
         </Card>
       ))}
