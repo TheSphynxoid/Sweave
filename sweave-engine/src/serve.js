@@ -12,6 +12,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, newMessageId } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import {
+  historyToResponsesInput,
+  providerResponsesStream,
+} from "./responses.js";
 import { historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
 const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "1";
@@ -234,6 +238,76 @@ async function runTurn(sessionId, body, res) {
   const assistantId = newMessageId("msg");
   let output = "";
   let usage = null;
+  if (resolved.flavor === "responses") {
+    // Responses flavor: same downstream events, different wire. The
+    // small tail below mirrors the chat path's (append + done +
+    // tokens) deliberately — restructuring the chat try/catch to
+    // share it risks the timeout/abort semantics; duplication is
+    // the honest trade.
+    const entries = store
+      .historyForRun(session)
+      .filter((m) => m.id !== userMsg.id);
+    entries.push({ role: "user", content: body.composed_prompt });
+    try {
+      const step = await providerResponsesStream({
+        baseURL: resolved.baseURL,
+        key: resolved.key,
+        modelId: body.model.model_id,
+        sessionId,
+        input: historyToResponsesInput(entries),
+        defs: [],
+        signal: controller.signal,
+        onToken: (t) => {
+          output += t;
+          sseEvent(res, { event: "token", text: t });
+        },
+      });
+      output = step.text;
+      usage = step.usage;
+    } catch (err) {
+      throw new Error(
+        `provider ${String((err && err.message) || err).slice(0, 300)}`
+      );
+    }
+    clearTimeout(timer);
+    if (turn.finished) return; // timeout/abort path already answered
+    finish();
+    store.append(session, {
+      id: assistantId,
+      role: "assistant",
+      content: output,
+      model: `${model.provider}/${model.model_id}`,
+      at: Date.now(),
+    });
+    sseEvent(res, {
+      event: "done",
+      output,
+      message_id: assistantId,
+      model_used: { provider: model.provider, model_id: model.model_id },
+    });
+    sseEvent(res, {
+      event: "tokens_used",
+      ...(usage
+        ? {
+            input: usage.prompt_tokens || 0,
+            output: usage.completion_tokens || 0,
+            reasoning: usage.completion_tokens_details?.reasoning_tokens || 0,
+            cache_read: usage.prompt_tokens_details?.cached_tokens || 0,
+            cache_write: 0,
+            cost: 0,
+          }
+        : {
+            input: 0,
+            output: approxTokens(output),
+            reasoning: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cost: 0,
+            estimated: true,
+          }),
+    });
+    res.end();
+  } else {
   try {
     const upstream = await fetch(`${resolved.baseURL}/chat/completions`, {
       method: "POST",
@@ -363,6 +437,7 @@ async function runTurn(sessionId, body, res) {
       res.end();
     } catch {}
   }
+  } // end else (chat flavor) — the responses branch above is self-contained
 }
 
 const server = createServer(async (req, res) => {

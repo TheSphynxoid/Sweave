@@ -206,7 +206,12 @@
        2026-09-14 (user ruling): `credentials.json` canonical, adopt-once +
        drift prompts + reverse-sync (backup), `GET /api/providers` universe
        × availability, sidecar Sweave tier, local/custom-endpoints out of
-       scope; keychain UI next. Zen mapped too (user: same gateway family
+       scope; keychain UI next. Queued rule (user, 2026-09-14, NOT yet
+       implemented): every external command (subprocess, provider call,
+       test-sidecar spawn) gets a bounded timeout with a known trigger
+       condition — no indefinite waits anywhere. Audit pending: opencode's
+       own timeout conditions (15min/30min observed, trigger unknown) +
+       our httpx turn_timeout+30 backstop + fixture spawns. Zen mapped too (user: same gateway family
        — proven: public /zen/v1, separate key, flavor table; hermetic green;
        live 2026-09-14: key valid/Bearer accepted, but free models fail
        server-side — deepseek-free 400 unavailable, muse-free 500, $0 spent;

@@ -27,6 +27,10 @@ import {
 } from "./tools.js";
 import { callEnginePermission, callSweaveTool, sweaveToolsFor } from "./sweave.js";
 import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import {
+  historyToResponsesInput,
+  providerResponsesStream,
+} from "./responses.js";
 
 const MAX_ITERATIONS = 50;
 const DOOM_REPEATS = 3;
@@ -89,7 +93,22 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, sessionId, messages, defs, signal, onToken, onToolDelta }) {
+async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onToolDelta }) {
+  // `messages` is flavor-appropriate input (chat messages or Responses
+  // input items — the caller maps history for the resolved flavor).
+  // Both transports return { text, calls: [{id, name, args}], usage }.
+  if (flavor === "responses") {
+    return providerResponsesStream({
+      baseURL,
+      key,
+      modelId,
+      sessionId,
+      input: messages,
+      defs,
+      signal,
+      onToken,
+    });
+  }
   const resp = await fetch(`${baseURL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -247,7 +266,13 @@ export async function runLoop(loopCtx) {
     // message + the loop's own assistant/tool entries). The store is
     // the single source — no cached slices to desync (a stale slice
     // once dropped the current prompt entirely: provider 400).
-    const messages = historyToProviderMessages(store.historyForRun(session));
+    // Mapped for the resolved flavor (chat messages vs Responses
+    // input items) — providerStream only transports.
+    const rawHistory = store.historyForRun(session);
+    const messages =
+      resolved.flavor === "responses"
+        ? historyToResponsesInput(rawHistory)
+        : historyToProviderMessages(rawHistory);
     let stepText = "";
     let stepCalls = [];
     let stepUsage = null;
@@ -256,6 +281,7 @@ export async function runLoop(loopCtx) {
       key: resolved.key,
       provider: model.provider,
       modelId: model.model_id,
+      flavor: resolved.flavor,
       sessionId: session.id,
       messages,
       defs: all,

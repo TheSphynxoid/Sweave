@@ -144,12 +144,14 @@ function sweaveStoreKey(provider) {
 
 /**
  * Resolve how to call `provider` for `modelId`. Returns
- * { ok, baseURL, key, via } or { ok: false, code, reason }.
+ * { ok, baseURL, key, via, flavor } or { ok: false, code, reason }.
  *
- * `modelId` selects the wire flavor on multi-flavor gateways
- * (opencode-go): chat/completions is attempted, responses/messages
- * models fail loud here with code "bad_request" naming the pending
- * transport — a vocabulary-frozen code, never a new event shape.
+ * `modelId` selects the wire flavor on multi-flavor gateways: "chat"
+ * (chat/completions) or "responses" (Responses API). Flavors the
+ * engine doesn't speak (messages, google) fail loud here with code
+ * "bad_request" naming the pending transport — a vocabulary-frozen
+ * code, never a new event shape. The gate runs before credentials so
+ * a keyed-but-unspeakable model still fails at turn start.
  */
 export function resolveProvider(provider, modelId) {
   const spec = TABLE[provider];
@@ -161,36 +163,37 @@ export function resolveProvider(provider, modelId) {
       reason: `provider ${JSON.stringify(provider)} has no OpenAI-compatible surface mapped (native protocol pending)`,
     };
   }
-  // Wire-flavor gate FIRST (before credentials): a model on a flavor
-  // the engine doesn't speak must fail here even when a key exists —
-  // otherwise it dies mid-turn as a provider 400.
+  let flavor = "chat";
   if (spec.flavors && modelId) {
-    for (const [flavor, ids] of Object.entries(spec.flavors)) {
-      if (ids.has(modelId)) {
-        return {
-          ok: false,
-          code: "bad_request",
-          reason:
-            `model ${JSON.stringify(modelId)} on ${JSON.stringify(provider)} ` +
-            `needs the ${flavor} transport (pending; engine speaks ` +
-            `chat/completions only)`,
-        };
+    for (const [name, ids] of Object.entries(spec.flavors)) {
+      if (!ids.has(modelId)) continue;
+      if (name === "responses") {
+        flavor = "responses";
+        break;
       }
+      return {
+        ok: false,
+        code: "bad_request",
+        reason:
+          `model ${JSON.stringify(modelId)} on ${JSON.stringify(provider)} ` +
+          `needs the ${name} transport (pending; engine speaks ` +
+          `chat/completions + responses)`,
+      };
     }
   }
   const baseURL = baseOverride || spec.baseURL;
   if (spec.key === false) {
-    return { ok: true, baseURL, key: null, via: "no-key (local serve)" };
+    return { ok: true, baseURL, key: null, via: "no-key (local serve)", flavor };
   }
   const explicit = process.env[`SWEAVE_ENGINE_KEY_${provider.toUpperCase().replace(/[^A-Z0-9]/gi, "_")}`];
-  if (explicit) return { ok: true, baseURL, key: explicit, via: "env:SWEAVE_ENGINE_KEY_*" };
+  if (explicit) return { ok: true, baseURL, key: explicit, via: "env:SWEAVE_ENGINE_KEY_*", flavor };
   for (const k of spec.envKeys) {
-    if (process.env[k]) return { ok: true, baseURL, key: process.env[k], via: `env:${k}` };
+    if (process.env[k]) return { ok: true, baseURL, key: process.env[k], via: `env:${k}`, flavor };
   }
   const own = sweaveStoreKey(provider);
-  if (own) return { ok: true, baseURL, key: own.key, via: own.via };
+  if (own) return { ok: true, baseURL, key: own.key, via: own.via, flavor };
   const boot = bootstrapKey(provider);
-  if (boot) return { ok: true, baseURL, key: boot.key, via: boot.via };
+  if (boot) return { ok: true, baseURL, key: boot.key, via: boot.via, flavor };
   return {
     ok: false,
     code: "auth_missing",

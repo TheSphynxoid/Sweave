@@ -7,9 +7,13 @@ quota, no network — the live probe (ox-alpha-free, $0) is a
 separate, user-approved step.
 
 Covers: chat-flavor turn (Bearer key, model id passthrough,
-tokens_used), responses/messages flavor loud rejection at turn
-start (no provider hit), auth_missing with no credential anywhere,
-explicit-key-beats-store order.
+tokens_used), messages-flavor loud rejection at turn start (no
+provider hit), auth_missing with no credential anywhere,
+explicit-key-beats-store order. Responses-flavor routing lives in
+test_engine_responses.py (the old rejection test for it was
+deleted when the responses transport landed — its premise is false
+now, and it hung the file: the sidecar attempted /responses
+against this stub, which only speaks /chat/completions).
 """
 
 from __future__ import annotations
@@ -212,21 +216,6 @@ async def test_go_validated_client_headers_stable(sidecar, stub_url):
         assert hit["user_agent"] == "sweave-engine/0.1.0"
         assert hit["session"].startswith("eng_")
     assert HITS[0]["session"] == HITS[1]["session"]
-
-
-@needs_node
-async def test_go_responses_flavor_rejected_before_provider(sidecar, stub_url):
-    """muse-spark contributor (responses flavor): loud, zero provider hit."""
-    HITS.clear()
-    from sweave.harness.engine import SweaveEngineHarness
-
-    proc = await SweaveEngineHarness().spawn(
-        _spec("opencode-go/muse-spark-1.3-contributor")
-    )
-    result = await proc.send(_message("hi"), trace=_Trace())
-    assert not result.success
-    assert "responses" in (result.error or "")
-    assert HITS == [], "flavor rejection must precede any provider call"
 
 
 @needs_node
