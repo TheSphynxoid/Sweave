@@ -23,6 +23,15 @@ opencode wire.
    engine-stop) and **answer/skip pending permission/question escalations**
    (the existing `…/answer`, `…/skip`, permission reply paths). Follow-ups
    go via the orchestrator — the M1.7 funnel rule stands.
+4. **Transcript parity (A-then-maybe-B).** Every agent turn carries its
+   transcript to the user — specialist turns no differently from the
+   orchestrator's chat. (A) Record-side first: persist what Sweave already
+   holds (rendered prompt + preamble + task per turn; tool parts the
+   runtime parser currently drops) as trace events, and project them as a
+   read-only subchat reusing the Thread primitives. (B) Fetch-side
+   engine-truth (`GET /session/{id}/message` rendered as transcript) is
+   deferred — it falls out naturally of the custom engine, which owns its
+   transcript; if it can be done with opencode it can be done with ours.
 
 ## Starting point (verified 2026-09-13 against code, not older bullets)
 
@@ -57,6 +66,14 @@ opencode wire.
   `status`, `error`, stamps — everything the pane's identity block needs
   is already stored; only *liveness* (last-activity, current tool) and
   *action* (abort) are missing.
+- History gap (verified 2026-09-13 via grep): the runtime stream parser
+  emits **zero** `tool.*` trace events (text + reasoning only), so the
+  detail view's `tool_timeline` (`detail_view.py:207-228`, feeds on
+  `tool.started/updated/completed/failed`) is structurally empty for
+  specialist turns — only the harness path writes them, which specialists
+  don't run on. Likewise a specialist turn's rendered prompt (templated
+  system + preamble + task) is composed in memory and never persisted,
+  unlike the chat loop's per-turn composed-prompt audit.
 
 ## Goal state
 
@@ -69,6 +86,13 @@ so far, pending question/permission with answer affordance, and an Abort
 action. Read-only except Abort + Answer/Skip. A byte-silent-but-working
 turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
 — never as a frozen bubble.
+
+A read-only subchat per specialist session — one block per turn (prompt
+actually sent, assistant text, tool calls with lifecycle, reasoning,
+tokens), projected from the trace like DetailView and rendered with the
+same Thread primitives as the orchestrator's chat. Same transparency,
+whatever the tier: the orchestrator's turns and the specialists' turns
+are both carried to the user, not just the former.
 
 ## Steps
 
@@ -91,7 +115,19 @@ turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
    Done-gate: pytest (long-tool fixture trips neither bound; genuine wedge
    still trips with truthful message; sensor-absent degrades to today's
    byte-clock — never assumes the probe); suite 3×; `run.py --check`.
-2. **Live block + consented abort, backend (~1 sess).** Detail payload gains
+2. **Specialist transcript, record-side (~1 sess).** (a) Persist at send
+   time: rendered prompt (system render + worktree preamble + task) as a
+   per-turn trace event mirroring the chat loop's composed-prompt audit;
+   (b) parse + trace tool parts in `_send_message` (same
+   pending→running→completed|error shapes the harness emits, so the
+   existing `tool_timeline` projector lights up unchanged — unknown part
+   types traced raw, never assumed); (c) project per-turn blocks from the
+   trace and render the read-only subchat (Thread primitives, no second
+   composer). Done-gate: pytest (prompt event present per turn; tool
+   fixture yields a populated timeline with lifecycle states; unknown
+   parts degrade); `run.py --check`; a real pre-fix delegation still
+   projects (empty timeline, not a crash).
+3. **Live block + consented abort, backend (~1 sess).** Detail payload gains
    `live` (present iff status == `running`: `elapsed_s`,
    `last_activity_s + source`, `current_tool | null`, `tool_budget_s |
    null`, `abortable: bool`). New `POST /api/delegations/{id}/abort`:
@@ -104,7 +140,7 @@ turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
    → failed+trace; abort rejected → loud UNCONFIRMED, delegation failed
    anyway; abort on settled → 409; `live` nulls when settled); `run.py
    --check`; ephemeral-server live probe (real abort acknowledged).
-3. **Pane UI (~1 sess, binds to shipped contracts).** Live row/section on the
+4. **Pane UI (~1 sess, binds to shipped contracts).** Live row/section on the
    existing cards + DetailView modal reading `live`: identity, elapsed +
    last-activity + source, current tool + budget countdown, partial text,
    pending-question answer inline (existing `TurnQuestions` path), Abort
@@ -115,9 +151,10 @@ turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
    replaces the dead bubble. Done-gate: vitest (live block renders,
    settled hides, abort confirms-then-posts), build green, screenshot probe
    of a live turn.
-4. **Gates + docs (~0.5 sess).** Full pytest 3×, `run.py --check`, vitest +
+5. **Gates + docs (~0.5 sess).** Full pytest 3×, `run.py --check`, vitest +
    build, live abort scene recorded. Docs: DESIGN §4 rows (live block,
-   abort endpoint, activity liveness), PROJECT_STATE entry, GOTCHAS
+   abort endpoint, activity liveness, specialist transcript), PROJECT_STATE
+   entry, GOTCHAS
    (byte-clock vs activity-clock rule; consented-abort vs KILL_ON_SILENCE
    split; bus types consumed — update when the wire drifts).
 
@@ -132,6 +169,8 @@ turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
 - No sqlite reads (wire-only ruling stands); no new MCP tool (abort/answer
   are HTTP routes, matching the existing escalation surface).
 - No specialist-session undo here (that's §C supersede-via-revert).
+- No fetch-side engine-truth transcript on the opencode wire (ruling 4B —
+  deferred to the custom engine, which owns its transcript).
 
 ## Risks
 
@@ -144,3 +183,6 @@ turn reads as "running `pytest` for 8:12, tool started, bounded to 20:00"
   within one turn.
 - `specialist.harness` schema work (custom engine step 4) touches the same
   record — coordinate, additive fields only, migration per gotcha #12 rule.
+- Tool-part shapes drift per opencode version → the step-2 parser matches
+  defensively (type-string switch, unknown traced raw); a version bump that
+  renames parts degrades to "unknown part" rows, never a turn failure.

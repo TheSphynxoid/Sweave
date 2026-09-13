@@ -170,8 +170,15 @@
      long-tool turn branches the sensor choice); per-tool budget once
      `tool-started` is known (proposed 1200s, locked at execution); stall
      clock watches bytes today (`specialist_runtime.py:963-964` — parts
-     parse only after a chunk lands, so byte-silence ≠ idle). Steps 0–4:
-     probe → activity liveness → live block + abort → pane UI → gates.
+     parse only after a chunk lands, so byte-silence ≠ idle). Ruling 4
+     (same day): transcript parity — every agent turn carries its
+     transcript to the user, specialist turns like the orchestrator's
+     (A record-side first: persist sent prompts + dropped tool parts,
+     project a read-only subchat; B fetch-side engine-truth deferred to
+     the custom engine). History gap found via grep: runtime emits zero
+     `tool.*` events, so the timeline is structurally empty for
+     specialist turns. Steps 0–5: probe → activity liveness → transcript
+     → live block + abort → pane UI → gates.
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
