@@ -21,10 +21,11 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { HelpCircle, Send, SkipForward } from "lucide-react";
+import { HelpCircle, Send, ShieldCheck, SkipForward } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
 import type { EscalationRecord } from "@/types";
+import { cn } from "@/utils/cn";
 
 const SKIP_CONFIRM_TEXT =
   "Skip this question? The agent will proceed with its best judgment. This cannot be undone.";
@@ -118,98 +119,109 @@ export function TurnQuestions({ delegationId }: { delegationId: string }) {
       data-testid="turn-question-card"
       data-delegation-id={delegationId}
       data-kind={esc.kind}
-      className="mt-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3"
+      className="animate-message-in mt-3 overflow-hidden rounded-2xl border border-amber-500/40 bg-gradient-to-b from-amber-500/[0.10] to-amber-500/[0.03] shadow-lg shadow-amber-500/5"
     >
-      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300">
-        {isPermission ? <HelpCircle size={14} /> : <HelpCircle size={14} />}
-        <span>
+      <div className="flex items-center gap-2 border-b border-amber-500/20 px-3.5 py-2">
+        <span className="grid h-6 w-6 place-items-center rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+          {isPermission ? <ShieldCheck size={13} /> : <HelpCircle size={13} />}
+        </span>
+        <span className="text-xs font-semibold text-amber-700 dark:text-amber-300">
           {isPermission
             ? "Permission required — the turn is waiting for your decision"
             : "Question — the turn is waiting for your answer"}
         </span>
+        <span className="ml-auto flex items-center gap-1 text-[10px] font-medium text-amber-700/70 dark:text-amber-300/70">
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
+          waiting
+        </span>
       </div>
-      <p className="whitespace-pre-wrap break-words text-sm text-foreground">
-        {esc.question}
-      </p>
-      {isPermission && esc.metadata != null && (
-        <p data-testid="turn-question-permission-detail" className="mt-1.5 text-[11px] text-muted-foreground">
-          {(() => {
-            const meta = esc.metadata as {
-              permission?: string;
-              patterns?: string[];
-              command?: string;
-            };
-            const parts = [
-              meta.permission ? `tool check: ${meta.permission}` : "",
-              meta.patterns?.length ? `patterns: ${meta.patterns.join(", ")}` : "",
-              meta.command ? `command: ${meta.command}` : "",
-            ].filter(Boolean);
-            // 'always allow' persists the pattern list opencode-side;
-            // the card labels it so the grant is explicit (audit).
-            parts.push(`'always allow' grants exactly: ${meta.patterns?.join(", ") ?? "the checked paths"}`);
-            return parts.join(" · ");
-          })()}
+      <div className="px-3.5 py-3">
+        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
+          {esc.question}
         </p>
-      )}
-      {options.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {options.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              disabled={busy}
-              onClick={() => void sendAnswer(opt)}
-              data-testid={`turn-question-option-${opt}`}
-              className="rounded-lg border border-border bg-card px-2.5 py-1 text-xs font-medium hover:border-primary hover:text-primary disabled:opacity-50"
-            >
-              {opt}
-            </button>
-          ))}
+        {isPermission && esc.metadata != null && (
+          <p data-testid="turn-question-permission-detail" className="mt-2 rounded-lg bg-background/60 px-2.5 py-1.5 font-mono text-[11px] leading-relaxed text-muted-foreground">
+            {(() => {
+              const meta = esc.metadata as {
+                permission?: string;
+                patterns?: string[];
+                command?: string;
+              };
+              const parts = [
+                meta.permission ? `tool check: ${meta.permission}` : "",
+                meta.patterns?.length ? `patterns: ${meta.patterns.join(", ")}` : "",
+                meta.command ? `command: ${meta.command}` : "",
+              ].filter(Boolean);
+              // 'always allow' persists the pattern list opencode-side;
+              // the card labels it so the grant is explicit (audit).
+              parts.push(`'always allow' grants exactly: ${meta.patterns?.join(", ") ?? "the checked paths"}`);
+              return parts.join(" · ");
+            })()}
+          </p>
+        )}
+        {options.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                disabled={busy}
+                onClick={() => void sendAnswer(opt)}
+                data-testid={`turn-question-option-${opt}`}
+                className="rounded-full border border-amber-500/40 bg-background/80 px-3 py-1.5 text-xs font-semibold text-amber-800 transition-all hover:-translate-y-px hover:bg-amber-500/15 hover:shadow-sm disabled:opacity-50 dark:text-amber-200"
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="mt-2.5 flex items-center gap-1.5">
+          <input
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && draft.trim()) void sendAnswer(draft);
+            }}
+            disabled={busy}
+            data-testid="turn-question-input"
+            placeholder={options.length > 0 ? "Or type a custom answer…" : "Type your answer…"}
+            className="min-w-0 flex-1 rounded-xl border border-border/70 bg-input px-3 py-2 text-sm shadow-sm transition-all focus:border-amber-500/60 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+          />
+          <button
+            type="button"
+            onClick={() => void sendAnswer(draft)}
+            disabled={busy || !draft.trim()}
+            data-testid="turn-question-send"
+            aria-label="Send answer"
+            className={cn(
+              "grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 text-white shadow-md shadow-amber-500/25 transition-all",
+              "hover:-translate-y-px hover:shadow-lg disabled:translate-y-0 disabled:opacity-40 disabled:shadow-none",
+            )}
+          >
+            <Send size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void sendSkip()}
+            disabled={busy}
+            data-testid="turn-question-skip"
+            title={isPermission ? "Deny — the tool call fails loud" : "Skip — the agent proceeds with best judgment"}
+            className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl border border-border/70 bg-background/60 px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            <SkipForward size={13} />
+            Skip
+          </button>
         </div>
-      )}
-      <div className="mt-2 flex items-center gap-1.5">
-        <input
-          type="text"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && draft.trim()) void sendAnswer(draft);
-          }}
-          disabled={busy}
-          data-testid="turn-question-input"
-          placeholder={options.length > 0 ? "Or type a custom answer…" : "Type your answer…"}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-input px-2.5 py-1.5 text-sm focus:outline-none"
-        />
-        <button
-          type="button"
-          onClick={() => void sendAnswer(draft)}
-          disabled={busy || !draft.trim()}
-          data-testid="turn-question-send"
-          aria-label="Send answer"
-          className="grid h-8 w-8 place-items-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40"
-        >
-          <Send size={14} />
-        </button>
-        <button
-          type="button"
-          onClick={() => void sendSkip()}
-          disabled={busy}
-          data-testid="turn-question-skip"
-          title={isPermission ? "Deny — the tool call fails loud" : "Skip — the agent proceeds with best judgment"}
-          className="inline-flex h-8 items-center gap-1 rounded-lg border border-border px-2 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
-        >
-          <SkipForward size={13} />
-          Skip
-        </button>
-      </div>
-      {error && (
-        <p data-testid="turn-question-error" className="mt-1.5 text-xs text-rose-500">
-          {error}
+        {error && (
+          <p data-testid="turn-question-error" className="mt-2 rounded-lg bg-rose-500/10 px-2.5 py-1.5 text-xs text-rose-600 dark:text-rose-300">
+            {error}
+          </p>
+        )}
+        <p className="mt-2 text-[11px] text-muted-foreground/80">
+          No deadline — the turn holds until you answer or skip.
         </p>
-      )}
-      <p className="mt-1.5 text-[11px] text-muted-foreground">
-        No deadline — the turn holds until you answer or skip.
-      </p>
+      </div>
     </div>
   );
 }

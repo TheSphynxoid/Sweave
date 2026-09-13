@@ -54,6 +54,115 @@
   animation: spin 1s linear infinite;
 }
 
+/* Chat polish: message entrance (fade + rise), used on every
+ * thread row + delegation card so turns land smoothly instead of
+ * popping in. Short + subtle; disabled under reduced-motion. */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-message-in {
+  animation: message-in 0.28s cubic-bezier(0.21, 0.9, 0.35, 1) both;
+}
+
+/* Agentic shimmer sweep for "thinking" labels: a soft highlight
+ * traveling across the text (gradient background-position loop). */
+@keyframes shimmer-sweep {
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer-text {
+  background: linear-gradient(
+    100deg,
+    var(--color-muted-foreground) 30%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 70%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-sweep 2.2s linear infinite;
+}
+
+/* Typing dots for the pending-turn indicator: three dots bouncing
+ * in sequence (staggered delays via nth-child). */
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.typing-dots > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--color-primary);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+
+.typing-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dots > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Soft glow pulse for the live orchestrator avatar ring. */
+@keyframes presence-ping {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-primary) 45%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.animate-presence {
+  animation: presence-ping 2.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-message-in,
+  .animate-shimmer-text,
+  .animate-presence {
+    animation: none;
+  }
+  .typing-dots > span {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 /* Smooth transitions for sidebar */
 .transition-all {
   transition-property: all;

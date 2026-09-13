@@ -4,10 +4,10 @@
  * Every assistant message carries its chat-turn delegation id in
  * `metadata.custom.delegationId` (projected by `lib/chat/runtime.ts`).
  * When the orchestrator deferred work during that turn, the child
- * delegations (`parent_task_id == turn id`) render here as compact
- * cards — agent + status pill + task snippet — so the turn never
- * reads as "waiting blindly". Cards expand to an output summary and
- * open the full M1.9 `DetailView` modal (the same component the
+ * delegations (`parent_task_id == turn id`) render here as a compact
+ * activity timeline — agent + status pill + task snippet — so the turn
+ * never reads as "waiting blindly". Cards expand to an output summary
+ * and open the full M1.9 `DetailView` modal (the same component the
  * Children tab uses).
  *
  * Live + historical: the component is mounted under EVERY assistant
@@ -22,13 +22,14 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink, Network } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
 import { DetailView } from "@/pages/children/DetailView";
 import { StatusPill } from "@/components/delegation/StatusPill";
 import { isTimeoutDelegation, parseTurnTimeout, formatRuntime } from "@/lib/delegation/taxonomy";
 import type { Delegation, EscalationRecord } from "@/types";
+import { cn } from "@/utils/cn";
 
 const TASK_SNIPPET_CHARS = 140;
 const OUTPUT_SNIPPET_CHARS = 600;
@@ -36,6 +37,11 @@ const OUTPUT_SNIPPET_CHARS = 600;
 function truncate(text: string, max: number): string {
   const clean = text.trim().replace(/\s+/g, " ");
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+function agentInitial(agent: string): string {
+  const clean = agent.trim();
+  return clean ? clean.charAt(0).toUpperCase() : "?";
 }
 
 export function TurnDelegations({ parentDelegationId }: { parentDelegationId: string }) {
@@ -108,98 +114,158 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
   const ordered = [...children].sort((a, b) =>
     a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
   );
+  const activeCount = ordered.filter(
+    (c) => c.status === "running" || c.status === "queued",
+  ).length;
 
   return (
-    <div className="mt-2 space-y-1.5" data-testid="turn-delegations">
-      {ordered.map((child) => {
-        const expanded = expandedId === child.delegation_id;
-        const timedOut = isTimeoutDelegation(child);
-        const summary = child.status === "failed" && !timedOut ? child.error || "" : child.output || "";
-        const runtime =
-          child.status === "done"
-            ? formatRuntime(child.started_at, child.completed_at)
-            : null;
-        return (
-          <div
-            key={child.delegation_id}
-            data-testid="turn-delegation-card"
-            data-delegation-id={child.delegation_id}
-            className="rounded-lg border border-border bg-card/60"
-          >
-            <button
-              type="button"
-              onClick={() => setExpandedId(expanded ? null : child.delegation_id)}
-              aria-expanded={expanded}
-              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs"
-            >
-              {expanded ? (
-                <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
-              ) : (
-                <ChevronRight size={13} className="shrink-0 text-muted-foreground" />
-              )}
-              <span className="font-medium text-foreground">{child.agent}</span>
-              <StatusPill
-                status={child.status}
-                error={child.error}
-                startedAt={child.started_at}
-                completedAt={child.completed_at}
-              />
-              {child.needs_attention && (
-                <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
-                  • needs input
-                </span>
-              )}
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                {truncate(child.task, TASK_SNIPPET_CHARS)}
-              </span>
-            </button>
-            {expanded && (
-              <div className="space-y-2 border-t border-border px-2.5 py-2">
-                {child.needs_attention && (
-                  <ChildEscalationPreview delegationId={child.delegation_id} />
+    <div
+      className="animate-fade-in mt-3 overflow-hidden rounded-xl border border-border/60 bg-muted/20"
+      data-testid="turn-delegations"
+    >
+      <div
+        className="flex items-center gap-2 border-b border-border/50 bg-muted/40 px-3 py-1.5"
+        data-testid="turn-delegations-header"
+      >
+        <Network size={12} className="text-primary" />
+        <span className="text-[11px] font-semibold text-foreground">
+          Specialist activity
+        </span>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {ordered.length} task{ordered.length === 1 ? "" : "s"}
+        </span>
+        {activeCount > 0 && (
+          <span className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-px text-[10px] font-medium text-primary">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+            {activeCount} running
+          </span>
+        )}
+      </div>
+      <ol className="relative space-y-1 px-2 py-2 before:absolute before:bottom-3 before:left-[21px] before:top-3 before:w-px before:bg-border/60">
+        {ordered.map((child) => {
+          const expanded = expandedId === child.delegation_id;
+          const timedOut = isTimeoutDelegation(child);
+          const summary = child.status === "failed" && !timedOut ? child.error || "" : child.output || "";
+          const runtime =
+            child.status === "done"
+              ? formatRuntime(child.started_at, child.completed_at)
+              : null;
+          const live = child.status === "running" || child.status === "queued";
+          return (
+            <li key={child.delegation_id} className="relative flex gap-2">
+              <span
+                aria-hidden
+                className={cn(
+                  "z-10 mt-2.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border text-[9px] font-bold",
+                  live
+                    ? "border-primary/50 bg-primary/15 text-primary"
+                    : child.status === "done"
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                      : child.status === "failed"
+                        ? "border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300"
+                        : "border-border bg-card text-muted-foreground",
                 )}
-                {timedOut && (
-                  <TimeoutNotice
-                    error={child.error}
-                    hasOutput={!!child.output.trim()}
-                  />
-                )}
-                {timedOut ? (
-                  child.output.trim() ? (
-                    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
-                      {truncate(child.output, OUTPUT_SNIPPET_CHARS)}
-                    </p>
-                  ) : null
-                ) : summary ? (
-                  <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
-                    {truncate(summary, OUTPUT_SNIPPET_CHARS)}
-                  </p>
+              >
+                {live ? (
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 ) : (
-                  <p className="text-xs italic text-muted-foreground/70">
-                    No output yet — the specialist is still working.
-                  </p>
+                  agentInitial(child.agent)
                 )}
-                {runtime && (
-                  <p
-                    data-testid="turn-delegation-runtime"
-                    className="text-[10px] text-muted-foreground"
-                  >
-                    Ran for {runtime}.
-                  </p>
+              </span>
+              <div
+                data-testid="turn-delegation-card"
+                data-delegation-id={child.delegation_id}
+                className={cn(
+                  "min-w-0 flex-1 rounded-lg border bg-card/80 backdrop-blur transition-all",
+                  expanded
+                    ? "border-primary/40 shadow-md shadow-primary/5"
+                    : "border-border/60 hover:border-primary/30 hover:shadow-sm",
                 )}
+              >
                 <button
                   type="button"
-                  onClick={() => setDetailId(child.delegation_id)}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                  onClick={() => setExpandedId(expanded ? null : child.delegation_id)}
+                  aria-expanded={expanded}
+                  className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs"
                 >
-                  <ExternalLink size={11} />
-                  Open full detail
+                  <ChevronDown
+                    size={13}
+                    className={cn(
+                      "shrink-0 text-muted-foreground transition-transform",
+                      expanded ? "" : "-rotate-90",
+                    )}
+                  />
+                  <span className="shrink-0 font-semibold text-foreground">{child.agent}</span>
+                  <StatusPill
+                    status={child.status}
+                    error={child.error}
+                    startedAt={child.started_at}
+                    completedAt={child.completed_at}
+                  />
+                  {child.needs_attention && (
+                    <span className="flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-px text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                      <span className="h-1 w-1 animate-pulse rounded-full bg-current" />
+                      needs input
+                    </span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {truncate(child.task, TASK_SNIPPET_CHARS)}
+                  </span>
                 </button>
+                {expanded && (
+                  <div className="animate-fade-in space-y-2 border-t border-border/50 px-2.5 py-2">
+                    {child.needs_attention && (
+                      <ChildEscalationPreview delegationId={child.delegation_id} />
+                    )}
+                    {timedOut && (
+                      <TimeoutNotice
+                        error={child.error}
+                        hasOutput={!!child.output.trim()}
+                      />
+                    )}
+                    {timedOut ? (
+                      child.output.trim() ? (
+                        <p className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+                          {truncate(child.output, OUTPUT_SNIPPET_CHARS)}
+                        </p>
+                      ) : null
+                    ) : summary ? (
+                      <p className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+                        {truncate(summary, OUTPUT_SNIPPET_CHARS)}
+                      </p>
+                    ) : (
+                      <p className="flex items-center gap-1.5 px-1 text-xs italic text-muted-foreground/70">
+                        <span className="typing-dots" aria-hidden>
+                          <span />
+                          <span />
+                          <span />
+                        </span>
+                        The specialist is still working.
+                      </p>
+                    )}
+                    {runtime && (
+                      <p
+                        data-testid="turn-delegation-runtime"
+                        className="px-1 text-[10px] tabular-nums text-muted-foreground"
+                      >
+                        Ran for {runtime}.
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setDetailId(child.delegation_id)}
+                      className="inline-flex items-center gap-1 px-1 text-[11px] font-semibold text-primary hover:underline"
+                    >
+                      <ExternalLink size={11} />
+                      Open full detail
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
+            </li>
+          );
+        })}
+      </ol>
       {detailId && <DetailView delegationId={detailId} onClose={() => setDetailId(null)} />}
     </div>
   );
@@ -217,7 +283,7 @@ function TimeoutNotice({ error, hasOutput }: { error: string | null; hasOutput: 
   return (
     <div
       data-testid="turn-delegation-timeout"
-      className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+      className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
     >
       <p>
         The specialist ran out of its turn budget
@@ -308,7 +374,7 @@ function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
   return (
     <div
       data-testid="turn-delegation-escalation"
-      className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+      className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
     >
       <p>
         {label} ({rec.status}):{" "}
@@ -323,7 +389,7 @@ function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
               disabled={busy}
               onClick={() => void answer(opt)}
               data-testid={`turn-escalation-option`}
-              className="rounded border border-amber-500/40 bg-background px-2 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300"
+              className="rounded-full border border-amber-500/40 bg-background px-2.5 py-1 text-[11px] font-semibold text-amber-700 transition-all hover:-translate-y-px hover:bg-amber-500/10 hover:shadow-sm disabled:opacity-50 dark:text-amber-300"
             >
               {opt}
             </button>

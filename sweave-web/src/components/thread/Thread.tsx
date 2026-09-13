@@ -18,6 +18,12 @@
  * delegation id ride in `metadata.custom` (projected by
  * `src/lib/chat/runtime.ts`).
  *
+ * Chat polish (2026-09-13): agentic hierarchy + smooth motion.
+ * User turns are gradient bubbles; orchestrator turns are elevated
+ * cards with a gradient-ring avatar, shimmer thinking states, a
+ * floating turn-status pill, and entrance animations. All primitive
+ * structure + testids are unchanged (see the thread test suite).
+ *
  * Rulings (2026-09-07): the action bar is REAL affordances only
  * (copy + timestamp); edit/regenerate/fork are R4.3 (no disabled fake
  * buttons); the composer stop affordance is disabled-with-tooltip
@@ -37,15 +43,18 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ArrowRight,
   Bot,
   Brain,
   Check,
   Copy,
+  Loader2,
   OctagonX,
   Pencil,
   RotateCcw,
   Sparkles,
   User,
+  Zap,
 } from "lucide-react";
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Avatar } from "@/components/assistant-ui/elements/avatar";
@@ -72,10 +81,12 @@ const SUGGESTED_PROMPTS = [
   "Explain the delegation flow",
 ];
 
+const SUGGESTED_ICONS = [Sparkles, Zap, Pencil, Bot] as const;
+
 export function Thread() {
   return (
     <ThreadPrimitive.Root
-      className="flex h-full min-h-0 flex-col bg-transparent"
+      className="chat-thread-ambient flex h-full min-h-0 flex-col"
       style={{ ["--thread-max-width" as string]: "48rem" }}
     >
       <ThreadPrimitive.Viewport
@@ -84,7 +95,7 @@ export function Thread() {
         scrollToBottomOnRunStart
         scrollToBottomOnThreadSwitch
         scrollToBottomOnInitialize
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin"
+        className="thread-viewport-scroll flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-thin"
         data-testid="thread-viewport"
       >
         <AuiIf condition={(s) => s.thread.isEmpty && !s.thread.isLoading}>
@@ -95,7 +106,7 @@ export function Thread() {
           <HistorySkeleton />
         </AuiIf>
 
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pb-6 pt-4">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 pb-6 pt-4">
           <ThreadPrimitive.Messages>
             {({ message }) =>
               message.role === "user" ? <UserMessage /> : <AssistantMessage />
@@ -111,7 +122,7 @@ export function Thread() {
               type="button"
               aria-label="Scroll to bottom"
               data-testid="thread-scroll-to-bottom"
-              className="mx-auto mb-2 grid h-8 w-8 place-items-center rounded-full border border-border bg-popover text-muted-foreground shadow-md transition-opacity hover:text-foreground disabled:opacity-0"
+              className="mx-auto mb-2 grid h-8 w-8 place-items-center rounded-full border border-border/70 bg-popover/95 text-muted-foreground shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 hover:text-foreground hover:shadow-xl disabled:opacity-0"
             >
               <ArrowDown size={15} />
             </button>
@@ -125,8 +136,9 @@ export function Thread() {
 
 // ---------------------------------------------------------------------------
 // Pending turn indicator (the dead zone between submit and the first
-// chat.delta: no streaming bubble exists yet, so show a shimmer row
-// under the user's message instead of an apparently frozen thread)
+// chat.delta: no streaming bubble exists yet, so show an agentic
+// "orchestrator at work" row under the user's message instead of an
+// apparently frozen thread)
 // ---------------------------------------------------------------------------
 
 function PendingTurnIndicator() {
@@ -135,14 +147,29 @@ function PendingTurnIndicator() {
   const lastRole = messages.length ? messages[messages.length - 1]?.role : undefined;
   if (!isRunning || lastRole !== "user") return null;
   return (
-    <div className="flex gap-3" data-testid="pending-turn-indicator">
-      <Avatar
-        size="sm"
-        className="mt-0.5 border border-border bg-card"
-        fallback={<Bot size={15} className="text-primary" />}
-      />
-      <div className="flex items-center py-2 text-sm">
-        <TextShimmer className="text-muted-foreground">Thinking…</TextShimmer>
+    <div
+      className="animate-message-in flex gap-3"
+      data-testid="pending-turn-indicator"
+    >
+      <span className="animate-presence mt-0.5 rounded-full bg-gradient-to-br from-primary via-primary/50 to-transparent p-[1.5px]">
+        <Avatar
+          size="sm"
+          className="border-0 bg-card"
+          fallback={<Bot size={15} className="text-primary" />}
+        />
+      </span>
+      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-border/60 bg-card/70 px-4 py-3 shadow-sm backdrop-blur">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="typing-dots" aria-hidden>
+            <span />
+            <span />
+            <span />
+          </span>
+          <TextShimmer className="font-medium">Orchestrator is thinking</TextShimmer>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Decomposing your request — specialists stand by for delegation.
+        </p>
       </div>
     </div>
   );
@@ -256,27 +283,35 @@ function TurnStatusBar() {
   const quiet = quietSeconds(elapsed, activeTick);
 
   return (
-    <div className="px-4 pb-1" data-testid="turn-status-bar">
-      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-lg border border-border bg-card/90 px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur">
+    <div className="animate-fade-in px-4 pb-2" data-testid="turn-status-bar">
+      <div className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-full border border-border/70 bg-card/90 py-1.5 pl-2.5 pr-3 text-xs text-muted-foreground shadow-lg backdrop-blur">
         <span
           aria-hidden
           className={cn(
-            "h-2 w-2 shrink-0 rounded-full",
-            lastStreaming ? "animate-pulse bg-primary" : "animate-pulse bg-amber-500",
+            "grid h-6 w-6 shrink-0 place-items-center rounded-full",
+            lastStreaming
+              ? "bg-primary/15 text-primary"
+              : "bg-amber-500/15 text-amber-600 dark:text-amber-400",
           )}
-        />
-        <span className="font-medium text-foreground">
+        >
+          {lastStreaming ? (
+            <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />
+          ) : (
+            <Brain size={13} className="animate-pulse" />
+          )}
+        </span>
+        <span className="font-semibold text-foreground">
           {lastStreaming ? "Streaming" : "Thinking"}
         </span>
         {lastStreaming && (
-          <span className="tabular-nums">
+          <span className="tabular-nums text-muted-foreground">
             {chars.toLocaleString()} chars
           </span>
         )}
-        <span className="tabular-nums">{elapsed}s</span>
+        <span className="tabular-nums text-muted-foreground">{elapsed}s</span>
         {quiet >= 10 && (
           <span
-            className="tabular-nums text-amber-600 dark:text-amber-400"
+            className="rounded-full bg-amber-500/15 px-2 py-0.5 tabular-nums text-amber-600 dark:text-amber-400"
             title="No output arrived in this long -- the turn may be wedged (the backend fails it after 5 silent minutes)"
             data-testid="turn-status-quiet"
           >
@@ -294,7 +329,7 @@ function TurnStatusBar() {
         <span
           title={wsDown ? `Live updates ${wsState} — deltas resume on reconnect` : "Live updates connected"}
           className={cn(
-            "flex items-center gap-1",
+            "flex items-center gap-1.5",
             wsDown ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground/70",
           )}
           data-testid="turn-status-ws"
@@ -304,7 +339,7 @@ function TurnStatusBar() {
             aria-hidden
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              wsDown ? "bg-amber-500" : "bg-emerald-500",
+              wsDown ? "animate-pulse bg-amber-500" : "bg-emerald-500",
             )}
           />
           {wsDown ? "reconnecting" : "live"}
@@ -323,27 +358,42 @@ function Welcome({ prompts }: { prompts: string[] }) {
   return (
     <div
       data-testid="welcome-screen"
-      className="mx-auto my-auto flex w-full max-w-2xl flex-col items-center px-4 py-10"
+      className="chat-hero-orb mx-auto my-auto flex w-full max-w-2xl flex-col items-center px-4 py-10"
     >
-      <div className="mb-4 grid h-14 w-14 place-items-center rounded-2xl border border-border bg-card shadow-sm">
-        <Sparkles size={24} className="text-primary" />
+      <div className="animate-presence mb-4 grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary via-primary/70 to-primary/30 text-primary-foreground shadow-lg shadow-primary/25">
+        <Sparkles size={24} />
       </div>
-      <h2 className="text-lg font-semibold tracking-tight">Sweave orchestrator</h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Start a conversation or pick a suggested prompt.
+      <p className="mb-1 flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
+        Agentic swarm ready
+      </p>
+      <h2 className="text-xl font-semibold tracking-tight">Sweave orchestrator</h2>
+      <p className="mt-1 max-w-md text-center text-sm text-muted-foreground">
+        Describe the outcome — the orchestrator decomposes it, delegates to
+        specialists, and reports back here.
       </p>
       <div className="mt-6 grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-        {prompts.map((prompt, i) => (
-          <button
-            key={i}
-            type="button"
-            data-testid={`suggested-prompt-${i}`}
-            onClick={() => aui.thread.append(prompt)}
-            className="rounded-xl border border-border bg-card px-3.5 py-3 text-left text-sm text-foreground/90 transition-colors hover:border-ring hover:bg-accent"
-          >
-            {prompt}
-          </button>
-        ))}
+        {prompts.map((prompt, i) => {
+          const Icon = SUGGESTED_ICONS[i % SUGGESTED_ICONS.length];
+          return (
+            <button
+              key={i}
+              type="button"
+              data-testid={`suggested-prompt-${i}`}
+              onClick={() => aui.thread.append(prompt)}
+              className="group flex items-center gap-2.5 rounded-2xl border border-border/70 bg-card/80 px-3.5 py-3 text-left text-sm text-foreground/90 shadow-sm backdrop-blur transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary transition-colors group-hover:bg-primary/20">
+                <Icon size={15} />
+              </span>
+              <span className="min-w-0 flex-1">{prompt}</span>
+              <ArrowRight
+                size={14}
+                className="shrink-0 text-muted-foreground/50 transition-all group-hover:translate-x-0.5 group-hover:text-primary"
+              />
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -441,9 +491,12 @@ function AssistantMessage() {
         <TurnDelegations parentDelegationId={custom.delegationId} />
       )}
 
-      <div className="mt-1.5 flex items-center justify-between gap-2">
-        {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
-        <div className="flex-1" />
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 pt-1.5">
+        {time ? (
+          <time className="text-[11px] tabular-nums text-muted-foreground/70">{time}</time>
+        ) : (
+          <span />
+        )}
         <AssistantActionBar />
       </div>
     </>
@@ -466,18 +519,34 @@ function AssistantMessage() {
 
   return (
     <div
-      className="group/message flex gap-3"
+      className="animate-message-in group/message flex gap-3"
       data-testid="assistant-message-row"
       data-message-id={messageId}
     >
-      <Avatar
-        size="sm"
-        className="mt-0.5 border border-border bg-card"
-        fallback={<Bot size={15} className="text-primary" />}
-      />
+      <span
+        className={cn(
+          "mt-0.5 h-fit rounded-full bg-gradient-to-br from-primary via-primary/50 to-transparent p-[1.5px]",
+          isRunning && "animate-presence",
+        )}
+      >
+        <Avatar
+          size="sm"
+          className="border-0 bg-card"
+          fallback={<Bot size={15} className="text-primary" />}
+        />
+      </span>
       <div className="min-w-0 flex-1">
-        <div className="mb-1 flex items-center gap-2 text-xs">
-          <span className="font-medium text-foreground">Assistant</span>
+        <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="flex items-center gap-1 font-semibold text-foreground">
+            <Sparkles size={11} className="text-primary" />
+            Sweave orchestrator
+          </span>
+          {isRunning && (
+            <span className="flex items-center gap-1 rounded-full bg-primary/10 px-2 py-px text-[10px] font-medium text-primary">
+              <Loader2 size={10} className="animate-spin" />
+              working
+            </span>
+          )}
           {custom.delegationId && (
             <CopyIdBadge
               id={custom.delegationId}
@@ -487,13 +556,22 @@ function AssistantMessage() {
           )}
         </div>
 
-        {custom.superseded ? (
-          <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
-            {roundShell}
-          </SupersededBlock>
-        ) : (
-          roundShell
-        )}
+        <div
+          className={cn(
+            "rounded-2xl rounded-tl-md border border-border/60 bg-card/80 px-4 py-3 shadow-sm backdrop-blur transition-shadow",
+            isRunning
+              ? "border-primary/30 shadow-md shadow-primary/5"
+              : "group-hover/message:shadow-md",
+          )}
+        >
+          {custom.superseded ? (
+            <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
+              {roundShell}
+            </SupersededBlock>
+          ) : (
+            roundShell
+          )}
+        </div>
       </div>
     </div>
   );
@@ -522,14 +600,21 @@ export function RoundBlock({
         type="button"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
-        className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+        className="flex max-w-full items-center gap-1.5 rounded-full border border-primary/25 bg-primary/[0.07] px-2.5 py-1 text-left text-[11px] text-muted-foreground transition-all hover:border-primary/50 hover:text-foreground hover:shadow-sm"
       >
-        <span className="shrink-0 rounded bg-muted px-1 py-px font-medium">
+        <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px font-semibold text-primary">
           Round {round + 1}
         </span>
         <span className="truncate">{preview.slice(0, 80) || "—"}</span>
       </button>
-      {expanded && <div className="mt-1.5">{children}</div>}
+      {expanded && (
+        <div
+          className="animate-fade-in mt-2 border-l-2 border-primary/30 pl-3"
+          data-testid="round-block-expanded"
+        >
+          {children}
+        </div>
+      )}
     </div>
   );
 }
@@ -555,12 +640,12 @@ function SupersededBlock({
         type="button"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
-        className="flex max-w-full items-center gap-1.5 rounded-md border border-dashed border-border px-2 py-1 text-left text-[11px] text-muted-foreground hover:text-foreground"
+        className="flex max-w-full items-center gap-1.5 rounded-full border border-dashed border-border px-2.5 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:text-foreground"
       >
-        <span className="shrink-0 rounded bg-muted px-1 py-px font-medium">{label}</span>
+        <span className="shrink-0 rounded-full bg-muted px-1.5 py-px font-medium">{label}</span>
         <span className="truncate">{preview.slice(0, 80) || "—"}</span>
       </button>
-      {expanded && <div className="mt-1.5 opacity-100">{children}</div>}
+      {expanded && <div className="animate-fade-in mt-1.5 opacity-100">{children}</div>}
     </div>
   );
 }
@@ -587,13 +672,18 @@ function ThinkingBlock({
       <div
         data-testid="thinking-block"
         data-state="streaming"
-        className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
+        className="mb-2.5 overflow-hidden rounded-xl border border-primary/25 bg-gradient-to-b from-primary/[0.08] to-transparent"
       >
-        <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-          <Brain size={12} className="text-primary" />
-          <span>Thinking…</span>
+        <div className="flex items-center gap-1.5 px-3 pt-2 text-[11px] font-semibold text-primary">
+          <Brain size={12} className="animate-pulse" />
+          <span className="animate-shimmer-text">Reasoning…</span>
+          <span className="typing-dots ml-1" aria-hidden>
+            <span />
+            <span />
+            <span />
+          </span>
         </div>
-        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+        <div className="max-h-40 overflow-y-auto whitespace-pre-wrap px-3 pb-2.5 pt-1 text-xs leading-relaxed text-muted-foreground scrollbar-thin">
           {thinking}
         </div>
       </div>
@@ -603,13 +693,16 @@ function ThinkingBlock({
     <details
       data-testid="thinking-block"
       data-state="done"
-      className="mb-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5"
+      className="group/think mb-2.5 rounded-xl border border-border/60 bg-muted/30 px-3 py-2 transition-colors hover:border-primary/30"
     >
-      <summary className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
         <Brain size={12} className="text-primary" />
-        <span>Thinking</span>
+        <span>Reasoning trace</span>
+        <span className="ml-auto text-[10px] text-muted-foreground/60 group-open/think:hidden">
+          expand
+        </span>
       </summary>
-      <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+      <div className="mt-1.5 max-h-60 overflow-y-auto whitespace-pre-wrap border-t border-border/40 pt-1.5 text-xs leading-relaxed text-muted-foreground scrollbar-thin">
         {thinking}
       </div>
     </details>
@@ -672,7 +765,7 @@ function AssistantActionBar() {
         tooltip="Retry turn"
         variant="ghost"
         size="sm"
-        className="h-7 w-7"
+        className="h-7 w-7 rounded-lg transition-colors hover:bg-primary/10 hover:text-primary"
         onClick={() => void retry()}
       >
         <RotateCcw size={13} />
@@ -682,7 +775,7 @@ function AssistantActionBar() {
           tooltip={isCopied ? "Copied" : "Copy"}
           variant="ghost"
           size="sm"
-          className="h-7 w-7"
+          className="h-7 w-7 rounded-lg transition-colors hover:bg-primary/10 hover:text-primary"
         >
           {isCopied ? <Check size={13} className="text-primary" /> : <Copy size={13} />}
         </TooltipIconButton>
@@ -703,7 +796,7 @@ function UserPlainText({
   part?: { text?: string };
 }) {
   const value = text ?? part?.text ?? "";
-  return <span className="whitespace-pre-wrap">{value}</span>;
+  return <span className="whitespace-pre-wrap break-words">{value}</span>;
 }
 
 function UserMessage() {
@@ -735,13 +828,13 @@ function UserMessage() {
         rows={3}
         autoFocus
         data-testid="user-message-edit-input"
-        className="w-full resize-y rounded-xl border border-ring bg-card px-3 py-2 text-sm text-foreground focus:outline-none"
+        className="w-full resize-y rounded-2xl border border-ring bg-card px-3.5 py-2.5 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
       />
-      <div className="mt-1 flex justify-end gap-1.5">
+      <div className="mt-1.5 flex justify-end gap-1.5">
         <button
           type="button"
           onClick={() => setEditing(false)}
-          className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          className="rounded-lg px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           Cancel
         </button>
@@ -749,25 +842,25 @@ function UserMessage() {
           type="button"
           onClick={saveEdit}
           data-testid="user-message-edit-save"
-          className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          className="rounded-lg bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-sm transition-all hover:bg-primary/90"
         >
           Save &amp; resend
         </button>
       </div>
     </div>
   ) : (
-    <div className="rounded-2xl border border-primary/20 bg-primary/10 px-3.5 py-2 text-sm shadow-sm transition-shadow group-hover/message:shadow-md">
+    <div className="rounded-2xl rounded-br-md bg-gradient-to-br from-primary to-primary/75 px-4 py-2.5 text-sm leading-relaxed text-primary-foreground shadow-md shadow-primary/20 transition-shadow group-hover/message:shadow-lg group-hover/message:shadow-primary/25">
       <MessagePrimitive.Parts components={{ Text: UserPlainText }} />
     </div>
   );
 
   return (
     <div
-      className="group/message flex justify-end"
+      className="animate-message-in group/message flex justify-end"
       data-testid="user-message-row"
       data-message-id={messageId}
     >
-      <div className="flex max-w-[75%] items-end gap-2">
+      <div className="flex max-w-[78%] items-end gap-2">
         <div className="flex min-w-0 flex-col items-end gap-1">
           {custom.superseded ? (
             <SupersededBlock label="Superseded" preview={threadTextOf(message)}>
@@ -777,7 +870,9 @@ function UserMessage() {
             bubble
           )}
           <div className="flex items-center gap-1 pr-1">
-            {time && <time className="text-[11px] text-muted-foreground/70">{time}</time>}
+            {time && (
+              <time className="text-[11px] tabular-nums text-muted-foreground/70">{time}</time>
+            )}
             {!isRunning && !editing && actions && (
               <button
                 type="button"
@@ -785,7 +880,7 @@ function UserMessage() {
                 title="Edit and resend"
                 aria-label="Edit and resend"
                 data-testid="user-message-edit"
-                className="rounded p-0.5 text-muted-foreground/60 opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover/message:opacity-100"
+                className="rounded-md p-1 text-muted-foreground/60 opacity-0 transition-all hover:bg-muted hover:text-foreground focus:opacity-100 group-hover/message:opacity-100"
               >
                 <Pencil size={12} />
               </button>
@@ -794,7 +889,7 @@ function UserMessage() {
         </div>
         <Avatar
           size="sm"
-          className="border border-border bg-card"
+          className="shrink-0 border border-border/60 bg-gradient-to-br from-muted to-muted/50"
           fallback={<User size={15} className="text-muted-foreground" />}
         />
       </div>
@@ -812,17 +907,17 @@ function Composer() {
   const isRunning = useAuiState((s) => s.thread.isRunning);
 
   return (
-    <div className="px-4 pb-4">
+    <div className="bg-gradient-to-t from-background via-background/95 to-transparent px-4 pb-4 pt-2">
       <ComposerPrimitive.Root
-        className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-border bg-card p-2 shadow-lg transition-[border-color,box-shadow] focus-within:border-primary/70 focus-within:ring-2 focus-within:ring-ring/30"
+        className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-border/70 bg-card/95 p-2 pl-3.5 shadow-xl shadow-black/5 backdrop-blur transition-all focus-within:border-primary/60 focus-within:shadow-primary/10 focus-within:ring-2 focus-within:ring-ring/25"
         data-testid="chat-composer"
       >
         <ComposerPrimitive.Input
-          placeholder={isRunning ? "The orchestrator is replying…" : "Write a message…"}
+          placeholder={isRunning ? "The orchestrator is replying…" : "Ask the swarm anything…"}
           autoFocus
           rows={1}
           data-testid="chat-composer-input"
-          className="max-h-40 min-h-[38px] flex-1 resize-none bg-transparent px-2.5 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+          className="max-h-40 min-h-[38px] flex-1 resize-none bg-transparent py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
         />
         {isRunning ? (
           <TooltipProvider>
@@ -847,20 +942,26 @@ function Composer() {
               aria-label="Send message"
               data-testid="chat-composer-send"
               className={cn(
-                "grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors",
-                "bg-primary text-primary-foreground hover:bg-primary/90",
+                "grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary/70 text-primary-foreground shadow-md shadow-primary/25 transition-all",
+                "hover:-translate-y-px hover:shadow-lg hover:shadow-primary/30 active:translate-y-0",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                "disabled:cursor-not-allowed disabled:opacity-40",
+                "disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none",
               )}
               disabled={isEmpty}
             >
-              <ArrowUp size={16} />
+              <ArrowUp size={16} strokeWidth={2.5} />
             </button>
           </ComposerPrimitive.Send>
         )}
       </ComposerPrimitive.Root>
-      <p className="mx-auto mt-1.5 w-full max-w-3xl text-center text-[10px] text-muted-foreground/60">
-        Enter to send · Shift+Enter for a newline
+      <p className="mx-auto mt-1.5 flex w-full max-w-3xl items-center justify-center gap-1.5 text-center text-[10px] text-muted-foreground/60">
+        <span className="kbd">Enter</span>
+        <span>to send</span>
+        <span aria-hidden>·</span>
+        <span className="kbd">Shift</span>
+        <span>+</span>
+        <span className="kbd">Enter</span>
+        <span>for a newline</span>
       </p>
     </div>
   );

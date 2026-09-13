@@ -223,3 +223,72 @@ button {
     opacity: 0.6;
   }
 }
+
+/* Chat polish helpers: keyboard hint chips in the composer footer
+ * + the welcome hero orb. Kept here (not in a component) so the
+ * Thread, the lab, and the empty states share one definition. */
+.kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.25rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.chat-hero-orb {
+  background:
+    radial-gradient(
+      22rem 14rem at 50% 0%,
+      color-mix(in oklch, var(--color-primary) 22%, transparent),
+      transparent 70%
+    );
+}
+
+/* Ambient backdrop for the thread: a soft primary glow pooled at the
+ * top of the pane so the workspace reads as a live "agentic" surface
+ * instead of a flat card. Pinned to the non-scrolling Root so it
+ * stays put while messages scroll beneath it. */
+.chat-thread-ambient {
+  background:
+    radial-gradient(
+      70rem 40rem at 50% -14%,
+      color-mix(in oklch, var(--color-primary) 12%, transparent),
+      transparent 62%
+    );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-thread-ambient {
+    background:
+      radial-gradient(
+        70rem 40rem at 50% -14%,
+        color-mix(in oklch, var(--color-primary) 9%, transparent),
+        transparent 62%
+      );
+  }
+}
+
+.thread-viewport-scroll {
+  scroll-behavior: smooth;
+}
+
+/* Fenced code blocks render pre > code through the same `code`
+ * override as inline code: strip the inline pill inside a block so
+ * the block keeps its own code-token surface. */
+.group\/code code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-viewport-scroll {
+    scroll-behavior: auto;
+  }
+}

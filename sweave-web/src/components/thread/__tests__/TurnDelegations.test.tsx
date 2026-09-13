@@ -253,7 +253,7 @@ describe("TurnDelegations", () => {
     });
     renderTurn("chat-abc");
     await screen.findByTestId("turn-delegation-card");
-    expect(screen.getByText("• needs input")).toBeTruthy();
+    expect(screen.getByText("needs input")).toBeTruthy();
     fireEvent.click(screen.getByTestId("turn-delegation-card").querySelector("button")!);
     fireEvent.click(screen.getByText("Open full detail"));
     expect(await screen.findByTestId("detail-modal")).toBeTruthy();

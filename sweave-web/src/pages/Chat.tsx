@@ -17,7 +17,7 @@
  * R4.2 step 3.
  */
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { MessagesSquare } from "lucide-react";
+import { MessagesSquare, Sparkles } from "lucide-react";
 import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
@@ -36,9 +36,9 @@ export function ChatPage() {
 
   if (!activeProject) {
     return (
-      <div className="flex h-full items-center justify-center p-6" data-testid="chat-page">
-        <div className="max-w-sm text-center space-y-4">
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+      <div className="chat-hero-orb flex h-full items-center justify-center p-6" data-testid="chat-page">
+        <div className="animate-message-in max-w-sm space-y-4 text-center">
+          <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-primary via-primary/70 to-primary/30 text-primary-foreground shadow-lg shadow-primary/25">
             <MessagesSquare size={22} />
           </div>
           <div className="space-y-1">
@@ -47,7 +47,9 @@ export function ChatPage() {
               No project is active. Create or select a project to start a conversation.
             </p>
           </div>
-          <Button onClick={() => setCreateOpen(true)}>Create a project</Button>
+          <Button onClick={() => setCreateOpen(true)} className="shadow-md shadow-primary/20">
+            Create a project
+          </Button>
         </div>
       </div>
     );
@@ -55,8 +57,11 @@ export function ChatPage() {
 
   if (!activeSession) {
     return (
-      <div className="flex h-full items-center justify-center p-6" data-testid="chat-page">
-        <div className="max-w-sm text-center space-y-3">
+      <div className="chat-hero-orb flex h-full items-center justify-center p-6" data-testid="chat-page">
+        <div className="animate-message-in max-w-sm space-y-3 text-center">
+          <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-border/60 bg-card/80 text-primary shadow-sm backdrop-blur">
+            <Sparkles size={20} />
+          </div>
           <p className="text-sm text-muted-foreground">
             Select a session in the topbar to start a conversation.
           </p>
@@ -67,18 +72,24 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex flex-col h-full p-4" data-testid="chat-page">
-      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-border">
-        <div className="flex items-center gap-2 min-w-0">
+    <div className="flex h-full flex-col" data-testid="chat-page">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 bg-card/50 px-4 py-2 backdrop-blur">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="hidden items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary sm:flex">
+            <Sparkles size={11} />
+            Orchestrator
+          </span>
           <SessionPicker />
         </div>
         <WsDot />
       </div>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <ChatActionsContext.Provider value={{ rerun }}>
-          <Thread />
-        </ChatActionsContext.Provider>
-      </AssistantRuntimeProvider>
+      <div className="min-h-0 flex-1">
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ChatActionsContext.Provider value={{ rerun }}>
+            <Thread />
+          </ChatActionsContext.Provider>
+        </AssistantRuntimeProvider>
+      </div>
     </div>
   );
 }
@@ -96,7 +107,12 @@ function WsDot() {
       data-testid="chat-ws-dot"
       data-ws-state={state}
       title={open ? "Live updates connected" : `Live updates ${state}`}
-      className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground"
+      className={cn(
+        "flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+        open
+          ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      )}
     >
       <span
         aria-hidden
