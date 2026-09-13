@@ -1158,7 +1158,9 @@ class ChatLoop:
                 )
             self.project_manager.save_session(session)
             # Trace what was injected and what was dropped (M1.7
-            # step 4 audit trail).
+            # step 4 audit trail). Step 3 adds the session-stable
+            # sections + the context.built audit event (same shape
+            # the native engine emits — one source for both).
             trace.append(
                 "composed_prompt",
                 {
@@ -1166,12 +1168,20 @@ class ChatLoop:
                     "whats_new_chars": len(composed.whats_new_section),
                     "synthesis_chars": len(composed.synthesis_section),
                     "transcript_ref_chars": len(composed.transcript_ref),
+                    "instructions_chars": len(composed.instructions_section),
+                    "skills_chars": len(composed.skills_section),
                     "user_chars": len(composed.user_message),
                     "dropped_memory": len(composed.dropped_memory),
                     "dropped_whats_new": len(composed.dropped_whats_new),
                     "dropped_synthesis": len(composed.dropped_synthesis),
+                    "dropped_instructions": len(
+                        composed.dropped_instructions
+                    ),
+                    "dropped_skills": len(composed.dropped_skills),
                 },
             )
+            if composed.context_audit is not None:
+                trace.append("context.built", dict(composed.context_audit))
             if first_turn_text.startswith("[chat error:"):
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.

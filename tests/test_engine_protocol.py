@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from sweave.engine import protocol
 from sweave.engine.protocol import (
     ABORT_OUTCOMES,
     ENGINE_HARNESS_NAME,

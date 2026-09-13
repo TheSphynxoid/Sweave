@@ -224,11 +224,21 @@ class ComposedPrompt:
     synthesis_section: str = ""
     transcript_ref: str = ""
     user_message: str = ""
+    # Step 3 (build_context): session-stable sections. Standing
+    # context first in the body, then turn-specific sections, the
+    # request last.
+    instructions_section: str = ""
+    skills_section: str = ""
     # Audit trail: what was dropped because of the cap (so the
     # trace can record the trade-off).
     dropped_memory: list[str] = None
     dropped_whats_new: list[str] = None
     dropped_synthesis: list[str] = None
+    dropped_instructions: list[str] = None
+    dropped_skills: list[str] = None
+    # The context.built audit payload (sections/tokens/dropped +
+    # instructions_status/sha) — the trace event body, verbatim.
+    context_audit: dict | None = None
 
     def __post_init__(self):
         if self.dropped_memory is None:
@@ -237,10 +247,18 @@ class ComposedPrompt:
             self.dropped_whats_new = []
         if self.dropped_synthesis is None:
             self.dropped_synthesis = []
+        if self.dropped_instructions is None:
+            self.dropped_instructions = []
+        if self.dropped_skills is None:
+            self.dropped_skills = []
 
     def to_body(self) -> str:
         """Return the single user-message body the runtime posts."""
         parts: list[str] = []
+        if self.instructions_section:
+            parts.append(self.instructions_section)
+        if self.skills_section:
+            parts.append(self.skills_section)
         if self.memory_section:
             parts.append(self.memory_section)
         if self.whats_new_section:
@@ -275,6 +293,15 @@ async def compose_turn_prompt(
     synthesis_budget: int = DEFAULT_SYNTHESIS_BUDGET,
     topk: int = DEFAULT_TOPK,
     now: datetime | None = None,
+    # Step 3 (build_context): session-stable sections. ``None`` =
+    # auto-load (instructions via the session cache, skills via
+    # discovery); explicit ``""`` skips the section. ``worktree_dir``
+    # defaults to ``project_dir`` (chat turns are in-tree).
+    worktree_dir: Path | None = None,
+    instructions_text: str | None = None,
+    skills_text: str | None = None,
+    context_budget: int | None = None,
+    context_cache: Any | None = None,
 ) -> ComposedPrompt:
     """Build the runtime's per-turn composed prompt.
 
@@ -346,15 +373,84 @@ async def compose_turn_prompt(
         budget=transcript_ref_budget,
     )
 
+    # 5) Step 3 (build_context): session-stable sections through the
+    # cross-section budget. instructions/skills ride the standing
+    # priorities; the finalize audit is the context.built payload.
+    # context_budget=None (default) disables cross-section drops —
+    # per-section caps keep their exact current behavior.
+    from sweave.chat.context import (
+        INSTRUCTION_CACHE,
+        PRIORITY_INSTRUCTIONS,
+        PRIORITY_MEMORY,
+        PRIORITY_SKILLS,
+        PRIORITY_SYNTHESIS,
+        PRIORITY_TRANSCRIPT_REF,
+        PRIORITY_WHATS_NEW,
+        ContextBuilder,
+        discover_skills,
+        render_skill_index,
+    )
+
+    session_key = getattr(session, "id", None) or "default"
+    wt_dir = worktree_dir if worktree_dir is not None else project_dir
+    if instructions_text is None:
+        active_cache = (
+            context_cache if context_cache is not None else INSTRUCTION_CACHE
+        )
+        snapshot = active_cache.get(session_key, project_dir, wt_dir)
+        instructions_section = snapshot.text
+        instructions_status = snapshot.status
+        instructions_sha = snapshot.sha
+    else:
+        instructions_section = instructions_text
+        instructions_status = "provided"
+        instructions_sha = ""
+    if skills_text is None:
+        found_skills, _ = discover_skills(project_dir)
+        skills_section, _ = render_skill_index(found_skills)
+    else:
+        skills_section = skills_text
+    dropped_instructions: list[str] = []
+    dropped_skills: list[str] = []
+    builder = ContextBuilder()
+    builder.add("instructions", instructions_section, PRIORITY_INSTRUCTIONS)
+    builder.add("skills", skills_section, PRIORITY_SKILLS)
+    builder.add("memory", memory_section, PRIORITY_MEMORY)
+    builder.add("whats_new", whats_new_section, PRIORITY_WHATS_NEW)
+    builder.add("synthesis", synthesis_section, PRIORITY_SYNTHESIS)
+    builder.add("transcript_ref", transcript_ref, PRIORITY_TRANSCRIPT_REF)
+    finalized = builder.finalize(context_budget)
+    by_name = dict(finalized.texts)
+    for drop in finalized.dropped:
+        by_name[drop["section"]] = ""
+        if drop["section"] == "instructions":
+            dropped_instructions.append("over total budget")
+        elif drop["section"] == "skills":
+            dropped_skills.append("over total budget")
+        elif drop["section"] == "memory":
+            dropped_memory.append("over total budget")
+        elif drop["section"] == "whats_new":
+            dropped_whats_new.append("over total budget")
+        elif drop["section"] == "synthesis":
+            dropped_synthesis.append("over total budget")
+    context_audit = dict(finalized.audit)
+    context_audit["instructions_status"] = instructions_status
+    context_audit["instructions_sha"] = instructions_sha
+
     return ComposedPrompt(
-        memory_section=memory_section,
-        whats_new_section=whats_new_section,
-        synthesis_section=synthesis_section,
-        transcript_ref=transcript_ref,
+        memory_section=by_name.get("memory", ""),
+        whats_new_section=by_name.get("whats_new", ""),
+        synthesis_section=by_name.get("synthesis", ""),
+        transcript_ref=by_name.get("transcript_ref", ""),
         user_message=user_message,
+        instructions_section=by_name.get("instructions", ""),
+        skills_section=by_name.get("skills", ""),
         dropped_memory=dropped_memory,
         dropped_whats_new=dropped_whats_new,
         dropped_synthesis=dropped_synthesis,
+        dropped_instructions=dropped_instructions,
+        dropped_skills=dropped_skills,
+        context_audit=context_audit,
     )
 
 
