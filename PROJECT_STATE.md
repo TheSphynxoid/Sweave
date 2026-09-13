@@ -32,7 +32,7 @@
 - ✅ Topbar shows project name and session name (clickable for quick switching)
 - ✅ Sidebar toggle for collapsing
 - ✅ All modals work (project, session, agent, detail)
-- ✅ Theme system with 20 preset themes (6 light + 14 dark: light/dark/dracula/nord/catppuccin + tokyo-night/onedark/gruvbox-dark/monokai/rose-pine/everforest-dark/kanagawa/solarized-dark/github-dark/midnight + solarized-light/gruvbox-light/github-light/rose-pine-dawn/everforest-light) and a 37-token grouped custom-color editor
+- ✅ Theme system with 20 preset themes (6 light + 14 dark: light/dark/dracula/nord/catppuccin + tokyo-night/onedark/gruvbox-dark/monokai/rose-pine/everforest-dark/kanagawa/solarized-dark/github-dark/midnight + solarized-light/gruvbox-light/github-light/rose-pine-dawn/everforest-light) and a 37-token grouped custom-color editor. **Carbon is the canonical dark default** (user ruling 2026-09-13: fresh installs + dark-OS "system" resolve to Carbon; the old "dark" slate stays selectable). Centralized `ThemeProvider` (preset + custom override, persisted, system-follow with live OS-change re-apply), generated no-FOUC inline script in `index.html` (exact stored preset pre-paint; regen via `sweave-web/scripts/gen-theme-inline.mjs`), system-first font stacks, and persisted S/M/L/XL font-size control in Settings applied via `--sweave-root-scale` root var
 - ✅ WebSocket real-time updates
 - ✅ **Chat polish — agentic + smooth (2026-09-13 retry of a stalled
   R4.2 tail attempt)**: user turns = gradient bubbles; orchestrator turns =

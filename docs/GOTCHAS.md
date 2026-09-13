@@ -537,8 +537,25 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     (resolved-but-unpromoted also hides: the remaining action is
     promotion), refetching on `specialist.escalated/resolved` for
     late-arriving permission asks. Rule: any new attention affordance
-    must verify its backing record exists; never render from the flag
-    alone.
+   must verify its backing record exists; never render from the flag
+   alone.
+
+5. **No-FOUC inline theme script: regenerate after touching tokens.ts /
+   fontScale.ts, and NEVER put a literal closing script tag inside it**
+   (2026-09-13). `sweave-web/index.html` embeds a generated pre-paint
+   script (preset table + font-scale map) between the
+   `SWEAVE-THEME-INLINE` markers — source of truth stays in
+   `src/lib/theme/tokens.ts` / `fontScale.ts`. After any change there,
+   run `cd sweave-web && node scripts/gen-theme-inline.mjs` (uses the
+   repo's own tsc; needs `npm install` done once). `inline.test.ts`
+   pins the embedded table against the live modules, so drift fails
+   the gate. Trap seen live: the generator's own code comment
+   contained the literal sequence that closes a script element — the
+   parser ended the element early and dumped the remaining JS as
+   visible page text starting mid-comment. The generator now fails
+   loudly if the body contains that sequence, and the pin test asserts
+   the same; write "closing script tag", never the literal, in or near
+   the template.
 
 ## Opencode harness & wire protocol
 
