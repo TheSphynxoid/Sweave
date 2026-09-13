@@ -34,6 +34,20 @@
 - ✅ All modals work (project, session, agent, detail)
 - ✅ Theme system with 20 preset themes (6 light + 14 dark: light/dark/dracula/nord/catppuccin + tokyo-night/onedark/gruvbox-dark/monokai/rose-pine/everforest-dark/kanagawa/solarized-dark/github-dark/midnight + solarized-light/gruvbox-light/github-light/rose-pine-dawn/everforest-light) and a 37-token grouped custom-color editor
 - ✅ WebSocket real-time updates
+- ✅ **Chat polish — agentic + smooth (2026-09-13 retry of a stalled
+  R4.2 tail attempt)**: user turns = gradient bubbles; orchestrator turns =
+  elevated cards with gradient-ring avatar + "working" pill + streaming
+  caret; pending-turn row with typing dots + "orchestrator is thinking";
+  pill-shaped TurnStatusBar (Streaming/Thinking phase + chars/elapsed +
+  quiet Ns + live/reconnecting dot); specialist activity = vertical step
+  timeline (nodes + running count); TurnQuestions = gradient card with
+  permission shield; Markdown code blocks get a lang-label + copy header,
+  tinted tables, quote/link styling; entrance/shimmer/typing/presence
+  animations (all disabled under prefers-reduced-motion); soft ambient
+  top-glow on the thread pane. Tests: `ChatPolish.test.tsx` pins the
+  visual contracts; 261/261 vitest green; build green. (The R4.2
+  code-block syntax highlighting + create/switch-in-thread remain
+  unplanned/deferred.)
 - ⚠️ Memory recall/reflect/retain operations (R4.4 re-cut 2026-09-10: page exists but POSTs 422 and no backend is usable by default — backend + contract are the plan)
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
