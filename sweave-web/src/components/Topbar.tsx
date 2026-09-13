@@ -10,7 +10,7 @@ import { useApp } from "@/context/AppProvider";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 
 export function Topbar() {
-  const { activeProject } = useApp();
+  const { activeProject, activeSession } = useApp();
 
   return (
     <header className="relative z-50 h-14 flex items-center justify-between gap-4 border-b border-border bg-topbar/60 text-topbar-foreground backdrop-blur px-4 shadow-sm shadow-black/5 shrink-0">
@@ -22,6 +22,14 @@ export function Topbar() {
         ) : (
           <span className="text-muted-foreground">No project selected</span>
         )}
+      </div>
+
+      <div
+        data-testid="topbar-session-title"
+        className="min-w-0 flex-1 truncate px-2 text-center text-sm text-muted-foreground"
+        title={activeSession?.name ?? undefined}
+      >
+        {activeSession ? activeSession.name : activeProject ? "No active session" : ""}
       </div>
 
       <div className="flex items-center gap-2">
