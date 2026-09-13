@@ -392,13 +392,23 @@ class CredentialStore:
         return sorted(out, key=lambda r: r["provider"])
 
     def push_candidates(self, store: dict[str, Any]) -> list[str]:
-        """OUR api_key providers missing (or differing) over there.
+        """OUR api_key providers safe to write over there.
 
-        The reverse-sync set: these get written to the opencode
-        store so managed serves and the standalone TUI stay usable.
+        Ledger-aware (2026-09-14 fix: the naive differ-push
+        overwrote a user rotation made in the opencode TUI with our
+        stale copy on the next boot). For ours O, theirs T, ledger L:
+        * O == T → converged, nothing to do.
+        * T missing/unshaped → additive push (nothing destroyed).
+        * L == T → they hold the last converged state; WE rotated →
+          push O.
+        * L == O (they rotated) or anything else (conflict) → NO
+          push; the drift surfaces via :meth:`pending_imports` for
+          the user to resolve (import or keep-mine). Never destroy
+          access elsewhere unasked.
         OAuth markers are never pushed.
         """
         data = self.load()
+        ledger = data["adopted_from_opencode"]
         out: list[str] = []
         for name, entry in data["providers"].items():
             if not isinstance(entry, dict) or entry.get("type") != "api_key":
@@ -406,6 +416,7 @@ class CredentialStore:
             key = entry.get("key")
             if not isinstance(key, str) or not key:
                 continue
+            ours_fp = entry.get("fingerprint")
             theirs = store.get(name)
             their_fp = (
                 fingerprint_key(theirs["key"].strip())
@@ -414,9 +425,24 @@ class CredentialStore:
                 and theirs["key"].strip()
                 else None
             )
-            if their_fp != entry.get("fingerprint"):
-                out.append(name)
+            if their_fp == ours_fp:
+                continue  # converged
+            if their_fp is None:
+                out.append(name)  # additive: nothing destroyed
+                continue
+            if ledger.get(name) == their_fp:
+                out.append(name)  # we rotated; they hold last-converged
+                continue
+            # They rotated (ledger == ours) or conflict: pending, no push.
         return sorted(out)
+
+    def mark_pushed(self, provider: str) -> None:
+        """Record that theirs now holds our key (post-push converge)."""
+        data = self.load()
+        entry = data["providers"].get(provider)
+        if isinstance(entry, dict) and entry.get("fingerprint"):
+            data["adopted_from_opencode"][provider] = entry["fingerprint"]
+            self._save()
 
     def render_push_entry(self, provider: str) -> dict[str, Any] | None:
         """The ``{"key", "type"}`` shape opencode stores natively."""
@@ -436,10 +462,12 @@ def sync_with_opencode(
     """Adopt-in + push-out across every existing opencode store.
 
     Boot + explicit-import path: adoptable keys flow INTO our store
-    (ledgered, idempotent); our api_key providers missing or
-    differing over there are pushed back (merged entry-by-entry,
-    backup kept). Best-effort per path — one corrupt store never
-    blocks the others. Returns counts for logging.
+    (ledgered, idempotent); our api_key providers are pushed back
+    only where the ledger proves WE are the newer side (or theirs
+    is missing) — merged entry-by-entry, backup kept. Their-side
+    rotations are never overwritten; they surface as pending.
+    Best-effort per path — one corrupt store never blocks the
+    others. Returns counts for logging.
     """
     store = store or CredentialStore()
     adopted: list[str] = []
@@ -477,6 +505,11 @@ def sync_with_opencode(
                 )
             try:
                 write_opencode_store(path, merged, backup=True)
+                for name in candidates:
+                    try:
+                        store.mark_pushed(name)
+                    except Exception:  # noqa: BLE001 — ledger lag is harmless
+                        pass
                 pushed[str(path)] = candidates
             except Exception as e:  # noqa: BLE001
                 logger.warning("credentials: push failed for %s: %s", path, e)

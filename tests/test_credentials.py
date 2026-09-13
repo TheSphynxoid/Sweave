@@ -145,17 +145,63 @@ def test_push_candidates_and_render(tmp_path: Path):
         "type": "oauth",
         "adopted": False,
     }
+    # Missing over there → additive push.
     assert store.push_candidates({}) == ["openrouter"]
+    # Converged → nothing.
     assert store.push_candidates(
         {"openrouter": {"key": "sk-a", "type": "api"}}
     ) == []
+    # Differing with NO ledger → conflict, never push unasked.
+    assert store.push_candidates(
+        {"openrouter": {"key": "sk-OTHER", "type": "api"}}
+    ) == []
+    # Ledger == theirs (we rotated after converging) → push ours.
+    store.load()["adopted_from_opencode"]["openrouter"] = fingerprint_key(
+        "sk-OTHER"
+    )
     assert store.push_candidates(
         {"openrouter": {"key": "sk-OTHER", "type": "api"}}
     ) == ["openrouter"]
+    # Ledger == ours (they rotated) → pending, never push.
+    store.load()["adopted_from_opencode"]["openrouter"] = fingerprint_key(
+        "sk-a"
+    )
+    assert store.push_candidates(
+        {"openrouter": {"key": "sk-NEW-THEIRS", "type": "api"}}
+    ) == []
+    assert store.pending_imports(
+        {"openrouter": {"key": "sk-NEW-THEIRS", "type": "api"}}
+    ) == [{"provider": "openrouter", "reason": "rotated in opencode"}]
     rendered = store.render_push_entry("openrouter")
     assert rendered == {"key": "sk-a", "type": "api"}
     assert store.render_push_entry("github-copilot") is None
     assert store.render_push_entry("missing") is None
+
+
+def test_sync_never_overwrites_their_rotation(tmp_path: Path, monkeypatch):
+    """Their-side rotation survives sync: no push, pending flags it."""
+    home = _opencode_home(tmp_path, {"openrouter": {"key": "sk-v1", "type": "api"}})
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    store = CredentialStore()
+    sync_with_opencode(store)  # adopts v1
+    assert store.get_key("openrouter") == "sk-v1"
+    # User rotates over there (opencode TUI /connect).
+    target = home / ".sweave" / "opencode-data" / "opencode" / "auth.json"
+    target.write_text(
+        json.dumps({"openrouter": {"key": "sk-v2-user", "type": "api"}}),
+        encoding="utf-8",
+    )
+    result = sync_with_opencode(store)
+    assert result["pushed"] == {}
+    assert {"provider": "openrouter", "reason": "rotated in opencode"} in result[
+        "pending"
+    ]
+    # Their key untouched; ours untouched.
+    assert json.loads(target.read_text(encoding="utf-8"))["openrouter"]["key"] == (
+        "sk-v2-user"
+    )
+    assert store.get_key("openrouter") == "sk-v1"
 
 
 def test_sync_end_to_end_with_backup(tmp_path: Path, monkeypatch):
