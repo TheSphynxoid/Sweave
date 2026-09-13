@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import {
   FONT_SCALE_STORAGE_KEY,
   FONT_SCALE_OPTIONS,

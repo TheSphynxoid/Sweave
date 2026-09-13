@@ -1241,8 +1241,12 @@ export const PRESETS = [
   }),
 ] as const;
 
-export const DEFAULT_PRESET_NAME = "dark" as const;
-export type PresetName = (typeof PRESETS)[number]["name"];
+/** Canonical dark default (user ruling 2026-09-13): true-black OLED. */
+export const DEFAULT_PRESET_NAME = "carbon" as const;
+export const DEFAULT_LIGHT_PRESET_NAME = "light" as const;
+/** Special "follow the OS" selection. Not a real preset -- resolved at apply time. */
+export const SYSTEM_PRESET_NAME = "system" as const;
+export type PresetName = (typeof PRESETS)[number]["name"] | (typeof SYSTEM_PRESET_NAME);
 
 export function getPreset(name: string): PresetTokens {
   const match = PRESETS.find((p) => p.name === name);

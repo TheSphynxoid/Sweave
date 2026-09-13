@@ -18,6 +18,8 @@
 import {
   CustomOverride,
   DEFAULT_PRESET_NAME,
+  DEFAULT_LIGHT_PRESET_NAME,
+  SYSTEM_PRESET_NAME,
   PresetName,
   getPreset,
   listPresetNames,
@@ -42,6 +44,32 @@ const DARK_CLASS = "dark";
 /** Default theme when nothing is persisted (or localStorage is blocked). */
 export function defaultActiveTheme(): ActiveTheme {
   return { preset: DEFAULT_PRESET_NAME, custom: {} };
+}
+
+/**
+ * Resolve the OS color-scheme preference. Returns `true` (dark) when
+ * either the OS prefers dark OR we can't tell -- matching the
+ * `@theme` defaults in `globals.css`, which are dark, so the first
+ * paint is never wrong for the common case.
+ */
+export function prefersDark(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return true;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+/**
+ * The real preset name the "system" selection maps to right now.
+ * Dark OS -> the default dark preset; light OS -> the default light preset.
+ */
+export function resolveSystemPresetName(): PresetName {
+  return prefersDark() ? DEFAULT_PRESET_NAME : DEFAULT_LIGHT_PRESET_NAME;
+}
+
+/** Map the active theme to a concrete preset name (resolving "system"). */
+function resolveEffectivePresetName(theme: ActiveTheme): PresetName {
+  return theme.preset === SYSTEM_PRESET_NAME ? resolveSystemPresetName() : theme.preset;
 }
 
 function safeGet(key: string): string | null {
@@ -70,7 +98,9 @@ export function loadActiveTheme(): ActiveTheme {
   const fallback = defaultActiveTheme();
   if (!presetRaw) return fallback;
   const valid = listPresetNames();
-  if (!valid.includes(presetRaw as PresetName)) return fallback;
+  if (!valid.includes(presetRaw as PresetName) && presetRaw !== SYSTEM_PRESET_NAME) {
+    return fallback;
+  }
   let custom: CustomOverride = {};
   if (customRaw) {
     try {
@@ -91,7 +121,7 @@ export function saveActiveTheme(theme: ActiveTheme): void {
 
 /** Resolve a theme to the merged token map (preset + custom). */
 export function resolveThemeTokens(theme: ActiveTheme): TokenMap {
-  return resolveTokens(getPreset(theme.preset).tokens, theme.custom);
+  return resolveTokens(getPreset(resolveEffectivePresetName(theme)).tokens, theme.custom);
 }
 
 /**
@@ -111,8 +141,11 @@ export function resolveThemeTokens(theme: ActiveTheme): TokenMap {
  */
 export function applyThemeToDocument(theme: ActiveTheme): void {
   if (typeof document === "undefined") return;
-  const preset = getPreset(theme.preset);
+  const preset = getPreset(resolveEffectivePresetName(theme));
   const root = document.documentElement;
+  // Keep the attribute equal to the *selected* preset (including
+  // "system") so the injected selector below matches; the token
+  // values are those of the *resolved* concrete preset.
   root.setAttribute(THEME_DATA_ATTR, theme.preset);
   // `dark:` variant + `.dark` CSS hooks key off this class, so
   // every dark-mode preset (dracula, nord, ...) gets dark styling.

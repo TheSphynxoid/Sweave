@@ -49,8 +49,8 @@ describe("PRESETS", () => {
     ]);
   });
 
-  it("default preset is dark (matches the pre-R4 v1 default)", () => {
-    expect(DEFAULT_PRESET_NAME).toBe("dark");
+  it("default preset is carbon (canonical dark; user ruling 2026-09-13)", () => {
+    expect(DEFAULT_PRESET_NAME).toBe("carbon");
   });
 
   it("every preset has a label, a description, a mode, and every required token", () => {

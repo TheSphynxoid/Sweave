@@ -7,22 +7,17 @@
  * active preset persists to localStorage; the custom override
  * is stored separately.
  */
-import { useEffect, useMemo, useState } from "react";
-import { Palette, Check, Sun, Moon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Palette, Check, Sun, Moon, Monitor } from "lucide-react";
 import {
   PRESETS,
   type PresetName,
   type ThemeMode,
-  loadActiveTheme,
-  saveActiveTheme,
-  applyThemeToDocument,
-  type ActiveTheme,
+  SYSTEM_PRESET_NAME,
+  useTheme,
 } from "@/lib/theme";
 import { cn } from "@/utils/cn";
-import {
-  CustomColorEditor,
-  applyCustomColorChange,
-} from "./CustomColorEditor";
+import { CustomColorEditor } from "./CustomColorEditor";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -106,35 +101,17 @@ function PresetGroup({
 }
 
 export function ThemeSwitcher() {
-  const [theme, setTheme] = useState<ActiveTheme>(() => loadActiveTheme());
+  const { theme, setPreset, setCustom, resetCustom } = useTheme();
   const [query, setQuery] = useState("");
 
-  useEffect(() => {
-    applyThemeToDocument(theme);
-  }, [theme]);
-
-  const choose = (preset: PresetName) => {
-    const next: ActiveTheme = { ...theme, preset };
-    setTheme(next);
-    saveActiveTheme(next);
-  };
-
-  const handleCustomChange = (next: ActiveTheme) => {
-    setTheme(next);
-    applyCustomColorChange(next);
-  };
-
-  const handleReset = () => {
-    const next: ActiveTheme = { ...theme, custom: {} };
-    setTheme(next);
-    saveActiveTheme(next);
-    applyThemeToDocument(next);
-  };
+  const choose = (preset: PresetName) => setPreset(preset);
 
   const activePreset = useMemo(
     () => PRESETS.find((p) => p.name === theme.preset),
     [theme.preset],
   );
+
+  const triggerLabel = theme.preset === SYSTEM_PRESET_NAME ? "system" : theme.preset;
 
   return (
     <DropdownMenu>
@@ -145,7 +122,7 @@ export function ThemeSwitcher() {
           className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted"
         >
           <Palette size={14} />
-          <span className="hidden sm:inline capitalize">{theme.preset}</span>
+          <span className="hidden sm:inline capitalize">{triggerLabel}</span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80 max-h-[85vh] overflow-y-auto">
@@ -162,6 +139,33 @@ export function ThemeSwitcher() {
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+        {/* Pinned "follow OS" option — always visible, ignores the search. */}
+        <DropdownMenuItem
+          onSelect={() => choose(SYSTEM_PRESET_NAME)}
+          data-testid="theme-preset-system"
+          className={cn(
+            "flex items-center justify-between gap-2 px-2 py-2 text-sm cursor-pointer",
+            theme.preset === SYSTEM_PRESET_NAME ? "bg-primary/10 text-primary" : "",
+          )}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              className="inline-block h-4 w-4 shrink-0 rounded-full ring-1 ring-border"
+              style={{
+                background: "linear-gradient(135deg, #0f172a 0 50%, #f8fafc 50% 100%)",
+              }}
+              aria-hidden
+            />
+            <span className="min-w-0">
+              <span className="block truncate">System</span>
+              <span className="block truncate text-[10px] text-muted-foreground">
+                Follow the operating system
+              </span>
+            </span>
+          </span>
+          {theme.preset === SYSTEM_PRESET_NAME && <Monitor size={14} className="shrink-0" />}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <PresetGroup mode="light" active={theme.preset} query={query} onChoose={choose} />
         <PresetGroup mode="dark" active={theme.preset} query={query} onChoose={choose} />
         <DropdownMenuSeparator />
@@ -170,14 +174,18 @@ export function ThemeSwitcher() {
           {Object.keys(theme.custom).length > 0 && (
             <button
               type="button"
-              onClick={handleReset}
+              onClick={resetCustom}
               className="text-[10px] text-primary hover:underline"
             >
               Reset
             </button>
           )}
         </DropdownMenuLabel>
-        <CustomColorEditor theme={theme} onChange={handleCustomChange} onReset={handleReset} />
+        <CustomColorEditor
+          theme={theme}
+          onChange={(next) => setCustom(next.custom)}
+          onReset={resetCustom}
+        />
         {activePreset && (
           <p className="px-3 py-1 text-[10px] text-muted-foreground">
             Active: {activePreset.label} — {activePreset.description}

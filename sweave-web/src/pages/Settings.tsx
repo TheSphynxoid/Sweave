@@ -1,18 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Settings as SettingsIcon, Palette, Folder, Cpu, SlidersHorizontal } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
 import {
   presetsByMode,
-  type PresetName,
   type ThemeMode,
-  loadActiveTheme,
-  saveActiveTheme,
-  applyThemeToDocument,
-  type ActiveTheme,
+  useTheme,
+  SYSTEM_PRESET_NAME,
 } from "@/lib/theme";
 import { useFontScale, FONT_SCALE_OPTIONS } from "@/lib/theme/fontScale";
 import { PageHeader } from "@/components/PageHeader";
@@ -95,17 +92,7 @@ export function SettingsPage() {
 }
 
 function AppearanceSettings() {
-  const [theme, setTheme] = useState<ActiveTheme>(() => loadActiveTheme());
-
-  useEffect(() => {
-    applyThemeToDocument(theme);
-  }, [theme]);
-
-  const choose = (preset: PresetName) => {
-    const next: ActiveTheme = { ...theme, preset };
-    setTheme(next);
-    saveActiveTheme(next);
-  };
+  const { theme, setPreset, setCustom, resetCustom } = useTheme();
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
@@ -115,6 +102,38 @@ function AppearanceSettings() {
           <CardDescription>Pick a base palette. Custom overrides apply on top.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              System
+            </p>
+            <button
+              type="button"
+              onClick={() => setPreset(SYSTEM_PRESET_NAME)}
+              data-testid="settings-preset-system"
+              title="Follow the operating system"
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg border p-3 text-left transition-colors",
+                theme.preset === SYSTEM_PRESET_NAME
+                  ? "border-primary ring-1 ring-primary"
+                  : "hover:bg-muted",
+              )}
+            >
+              <span
+                className="grid h-9 w-9 shrink-0 rounded-md"
+                style={{
+                  background: "linear-gradient(135deg, #0f172a 0 50%, #f8fafc 50% 100%)",
+                }}
+                aria-hidden
+              />
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium">System</span>
+                <span className="block truncate text-[10px] text-muted-foreground">
+                  Follow the operating system
+                </span>
+              </span>
+            </button>
+          </div>
+
           {(["light", "dark"] as const).map((mode: ThemeMode) => (
             <div key={mode} className="space-y-2">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -131,7 +150,7 @@ function AppearanceSettings() {
                     <button
                       key={preset.name}
                       type="button"
-                      onClick={() => choose(preset.name)}
+                      onClick={() => setPreset(preset.name)}
                       data-testid={`settings-preset-${preset.name}`}
                       title={preset.description}
                       className={cn(
@@ -174,17 +193,8 @@ function AppearanceSettings() {
         <CardContent>
           <CustomColorEditor
             theme={theme}
-            onChange={(next) => {
-              setTheme(next);
-              saveActiveTheme(next);
-              applyThemeToDocument(next);
-            }}
-            onReset={() => {
-              const next: ActiveTheme = { ...theme, custom: {} };
-              setTheme(next);
-              saveActiveTheme(next);
-              applyThemeToDocument(next);
-            }}
+            onChange={(next) => setCustom(next.custom)}
+            onReset={resetCustom}
           />
         </CardContent>
       </Card>

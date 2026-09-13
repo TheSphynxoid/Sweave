@@ -6,8 +6,11 @@
  * The runtime theme path (``applyThemeToDocument`` in
  * src/lib/theme/switcher.ts) writes the same variables per
  * active preset -- the `--color-*` defaults below are the
- * "dark" preset's first paint so the UI is not unstyled before
- * the JS hydrates.
+ * "dark" preset's fallback so the UI is not unstyled when
+ * neither the inline no-FOUC script nor the JS has run
+ * (no-JS, script blocked). With JS, index.html's generated
+ * inline script paints the exact stored preset before first
+ * paint (see scripts/gen-theme-inline.mjs).
  *
  * Token format: each `--color-<name>` is a full ``rgb()`` value
  * so the Tailwind utilities work without an arbitrary-value

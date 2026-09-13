@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   defaultActiveTheme,
   loadActiveTheme,
@@ -11,8 +11,8 @@ import {
 import { listPresetNames, getPreset } from "../tokens";
 
 describe("defaultActiveTheme", () => {
-  it("returns the dark preset with an empty custom override", () => {
-    expect(defaultActiveTheme()).toEqual({ preset: "dark", custom: {} });
+  it("returns the carbon preset with an empty custom override", () => {
+    expect(defaultActiveTheme()).toEqual({ preset: "carbon", custom: {} });
   });
 });
 
@@ -144,5 +144,44 @@ describe("loadActiveTheme sanitization", () => {
       preset: "dark",
       custom: { primary: "1 2 3" },
     });
+  });
+});
+
+describe("system preset", () => {
+  const realMatchMedia = window.matchMedia;
+
+  afterEach(() => {
+    window.matchMedia = realMatchMedia;
+  });
+
+  it("loadActiveTheme accepts a persisted system selection", () => {
+    window.localStorage.setItem("sweave.theme.preset", "system");
+    expect(loadActiveTheme()).toEqual({ preset: "system", custom: {} });
+  });
+
+  it("resolveThemeTokens resolves system to carbon on a dark OS", () => {
+    const tokens = resolveThemeTokens({ preset: "system", custom: {} });
+    expect(tokens).toEqual(getPreset("carbon").tokens);
+  });
+
+  it("resolveThemeTokens resolves system to light on a light OS", () => {
+    window.matchMedia = (() => ({ matches: false })) as unknown as typeof window.matchMedia;
+    const tokens = resolveThemeTokens({ preset: "system", custom: {} });
+    expect(tokens).toEqual(getPreset("light").tokens);
+  });
+
+  it("applyThemeToDocument keeps data-theme=system and follows the OS mode", () => {
+    applyThemeToDocument({ preset: "system", custom: {} });
+    expect(document.documentElement.getAttribute(THEME_DATA_ATTR)).toBe("system");
+    // jsdom has no matchMedia: prefersDark() falls back to dark.
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+  });
+
+  it("applyThemeToDocument clears the dark class for system on a light OS", () => {
+    window.matchMedia = (() => ({ matches: false })) as unknown as typeof window.matchMedia;
+    applyThemeToDocument({ preset: "system", custom: {} });
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.style.colorScheme).toBe("light");
   });
 });
