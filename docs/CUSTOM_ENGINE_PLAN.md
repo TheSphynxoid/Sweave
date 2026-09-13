@@ -137,6 +137,18 @@ incremental deltas (multi-`chat.delta` per turn, asserted in test), token
 count matches `tokens_used`; opencode fallback untouched; pytest + vitest
 green.
 
+Auth (user-required 2026-09-13, recorded not rushed — step-1 design
+constraint, not a later retrofit): the engine must reach EVERY provider in
+the catalog, never a subset. "OpenAI-compatible" is transport convenience,
+not a coverage bar — where a catalog provider has no OpenAI-compatible
+surface the engine speaks its native protocol (or its gateway); catalog
+coverage is the gate. Credential resolution order: explicit config keys →
+env → opencode auth-store bootstrap (`auth.json` / `account.json`, already
+copied for data-dir isolation — reuse where the provider flow allows);
+engine-owned OAuth/device flows long-term. A provider with no usable
+credential fails loudly at turn start (named `auth_missing`, never a
+mid-turn cryptic error).
+
 ### Step 2 — 6-tool executor + permission enforcement (~1.5 sessions)
 `read / write+edit / bash(scoped+ask) / glob / grep / todo` in the
 delegation worktree cwd. Permission map rendered by the orchestrator
@@ -213,7 +225,13 @@ as prompt surgery. Instruction files land here too (user-noted 2026-09-11:
 opencode auto-loads `AGENTS.md`; the ecosystem convention varies —
 `CLAUDE.md`/`AGENTS.md` per harness — so the orchestrator loads
 `{project}/AGENTS.md` + `{worktree}/AGENTS.md` itself, budgeted and traced
-like any other section, and the engine receives finished text). Compaction
+like any other section, and the engine receives finished text; restated
+2026-09-13: automatic, every turn, no opt-in — this is baseline agent
+behavior, recorded not rushed). Skills read here as well
+(`skills/{name}/SKILL.md` convention per PLUGGABLES/TRACKING Phase C —
+read-not-run v1, native read on this engine, same budgeted traced section
+path; the opencode `skill` *tool-execution* parity stays demand-gated,
+loading does not). Compaction
 rides here too (user-noted 2026-09-11: opencode's hidden compaction agent;
 MIT per DESIGN §8 — lift its prompt verbatim with the notice preserved in
 THIRD_PARTY_NOTICES, or improve on it — as the engine-side compactor for
@@ -244,8 +262,10 @@ orchestrator — policy holds).
 ## 5. Explicit non-goals
 
 - No Python backend rewrite; no merging the engine into the API process.
-- No full opencode tool parity in v1 (`lsp`, `skill`, `plan`, `webfetch`,
-  `websearch`, `patch` stay opencode-only until demand proves otherwise).
+- No full opencode tool parity in v1 (`lsp`, `plan`, `webfetch`,
+  `websearch`, `patch` stay opencode-only until demand proves otherwise;
+  `skill` *tool-execution* likewise — but skill *loading/reads* are step-3
+  scope per the paragraph above, not deferred).
 - No fork of opencode (MIT reference clone stays read-only inspiration).
 - No LangGraph/CrewAI/AutoGen/Agents-SDK adoption (§8: they own the loop).
 - No ACP harness (verdict stands until opencode streams session updates).
@@ -343,9 +363,12 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | Consented abort (acknowledged vs UNCONFIRMED) | Planned (step 0 control verb; serves the view abort endpoint) |
 | Revert / rewind (`revert(to_message)` per §C spec) | Planned (step 0 control verb; opencode pointer + shadow-git semantics are the reference) |
 | Per-turn `tokens_used` + cost (M1.9 anchor, usage ledger) | Planned (terminal shape identical; per-tool telemetry native) |
-| Compaction + AGENTS.md / instruction loading + memory `build_context()` | Planned (step 3) |
+| Provider auth for the FULL catalog (no provider left behind) | Planned (step 1 design constraint: config → env → opencode-store bootstrap → engine OAuth; `auth_missing` fails loud at turn start; native protocol where no OpenAI-compatible surface exists) |
+| AGENTS.md / instruction auto-load (automatic, every turn) | Planned (step 3; baseline behavior, recorded not rushed) |
+| Skills reads (`skills/{name}/SKILL.md`, read-not-run v1) | Planned (step 3, same budgeted traced path, native read) |
+| Compaction + memory `build_context()` | Planned (step 3) |
 | Per-specialist selection + opencode fallback | Planned (step 4) |
-| `lsp` / `skill` / `plan` / `webfetch` / `websearch` / `patch` tools | Deferred non-goal (demand-proven only; opencode covers meanwhile) |
+| `lsp` / `plan` / `webfetch` / `websearch` / `patch` tools + `skill` tool-execution | Deferred non-goal (demand-proven only; opencode covers meanwhile — loading/reads are NOT deferred, see above) |
 | SubAgentRun ephemeral runs | No engine work (store + endpoints sit above the harness) |
 | MCP server | Opencode-adapter only; engine speaks native calls |
 | Permission bridge plugin + hijack endpoint | Not transferred (in-engine `permission.asked` replaces the ferry) |
