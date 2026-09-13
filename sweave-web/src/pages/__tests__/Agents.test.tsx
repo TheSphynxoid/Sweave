@@ -7,7 +7,7 @@
  * keep the full edit affordances.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AgentsPage } from "../Agents";
 import { api } from "@/api/client";
@@ -103,5 +103,55 @@ describe("AgentsPage seed model overrides", () => {
     renderPage();
     await waitForPicker("sql-expert", "project");
     expect(screen.getAllByText("Edit").length).toBe(1);
+  });
+});
+
+describe("AgentsPage delete confirmation", () => {
+  const deleteMock = vi.mocked(api.deleteSpecialist);
+
+  it("asks first instead of deleting immediately", async () => {
+    renderPage();
+    await waitForPicker("sql-expert", "project");
+    fireEvent.click(screen.getByText("Delete"));
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("confirm-delete-specialist-dialog")).toBeTruthy();
+  });
+
+  it("deletes on confirm and not on cancel", async () => {
+    deleteMock.mockResolvedValue(undefined as never);
+    renderPage();
+    await waitForPicker("sql-expert", "project");
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(await screen.findByTestId("confirm-delete-specialist-dialog-cancel"));
+    expect(deleteMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(await screen.findByTestId("confirm-delete-specialist-dialog-confirm"));
+    await waitFor(() => {
+      expect(deleteMock).toHaveBeenCalledWith("sql-expert", "project");
+    });
+  });
+});
+
+describe("AgentsPage search filter", () => {
+  it("narrows cards by name and restores on clear", async () => {
+    renderPage();
+    await waitForPicker("backend-specialist", "seed");
+    fireEvent.change(screen.getByTestId("agents-search"), { target: { value: "sql" } });
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="model-picker-seed-backend-specialist"]')).toBeNull();
+    });
+    expect(
+      document.querySelector('[data-testid="model-picker-project-sql-expert"]'),
+    ).not.toBeNull();
+    fireEvent.change(screen.getByTestId("agents-search"), { target: { value: "" } });
+    await waitForPicker("backend-specialist", "seed");
+  });
+
+  it("shows an empty note when nothing matches", async () => {
+    renderPage();
+    await waitForPicker("backend-specialist", "seed");
+    fireEvent.change(screen.getByTestId("agents-search"), { target: { value: "zzz-nope" } });
+    expect(await screen.findByText(/No specialists match/)).toBeTruthy();
   });
 });

@@ -12,6 +12,7 @@ import {
   Layers,
   Sparkles,
   ChevronDown,
+  Search,
 } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
@@ -26,6 +27,7 @@ import { ModelWithEffort } from "@/components/EffortSelect";
 import { EffectiveDefaultNote } from "@/components/EffectiveDefaultNote";
 import { CreateSpecialistDialog } from "@/components/CreateSpecialistDialog";
 import { EditSpecialistDialog } from "@/components/EditSpecialistDialog";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 const SCOPE_META: Record<
   string,
@@ -42,6 +44,9 @@ export function AgentsPage() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<SpecialistSummary | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<SpecialistSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [query, setQuery] = useState("");
 
   const { data: specialists = [], isLoading } = useQuery<SpecialistSummary[]>({
     queryKey: ["specialists"],
@@ -74,14 +79,23 @@ export function AgentsPage() {
       global: [],
       seed: [],
     };
+    const q = query.trim().toLowerCase();
     specialists.forEach((s) => {
+      if (
+        q.length > 0 &&
+        !s.name.toLowerCase().includes(q) &&
+        !(s.description ?? "").toLowerCase().includes(q) &&
+        !(s.harness ?? "").toLowerCase().includes(q)
+      ) {
+        return;
+      }
       const key = s.is_orchestrator ? "orchestrator" : s.scope;
       (map[key] ??= []).push(s);
     });
     return order
       .map((k) => ({ key: k, items: map[k] ?? [] }))
       .filter((g) => g.items.length > 0);
-  }, [specialists]);
+  }, [specialists, query]);
 
   const setModel = async (s: SpecialistSummary, model: string) => {
     try {
@@ -93,12 +107,17 @@ export function AgentsPage() {
   };
 
   const remove = async (s: SpecialistSummary) => {
+    if (deleting) return;
+    setDeleting(true);
     try {
       await api.deleteSpecialist(s.name, s.scope === "global" ? "global" : "project");
       await qc.invalidateQueries({ queryKey: ["specialists"] });
       pushNotification("success", `Specialist "${s.name}" deleted.`);
     } catch (err) {
       pushNotification("error", `Failed to delete specialist: ${(err as Error).message}`);
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
   };
 
@@ -141,6 +160,23 @@ export function AgentsPage() {
         />
       ) : (
         <div className="space-y-6">
+          <div className="relative max-w-sm">
+            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by name, description, or harness…"
+              aria-label="Filter specialists"
+              data-testid="agents-search"
+              className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          {groups.length === 0 && (
+            <p className="px-1 text-sm text-muted-foreground">
+              No specialists match “{query.trim()}”.
+            </p>
+          )}
           {groups.map((group) => {
             const meta = SCOPE_META[group.key];
             const Icon = meta.icon;
@@ -160,7 +196,7 @@ export function AgentsPage() {
                       variantsMap={models?.variants ?? {}}
                       defaultModel={models?.default ?? null}
                       onModel={(m) => setModel(s, m)}
-                      onDelete={() => remove(s)}
+                      onDelete={() => setPendingDelete(s)}
                       onEdit={() => setEditTarget(s)}
                     />
                   ))}
@@ -178,6 +214,24 @@ export function AgentsPage() {
         onOpenChange={(open) => {
           if (!open) setEditTarget(null);
         }}
+      />
+      <ConfirmDeleteDialog
+        open={pendingDelete !== null}
+        title="Delete specialist"
+        body={
+          pendingDelete
+            ? `Delete "${pendingDelete.name}"? This cannot be undone.`
+            : ""
+        }
+        pending={deleting}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDelete || deleting) return;
+          void remove(pendingDelete);
+        }}
+        testId="confirm-delete-specialist-dialog"
       />
     </div>
   );
@@ -211,17 +265,12 @@ function SpecialistCard({
   return (
     <Card className="overflow-hidden hover:shadow-md transition-shadow">
       <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="font-medium truncate">{specialist.name}</p>
-            <p className="text-xs text-muted-foreground truncate">
-              {specialist.harness}
-              {specialist.role_ref ? ` · ${specialist.role_ref}` : ""}
-            </p>
-          </div>
-          <Badge variant={specialist.is_orchestrator ? "default" : "outline"} className="shrink-0">
-            {specialist.scope}
-          </Badge>
+        <div className="min-w-0">
+          <p className="font-medium truncate">{specialist.name}</p>
+          <p className="text-xs text-muted-foreground truncate">
+            {specialist.harness}
+            {specialist.role_ref ? ` · ${specialist.role_ref}` : ""}
+          </p>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
