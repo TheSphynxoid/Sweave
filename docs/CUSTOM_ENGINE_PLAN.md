@@ -126,6 +126,8 @@ needs a durable session store from day one, which doubles as the
 resume-from-partial journal).
 Done-gate: protocol doc in this file's appendix + contract tests against
 the mock (no engine binary yet); pytest green.
+DONE 2026-09-13 (`sweave/engine/protocol.py` + `tests/test_engine_protocol.py`,
+27 green; commits `c86e9e7` + `1275ce4`).
 
 Wire drift (user ruling 2026-09-11: our wire is versioned by us,
 theirs drifts under us — asymmetric by construction):
@@ -153,6 +155,22 @@ same provider catalog as `models.yaml`), true token SSE → Python `on_chunk`
 incremental deltas (multi-`chat.delta` per turn, asserted in test), token
 count matches `tokens_used`; opencode fallback untouched; pytest + vitest
 green.
+
+Starting shape (recon 2026-09-13, verified against code — next session
+starts here, no re-derive): Node v24 + npm 12 present. TS sidecar lives
+in `sweave-engine/` (repo-root sibling of the `sweave/engine/`
+protocol package — distinct paths, no conflict); Python adapter is
+additive (`sweave/harness/engine.py` registering `"sweave-engine"`,
+never the default until step 4). Selection sites hardcode
+`harness="opencode"` in 4 places today (`chat/loop.py:548`,
+`runtime/job_runner.py:702`, `runtime/specialist_runtime.py:739,757`)
+— `Specialist.harness` and `config harness.default` exist but no
+runtime site reads them; threading them through IS the step-4 work
+(no schema change). Step-1 routing stays opt-in per-task override, no
+config change. Free-tier live gate: provider `opencode` /
+`muse-spark-1.3-contributor-free` (`models.yaml:194-296` block); auth
+via the opencode auth-store bootstrap (same store data-dir isolation
+already copies).
 
 Auth (user-required 2026-09-13, recorded not rushed — step-1 design
 constraint, not a later retrofit): the engine must reach EVERY provider in
