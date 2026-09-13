@@ -12,9 +12,9 @@
  * `useSweaveChatRuntime` — one in Chat.tsx, one inside Thread.tsx —
  * ran two WS subscriptions and two histories for the same session).
  *
- * Session switching stays in the R4.1 tree (SessionPicker here is the
- * in-thread jump affordance); create/switch/rename-in-thread lands in
- * R4.2 step 3.
+ * Session switching lives in the sidebar project/session tree (the
+ * sole switching surface since the 2026-09-13 consolidation);
+ * create/switch/rename-in-thread lands in R4.2 step 3.
  */
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { MessagesSquare, Sparkles } from "lucide-react";
@@ -60,7 +60,7 @@ export function ChatPage() {
             <Sparkles size={20} />
           </div>
           <p className="text-sm text-muted-foreground">
-            Select a session in the topbar to start a conversation.
+            Select a session in the sidebar to start a conversation.
           </p>
         </div>
       </div>

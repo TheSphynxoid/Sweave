@@ -1,12 +1,14 @@
 /**
- * Sidebar (M1.9 Step 1, R4.1 Step 2, R4.4 polish).
+ * Sidebar (M1.9 Step 1, R4.1 Step 2, R4.4 polish, consolidated 2026-09-13).
  *
- * Modern agent-shell nav: brand header + collapse toggle, the project
- * switcher, the always-visible session tree, the primary funnels
- * (Chat / Children / Plan) and the pane shells (Memory / Agents / Settings).
- * Active items get a left accent bar (expanded) or a filled chip (collapsed);
- * section labels + counts keep it scannable. A ⌘K hint at the bottom opens
- * the command palette.
+ * Agent-shell nav, top to bottom: brand header + collapse toggle, the
+ * primary nav (one list — Chat / Children / Plan / Memory / Agents /
+ * Settings), then the project/session tree owning ALL leftover height
+ * (the sole session-switching surface), then a pinned status row with
+ * the command-palette launcher + connection dot. The slim topbar keeps
+ * only the project breadcrumb + theme switcher, so nothing here
+ * duplicates it. Active items get a left accent bar (expanded) or a
+ * filled chip (collapsed).
  *
  * Nav items are deliberately SEPARATE rounded buttons with a small gap
  * (space-y-1) rather than a margin-less connected toolbar — that is the
@@ -27,24 +29,18 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/utils/cn";
-import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { ProjectSessionTree } from "./ProjectSessionTree";
-import { Separator } from "@/components/ui/separator";
 import { Kbd } from "@/components/ui/kbd";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-const FUNNELS = [
+const NAV = [
   { to: "/chat", label: "Chat", icon: MessageSquare },
   { to: "/children", label: "Children", icon: Network },
-  // TRACKING_PLAN Phase A: the plan board sits with the funnels
+  // TRACKING_PLAN Phase A: the plan board sits with the main nav
   // (same weight as Chat/Children, per the 2026-09-11 ruling).
   { to: "/plan", label: "Plan", icon: ListTodo },
-] as const;
-
-const SCAFFOLDS = [
   { to: "/memory", label: "Memory", icon: Brain },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/settings", label: "Settings", icon: Settings },
@@ -100,7 +96,6 @@ function NavItem({ item, collapsed }: { item: NavItemDef; collapsed?: boolean })
 
 export function Sidebar() {
   const [open, setOpen] = useState(true);
-  const { activeSession } = useApp();
   const { state: wsState } = useWS();
   const setCommandOpen = useUIStore((s) => s.setCommandOpen);
 
@@ -143,37 +138,22 @@ export function Sidebar() {
         </Button>
       </div>
 
-      {/* The project/session tree owns ALL leftover height (min-h-0 so it
-          can shrink) and scrolls internally — the nav + status rows below
-          stay pinned instead of being pushed out of the viewport (the old
-          max-h-[40vh] tree + non-shrinkable wrapper overflowed them). */}
-      {open && (
-        <div className="flex min-h-0 flex-1 flex-col border-b border-border p-3 pb-2">
-          <ProjectSessionTree />
-        </div>
-      )}
-
+      {/* Primary nav first (single list, most-used on top), then the
+          project/session tree owning ALL leftover height (min-h-0 so it
+          can shrink) and scrolling internally — the nav + status rows
+          stay pinned instead of being pushed out of the viewport. */}
       <nav aria-label="Primary" className="shrink-0 space-y-1 px-3 py-3">
-        {open && (
-          <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Funnels
-          </p>
-        )}
-        {FUNNELS.map((item) => (
-          <NavItem key={item.to} item={item} collapsed={!open} />
-        ))}
-
-        {open && (
-          <p className="px-2 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Panes
-          </p>
-        )}
-        {SCAFFOLDS.map((item) => (
+        {NAV.map((item) => (
           <NavItem key={item.to} item={item} collapsed={!open} />
         ))}
       </nav>
 
-      <Separator />
+      {open && (
+        <div className="flex min-h-0 flex-1 flex-col border-y border-border p-3 pb-2">
+          <ProjectSessionTree />
+        </div>
+      )}
+
       <div className={cn("p-3 space-y-2", !open && "flex flex-col items-center")}>
         <Button
           variant="outline"
@@ -208,11 +188,6 @@ export function Sidebar() {
             <span className="sr-only">
               {wsState === "open" ? "Connected" : wsState}
             </span>
-          )}
-          {open && activeSession && (
-            <Badge variant="muted" className="ml-auto truncate max-w-[8rem]">
-              {activeSession.name}
-            </Badge>
           )}
         </div>
       </div>

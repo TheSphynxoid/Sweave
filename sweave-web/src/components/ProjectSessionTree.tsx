@@ -1,12 +1,16 @@
 /**
- * ProjectSessionTree (R4.4 — unified project/session tree).
+ * ProjectSessionTree (R4.4 — unified project/session tree; consolidated 2026-09-13).
  *
- * A single collapsible tree like other agent UIs: each project is a parent
- * row (click to activate + expand) whose children are its sessions. The
- * active session is highlighted; sessions can be created inline or deleted
- * on hover. A "+" in the header opens the create-project dialog.
+ * The SOLE session-switching surface: each project is a parent row (click
+ * to activate + expand) whose children are its sessions. Every row shows
+ * a session count and a marker when the project holds the active
+ * session, so a collapsed tree still orients. Session AND project
+ * deletes both go through a confirm dialog (projects used to delete on
+ * a single click — a misclick could destroy a project).
  *
- * Replaces the old separate ProjectSwitcher + SessionTree.
+ * Session lists are fetched per project at the row level (same
+ * ["sessions", name] cache key the expanded view uses), so counts are
+ * free and expanding never refetches.
  */
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -30,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import type { ProjectSummary, SessionSummary } from "@/types";
 
 export function ProjectSessionTree() {
   const { activeProject, activeSession, setActiveProject, setActiveSession, pushNotification } =
@@ -47,6 +52,7 @@ export function ProjectSessionTree() {
     id: string;
     name: string;
   } | null>(null);
+  const [pendingDeleteProject, setPendingDeleteProject] = useState<string | null>(null);
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projects"],
@@ -108,7 +114,10 @@ export function ProjectSessionTree() {
       pushNotification("success", "Project deleted.");
     },
     onError: (err) => pushNotification("error", `Failed to delete project: ${(err as Error).message}`),
-    onSettled: () => setDeletingProject(null),
+    onSettled: () => {
+      setDeletingProject(null);
+      setPendingDeleteProject(null);
+    },
   });
 
   return (
@@ -137,96 +146,51 @@ export function ProjectSessionTree() {
               No projects yet.
             </li>
           )}
-          {projects.map((p) => {
-            const isActiveProject = activeProject?.name === p.name;
-            const isOpen = expanded.has(p.name);
-            return (
-              <li key={p.name}>
-                <div
-                  className={cn(
-                    "group relative flex items-center gap-1.5 rounded-md pr-1 py-1.5 pl-1 text-sm transition-colors",
-                    isActiveProject
-                      ? "bg-primary/10 text-primary"
-                      : "text-foreground hover:bg-muted",
-                  )}
-                >
-                  <button
-                    type="button"
-                    aria-label={isOpen ? "Collapse" : "Expand"}
-                    onClick={() => toggle(p.name)}
-                    className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:text-foreground"
-                  >
-                    <ChevronRight
-                      size={14}
-                      className={cn("transition-transform", isOpen && "rotate-90")}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => activateProject(p.name)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  >
-                    {isOpen ? (
-                      <FolderOpen size={14} className="shrink-0" />
-                    ) : (
-                      <Folder size={14} className="shrink-0" />
-                    )}
-                    <span className="truncate">{p.name}</span>
-                  </button>
-                  {!isActiveProject && (
-                    <button
-                      type="button"
-                      aria-label={`Delete ${p.name}`}
-                      onClick={() => {
-                        if (deletingProject) return;
-                        setDeletingProject(p.name);
-                        deleteProject.mutate(p.name);
-                      }}
-                      className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                    >
-                      {deletingProject === p.name ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={13} />
-                      )}
-                    </button>
-                  )}
-                </div>
-
-                {isOpen && (
-                  <ProjectSessions
-                    projectName={p.name}
-                    activeSessionId={activeSession?.id}
-                    creating={creatingFor === p.name}
-                    newName={newName}
-                    onNewName={setNewName}
-                    onStartCreate={() => {
-                      setCreatingFor(p.name);
-                      setNewName("");
-                    }}
-                    onCreate={() => createSession.mutate(p.name)}
-                    creatingPending={createSession.isPending}
-                    deletingSession={deletingSession}
-                    onDeleteSession={(id, name) => {
-                      if (deletingSession) return;
-                      // Confirmation first — deletion happens only in the
-                      // dialog's confirm handler.
-                      setPendingDeleteSession({ id, name });
-                    }}
-                    onPickSession={async (id) => {
-                      if (id === activeSession?.id) return;
-                      try {
-                        await setActiveSession(id);
-                        navigate("/chat");
-                      } catch (err) {
-                        pushNotification("error", `Failed to switch session: ${(err as Error).message}`);
-                      }
-                    }}
-                  />
-                )}
-              </li>
-            );
-          })}
+          {projects.map((p) => (
+            <ProjectRow
+              key={p.name}
+              project={p}
+              isActiveProject={activeProject?.name === p.name}
+              holdsActiveSession={activeSession?.project_name === p.name}
+              isOpen={expanded.has(p.name)}
+              activeSessionId={activeSession?.id}
+              creating={creatingFor === p.name}
+              newName={newName}
+              creatingPending={createSession.isPending}
+              deletingSession={deletingSession}
+              deletingProject={deletingProject === p.name}
+              onToggle={() => toggle(p.name)}
+              onActivate={() => activateProject(p.name)}
+              onStartCreate={() => {
+                setCreatingFor(p.name);
+                setNewName("");
+              }}
+              onNewName={setNewName}
+              onCreate={() => createSession.mutate(p.name)}
+              onDeleteProject={() => {
+                if (deletingProject) return;
+                // Confirmation first — deletion happens only in the
+                // dialog's confirm handler (previously a single click
+                // deleted the project immediately).
+                setPendingDeleteProject(p.name);
+              }}
+              onDeleteSession={(id, name) => {
+                if (deletingSession) return;
+                // Confirmation first — deletion happens only in the
+                // dialog's confirm handler.
+                setPendingDeleteSession({ id, name });
+              }}
+              onPickSession={async (id) => {
+                if (id === activeSession?.id) return;
+                try {
+                  await setActiveSession(id);
+                  navigate("/chat");
+                } catch (err) {
+                  pushNotification("error", `Failed to switch session: ${(err as Error).message}`);
+                }
+              }}
+            />
+          ))}
         </ul>
       </ScrollArea>
       <ConfirmDeleteDialog
@@ -248,12 +212,165 @@ export function ProjectSessionTree() {
         }}
         testId="confirm-delete-session-dialog"
       />
+      <ConfirmDeleteDialog
+        open={pendingDeleteProject !== null}
+        title="Delete project"
+        body={
+          pendingDeleteProject
+            ? `Delete "${pendingDeleteProject}" and all its sessions? This cannot be undone.`
+            : ""
+        }
+        pending={deleteProject.isPending}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteProject(null);
+        }}
+        onConfirm={() => {
+          if (!pendingDeleteProject || deleteProject.isPending) return;
+          setDeletingProject(pendingDeleteProject);
+          deleteProject.mutate(pendingDeleteProject);
+        }}
+        testId="confirm-delete-project-dialog"
+      />
     </div>
   );
 }
 
+function ProjectRow({
+  project,
+  isActiveProject,
+  holdsActiveSession,
+  isOpen,
+  activeSessionId,
+  creating,
+  newName,
+  creatingPending,
+  deletingSession,
+  deletingProject,
+  onToggle,
+  onActivate,
+  onStartCreate,
+  onNewName,
+  onCreate,
+  onDeleteProject,
+  onDeleteSession,
+  onPickSession,
+}: {
+  project: ProjectSummary;
+  isActiveProject: boolean;
+  holdsActiveSession: boolean;
+  isOpen: boolean;
+  activeSessionId?: string;
+  creating: boolean;
+  newName: string;
+  creatingPending: boolean;
+  deletingSession: string | null;
+  deletingProject: boolean;
+  onToggle: () => void;
+  onActivate: () => void;
+  onStartCreate: () => void;
+  onNewName: (v: string) => void;
+  onCreate: () => void;
+  onDeleteProject: () => void;
+  onDeleteSession: (id: string, name: string) => void;
+  onPickSession: (id: string) => void;
+}) {
+  // Fetched for every row (not just expanded ones) so the count badge
+  // and the expanded view share one ["sessions", name] cache entry —
+  // expanding never refetches.
+  const { data: sessions = [], isLoading } = useQuery({
+    queryKey: ["sessions", project.name],
+    queryFn: () => api.listSessions(project.name),
+  });
+
+  return (
+    <li>
+      <div
+        data-testid={`project-row-${project.name}`}
+        className={cn(
+          "group relative flex items-center gap-1.5 rounded-md pr-1 py-1.5 pl-1 text-sm transition-colors",
+          isActiveProject
+            ? "bg-primary/10 text-primary"
+            : "text-foreground hover:bg-muted",
+        )}
+      >
+        <button
+          type="button"
+          aria-label={isOpen ? "Collapse" : "Expand"}
+          onClick={onToggle}
+          className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:text-foreground"
+        >
+          <ChevronRight
+            size={14}
+            className={cn("transition-transform", isOpen && "rotate-90")}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={onActivate}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          {isOpen ? (
+            <FolderOpen size={14} className="shrink-0" />
+          ) : (
+            <Folder size={14} className="shrink-0" />
+          )}
+          <span className="truncate">{project.name}</span>
+        </button>
+        {holdsActiveSession && (
+          <span
+            data-testid={`project-active-dot-${project.name}`}
+            title="Contains the active session"
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500"
+          />
+        )}
+        {!isLoading && (
+          <span
+            data-testid={`project-session-count-${project.name}`}
+            title={`${sessions.length} session${sessions.length === 1 ? "" : "s"}`}
+            className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[10px] tabular-nums text-muted-foreground"
+          >
+            {sessions.length}
+          </span>
+        )}
+        {!isActiveProject && (
+          <button
+            type="button"
+            aria-label={`Delete ${project.name}`}
+            onClick={onDeleteProject}
+            className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+          >
+            {deletingProject ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Trash2 size={13} />
+            )}
+          </button>
+        )}
+      </div>
+
+      {isOpen && (
+        <ProjectSessions
+          sessions={sessions}
+          isLoading={isLoading}
+          activeSessionId={activeSessionId}
+          creating={creating}
+          newName={newName}
+          onNewName={onNewName}
+          onStartCreate={onStartCreate}
+          onCreate={onCreate}
+          creatingPending={creatingPending}
+          deletingSession={deletingSession}
+          onDeleteSession={onDeleteSession}
+          onPickSession={onPickSession}
+        />
+      )}
+    </li>
+  );
+}
+
 function ProjectSessions({
-  projectName,
+  sessions,
+  isLoading,
   activeSessionId,
   creating,
   newName,
@@ -265,7 +382,8 @@ function ProjectSessions({
   onDeleteSession,
   onPickSession,
 }: {
-  projectName: string;
+  sessions: SessionSummary[];
+  isLoading: boolean;
   activeSessionId?: string;
   creating: boolean;
   newName: string;
@@ -277,12 +395,6 @@ function ProjectSessions({
   onDeleteSession: (id: string, name: string) => void;
   onPickSession: (id: string) => void;
 }) {
-  const { data: sessions = [], isLoading } = useQuery({
-    queryKey: ["sessions", projectName],
-    queryFn: () => api.listSessions(projectName),
-    enabled: true,
-  });
-
   // Keep the active session in view inside the sidebar's scroll area —
   // activating a session deep in the tree must not leave its row (and
   // with it the check / delete affordances) below the fold.
