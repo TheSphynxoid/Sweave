@@ -133,10 +133,14 @@
     files): failure MODE flipped 09-10→09-12 from total-budget trips
     (30–39/day on 250–320-turn days) to header-silence deaths (3+3 on
     09-11, 2+2 on 09-12, all phase=headers at exactly 300s) as volume
-    collapsed (324→6 turns/day) and the model mix went 100% to the
-    free tier (`muse-spark-1.3-contributor-free`, incl. explicit rate
-    limits 09-11). Small denominators + 5–22 min waits explain why it
-    feels like "always". Fix direction, not tuning: liveness probe
+     collapsed (324→6 turns/day) and the model mix went 100% to the
+     free tier (`muse-spark-1.3-contributor-free`, incl. explicit rate
+     limits 09-11). Small denominators + 5–22 min waits explain why it
+     feels like "always". CORRECTION 09-13 (user): the free-tier mix is
+     correlate, not cause — the "paid didn't help" test was void (the
+     paid pick never reached the wire; precedence gap, see below), and
+     the killer was our own 300s header bound on legit serve warmup.
+     Fix direction, not tuning: liveness probe
     (silence → serve-state check → wait-with-progress vs abort) +
     progress heartbeats + provider fallback on slowness; bounds stay
     differentiated (chat snappy, execution patient).
@@ -154,7 +158,20 @@
     09-13 "paid tier didn't help" was this precedence gap, never the
     zombie); supersede-via-revert spec (undo/redo, native opencode
     revert probed live, file-state restore confirmed);
-    scripts/probe_revert_*.py stay as drift gates.
+     scripts/probe_revert_*.py stay as drift gates.
+   - ▶ **Specialist live view (2026-09-13): plan of record
+     `docs/SPECIALIST_VIEW_PLAN.md`.** Full read-only transparency pane
+     per running delegation (identity + elapsed + last-activity + current
+     tool + partials + tool timeline + tokens); the ONLY side-effects are
+     consented abort (`POST /api/delegations/{id}/abort`, NOT gated by
+     `KILL_ON_SILENCE`) and permission/question answering (existing
+     paths). No second input funnel — follow-ups stay orchestrator-only.
+     Rulings locked 2026-09-13: probe-first (bus + hook inventory on a real
+     long-tool turn branches the sensor choice); per-tool budget once
+     `tool-started` is known (proposed 1200s, locked at execution); stall
+     clock watches bytes today (`specialist_runtime.py:963-964` — parts
+     parse only after a chunk lands, so byte-silence ≠ idle). Steps 0–4:
+     probe → activity liveness → live block + abort → pane UI → gates.
 - ✅ **Fast-track: user default out of models.yaml (2026-09-11)** —
   three writers shared one file (`set_default_model` persisted INTO
   models.yaml, `sync_registry` read/rewrote `old_default`, any stale
