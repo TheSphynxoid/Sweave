@@ -12,6 +12,13 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+// Validated-client contract (Go docs "Where can I use it"): identify
+// with our own user agent (never a generic SDK/HTTP-library name)
+// and send a stable x-opencode-session per conversation (routing +
+// prompt caching). Our durable eng_* session ids are exactly that.
+export const ENGINE_USER_AGENT = "sweave-engine/0.1.0";
+export const SESSION_HEADER = "x-opencode-session";
+
 // Catalog providers with a KNOWN OpenAI-compatible chat-completions
 // surface. `key: false` = no credential needed (local serve).
 const TABLE = {

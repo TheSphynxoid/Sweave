@@ -58,6 +58,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "auth": self.headers.get("Authorization", ""),
                     "model": body.get("model", ""),
                     "stream": body.get("stream"),
+                    "user_agent": self.headers.get("User-Agent", ""),
+                    "session": self.headers.get("x-opencode-session", ""),
                 }
             )
             self.close_connection = True
@@ -193,6 +195,23 @@ async def test_go_chat_flavor_turn(sidecar, stub_url):
     assert HITS[0]["model"] == "ox-alpha-free"
     assert HITS[0]["stream"] is True
     assert len([p for n, p in trace.events if n == "tokens_used"]) == 1
+
+
+@needs_node
+async def test_go_validated_client_headers_stable(sidecar, stub_url):
+    """Go validated-client contract: own UA + stable x-opencode-session."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec("opencode-go/ox-alpha-free"))
+    first = await proc.send(_message("one"), trace=_Trace())
+    second = await proc.send(_message("two"), trace=_Trace())
+    assert first.success and second.success
+    assert len(HITS) == 2
+    for hit in HITS:
+        assert hit["user_agent"] == "sweave-engine/0.1.0"
+        assert hit["session"].startswith("eng_")
+    assert HITS[0]["session"] == HITS[1]["session"]
 
 
 @needs_node

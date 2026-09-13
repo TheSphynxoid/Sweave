@@ -33,6 +33,7 @@ needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
 STUB: dict = {
     "script": [],
     "requests": [],
+    "req_headers": [],
     "tasks": [],
     "escalations": [],
     "permissions": [],
@@ -81,6 +82,12 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if self.path == "/chat/completions":
             STUB["requests"].append(body)
+            STUB["req_headers"].append(
+                {
+                    "user_agent": self.headers.get("User-Agent", ""),
+                    "session": self.headers.get("x-opencode-session", ""),
+                }
+            )
             if not body.get("messages"):
                 # Live-provider parity: a request without messages is a
                 # 400 (this exact bug shipped once — empty history slice).
@@ -145,6 +152,7 @@ class _Handler(BaseHTTPRequestHandler):
 def _reset_stub():
     STUB["script"] = []
     STUB["requests"] = []
+    STUB["req_headers"] = []
     STUB["tasks"] = []
     STUB["escalations"] = []
     STUB["permissions"] = []
@@ -292,6 +300,33 @@ async def test_scripted_read_edit_bash_grep_turn(sidecar, worktree):
     assert "alpha" in by_tool["read"]["output"]
     assert "hi" in by_tool["bash"]["output"]
     assert "notes.txt" in by_tool["grep"]["output"]
+
+
+@needs_node
+async def test_loop_provider_calls_carry_validated_client_headers(sidecar, worktree):
+    """Every loop iteration sends UA + the stable session header."""
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": "notes.txt"})]},
+        {"text": "HEADERS DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec(worktree, tools=["read"])
+    )
+    result = await proc.send(_message("read the notes"), trace=_FakeTrace())
+    assert result.success, result.error
+    assert result.output == "HEADERS DONE"
+    assert len(STUB["req_headers"]) >= 2  # main + auxiliary iteration(s)
+    sessions = {h["session"] for h in STUB["req_headers"]}
+    assert sessions != {""}
+    assert len(sessions) == 1
+    assert next(iter(sessions)).startswith("eng_")
+    assert all(
+        h["user_agent"] == "sweave-engine/0.1.0"
+        for h in STUB["req_headers"]
+    )
 
 
 @needs_node

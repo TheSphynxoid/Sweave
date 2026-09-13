@@ -26,6 +26,7 @@ import {
   permissionKey,
 } from "./tools.js";
 import { callEnginePermission, callSweaveTool, sweaveToolsFor } from "./sweave.js";
+import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 
 const MAX_ITERATIONS = 50;
 const DOOM_REPEATS = 3;
@@ -88,12 +89,14 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, messages, defs, signal, onToken, onToolDelta }) {
+async function providerStream({ baseURL, key, provider, modelId, sessionId, messages, defs, signal, onToken, onToolDelta }) {
   const resp = await fetch(`${baseURL}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${key || "no-key"}`,
+      "User-Agent": ENGINE_USER_AGENT,
+      [SESSION_HEADER]: sessionId || "unknown",
       ...(provider === "openrouter"
         ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
         : {}),
@@ -253,6 +256,7 @@ export async function runLoop(loopCtx) {
       key: resolved.key,
       provider: model.provider,
       modelId: model.model_id,
+      sessionId: session.id,
       messages,
       defs: all,
       signal,

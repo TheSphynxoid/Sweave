@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, newMessageId } from "./sessions.js";
-import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS } from "./providers.js";
+import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import { historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
 const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "1";
@@ -240,6 +240,8 @@ async function runTurn(sessionId, body, res) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${resolved.key || "no-key"}`,
+        "User-Agent": ENGINE_USER_AGENT,
+        [SESSION_HEADER]: sessionId,
         ...(model.provider === "openrouter"
           ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
           : {}),
