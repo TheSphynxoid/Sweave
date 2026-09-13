@@ -23,6 +23,36 @@ is a PROJECTOR (the `detail_view.py` precedent): no new hot-path
 writes, no schema migration, no turn-latency cost. Recompute is
 always possible because the sources are append-only.
 
+## Second tier (2026-09-12): in-agent hooks, extensible collectors
+
+Derivation covers the built-in ledger. For anything custom, the
+sweave-agent path (custom engine first, opencode path via the same
+vocabulary) exposes a hook surface — cheap because integrated:
+
+* **One event vocabulary, both engines.** The trace event names
+  (`tool.*`, `step.boundary`, `tokens_used`, `stalled`,
+  `review_requested`, `status_changed`, ...) ARE the hook schema,
+  versioned like the wire (wire-drift doctrine extended to events).
+  Hooks attach to the existing `WSEventBus` + trace writer — a thin
+  registry, not a rewrite.
+* **Subscribe with filters**: `on(event, filter) -> collector`.
+  Unregistered hooks cost one `if subscribers:` check on the hot
+  path; registered ones pay dispatch over already-constructed event
+  dicts. High-frequency streams (`chat.delta`) excluded by default,
+  sampled on explicit opt-in.
+* **Collectors + sinks are user code**: a collector is a small
+  record/reduce function; sinks are local JSONL (default), file
+  export, or HTTP webhook — aggregate wherever they want. The
+  built-in ledger itself becomes the reference collector, not a
+  special case.
+* **Overhead budget pinned**: hook dispatch time traced per turn
+  (same audit discipline as tokens); a hook that blows its budget
+  is disabled with a warning, never allowed to wedge a turn.
+* **Privacy tiers**: ledger-grade stream carries counts/shapes only
+  (export-safe by construction). Raw content (prompts, tool I/O)
+  needs explicit per-hook opt-in — the anti-list applies (never
+  silent exfil); a raw hook without consent fails closed.
+
 ## What's collected (dimensions × measures)
 
 Dimensions: day, project, specialist, model (+variant), role,
