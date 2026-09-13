@@ -43,6 +43,9 @@ describe("PRESETS", () => {
       "github-light",
       "rose-pine-dawn",
       "everforest-light",
+      "carbon",
+      "nebula",
+      "ember",
     ]);
   });
 
@@ -82,6 +85,55 @@ describe("PRESETS", () => {
       PRESETS.length,
     );
   });
+});
+
+describe("new dark presets — accessibility (WCAG AA)", () => {
+  // Relative luminance + contrast ratio (sRGB). Used to lock in
+  // that the three new dark themes keep readable text on their
+  // surfaces (>= 4.5:1 for normal text; links/status use the same rule).
+  function luminance(rgb: string): number {
+    const [r, g, b] = rgb.split(/\s+/).map(Number);
+    const channel = (v: number) => {
+      const s = v / 255;
+      return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  }
+
+  function contrast(fg: string, bg: string): number {
+    const l1 = luminance(fg);
+    const l2 = luminance(bg);
+    const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  // (foreground token, background token) pairs that must read clearly.
+  const PAIRS: [TokenName, TokenName][] = [
+    ["foreground", "background"],
+    ["muted-foreground", "background"],
+    ["card-foreground", "card"],
+    ["popover-foreground", "popover"],
+    ["sidebar-foreground", "sidebar"],
+    ["topbar-foreground", "topbar"],
+    ["user-message-foreground", "user-message"],
+    ["assistant-message-foreground", "assistant-message"],
+    ["code-foreground", "code"],
+    ["primary-foreground", "primary"],
+    ["destructive-foreground", "destructive"],
+    ["success-foreground", "success"],
+    ["warning-foreground", "warning"],
+    ["info-foreground", "info"],
+  ];
+
+  for (const name of ["carbon", "nebula", "ember"] as const) {
+    it(`${name} meets WCAG AA (>= 4.5:1) on every text/background pair`, () => {
+      const tokens = getPreset(name).tokens;
+      for (const [fg, bg] of PAIRS) {
+        const ratio = contrast(tokens[fg], tokens[bg]);
+        expect(ratio, `${name}: ${fg} on ${bg} = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+  }
 });
 
 describe("TOKEN_GROUPS", () => {
