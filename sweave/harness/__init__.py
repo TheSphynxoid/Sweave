@@ -8,6 +8,7 @@ from .base import (
     HarnessRegistry,
 )
 from .opencode import OpenCodeHarness, OpenCodeProcess
+from .engine import SweaveEngineHarness, SweaveEngineProcess
 from .detect import (
     HarnessInfo,
     detect_opencode,
@@ -27,6 +28,8 @@ __all__ = [
     "HarnessRegistry",
     "OpenCodeHarness",
     "OpenCodeProcess",
+    "SweaveEngineHarness",
+    "SweaveEngineProcess",
     "HarnessInfo",
     "detect_opencode",
     "detect_claude_code",
