@@ -105,6 +105,38 @@ are both carried to the user, not just the former.
    decision for step 1 (bus-activity reset vs plugin-ferried `tool-started`
    vs both). Done-gate: inventory committed; a second run reproduces the
    same type set. Keep the script as a drift gate (wire drifts under us).
+   DONE 2026-09-13 (`scripts/probe_bus_inventory_1_18.py`, 3 free-tier
+   runs on 1.18.30, same 13-type set twice — drift gate holds).
+
+   Inventory (150s bash sleep, `timeout` passed explicitly in ms):
+   `server.connected` 1, `server.heartbeat` ~16 (every 10s, keepalive
+   only — never progress), `session.status` 6 (busy at boundaries),
+   `session.idle` 1 (terminal), `message.part.delta` ~106 (model text
+   only), `message.part.updated` 15, `message.updated` 10,
+   `session.diff` 3 (empty), `session.updated` 5, `catalog.updated` 2,
+   `integration.updated` 1, `reference.updated` 1, `plugin.added` 45
+   (serve boot, not the turn). Message stream: 1 chunk (single-shot
+   delivery confirmed — brace-depth parse, not line-split). Tool part
+   keys: `callID,id,messageID,metadata,sessionID,state,tool,type`;
+   state keys: `input,metadata,output,status,time,title`; bash accepts
+   `{"command", "timeout"}` with timeout in ms (model passed
+   170000–180000; kill message otherwise reads "terminated command
+   after exceeding timeout 160 ms" — run 1's lesson, prompt now
+   instructs the timeout explicitly).
+
+   SENSOR DECISION (locked): plugin-ferried `tool-started` ONLY.
+   Progress-bucket histogram (10s, heartbeats excluded) shows 100
+   events at setup, ZERO across the entire 10–140s tool window, then
+   completion at 150–160s: the bus is as silent as the stream
+   mid-tool (the run-1 10k-delta storm was model verbosity at the
+   boundaries, not tool progress). So: no bus-activity reset — the
+   bridge plugin ferries `tool-started` in-process (it sees the call;
+   same ferry pattern as the permission bridge), which parks the
+   byte-clock and arms the per-tool budget; mid-tool wedges stay
+   indistinguishable from work until the budget trips (accepted:
+   bounded + visible + abortable beats silent + dead). This also
+   unblocks custom-engine step 2 (same sensor). Sensor-absent still
+   degrades to today's byte-clock, never assumes the probe.
 1. **Activity-based liveness (~0.5–1 sess).** Feed the proven sensor into the
    stall path: bytes OR bus/tool activity resets the clock; `tool-started`
    parks the byte-clock and arms the per-tool budget (proposed 1200s) under
