@@ -155,6 +155,16 @@ same provider catalog as `models.yaml`), true token SSE → Python `on_chunk`
 incremental deltas (multi-`chat.delta` per turn, asserted in test), token
 count matches `tokens_used`; opencode fallback untouched; pytest + vitest
 green.
+DONE 2026-09-13 (zero-dep JS sidecar `sweave-engine/src/*.js` +
+`sweave/harness/engine.py` adapter + `tests/test_engine_chat.py` 10
+green + `scripts/engine_live_gate.py`). Live proof (free-tier, $0):
+`liquid/lfm-2.5-2.6b:free` → 24 chunks / 2.6s, output correct,
+tokens_used real (in 21 / out 321); `gemma-4-26b-a4b-it:free` →
+single-chunk block-mode delivery (forwarded as-is, never faked —
+the plan's block-mode clause) then 429 rate-limit, which surfaced
+loud as `[chat error: provider_error: …429…]` with no silent loss.
+Full suite 871 green (see step-3 note for the 1 deselected
+pre-existing UI failure).
 
 Starting shape (recon 2026-09-13, verified against code — next session
 starts here, no re-derive): Node v24 + npm 12 present. TS sidecar lives
@@ -465,7 +475,7 @@ Deltas are naming/roots only — semantics stay verbatim.
 
 | Basic | Standard source (fetched 2026-09-13) | Sweave adoption |
 |---|---|---|
-| Instruction files | AGENTS.md, Linux-Foundation open standard (60k+ repos, 20+ tools). Plain markdown, no frontmatter. Discovery: global → project root → cwd walk, one file per dir, root-down blank-joined, empty skipped, 32 KiB cap. Nested: nearest wins. | Same semantics. Global root is `~/.sweave/AGENTS.md` (not `~/.codex/`); no `AGENTS.override.md` (promotion discipline covers overrides); `CLAUDE.md` is dir-level fallback with one-level `@`-import resolution. Session-cached (mtime/size-gated; re-inject on new session / worktree change / file change / invalidate). Same 32 KiB cap. |
+| Instruction files | AGENTS.md, Linux-Foundation open standard (60k+ repos, 20+ tools). Plain markdown, no frontmatter. Discovery: global → project root → cwd walk, one file per dir, root-down blank-joined, empty skipped, 32 KiB cap. Nested: nearest wins. | Same semantics. Global root is `~/.sweave/AGENTS.md` (not `~/.codex/`); no `AGENTS.override.md` (promotion discipline covers overrides); `CLAUDE.md` is dir-level fallback with one-level `@`-import resolution. Session-cached (content-gated — same-tick rewrites included; re-inject on new session / worktree change / file change / invalidate). Same 32 KiB cap. |
 | Skills | SKILL.md, agentskills.io open spec. `skills/{name}/SKILL.md`, required `name` (1-64, kebab, == dirname) + `description` (1-1024, what+when); optional license/compatibility/metadata/allowed-tools. Progressive disclosure L1 metadata (~100 tok) → L2 body (<5k tok / <500 lines) → L3+ bundled files. | Same validation + disclosure. Roots: `{project}/skills/` → `~/.sweave/skills/` (house project→global order). Read-not-run v1: no execution, zero new MCP tools — L1 index rides the turn, bodies are files the agent reads itself. Matches `docs/PLUGGABLES_PLAN.md` taxonomy (skills are read, never run). |
 | Compaction | opencode mechanics (`session/compaction` source + compaction docs, MIT): size-triggered preflight (estimate ≥ limit − max(output, 20k buffer)), `keep.tokens` verbatim tail, anchored summary template (Objective / Important Details / Work State / Next Move / Relevant Files), same-model/no-tools/4k summary cap, prune old completed tool outputs past 40k with `skill` protected, one-shot overflow recovery. Prompts: system `compaction.txt` + "Provide a detailed prompt for continuing…" user text. | Mechanics adopted for the engine-side compactor (engine build scope, not step 3). The verbatim prompts lift with the MIT notice preserved in `THIRD_PARTY_NOTICES` (file created with the compactor — does not exist yet). Step 3 owns only the invalidate hook (`InstructionCache.invalidate`, post-compaction/revert). |
 | todo | opencode `todowrite` (`tool/todo.ts` source): full-list write `{content, status, priority}`, statuses pending/in_progress/completed/cancelled, exactly-one-`in_progress` discipline, `todowrite` permission key, disabled for subagents by default. | Engine `todo` tool (step-2 executor scope) mirrors the shape exactly, including the permission key and the subagent default-off. (Our own session `TodoWrite` already follows the same discipline.) |
