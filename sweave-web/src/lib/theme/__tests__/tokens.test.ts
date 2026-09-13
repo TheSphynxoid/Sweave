@@ -21,7 +21,7 @@ const REQUIRED_TOKENS: TokenName[] = [...ALL_TOKEN_NAMES];
 const RGB_TUPLE_RE = /^\d{1,3}\s+\d{1,3}\s+\d{1,3}$/;
 
 describe("PRESETS", () => {
-  it("exposes all 20 presets in stable order", () => {
+  it("exposes all 29 presets in stable order", () => {
     expect(PRESETS.map((p) => p.name)).toEqual([
       "light",
       "dark",
@@ -46,6 +46,12 @@ describe("PRESETS", () => {
       "carbon",
       "nebula",
       "ember",
+      "night-owl",
+      "ayu-mirage",
+      "poimandres",
+      "flexoki-dark",
+      "synthwave-84",
+      "vesper",
     ]);
   });
 
@@ -89,8 +95,10 @@ describe("PRESETS", () => {
 
 describe("new dark presets — accessibility (WCAG AA)", () => {
   // Relative luminance + contrast ratio (sRGB). Used to lock in
-  // that the three new dark themes keep readable text on their
+  // that the newer dark themes keep readable text on their
   // surfaces (>= 4.5:1 for normal text; links/status use the same rule).
+  // Scoped to the post-R4 additions (carbon trio + 2026-09-13 six):
+  // legacy presets predate the rule and are pinned as-is.
   function luminance(rgb: string): number {
     const [r, g, b] = rgb.split(/\s+/).map(Number);
     const channel = (v: number) => {
@@ -125,13 +133,40 @@ describe("new dark presets — accessibility (WCAG AA)", () => {
     ["info-foreground", "info"],
   ];
 
-  for (const name of ["carbon", "nebula", "ember"] as const) {
+  for (const name of [
+    "carbon",
+    "nebula",
+    "ember",
+    "night-owl",
+    "ayu-mirage",
+    "poimandres",
+    "flexoki-dark",
+    "synthwave-84",
+    "vesper",
+  ] as const) {
     it(`${name} meets WCAG AA (>= 4.5:1) on every text/background pair`, () => {
       const tokens = getPreset(name).tokens;
       for (const [fg, bg] of PAIRS) {
         const ratio = contrast(tokens[fg], tokens[bg]);
         expect(ratio, `${name}: ${fg} on ${bg} = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
       }
+    });
+  }
+
+  // Links render on the bare background, so they get their own pin
+  // (the shared PAIRS list covers component surfaces, not links).
+  for (const name of [
+    "night-owl",
+    "ayu-mirage",
+    "poimandres",
+    "flexoki-dark",
+    "synthwave-84",
+    "vesper",
+  ] as const) {
+    it(`${name} link reads on the background (>= 4.5:1)`, () => {
+      const tokens = getPreset(name).tokens;
+      const ratio = contrast(tokens.link, tokens.background);
+      expect(ratio, `${name}: link = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
     });
   }
 });
