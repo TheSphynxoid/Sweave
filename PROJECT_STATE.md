@@ -180,7 +180,16 @@
      specialist turns. Steps 0–5: probe → activity liveness → transcript
      → live block + abort → pane UI → gates.
    - ▶ **Custom engine thread (2026-09-13): `docs/CUSTOM_ENGINE_PLAN.md`
-     refreshed for side-by-side execution with the view track.** Verdict:
+      refreshed for side-by-side execution with the view track.**
+      Solo-executed 2026-09-13 (no parallel worker): steps 0 (protocol
+      freeze) + 3 (`build_context()` + basics standards) + 1 (zero-dep
+      sidecar, true-streaming chat, live free-tier proof) + 2 (6-tool
+      executor, permission enforcement, `POST /api/engine/permission`,
+      hermetic 29 + live allow/deny scenes green) all DONE — 900 pytest
+      green. View probe 0 done inline (bus silent mid-tool →
+      plugin-ferried `tool-started`-only sensor, unblocking step 2).
+      Remaining: step 4 (selection+fallback, no schema — field exists)
+      + step 5 (parity gates + docs). Verdict:
      run both — with a coupling discipline, not just good intentions.
      Shared seams have single owners (trace vocabulary + detail payload →
      transparency track, engine adopts; permission semantics → orchestrator).
