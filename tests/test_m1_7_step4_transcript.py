@@ -343,6 +343,32 @@ async def test_compose_transcript_ref_is_short_paragraph(tmp_path: Path):
     assert "50" in composed.transcript_ref
 
 
+@pytest.mark.asyncio
+async def test_transcript_ref_ignores_superseded_tries(tmp_path: Path):
+    """Superseded tries are audit trail, not context: the reference
+    counts and quotes the live thread only (incident: rerun awareness
+    leaking superseded content past the session rotation)."""
+    from sweave.chat.transcript import _transcript_reference
+
+    def msg(role, content, superseded=False):
+        m = type("M", (), {"role": role, "content": content})()
+        m.metadata = {"superseded": True} if superseded else {}
+        return m
+
+    ref = _transcript_reference(
+        transcript_messages=[
+            msg("user", "live question"),
+            msg("assistant", "stale answer", superseded=True),
+            msg("user", "dead follow-up", superseded=True),
+        ],
+        budget=500,
+    )
+    assert "3 messages" not in ref
+    assert "1 messages" in ref
+    assert "live question" in ref
+    assert "dead follow-up" not in ref
+
+
 # ---------------------------------------------------------------------------
 # GitSnapshotter tests
 # ---------------------------------------------------------------------------

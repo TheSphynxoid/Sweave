@@ -504,13 +504,27 @@ def _transcript_reference(
     """
     if not transcript_messages:
         return ""
+    # Superseded tries are audit trail, not context: a rerun flags
+    # later messages (record, not deletion) and an edit rotates the
+    # engine binding precisely so the model never sees contradictory
+    # history — but this reference counted and quoted them anyway
+    # (including picking a superseded user message as "most recent").
+    # Filter to the live thread; the UI still renders the rest
+    # collapsed for the human.
+    live = [
+        m
+        for m in transcript_messages
+        if not ((getattr(m, "metadata", None) or {}).get("superseded"))
+    ]
+    if not live:
+        return ""
     # One short paragraph: count messages + last user message
     # (truncated). The runtime never inlines the full transcript.
-    n = len(transcript_messages)
+    n = len(live)
     last_user = next(
         (
             m
-            for m in reversed(transcript_messages)
+            for m in reversed(live)
             if getattr(m, "role", None) == "user"
         ),
         None,
