@@ -225,9 +225,14 @@ as prompt surgery. Instruction files land here too (user-noted 2026-09-11:
 opencode auto-loads `AGENTS.md`; the ecosystem convention varies —
 `CLAUDE.md`/`AGENTS.md` per harness — so the orchestrator loads
 `{project}/AGENTS.md` + `{worktree}/AGENTS.md` itself, budgeted and traced
-like any other section, and the engine receives finished text; restated
-2026-09-13: automatic, every turn, no opt-in — this is baseline agent
-behavior, recorded not rushed). Skills read here as well
+like any other section, and the engine receives finished text; corrected
+2026-09-13 (user): session-scoped, NOT per-turn — the hook runs pre-turn
+but the instruction section is cached per session and re-injected only on
+new session, worktree change, file change (mtime/hash-gated), or
+post-compaction / post-revert rewind. Unconditional per-turn injection
+spams a static file into a session that already remembers it (external
+engines carry session memory on top per the M1.7 ruling). The trace
+records cached-vs-injected + hash, so staleness is auditable). Skills read here as well
 (`skills/{name}/SKILL.md` convention per PLUGGABLES/TRACKING Phase C —
 read-not-run v1, native read on this engine, same budgeted traced section
 path; the opencode `skill` *tool-execution* parity stays demand-gated,
@@ -364,7 +369,7 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | Revert / rewind (`revert(to_message)` per §C spec) | Planned (step 0 control verb; opencode pointer + shadow-git semantics are the reference) |
 | Per-turn `tokens_used` + cost (M1.9 anchor, usage ledger) | Planned (terminal shape identical; per-tool telemetry native) |
 | Provider auth for the FULL catalog (no provider left behind) | Planned (step 1 design constraint: config → env → opencode-store bootstrap → engine OAuth; `auth_missing` fails loud at turn start; native protocol where no OpenAI-compatible surface exists) |
-| AGENTS.md / instruction auto-load (automatic, every turn) | Planned (step 3; baseline behavior, recorded not rushed) |
+| AGENTS.md / instruction auto-load (session-scoped, change-gated) | Planned (step 3; automatic with no opt-in, but cached per session — re-inject on new session / worktree / file change / post-compaction only) |
 | Skills reads (`skills/{name}/SKILL.md`, read-not-run v1) | Planned (step 3, same budgeted traced path, native read) |
 | Compaction + memory `build_context()` | Planned (step 3) |
 | Per-specialist selection + opencode fallback | Planned (step 4) |
