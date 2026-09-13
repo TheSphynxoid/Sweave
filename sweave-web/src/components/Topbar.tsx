@@ -5,12 +5,13 @@
  * launcher + connection pill + theme switcher on the right.
  */
 import { useMemo } from "react";
-import { ChevronRight, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
 import { useUIStore } from "@/store/ui";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { CopyIconButton } from "@/components/CopyId";
+import { SessionPicker } from "@/pages/chat/SessionPicker";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/utils/cn";
 
@@ -33,25 +34,20 @@ export function Topbar() {
   }, [wsState]);
 
   return (
-    <header className="h-14 flex items-center justify-between gap-4 border-b border-border bg-topbar/60 text-topbar-foreground backdrop-blur px-4 shrink-0">
-      <div className="flex items-center gap-1.5 min-w-0 text-sm">
+    <header className="relative z-50 h-14 flex items-center justify-between gap-4 border-b border-border bg-topbar/60 text-topbar-foreground backdrop-blur px-4 shadow-sm shadow-black/5 shrink-0">
+      <div className="flex items-center gap-2 min-w-0 text-sm">
         {activeProject ? (
           <>
-            <span className="font-medium text-foreground truncate max-w-[28ch]">
+            <span className="font-medium text-foreground truncate max-w-[20ch]">
               {activeProject.name}
             </span>
-              {activeSession && (
-              <>
-                <ChevronRight size={14} className="text-muted-foreground shrink-0" />
-                <span className="font-medium text-foreground truncate max-w-[24ch]">
-                  {activeSession.name}
-                </span>
-                <CopyIconButton
-                  id={activeSession.id}
-                  label="Session id"
-                  testId="topbar-copy-session-id"
-                />
-              </>
+            <SessionPicker />
+            {activeSession && (
+              <CopyIconButton
+                id={activeSession.id}
+                label="Session id"
+                testId="topbar-copy-session-id"
+              />
             )}
           </>
         ) : (
@@ -64,7 +60,7 @@ export function Topbar() {
           type="button"
           onClick={() => setCommandOpen(true)}
           data-testid="topbar-command"
-          className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs text-muted-foreground transition-colors hover:bg-muted"
+          className="flex h-9 items-center gap-2 rounded-xl border border-border bg-background/60 px-3 text-xs text-muted-foreground shadow-sm transition-colors hover:bg-muted"
         >
           <Search size={14} />
           <span>Search or jump to…</span>
@@ -73,11 +69,11 @@ export function Topbar() {
 
         <div
           data-testid="ws-state"
-          className="flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs text-muted-foreground"
+          className="flex h-9 items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 text-xs text-muted-foreground shadow-sm"
         >
           <span
             className={cn(
-              "w-2 h-2 rounded-full",
+              "h-2 w-2 rounded-full",
               wsState === "open" && "bg-emerald-500",
               wsState === "reconnecting" && "bg-amber-500",
               wsState === "connecting" && "bg-amber-500",

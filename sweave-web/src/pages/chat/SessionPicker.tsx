@@ -70,7 +70,7 @@ export function SessionPicker() {
         type="button"
         data-testid="session-picker-toggle"
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 px-3 py-1.5 border border-border rounded text-sm hover:bg-muted"
+        className="flex items-center gap-2 px-3 py-1.5 border border-border rounded-xl bg-background/60 text-sm shadow-sm transition-colors hover:bg-muted"
         aria-haspopup="menu"
         aria-expanded={open}
       >
@@ -83,7 +83,7 @@ export function SessionPicker() {
         <div
           data-testid="session-picker-menu"
           role="menu"
-          className="absolute left-0 mt-1 w-72 border border-border bg-card rounded shadow-lg z-40"
+          className="absolute left-0 mt-1 w-72 border border-border bg-card rounded-xl shadow-lg z-40"
         >
           <div className="p-2 border-b border-border flex gap-2">
             <input
@@ -92,7 +92,7 @@ export function SessionPicker() {
               onChange={(e) => setName(e.target.value)}
               placeholder="New session name"
               data-testid="session-name-input"
-              className="flex-1 px-2 py-1 text-sm border border-border rounded bg-input"
+              className="flex-1 px-2 py-1 text-sm border border-border rounded-lg bg-input"
               onKeyDown={(e) => {
                 if (e.key === "Enter") void handleCreate();
               }}
@@ -102,7 +102,7 @@ export function SessionPicker() {
               onClick={handleCreate}
               disabled={creating}
               data-testid="session-create-btn"
-              className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded disabled:opacity-50 flex items-center gap-1"
+              className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg disabled:opacity-50 flex items-center gap-1"
             >
               <Plus size={12} /> New
             </button>
