@@ -280,6 +280,15 @@ unchanged). Done-gate: curated-memory turn shows the audit event;
 over-cap turn drops lowest-priority with trace reason; composer tests
 extended, engine-agnostic by construction (R4.4 "custom-engine memory API"
 note satisfied).
+DONE 2026-09-13 (`sweave/chat/context.py`: instruction chain +
+session cache + skill index + `ContextBuilder`/`build_context`;
+`transcript.py` gains standing sections + `context_audit`;
+`loop.py` trace site gains the new keys + `context.built` event;
+`tests/test_engine_context.py` 25 green; full suite 861 green.
+`context_budget=None` default = no cross-section drops, so current
+per-section behavior is byte-identical. Basics standards frozen in
+the appendix below; embedder retrieve-then-inject rides R4.4;
+compactor implementation rides the engine build.)
 
 ### Step 4 — Per-specialist selection + fallback (~0.5 session)
 `specialist.harness` field ALREADY EXISTS (default `"opencode"` —
@@ -445,3 +454,18 @@ terminal `tokens_used`; `GET /health` (handshake `{protocol_version,
 `auth_missing` is a named turn-start failure (full-catalog auth is the
 step-1 constraint). `Specialist.harness` predates the freeze — step 4
 needs no schema work.
+
+## Appendix — basics standards (frozen 2026-09-13, user-locked: follow,
+don't re-design)
+
+The session-stable basics every harness gets identically via
+`build_context()` (`sweave/chat/context.py`, step 3). Each row is an
+open/ecosystem standard on the left, our adoption delta on the right.
+Deltas are naming/roots only — semantics stay verbatim.
+
+| Basic | Standard source (fetched 2026-09-13) | Sweave adoption |
+|---|---|---|
+| Instruction files | AGENTS.md, Linux-Foundation open standard (60k+ repos, 20+ tools). Plain markdown, no frontmatter. Discovery: global → project root → cwd walk, one file per dir, root-down blank-joined, empty skipped, 32 KiB cap. Nested: nearest wins. | Same semantics. Global root is `~/.sweave/AGENTS.md` (not `~/.codex/`); no `AGENTS.override.md` (promotion discipline covers overrides); `CLAUDE.md` is dir-level fallback with one-level `@`-import resolution. Session-cached (mtime/size-gated; re-inject on new session / worktree change / file change / invalidate). Same 32 KiB cap. |
+| Skills | SKILL.md, agentskills.io open spec. `skills/{name}/SKILL.md`, required `name` (1-64, kebab, == dirname) + `description` (1-1024, what+when); optional license/compatibility/metadata/allowed-tools. Progressive disclosure L1 metadata (~100 tok) → L2 body (<5k tok / <500 lines) → L3+ bundled files. | Same validation + disclosure. Roots: `{project}/skills/` → `~/.sweave/skills/` (house project→global order). Read-not-run v1: no execution, zero new MCP tools — L1 index rides the turn, bodies are files the agent reads itself. Matches `docs/PLUGGABLES_PLAN.md` taxonomy (skills are read, never run). |
+| Compaction | opencode mechanics (`session/compaction` source + compaction docs, MIT): size-triggered preflight (estimate ≥ limit − max(output, 20k buffer)), `keep.tokens` verbatim tail, anchored summary template (Objective / Important Details / Work State / Next Move / Relevant Files), same-model/no-tools/4k summary cap, prune old completed tool outputs past 40k with `skill` protected, one-shot overflow recovery. Prompts: system `compaction.txt` + "Provide a detailed prompt for continuing…" user text. | Mechanics adopted for the engine-side compactor (engine build scope, not step 3). The verbatim prompts lift with the MIT notice preserved in `THIRD_PARTY_NOTICES` (file created with the compactor — does not exist yet). Step 3 owns only the invalidate hook (`InstructionCache.invalidate`, post-compaction/revert). |
+| todo | opencode `todowrite` (`tool/todo.ts` source): full-list write `{content, status, priority}`, statuses pending/in_progress/completed/cancelled, exactly-one-`in_progress` discipline, `todowrite` permission key, disabled for subagents by default. | Engine `todo` tool (step-2 executor scope) mirrors the shape exactly, including the permission key and the subagent default-off. (Our own session `TodoWrite` already follows the same discipline.) |
