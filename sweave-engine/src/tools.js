@@ -1,0 +1,472 @@
+// Execution-tool implementations (step 2). Zero dependencies.
+//
+// Permission model (opencode parity, enforced blindly from the
+// orchestrator-rendered map — the engine never invents policy):
+//   map = { tool: "allow"|"ask"|"deny" | { pattern: action } }
+//   - string form = blanket verdict for the tool
+//   - object form = pattern rules, LAST match wins (opencode rule)
+//   - unknown tool key = "allow", except external_directory = "ask"
+// Match targets mirror opencode: read/edit/write -> file path,
+// glob -> pattern, grep -> regex, bash -> full command string,
+// todo -> "*". Paths resolving OUTSIDE the turn cwd additionally
+// consult the external_directory entry (default ask).
+//
+// ask -> ctx.askPermission({ permission, patterns, detail }) which
+// the loop implements via SSE permission.asked + the Sweave
+// POST /api/engine/permission round-trip. Session "always" approvals
+// live on the engine session (opencode approved-list parity).
+
+import { exec } from "node:child_process";
+import { promises as fsp, existsSync, statSync } from "node:fs";
+import { join, resolve, relative, sep } from "node:path";
+
+export const DEFAULT_BASH_TIMEOUT_MS = 120000;
+export const PER_TOOL_BUDGET_MS = 1200000; // proposed 1200s, view-plan parity
+export const MAX_OUTPUT_CHARS = 32768;
+
+function globBody(pattern) {
+  // Pragmatic glob (*, ?, **) -> regex body. Mirrors the shapes
+  // opencode renders ("git commit*", "<root>\*", "<root>/**").
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "*") {
+      if (pattern[i + 1] === "*") i++;
+      out += ".*";
+    } else if (c === "?") {
+      out += ".";
+    } else {
+      out += c.replace(/[.+^${}()|[\]\\]/, "\\$&");
+    }
+  }
+  return out;
+}
+
+function patternMatches(pattern, target, isPath) {
+  if (pattern === "*") return true;
+  try {
+    const ci = isPath && process.platform === "win32";
+    return new RegExp(`^${globBody(pattern)}$`, ci ? "si" : "s").test(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Evaluate one permission. Returns "allow"|"ask"|"deny".
+ * @param {object} map permission map from /run
+ * @param {string} tool tool name
+ * @param {string} target match target (path / command / pattern / "*")
+ * @param {boolean} isPath whether target is a filesystem path
+ */
+export function evaluatePermission(map, tool, target, isPath) {
+  const entry = map ? map[tool] : undefined;
+  const defaults = tool === "external_directory" ? "ask" : "allow";
+  if (entry === undefined) return defaults;
+  if (typeof entry === "string") {
+    return entry === "allow" || entry === "ask" || entry === "deny" ? entry : defaults;
+  }
+  if (entry && typeof entry === "object") {
+    let verdict = null;
+    for (const [pattern, action] of Object.entries(entry)) {
+      if (patternMatches(pattern, target, isPath)) verdict = action;
+    }
+    if (verdict === "allow" || verdict === "ask" || verdict === "deny") return verdict;
+  }
+  return defaults;
+}
+
+function isOutsideCwd(cwd, absPath) {
+  const rel = relative(cwd, absPath);
+  return rel === "" ? false : rel.startsWith("..") || resolve(rel) === rel;
+}
+
+/**
+ * Gate one tool call. Returns { verdict, permission?, patterns? }.
+ * Path tools additionally consult external_directory when the
+ * resolved path escapes the turn cwd.
+ */
+export function gateToolCall(map, tool, target, { isPath = false, cwd = null, absPath = null } = {}) {
+  const verdict = evaluatePermission(map, tool, target, isPath);
+  if (verdict !== "allow") {
+    return { verdict, permission: tool, patterns: [target] };
+  }
+  if (isPath && cwd && absPath && isOutsideCwd(cwd, absPath)) {
+    const ext = evaluatePermission(map, "external_directory", absPath, true);
+    if (ext !== "allow") {
+      return { verdict: ext, permission: "external_directory", patterns: [absPath] };
+    }
+  }
+  return { verdict: "allow" };
+}
+
+function ok(output) {
+  return { ok: true, output: String(output === undefined ? "" : output) };
+}
+
+function fail(error) {
+  return { ok: false, error: String(error) };
+}
+
+function truncateOutput(text) {
+  if (text.length <= MAX_OUTPUT_CHARS) return { text, truncated: false };
+  return {
+    text: text.slice(0, MAX_OUTPUT_CHARS) + `\n... [truncated ${text.length - MAX_OUTPUT_CHARS} chars]`,
+    truncated: true,
+  };
+}
+
+async function readPath(cwd, filePath, offset, limit) {
+  const abs = resolve(cwd, filePath);
+  let st;
+  try {
+    st = statSync(abs);
+  } catch {
+    return fail(`read: no such file or directory: ${filePath}`);
+  }
+  if (st.isDirectory()) {
+    const entries = await fsp.readdir(abs, { withFileTypes: true });
+    const lines = entries.map((e) => `${e.isDirectory() ? e.name + "/" : e.name}`);
+    return ok(lines.join("\n"));
+  }
+  if (st.size > 4 * 1024 * 1024) return fail("read: file too large (>4MB)");
+  const raw = await fsp.readFile(abs, "utf8");
+  if (raw.includes("\0")) return fail("read: binary file");
+  const lines = raw.split("\n");
+  const start = Math.max(0, (offset || 1) - 1);
+  const slice = limit ? lines.slice(start, start + limit) : lines.slice(start);
+  return ok(slice.join("\n"));
+}
+
+async function editPath(cwd, filePath, oldString, newString, replaceAll) {
+  const abs = resolve(cwd, filePath);
+  let raw;
+  try {
+    raw = await fsp.readFile(abs, "utf8");
+  } catch {
+    return fail(`edit: no such file: ${filePath}`);
+  }
+  if (typeof oldString !== "string" || !oldString) return fail("edit: oldString must be non-empty");
+  const count = raw.split(oldString).length - 1;
+  if (count === 0) return fail("edit: oldString not found in file");
+  if (count > 1 && !replaceAll) {
+    return fail(`edit: oldString matches ${count} times; use replaceAll or add context`);
+  }
+  const next = replaceAll ? raw.split(oldString).join(newString) : raw.replace(oldString, newString);
+  await fsp.writeFile(abs, next, "utf8");
+  return ok(`edited ${filePath} (${count} replacement${count === 1 ? "" : "s"})`);
+}
+
+async function writePath(cwd, filePath, content) {
+  const abs = resolve(cwd, filePath);
+  await fsp.mkdir(join(abs, ".."), { recursive: true });
+  await fsp.writeFile(abs, content === undefined ? "" : String(content), "utf8");
+  return ok(`wrote ${filePath}`);
+}
+
+function runBash(cwd, command, timeoutMs) {
+  return new Promise((resolvePromise) => {
+    const timeout = Math.max(1000, timeoutMs || DEFAULT_BASH_TIMEOUT_MS);
+    const child = exec(
+      command,
+      { cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      (error, stdout, stderr) => {
+        const out = truncateOutput((stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : ""));
+        if (error) {
+          if (error.killed && error.signal === "SIGTERM") {
+            resolvePromise({
+              ok: false,
+              error: `bash: timed out after ${timeout}ms (partial output kept)`,
+              partial: out.text,
+            });
+          } else {
+            resolvePromise({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(0, 2000)}` });
+          }
+        } else {
+          resolvePromise(ok(out.text));
+        }
+      }
+    );
+    void child;
+  });
+}
+
+async function globSearch(cwd, pattern, root) {
+  // Pure-JS glob over **, *, ?. Returns paths sorted by mtime desc
+  // (opencode GlobTool parity: modification-time order).
+  const base = root ? resolve(cwd, root) : cwd;
+  const hasDoubleStar = pattern.includes("**");
+  const results = [];
+  async function walk(dir, rel) {
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      const relPath = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (hasDoubleStar) await walk(join(dir, e.name), relPath);
+        else if (!pattern.includes("/")) await walk(join(dir, e.name), relPath);
+      } else {
+        const name = hasDoubleStar ? relPath : e.name;
+        if (patternMatches(pattern, name, true) || patternMatches(pattern, relPath, true)) {
+          results.push({ relPath, abs: join(dir, e.name) });
+        }
+      }
+    }
+  }
+  await walk(base, "");
+  const withTime = [];
+  for (const r of results.slice(0, 500)) {
+    try {
+      withTime.push({ ...r, mtime: statSync(r.abs).mtimeMs });
+    } catch {
+      withTime.push({ ...r, mtime: 0 });
+    }
+  }
+  withTime.sort((a, b) => b.mtime - a.mtime);
+  return ok(withTime.map((r) => r.relPath).join("\n"));
+}
+
+async function grepSearch(cwd, pattern, path, include) {
+  let re;
+  try {
+    re = new RegExp(pattern);
+  } catch (e) {
+    return fail(`grep: invalid regex: ${e.message}`);
+  }
+  const base = path ? resolve(cwd, path) : cwd;
+  const matches = [];
+  async function walk(dir) {
+    if (matches.length >= 100) return; // ripgrep-100 cap parity
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (matches.length >= 100) return;
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      const abs = join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(abs);
+      } else {
+        if (include && !patternMatches(include, e.name, true)) continue;
+        let st;
+        try {
+          st = statSync(abs);
+        } catch {
+          continue;
+        }
+        if (st.size > 1024 * 1024) continue;
+        let raw;
+        try {
+          raw = await fsp.readFile(abs, "utf8");
+        } catch {
+          continue;
+        }
+        if (raw.includes("\0")) continue;
+        const lines = raw.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (re.test(lines[i])) {
+            matches.push(`${relative(cwd, abs)}:${i + 1}:${lines[i].slice(0, 300)}`);
+            if (matches.length >= 100) return;
+          }
+        }
+      }
+    }
+  }
+  await walk(base);
+  return ok(matches.join("\n"));
+}
+
+const TODO_STATUSES = new Set(["pending", "in_progress", "completed", "cancelled"]);
+const TODO_PRIORITIES = new Set(["high", "medium", "low"]);
+
+function todoWrite(session, todos) {
+  if (!Array.isArray(todos)) return fail("todo: todos must be a list");
+  for (const t of todos) {
+    if (!t || typeof t.content !== "string" || !t.content) {
+      return fail("todo: every item needs a non-empty content string");
+    }
+    if (!TODO_STATUSES.has(t.status)) {
+      return fail(`todo: bad status ${JSON.stringify(t.status)} (pending|in_progress|completed|cancelled)`);
+    }
+    if (!TODO_PRIORITIES.has(t.priority)) {
+      return fail(`todo: bad priority ${JSON.stringify(t.priority)} (high|medium|low)`);
+    }
+  }
+  session.todos = todos.map((t) => ({ content: t.content, status: t.status, priority: t.priority }));
+  return ok(JSON.stringify(session.todos, null, 2));
+}
+
+// OpenAI function schemas. Descriptions stay reference-tight: the
+// orchestrator prompt already teaches the contract (tool-context
+// budget standing rule). The todo discipline rides here because no
+// prompt teaches it — the documented budget exception.
+export const EXEC_TOOL_DEFS = [
+  {
+    name: "read",
+    description: "Read a file (offset/limit, 1-based) or list a directory.",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Path relative to the turn cwd" },
+        offset: { type: "number" },
+        limit: { type: "number" },
+      },
+      required: ["filePath"],
+    },
+  },
+  {
+    name: "edit",
+    description: "Exact-string file edit (oldString must match verbatim).",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string" },
+        oldString: { type: "string" },
+        newString: { type: "string" },
+        replaceAll: { type: "boolean" },
+      },
+      required: ["filePath", "oldString", "newString"],
+    },
+  },
+  {
+    name: "write",
+    description: "Create or overwrite a file (gated by the edit permission).",
+    parameters: {
+      type: "object",
+      properties: {
+        filePath: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["filePath", "content"],
+    },
+  },
+  {
+    name: "bash",
+    description: "Run a shell command in the turn cwd.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string" },
+        timeout: { type: "number", description: "Timeout in ms" },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "glob",
+    description: "Find files by pattern (sorted by modification time).",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "grep",
+    description: "Regex search across files (max 100 matches).",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string" },
+        include: { type: "string" },
+      },
+      required: ["pattern"],
+    },
+  },
+  {
+    name: "todo",
+    description:
+      "Session task list (full-list replace). Mark in_progress exactly one at a time; mark completed only after verification.",
+    parameters: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+              status: { type: "string" },
+              priority: { type: "string" },
+            },
+            required: ["content", "status", "priority"],
+          },
+        },
+      },
+      required: ["todos"],
+    },
+  },
+];
+
+/**
+ * Execute one execution tool (permission already decided by the
+ * caller — pass the gate verdict for ask flows).
+ * @returns { { ok, output?|error?, partial? } }
+ */
+export async function executeTool(name, args, execCtx) {
+  const { cwd, session } = execCtx;
+  const a = args || {};
+  switch (name) {
+    case "read": {
+      const abs = resolve(cwd, a.filePath || "");
+      return readPath(cwd, a.filePath || "", a.offset, a.limit).then((r) => ({ ...r, _abs: abs }));
+    }
+    case "edit": {
+      const abs = resolve(cwd, a.filePath || "");
+      // write-equivalent: gated by the edit permission key (opencode parity).
+      return editPath(cwd, a.filePath || "", a.oldString, a.newString, a.replaceAll).then((r) => ({ ...r, _abs: abs }));
+    }
+    case "write": {
+      const abs = resolve(cwd, a.filePath || "");
+      return writePath(cwd, a.filePath || "", a.content).then((r) => ({ ...r, _abs: abs }));
+    }
+    case "bash":
+      return runBash(cwd, a.command || "", a.timeout);
+    case "glob":
+      return globSearch(cwd, a.pattern || "", a.path);
+    case "grep":
+      return grepSearch(cwd, a.pattern || "", a.path, a.include);
+    case "todo":
+      return todoWrite(session, a.todos);
+    default:
+      return fail(`unknown execution tool: ${name}`);
+  }
+}
+
+/** Match target for a tool call (opencode parity per tool). */
+export function matchTarget(name, args) {
+  const a = args || {};
+  switch (name) {
+    case "read":
+    case "edit":
+    case "write":
+      return { target: String(a.filePath || ""), isPath: true };
+    case "glob":
+      return { target: String(a.pattern || ""), isPath: true };
+    case "grep":
+      return { target: String(a.pattern || ""), isPath: false };
+    case "bash":
+      return { target: String(a.command || ""), isPath: false };
+    case "todo":
+      return { target: "*", isPath: false };
+    default:
+      return { target: "*", isPath: false };
+  }
+}
+
+/** Permission key actually evaluated (write shares edit's key). */
+export function permissionKey(name) {
+  return name === "write" ? "edit" : name;
+}

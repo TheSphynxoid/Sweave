@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { SessionStore, newMessageId } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS } from "./providers.js";
+import { historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
 const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "1";
 const VERSION_HEADER = "X-Sweave-Engine-Protocol";
@@ -74,6 +75,16 @@ function validateRun(body) {
   if (typeof body.turn_timeout !== "number" || !(body.turn_timeout > 0)) {
     return "bad:turn_timeout (must be > 0 seconds)";
   }
+  // Step-2 additions (optional, additive — absence keeps step-1 behavior):
+  // delegation_id links sweave-tool calls (defer/escalate/ask) to the
+  // owning delegation; role ("orchestrator"|"specialist", default
+  // specialist = least privilege) gates which sweave tools are offered.
+  if (body.delegation_id !== undefined && typeof body.delegation_id !== "string") {
+    return "bad:delegation_id (must be a string when present)";
+  }
+  if (body.role !== undefined && body.role !== "orchestrator" && body.role !== "specialist") {
+    return "bad:role (must be orchestrator|specialist when present)";
+  }
   return null;
 }
 
@@ -84,6 +95,64 @@ function approxTokens(text) {
 
 function sseEvent(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+async function runLoopTurn(sessionId, session, body, res, turn, finish, timer) {
+  const emit = (obj) => {
+    try {
+      sseEvent(res, obj);
+    } catch {
+      // Client gone mid-turn; the catch below finishes silently.
+    }
+  };
+  try {
+    const { output, usage } = await runLoop({
+      session,
+      saveSession: () => store.save(),
+      store,
+      emit,
+      body,
+      resolved: resolveProvider(body.model.provider),
+      cwd: body.cwd || ".",
+      signal: turn.controller.signal,
+      isAborted: () => turn.finished,
+    });
+    clearTimeout(timer);
+    if (turn.finished) return; // timeout/abort path already answered
+    finish();
+    emit({ event: "done", output, model_used: { provider: body.model.provider, model_id: body.model.model_id } });
+    const hasUsage = usage && (usage.input > 0 || usage.output > 0);
+    emit({
+      event: "tokens_used",
+      input: usage.input,
+      output: usage.output,
+      reasoning: usage.reasoning,
+      cache_read: 0,
+      cache_write: 0,
+      cost: 0,
+      ...(hasUsage ? {} : { estimated: true }),
+    });
+    try {
+      res.end();
+    } catch {}
+  } catch (err) {
+    clearTimeout(timer);
+    if (turn.finished) return;
+    finish();
+    const code = (err && err.code) || "provider_error";
+    store.append(session, {
+      id: newMessageId("msg"),
+      role: "assistant",
+      content: "",
+      failed: true,
+      error: code === "aborted" ? "turn aborted" : String((err && err.message) || err),
+      at: Date.now(),
+    });
+    emit({ event: "error", code, message: String((err && err.message) || err).slice(0, 500) });
+    try {
+      res.end();
+    } catch {}
+  }
 }
 
 async function runTurn(sessionId, body, res) {
@@ -106,15 +175,6 @@ async function runTurn(sessionId, body, res) {
     at: Date.now(),
   };
   store.append(session, userMsg);
-
-  const history = store
-    .historyForRun(session)
-    .filter((m) => m.id !== userMsg.id) // appended above; re-add below in order
-    .map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.failed ? `[previous error: ${m.error || "unknown"}]` : m.content,
-    }));
-  history.push({ role: "user", content: body.composed_prompt });
 
   const controller = new AbortController();
   const turn = { controller, finished: false };
@@ -140,6 +200,23 @@ async function runTurn(sessionId, body, res) {
     finish();
   };
   timer = setTimeout(onTimeout, turnTimeoutMs);
+
+  // Step-2 agentic loop (execution and/or orchestrator sweave tools
+  // requested). The legacy single-shot chat path below stays
+  // byte-identical for tool-less non-orchestrator turns.
+  if (needsLoop(body)) {
+    await runLoopTurn(sessionId, session, body, res, turn, finish, timer);
+    return;
+  }
+
+  const history = store
+    .historyForRun(session)
+    .filter((m) => m.id !== userMsg.id) // appended above; re-add below in order
+    .map((m) => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: m.failed ? `[previous error: ${m.error || "unknown"}]` : m.content,
+    }));
+  history.push({ role: "user", content: body.composed_prompt });
 
   const assistantId = newMessageId("msg");
   let output = "";

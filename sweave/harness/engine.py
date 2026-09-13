@@ -182,6 +182,15 @@ class SweaveEngineProcess:
                 "turn_timeout": turn_timeout,
                 "cwd": str(self.spec.worktree_path or ""),
             }
+            # Step-2 additive passthrough (runtime-owned; absent keeps
+            # step-1 behavior): delegation_id links sweave-tool calls,
+            # role gates which sweave tools the loop offers.
+            delegation_id = message.metadata.get("delegation_id")
+            if isinstance(delegation_id, str) and delegation_id:
+                body["delegation_id"] = delegation_id
+            role = message.metadata.get("role")
+            if role in ("orchestrator", "specialist"):
+                body["role"] = role
             try:
                 validate_run_request(body)
             except ValueError as e:
@@ -240,18 +249,35 @@ class SweaveEngineProcess:
                                         "callback raised: %s",
                                         cb_err,
                                     )
-                        elif kind == "tokens_used" and trace is not None:
-                            try:
-                                trace.append(
-                                    "tokens_used",
-                                    {k: v for k, v in event.items() if k != "event"},
-                                )
-                            except Exception as trace_err:  # noqa: BLE001
-                                logger.warning(
-                                    "SweaveEngineProcess.send: tokens_used "
-                                    "trace failed: %s",
-                                    trace_err,
-                                )
+                        elif kind in (
+                            "tool.started",
+                            "tool.updated",
+                            "tool.completed",
+                            "tool.failed",
+                            "step.boundary",
+                            "permission.asked",
+                            "tokens_used",
+                        ):
+                            # Frozen-vocabulary trace parity with the
+                            # opencode adapter: identical event names so
+                            # `sweave log` and DetailView work unchanged.
+                            if trace is not None:
+                                try:
+                                    trace.append(
+                                        kind,
+                                        {
+                                            k: v
+                                            for k, v in event.items()
+                                            if k != "event"
+                                        },
+                                    )
+                                except Exception as trace_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SweaveEngineProcess.send: %s "
+                                        "trace failed: %s",
+                                        kind,
+                                        trace_err,
+                                    )
                         elif kind == "error":
                             code = event.get("code", "error")
                             msg = event.get("message", "")

@@ -96,6 +96,15 @@ RUN_REQUEST_REQUIRED: tuple[str, ...] = (
     "cwd",
 )
 
+#: Step-2 optional fields (additive — absence keeps step-1 behavior).
+#: ``delegation_id`` links sweave-tool calls (defer/escalate/ask) to
+#: the owning delegation; ``role`` gates which sweave tools the loop
+#: offers ("orchestrator" = all four, anything else = escalate only;
+#: default is the least-privilege specialist set).
+RUN_REQUEST_OPTIONAL: tuple[str, ...] = ("delegation_id", "role")
+ROLE_ORCHESTRATOR = "orchestrator"
+ROLE_SPECIALIST = "specialist"
+
 #: Named turn-start failures. ``auth_missing``: a catalog provider with
 #: no usable credential fails loudly here (step-1 constraint — config
 #: keys -> env -> opencode auth-store bootstrap -> engine OAuth),
@@ -150,6 +159,10 @@ def validate_run_request(body: dict[str, Any]) -> dict[str, Any]:
     turn_timeout = body["turn_timeout"]
     if not isinstance(turn_timeout, (int, float)) or not turn_timeout > 0:
         raise ValueError("bad:turn_timeout (must be > 0 seconds)")
+    if "delegation_id" in body and not isinstance(body["delegation_id"], str):
+        raise ValueError("bad:delegation_id (must be a string when present)")
+    if "role" in body and body["role"] not in (ROLE_ORCHESTRATOR, ROLE_SPECIALIST):
+        raise ValueError("bad:role (must be orchestrator|specialist when present)")
     return body
 
 
