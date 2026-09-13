@@ -274,14 +274,23 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Estimation records (record-only)** | ✅ | M2.0 2026-09-11 — Delegation schema v7 (`estimate: {tokens, seconds} | None`, `_migrate_v6_to_v7`); `POST /api/v2/tasks` + MCP `defer` accept optional estimate (non-negative, unknown keys ignored, all-null normalises to None); estimate-vs-actual folded into the detail projection (`estimate_vs_actual`: estimate echo + trace `tokens_used` summed + created→completed seconds; nulls on missing trace/record) + `sweave log` panel. No enforcement, no calibration (M2.5), no chat-turn estimates. |
 | **Wait-set flag + review-request** | ✅ | M2.1 2026-09-12 — schema v8 (`blocking: bool = False`, `review_request: ReviewRequest | None`, `_migrate_v7_to_v8`); `POST /api/v2/tasks` + MCP `defer` accept optional `blocking` (non-bool via defer → `rejected:` line); success→`review` transition attaches the request (reviewer hint, diff pointer, manifest summary/confidence) + `review_requested` trace event, failure attaches nothing, `promote` keeps it as history; both waits share one rule (`JOIN_SETTLED_STATUSES` + `in_join_set`/`is_join_settled`): only `blocking` children join, `review` counts as settled, empty join set returns immediately, `wait_set_scoped` names the skipped set; synthesis surfaces pending requests (resolve explicitly via `defer(target=reviewer)` — no verdict payload, M2.2); `review_request` folded into the detail projection. No UI changes, no `blocking` on chat turns. |
 | **Review bundle + record header + attention trigger** | ✅ | Review deepening Phase 1 2026-09-12 — schema v10 (`review_bundle: {path, bytes, truncated, scope} | None`, `_migrate_v9_to_v10`); entering `review` captures the diff artifact synchronously to `{project}/.sweave/reviews/{id}.diff` (worktree-vs-base + untracked files as marked sections; manifest-files or honest unscoped in-tree fallback; degraded captures store a pointer without a file, `missing:<reason>`); all bodies pass the Phase-1 redaction boundary (known secret shapes → `[REDACTED:<kind>]`, full vault still R4.4); 256KB cap with truncation recorded. Detail payload gains the `record` header (status/agent/task+140-char snippet/output summary 2000 chars/error/stamps/blocking/attention) + bundle pointer echo; `sweave log` prints a pointer line only. `needs_attention` means "answer OR promote": set on review entry, cleared on promote (pending question keeps it); the production store flagger shares the single `_review_owes_promotion` rule so answer/skip/timeout never clear while a review is owed. No verdict payload (M2.2), no auto-assignment (Phase 2), no UI changes. |
+| **Engine protocol v1 (frozen)** | ✅ | Custom-engine step 0, 2026-09-13 — `sweave/engine/protocol.py` (zero-I/O constants + validators, 27 hermetic contract tests): `POST /run` → SSE, `GET /health`, `POST /abort` (acknowledged/UNCONFIRMED), `POST /revert`; trace vocabulary adopted verbatim from the M1.9 anchor (parity-pinned against the real harness helper) |
+| **Engine sidecar (chat + tools)** | ✅ | Custom-engine steps 1–2, 2026-09-13 — zero-dependency Node `sweave-engine/src/` (`serve.js` + `loop.js` + `tools.js` + `sweave.js` + `sessions.js` + `providers.js`): true token streaming, 6-tool executor (read/edit/write/bash/glob/grep/todo) with blind permission-map enforcement (allow/ask/deny, last-match-wins, external_directory), agentic loop with per-tool budgets + doom-loop guard + structural role gate, durable sessions, full-catalog auth (named `auth_missing`, never cryptic). Opt-in only — opencode stays the default until step-4 parity flip |
+| **Engine harness adapter** | ✅ | Custom-engine step 1, 2026-09-13 — `sweave/harness/engine.py` (`SweaveEngineHarness`, registered in `harness_registry` alongside opencode): mirrors `OpenCodeProcess.send` (per-message model wins, optional `on_chunk` per token, frozen-vocab trace parity), lazy sidecar spawn with port discovery, loud `ProtocolMismatch` on version drift |
+| **build_context() + basics standards** | ✅ | Custom-engine step 3, 2026-09-13 — `sweave/chat/context.py` (engine-agnostic, server-side): AGENTS.md chain (LF standard: global→project→worktree, 32 KiB cap, session-cached content-gated) + SKILL.md index/body (agentskills.io spec, read-not-run v1) + cross-section budget with `context.built` audit; `transcript.py` gains the standing sections, `loop.py` the trace site. Compaction mechanics adopted (opencode, MIT — prompt lifts with the engine compactor + `THIRD_PARTY_NOTICES`); todo shape mirrors opencode `todowrite` |
+| **Engine permission endpoint** | ✅ | Custom-engine step 2, 2026-09-13 — `POST /api/engine/permission` (`sweave/web/routers/engine.py`, same MCP-token guard): engine `ask` → blocking human escalation (kind=permission, no timeout) → once\|always\|reject (skip/timeout fail closed). No scope re-evaluation (the rendered map already encodes scope); the opencode bridge plugin + hijack endpoint are not transferred |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions
 
 1. **Standalone, Polly-style** — no omnigent dependency (remove `omnigent[hindsight]` from
    pyproject). Keep Omnigent agent-YAML *shape* as our agent spec.
-2. **OpenCode first** — the only spawn-capable harness for milestone 1; claude/codex
-   adapters are documented roadmap (R3), not day-one code.
+2. **OpenCode first, engine opt-in** — opencode is the default harness
+   (amended 2026-09-13: `sweave-engine` is spawn-capable since custom-engine
+   steps 1–2 — true-streaming chat + 6-tool executor, versioned protocol,
+   registered in `harness_registry` — but stays opt-in until the step-4
+   parity flip; claude/codex adapters remain documented roadmap (R3),
+   not day-one code).
 3. **Docs split** — this file = architecture/design; AGENTS.md = how agents work in this
    repo; PROJECT_STATE.md = runtime state + session history.
 4. Vanilla-JS no-build SPA; FastAPI serves static + REST + WS.
@@ -600,6 +609,11 @@ enforcement): `docs/PLUGGABLES_PLAN.md` §3.
 ### R3 — Multi-harness
 - `ClaudeCodeHarness`, `CodexHarness` implementing AgentProcess (subprocess/headless),
   register in harness_registry; per-agent `harness:` field already in AgentSpec.
+- Native engine (shipped 2026-09-13, steps 0–3: protocol + sidecar + adapter +
+  build_context; step 4 pending): `SweaveEngineHarness` registered alongside
+  opencode; per-specialist selection (`Specialist.harness`, field predates the
+  engine — no migration) + automatic opencode fallback with `fallback_used`
+  trace reason; opencode drops to opt-in only after the step-5 parity gates.
 - Cross-vendor review then = reviewer on a different harness than implementer.
 - Wire drift (ruling 2026-09-11): third-party wires drift under us while
   ours is versioned by us. Every third-party adapter ships a probe gate

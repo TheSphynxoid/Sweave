@@ -133,7 +133,10 @@ amendments.
 | `sweave/web/server.py` | FastAPI app, 40+ routes, SPA serving |
 | `sweave-web/src/` | React UI (wave-1, R4): pages, components, contexts; build output `dist/` served by the backend |
 | `sweave/tools/__init__.py` | DelegateTaskTool (task→worktree→spawn), RouteTaskTool, MemoryTool |
-| `sweave/harness/{base,opencode,detect}.py` | AgentSpec/AgentProcess protocol; OpenCode impl |
+| `sweave/harness/{base,opencode,engine,detect}.py` | AgentSpec/AgentProcess protocol; OpenCode impl; native-engine adapter (opt-in, never default until step 4) |
+| `sweave/engine/protocol.py` | Versioned engine↔orchestrator contract (frozen v1 — read before extending) |
+| `sweave-engine/src/` | Zero-dep Node sidecar: serve/loop/tools/sweave/sessions/providers |
+| `sweave/chat/context.py` | build_context(): AGENTS.md chain + skill index + section budget + context.built audit |
 | `sweave/workspace/manager.py` | git worktrees `.worktrees/{task_id}/{agent}` + PR |
 | `sweave/projects.py` + `sweave/api/projects.py` | Project/Session/ChildSession model + endpoints |
 | `sweave/config/` | pydantic schemas, ConfigManager (hot reload) |

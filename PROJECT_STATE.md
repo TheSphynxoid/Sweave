@@ -186,7 +186,8 @@
       sidecar, true-streaming chat, live free-tier proof) + 2 (6-tool
       executor, permission enforcement, `POST /api/engine/permission`,
       hermetic 29 + live allow/deny scenes green) all DONE — 900 pytest
-      green. View probe 0 done inline (bus silent mid-tool →
+      green (1 deselected: `test_chat_surface_files_present`, a pre-existing
+      UI-thread failure — SessionPicker.tsx refactored away, not engine-related). View probe 0 done inline (bus silent mid-tool →
       plugin-ferried `tool-started`-only sensor, unblocking step 2).
       Remaining: step 4 (selection+fallback, no schema — field exists)
       + step 5 (parity gates + docs). Verdict:
