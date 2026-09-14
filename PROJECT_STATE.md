@@ -216,10 +216,29 @@
        live 2026-09-14: key valid/Bearer accepted, but free models fail
        server-side — deepseek-free 400 unavailable, muse-free 500, $0 spent;
        full native turn unproven). Found live: isolated vs real auth stores
-       hold DIFFERENT opencode keys (fp-diverged silently — the drift-prompt
-       earns its keep; boot sync converges going forward). Next: live Go probe ($0 free
-       model, needs approval — spends Go quota) → responses transport
-       (unlocks muse-spark-contributor) → fallback removal → step 5.
+        hold DIFFERENT opencode keys (fp-diverged silently — the drift-prompt
+        earns its keep; boot sync converges going forward). Next: live Go probe ($0 free
+        model, needs approval — spends Go quota) → responses transport
+        (unlocks muse-spark-contributor) → fallback removal → step 5.
+        2026-09-14 late session (execution, user-driven UI + engine round):
+        fallback REMOVAL executed early (user ruling: clarity over
+        obscurity — the retry caused silent amnesia + double bill +
+        error misattribution, all three observed live the same night;
+        pre-work engine death now fails loud single-wrapped) + protocol
+        v1→v2 thinking inclusion (sidecar captures reasoning on all
+        three stream paths, `reasoning` SSE, Python forwards to
+        chat.thinking + metadata.thinking; vercel/ai-pattern baseline
+        pinned v7.0.99, re-implemented zero-dep) + keychain UI
+        (Providers tab, per-source resolve) + location-aware
+        specialist lookup (fixes PUT 400/DELETE 404 on mis-scoped
+        records) + seed harness overrides + engine/opencode session
+        foreign-id guards both directions + sidecar CREATE_NO_WINDOW.
+        Live notes: `Sweave-20260914-022215-630a55` proves native
+        engine live but on CHAT flavor (opencode-go/deepseek) — the
+        responses-flavor live proof is still open; free models 500
+        server-side (known flake). Opencode serves cache auth at
+        startup: key changes need serve recycle (restart), engine
+        reads per turn; redo reuses the same serve (no reload).
        Remaining: step 5 (parity gates + docs, incl. the live
        mixed-fleet scene — needs an auth'd server window). Verdict:
      run both — with a coupling discipline, not just good intentions.

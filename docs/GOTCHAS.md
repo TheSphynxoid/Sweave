@@ -45,6 +45,51 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    Never bind the user's live port; never `start_server.py` for a
    scratch instance (it shares `web.pid`/`web.log`); PID-scope every
    kill and confirm the user's server answers after.
+7. **Backend fixes are invisible until THAT server restarts + never
+   mutate live stores out-of-process** (2026-09-14, two live bites).
+   (a) The user's server (PID 27388, booted 01:12) predates the
+   working tree: `GET /api/harnesses` still listed only `opencode`
+   and new endpoints 404d while the UI (vite dev, live source)
+   already showed the new surfaces. Symptom pattern: UI offers what
+   the API doesn't have. Fix is a restart (no turns were running;
+   check `/api/delegations?status=running` first), never parallel
+   editing. (b) A scratch create/delete probe via the API left
+   `zz-debug-harness` in server MEMORY after the file was cleaned
+   directly — the server re-lists it until restart; file edits lose
+   to in-memory stores on the next upsert. Probe live state with
+   no-op reads; when a write probe is unavoidable, do it through
+   the API and delete through the API. (c) Mis-scoped records:
+   `Sweave/.sweave/agents.json` holds full `scope="global"` copies
+   (pre-2026-09-11 shape) — the list shows "global", but a
+   scope-hinted global lookup skips the project file, falls to the
+   seed view, and PUT 400s "seed view ... cannot be edited here".
+   `SpecialistResolver.locate()` (project -> global -> seed by FILE
+   LOCATION) is the single lookup for PUT/DELETE write-back; never
+   trust the scope label for routing a write.
+8. **Seed views vs raw overrides + cross-harness session ids**
+   (2026-09-14). (a) The global store holds hollow `scope="seed"`
+   override records (old ones with stale baked `harness` defaults):
+   `list_resolved`/`resolve` must serve the MERGED `_seed_view`,
+   never the raw record — and `harness_override=None` means "inherit
+   the YAML", the only state that distinguishes "user chose" from
+   "never chose". Both setters (`set_seed_model`/`set_seed_harness`)
+   must carry the other dimension over, or they wipe it. (b) Engine
+   sessions are `eng_*`, opencode `ses_*`: attaching a foreign id
+   mints a charter-less fresh session under that string (silent
+   amnesia) — `_engine_session_resume()` spawns instead. History
+   never transfers across harnesses by design. (c) The opencode side
+   needs the mirror: `_ensure_session` must ignore non-`ses_*`
+   stored ids WITHOUT verifying (a foreign id can answer non-404
+   and then die in `_send_message`'s guard — live 2026-09-14:
+   `eng_*` via the engine→opencode fallback), and only HTTP 200
+   reuses (404 + anything else recreates). Fixture note: mock ids
+   must be `ses_*` with underscore — `ses-foo` (hyphen) is foreign
+   by the same rule and silently takes the create path. (d) The
+   automatic engine→opencode retry is REMOVED (2026-09-14, clarity
+   over obscurity): an engine-selected turn that fails fails loud,
+   full stop — a retry would start a history-less session, bill
+   twice, and misattribute the error (all three observed live the
+   same night).
 
 ## Opencode harness & wire protocol
 
