@@ -361,8 +361,9 @@ def test_engine_session_id_migrates_to_none():
     rec = Delegation.from_dict(v8_record)
     assert rec.engine_session_id is None
     assert rec.review_bundle is None
+    assert rec.worktree_owned is True
     assert rec.schema_version == SCHEMA_VERSION
-    assert SCHEMA_VERSION == 10
+    assert SCHEMA_VERSION == 11
 
 
 @pytest.mark.asyncio

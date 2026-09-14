@@ -28,26 +28,44 @@ import type { HarnessInfo, SpecialistSummary } from "@/types";
 
 /**
  * PUT body for the edit dialog. Seeds own nothing but their
- * per-seed overrides: harness-only (model rides the card picker).
- * Anything else on a seed 400s server-side — never send it.
+ * per-seed overrides: harness + worktree policy (model rides the
+ * card picker). Anything else on a seed 400s server-side — never
+ * send it.
  */
+export const WORKTREE_POLICIES = [
+  { value: "isolated", label: "Isolated", hint: "Fresh worktree per task" },
+  { value: "inherit", label: "Inherit", hint: "Parent delegation's tree, else project root" },
+  { value: "none", label: "No worktree", hint: "Run in the project root" },
+] as const;
+
 export function specialistEditBody(
   spec: SpecialistSummary,
-  fields: { description: string; systemPrompt: string; roleRef: string | null; harness: string },
+  fields: {
+    description: string;
+    systemPrompt: string;
+    roleRef: string | null;
+    harness: string;
+    worktreePolicy: string;
+  },
 ): {
   description?: string;
   system_prompt?: string;
   role_ref?: string | null;
   harness?: string;
+  worktree_policy?: string;
 } {
   if (spec.scope === "seed") {
-    return fields.harness ? { harness: fields.harness } : {};
+    return {
+      ...(fields.harness ? { harness: fields.harness } : {}),
+      ...(fields.worktreePolicy ? { worktree_policy: fields.worktreePolicy } : {}),
+    };
   }
   return {
     description: fields.description,
     system_prompt: fields.systemPrompt,
     role_ref: fields.roleRef,
     ...(fields.harness ? { harness: fields.harness } : {}),
+    ...(fields.worktreePolicy ? { worktree_policy: fields.worktreePolicy } : {}),
   };
 }
 
@@ -66,6 +84,7 @@ export function EditSpecialistDialog({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [roleRef, setRoleRef] = useState("");
   const [harness, setHarness] = useState("");
+  const [worktreePolicy, setWorktreePolicy] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const { data: harnesses = [] } = useQuery<HarnessInfo[]>({
@@ -74,11 +93,15 @@ export function EditSpecialistDialog({
   });
 
   // Seed mode: prompt/description/role live in config.yaml (the PUT
-  // refuses them) — only the harness override is editable here
-  // (model rides the card picker). Saving an unchanged seed harness
+  // refuses them) — only the harness + worktree overrides are editable
+  // here (model rides the card picker). Saving fully-unchanged seeds
   // would 400 ("nothing to do"), so the button locks instead.
   const isSeed = specialist?.scope === "seed";
-  const seedUnchanged = !!isSeed && (!harness || harness === (specialist?.harness ?? ""));
+  const seedPolicy = specialist?.worktree_policy ?? "isolated";
+  const seedUnchanged =
+    !!isSeed &&
+    (!harness || harness === (specialist?.harness ?? "")) &&
+    (!worktreePolicy || worktreePolicy === seedPolicy);
 
   // Prefill from the record being edited (the dialog is reused
   // across cards, so sync on every specialist change).
@@ -87,6 +110,7 @@ export function EditSpecialistDialog({
     setSystemPrompt(specialist?.system_prompt ?? "");
     setRoleRef(specialist?.role_ref ?? "");
     setHarness(specialist?.harness ?? "");
+    setWorktreePolicy(specialist?.worktree_policy ?? "isolated");
   }, [specialist]);
 
   const submit = async () => {
@@ -100,6 +124,7 @@ export function EditSpecialistDialog({
           systemPrompt,
           roleRef: roleRef.trim() || null,
           harness,
+          worktreePolicy,
         }),
         specialist.scope === "global" ? "global" : "project",
       );
@@ -135,7 +160,8 @@ export function EditSpecialistDialog({
           {isSeed && (
             <p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
               Seed-owned prompt — description, role ref, and system prompt live in
-              sweave/agents/*/config.yaml. Only the harness override is editable here.
+              sweave/agents/*/config.yaml. Only the harness + worktree overrides
+              are editable here.
             </p>
           )}
           <div className="space-y-1.5">
@@ -179,6 +205,25 @@ export function EditSpecialistDialog({
             </Select>
             <p className="text-xs text-muted-foreground">
               Applies to the next delegation — never mid-task.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Worktree policy</Label>
+            <Select value={worktreePolicy} onValueChange={setWorktreePolicy}>
+              <SelectTrigger className="h-9" data-testid="spec-edit-worktree-policy">
+                <SelectValue placeholder="Select worktree policy" />
+              </SelectTrigger>
+              <SelectContent>
+                {WORKTREE_POLICIES.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label} — {p.hint}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Isolated = fresh tree per task. Inherit = parent delegation&apos;s
+              tree (reviewers), else project root. No worktree = project root.
             </p>
           </div>
           <div className="space-y-1.5">

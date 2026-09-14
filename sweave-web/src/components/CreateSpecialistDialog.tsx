@@ -40,6 +40,7 @@ export function CreateSpecialistDialog({
   const [systemPrompt, setSystemPrompt] = useState("");
   const [harness, setHarness] = useState("sweave-engine");
   const [scope, setScope] = useState<"project" | "global">("project");
+  const [worktreePolicy, setWorktreePolicy] = useState("isolated");
   const [model, setModel] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -66,6 +67,7 @@ export function CreateSpecialistDialog({
     setDescription("");
     setSystemPrompt("");
     setModel("");
+    setWorktreePolicy("isolated");
   };
 
   const submit = async () => {
@@ -86,6 +88,7 @@ export function CreateSpecialistDialog({
           description: description.trim(),
           system_prompt: systemPrompt.trim(),
           harness,
+          worktree_policy: worktreePolicy,
           ...(model ? { current_model: model } : {}),
         },
         scope,
@@ -174,6 +177,21 @@ export function CreateSpecialistDialog({
               effortClassName="h-9 text-xs"
               testId="model-picker-new-specialist"
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Worktree policy</Label>
+            <Select value={worktreePolicy} onValueChange={setWorktreePolicy}>
+              <SelectTrigger className="h-9" data-testid="spec-new-worktree-policy">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="isolated">Isolated — fresh tree per task</SelectItem>
+                <SelectItem value="inherit">
+                  Inherit — parent delegation&apos;s tree, else project root
+                </SelectItem>
+                <SelectItem value="none">No worktree — project root</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="spec-prompt">System prompt</Label>

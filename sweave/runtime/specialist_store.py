@@ -100,6 +100,32 @@ def _validate_name(name: str) -> None:
         )
 
 
+#: Worktree isolation policy per specialist (user-decided toggle, no
+#: LLM surface): ``isolated`` = fresh sweave/{task}/{agent} tree per
+#: delegation (default, today's behavior); ``inherit`` = run in the
+#: parent delegation's worktree (for reviewers — falls back to
+#: project root when the parent has no tree); ``none`` = run in the
+#: project root (bundle-only review, no tree at all).
+WORKTREE_POLICIES: tuple[str, ...] = ("isolated", "inherit", "none")
+
+DEFAULT_WORKTREE_POLICY = "isolated"
+
+
+def validate_worktree_policy(value: Any) -> str:
+    """Coerce + validate a worktree policy (ValueError on unknown).
+
+    Accepts the three policy names (whitespace-tolerant); anything
+    else is a 400 at the API boundary, never a silent default.
+    """
+    clean = str(value or "").strip()
+    if clean not in WORKTREE_POLICIES:
+        raise ValueError(
+            f"unknown worktree_policy {value!r} "
+            f"(known: {', '.join(WORKTREE_POLICIES)})"
+        )
+    return clean
+
+
 def parse_model_ref(raw: "str | dict | None") -> ModelRef | None:
     """Coerce a string-or-dict to a :class:`ModelRef`.
 
@@ -219,6 +245,13 @@ class Specialist:
     # by ``_seed_view``. Separate from ``harness`` (whose baked
     # default can never distinguish "user chose" from "never chose").
     harness_override: str | None = None
+    # Worktree isolation policy (per-specialist user toggle, NOT an
+    # LLM parameter — the orchestrator's defer contract is unchanged;
+    # the runtime resolves the tree from this field at dispatch).
+    # ``isolated`` (default) = today's per-task tree; ``inherit`` =
+    # parent delegation's tree (reviewers; parentless/treeless parent
+    # falls back to project root); ``none`` = project root, no tree.
+    worktree_policy: str = DEFAULT_WORKTREE_POLICY
     current_model: str | None = None
     session_id: str | None = None  # M1.3 fills
     created_at: datetime = field(default_factory=_now)
@@ -322,6 +355,7 @@ class Specialist:
             "description": self.description,
             "system_prompt": self.system_prompt,
             "harness": self.harness,
+            "worktree_policy": self.worktree_policy,
             "current_model": self.public_model(),
             "session_id": self.session_id,
         }
@@ -481,6 +515,7 @@ class GlobalSpecialistStore(_BaseSpecialistStore):
             role_ref=rec.role_ref or seed_roles[rec.name],
             model_ref=rec.model_ref,
             harness_override=rec.harness or None,
+            worktree_policy=(rec.worktree_policy or DEFAULT_WORKTREE_POLICY),
         )
 
 
@@ -544,16 +579,18 @@ def _make_seed_override(
     role_ref: str | None,
     model_ref: ModelRef | None,
     harness_override: str | None = None,
+    worktree_policy: str = DEFAULT_WORKTREE_POLICY,
 ) -> Specialist:
     """Build a minimal **seed override** record for the global store.
 
     An override carries ONLY the user's per-seed choices (model via
-    :meth:`Specialist.set_model_ref`, harness via ``harness_override``)
-    plus identity metadata. It deliberately does NOT copy prompt,
-    description or session state from the seed: ``sweave/agents/*/
-    config.yaml`` stays the single source of truth for those. It is
-    merged into the derived seed view at resolve time; an explicit
-    project/global record with the same name still shadows the seed.
+    :meth:`Specialist.set_model_ref`, harness via ``harness_override``,
+    worktree policy via ``worktree_policy``) plus identity metadata. It
+    deliberately does NOT copy prompt, description or session state
+    from the seed: ``sweave/agents/*/config.yaml`` stays the single
+    source of truth for those. It is merged into the derived seed view
+    at resolve time; an explicit project/global record with the same
+    name still shadows the seed.
     """
     ov = Specialist(
         name=name,
@@ -563,6 +600,7 @@ def _make_seed_override(
         description="",
         system_prompt="",
         harness_override=harness_override,
+        worktree_policy=worktree_policy,
     )
     ov.set_model_ref(model_ref)
     return ov
@@ -650,6 +688,18 @@ class SpecialistResolver:
         ):
             # Explicit per-seed harness choice (None = inherit YAML).
             view.harness = ov.harness_override
+        if (
+            ov is not None
+            and ov.scope == "seed"
+            and (ov.worktree_policy or DEFAULT_WORKTREE_POLICY)
+            != DEFAULT_WORKTREE_POLICY
+        ):
+            # Explicit per-seed worktree-policy choice. The default
+            # doubles as "never chose" (choosing ``isolated``
+            # explicitly is behaviorally identical), so only a
+            # non-default value merges — same airtightness as the
+            # harness None-vs-value split, without a second field.
+            view.worktree_policy = ov.worktree_policy
         return view
 
     # ---- resolution -----------------------------------------------------
@@ -842,7 +892,8 @@ class SpecialistResolver:
             # / set_seed_harness().
             raise ValueError(
                 "'seed' is a read-only view; edit the config.yaml, or use "
-                "set_seed_model()/set_seed_harness() for the per-seed choices"
+                "set_seed_model()/set_seed_harness()/set_seed_worktree_policy() "
+                "for the per-seed choices"
             )
         store = self._project_store(project_dir) if project_dir is not None else None
         if store is None:
@@ -864,7 +915,8 @@ class SpecialistResolver:
         store; the derived seed view picks it up at resolve time. The
         returned record is a transient merged view (scope stays
         "seed"); it must never be re-persisted via :meth:`update`.
-        A pre-existing harness choice on the override is preserved.
+        A pre-existing harness/worktree-policy choice on the override
+        is preserved.
         """
         seed_def = self._find_seed_def(name)
         if seed_def is None:
@@ -874,6 +926,7 @@ class SpecialistResolver:
             role_ref=seed_def.role,
             model_ref=ref,
             harness_override=self._seed_harness_choice(seed_def.name),
+            worktree_policy=self._seed_worktree_choice(seed_def.name),
         )
         self.global_store.upsert(ov)
         return self._seed_view(seed_def.name) or ov
@@ -908,6 +961,7 @@ class SpecialistResolver:
             role_ref=seed_def.role,
             model_ref=model_ref,
             harness_override=clean,
+            worktree_policy=self._seed_worktree_choice(seed_def.name),
         )
         self.global_store.upsert(ov)
         return self._seed_view(seed_def.name) or ov
@@ -918,6 +972,52 @@ class SpecialistResolver:
         if existing is not None and existing.scope == "seed":
             return existing.harness_override
         return None
+
+    def _seed_worktree_choice(self, name: str) -> str:
+        """Current worktree-policy choice on the seed override
+        (default = never chose — choosing ``isolated`` explicitly is
+        behaviorally identical)."""
+        existing = self.global_store.get(name)
+        if existing is not None and existing.scope == "seed":
+            try:
+                return validate_worktree_policy(
+                    existing.worktree_policy or DEFAULT_WORKTREE_POLICY
+                )
+            except ValueError:
+                return DEFAULT_WORKTREE_POLICY
+        return DEFAULT_WORKTREE_POLICY
+
+    def set_seed_worktree_policy(
+        self, name: str, policy: str | None
+    ) -> Specialist:
+        """Persist the per-seed worktree-policy choice for seed *name*.
+
+        ``None`` (or empty) clears the choice back to ``isolated``;
+        otherwise the value must be a known policy (validated here so
+        a typo can't strand a seed). Merges with any pre-existing
+        model/harness choices on the override. Returns the merged seed
+        view (transient — never re-persist via :meth:`update`).
+        """
+        seed_def = self._find_seed_def(name)
+        if seed_def is None:
+            raise ValueError(f"'{name}' is not a seed specialist")
+        clean = (policy or "").strip() or DEFAULT_WORKTREE_POLICY
+        validate_worktree_policy(clean)
+        existing = self.global_store.get(seed_def.name)
+        model_ref = (
+            existing.model_ref
+            if existing is not None and existing.scope == "seed"
+            else None
+        )
+        ov = _make_seed_override(
+            name=seed_def.name,
+            role_ref=seed_def.role,
+            model_ref=model_ref,
+            harness_override=self._seed_harness_choice(seed_def.name),
+            worktree_policy=clean,
+        )
+        self.global_store.upsert(ov)
+        return self._seed_view(seed_def.name) or ov
 
     def delete(
         self,

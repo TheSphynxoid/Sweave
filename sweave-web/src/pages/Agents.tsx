@@ -260,6 +260,30 @@ function HarnessBadge({ harness, name }: { harness: string; name: string }) {
   );
 }
 
+/**
+ * Worktree-policy badge (per-specialist isolation toggle). Shown only
+ * for non-default policies — `isolated` is the norm and needs no ink.
+ * `inherit` runs in the parent delegation's tree (reviewers), else the
+ * project root; `none` always runs in the project root.
+ */
+function PolicyBadge({ policy, name }: { policy?: string; name: string }) {
+  if (!policy || policy === "isolated") return null;
+  return (
+    <Badge
+      variant="muted"
+      className="mr-1 align-middle"
+      data-testid={`policy-badge-${name}`}
+      title={
+        policy === "inherit"
+          ? "Runs in the parent delegation's worktree (project root when the parent has no tree)"
+          : "Runs in the project root with no worktree"
+      }
+    >
+      {policy === "inherit" ? "inherits tree" : "no worktree"}
+    </Badge>
+  );
+}
+
 function SpecialistCard({
   specialist,
   modelOptions,
@@ -295,6 +319,7 @@ function SpecialistCard({
           <p className="font-medium truncate">{specialist.name}</p>
           <div className="text-xs text-muted-foreground truncate">
             <HarnessBadge harness={specialist.harness} name={specialist.name} />
+            <PolicyBadge policy={specialist.worktree_policy} name={specialist.name} />
             {specialist.role_ref ? ` · ${specialist.role_ref}` : ""}
           </div>
         </div>

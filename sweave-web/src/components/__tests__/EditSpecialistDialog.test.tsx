@@ -86,6 +86,7 @@ describe("EditSpecialistDialog", () => {
           system_prompt: "Old prompt with {{task}} var",
           role_ref: "backend",
           harness: "opencode",
+          worktree_policy: "isolated",
         },
         "project",
       ),
@@ -147,6 +148,7 @@ describe("specialistEditBody", () => {
     systemPrompt: "P",
     roleRef: "backend",
     harness: "sweave-engine",
+    worktreePolicy: "inherit",
   };
   it("sends the full patch for project/global records", () => {
     expect(
@@ -159,12 +161,28 @@ describe("specialistEditBody", () => {
       system_prompt: "P",
       role_ref: "backend",
       harness: "sweave-engine",
+      worktree_policy: "inherit",
     });
   });
 
-  it("sends harness-only for seeds (prompt edits would 400)", () => {
+  it("sends harness + policy for seeds (prompt edits would 400)", () => {
     expect(
       specialistEditBody(specialist({ scope: "seed" }), fields),
-    ).toEqual({ harness: "sweave-engine" });
+    ).toEqual({ harness: "sweave-engine", worktree_policy: "inherit" });
+  });
+
+  it("shows the current worktree policy on its picker", async () => {
+    renderDialog(specialist({ worktree_policy: "inherit" }));
+    expect(
+      (await screen.findByTestId("spec-edit-worktree-policy")).textContent,
+    ).toContain("Inherit");
+  });
+
+  it("locks seed save only when harness AND policy are unchanged", async () => {
+    renderDialog(
+      specialist({ scope: "seed", harness: "sweave-engine", worktree_policy: "inherit" }),
+    );
+    const save = screen.getByRole("button", { name: /save changes/i }) as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(true));
   });
 });

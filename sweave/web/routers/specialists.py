@@ -37,6 +37,7 @@ from sweave.runtime.specialist_store import (
     ORCHESTRATOR_NAME,
     Specialist,
     parse_model_ref,
+    validate_worktree_policy,
 )
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -59,6 +60,9 @@ class SpecialistCreate(BaseModel):
     harness: str = "sweave-engine"
     current_model: Optional[str] = None
     scope: str = "project"  # project | global
+    # Worktree isolation policy (per-specialist user toggle — never
+    # an LLM parameter; the defer contract is unchanged).
+    worktree_policy: str = "isolated"
 
 
 class SpecialistUpdate(BaseModel):
@@ -67,6 +71,7 @@ class SpecialistUpdate(BaseModel):
     system_prompt: Optional[str] = None
     harness: Optional[str] = None
     current_model: Optional[str] = None
+    worktree_policy: Optional[str] = None
 
 
 class SetModelRequest(BaseModel):
@@ -105,7 +110,7 @@ def _seed_read_only_400(name: str) -> HTTPException:
         400,
         f"'{name}' is a seed view; its prompt/description live in "
         "sweave/agents/*/config.yaml and cannot be edited here "
-        "(model + harness are settable per-seed)",
+        "(model + harness + worktree policy are settable per-seed)",
     )
 
 
@@ -198,6 +203,11 @@ async def create_specialist(
     # Defence in depth: API cannot create orchestrators.
     # Name-shape violations are a 400 (bad input), not a 500: the
     # Specialist constructor validates the name and raises ValueError.
+    # Unknown worktree policies are a 400 the same way.
+    try:
+        worktree_policy = validate_worktree_policy(body.worktree_policy)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     try:
         rec = Specialist(
             name=body.name,
@@ -208,6 +218,7 @@ async def create_specialist(
             system_prompt=body.system_prompt,
             harness=body.harness,
             current_model=body.current_model,
+            worktree_policy=worktree_policy,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -261,8 +272,8 @@ async def update_specialist(
     # sweave/agents/*/config.yaml. Writing a seed view into a store
     # would materialize a full shadow copy that hides the seed (this
     # is exactly how the backend-specialist seed got demoted to
-    # "global"). Model + harness route through the seed overrides;
-    # prompt/description/role edits are refused.
+    # "global"). Model + harness + worktree policy route through the
+    # seed overrides; prompt/description/role edits are refused.
     if existing.scope == "seed":
         if (
             body.role_ref is not None
@@ -270,11 +281,23 @@ async def update_specialist(
             or body.system_prompt is not None
         ):
             raise _seed_read_only_400(name)
-        if body.harness is None and body.current_model is None:
+        if (
+            body.harness is None
+            and body.current_model is None
+            and body.worktree_policy is None
+        ):
             raise _seed_read_only_400(name)
         if body.harness is not None:
             try:
                 resolver.set_seed_harness(name, body.harness)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            await state.publish(
+                "specialist.updated", {"name": name, "scope": "seed"}
+            )
+        if body.worktree_policy is not None:
+            try:
+                resolver.set_seed_worktree_policy(name, body.worktree_policy)
             except ValueError as e:
                 raise HTTPException(400, str(e))
             await state.publish(
@@ -301,6 +324,13 @@ async def update_specialist(
         existing.system_prompt = body.system_prompt
     if body.harness is not None:
         existing.harness = body.harness
+    if body.worktree_policy is not None:
+        try:
+            existing.worktree_policy = validate_worktree_policy(
+                body.worktree_policy
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     if body.current_model is not None:
         existing.current_model = body.current_model
     # Write back to the store the record came from (location, not the

@@ -91,9 +91,10 @@ def test_v1_record_loads_as_v7_with_estimate_none():
     land on the same chain); the v1->v8 matrix lives in
     tests/test_m2_1_schema.py.
     M2.1-follow-up update: schema is now v9 (engine_session_id).
-    Review Phase 1 update: schema is now v10 (review_bundle)."""
+    Review Phase 1 update: schema is now v10 (review_bundle).
+    Worktree-policy update: schema is now v11 (worktree_owned)."""
     d = Delegation.from_dict(_minimal_record(1))
-    assert d.schema_version == 10
+    assert d.schema_version == 11
     assert d.estimate is None
     assert d.kind == "task"
     assert d.needs_attention is False
@@ -102,27 +103,30 @@ def test_v1_record_loads_as_v7_with_estimate_none():
     assert d.review_request is None
     assert d.engine_session_id is None
     assert d.review_bundle is None
+    assert d.worktree_owned is True
 
 
 def test_v6_record_loads_as_v7_with_estimate_none():
     """M2.1 step 2 update: lands at v8 now (see above).
     M2.1-follow-up update: lands at v9 now.
-    Review Phase 1 update: lands at v10 now."""
+    Review Phase 1 update: lands at v10 now.
+    Worktree-policy update: lands at v11 now."""
     d = Delegation.from_dict(_minimal_record(6))
-    assert d.schema_version == 10
+    assert d.schema_version == 11
     assert d.estimate is None
 
 
 def test_v7_estimate_round_trips():
     """M2.1 step 2 update: round-trips at v8 now (see above).
     M2.1-follow-up update: round-trips at v9 now.
-    Review Phase 1 update: round-trips at v10 now."""
+    Review Phase 1 update: round-trips at v10 now.
+    Worktree-policy update: round-trips at v11 now."""
     d = Delegation(agent="a", task="t", estimate={"tokens": 1500, "seconds": 90.5})
     data = d.to_dict()
     assert data["estimate"] == {"tokens": 1500, "seconds": 90.5}
     back = Delegation.from_dict(data)
     assert back.estimate == {"tokens": 1500, "seconds": 90.5}
-    assert back.schema_version == 10
+    assert back.schema_version == 11
 
 
 def test_estimate_defaults_to_none():

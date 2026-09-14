@@ -26,18 +26,20 @@ def _minimal_record(version: int, **extra) -> dict:
     return rec
 
 
-def test_v1_record_loads_as_v8_with_waitset_defaults():
+def test_v1_record_loads_as_v11_with_waitset_defaults():
     """Full chain: a v1 record passes through every migration
-    (v1�+'�?�+'v7�+'v8) and lands with blocking False + review_request None.
+    (v1…v10…v11) and lands with blocking False + review_request None.
 
     M2.1-follow-up update: lands at v9 now (+ engine_session_id None).
-    Review Phase 1 update: lands at v10 (+ review_bundle None)."""
+    Review Phase 1 update: lands at v10 (+ review_bundle None).
+    Worktree-policy update: lands at v11 (+ worktree_owned True)."""
     d = Delegation.from_dict(_minimal_record(1))
-    assert d.schema_version == SCHEMA_VERSION == 10
+    assert d.schema_version == SCHEMA_VERSION == 11
     assert d.blocking is False
     assert d.review_request is None
     assert d.engine_session_id is None
     assert d.review_bundle is None
+    assert d.worktree_owned is True
     # Earlier migrations still hold.
     assert d.estimate is None
     assert d.kind == "task"
@@ -51,13 +53,15 @@ def test_v7_record_loads_as_v8_with_waitset_defaults():
     requests only to new transitions).
 
     M2.1-follow-up update: lands at v9 now (+ engine_session_id None).
-    Review Phase 1 update: lands at v10 (+ review_bundle None)."""
+    Review Phase 1 update: lands at v10 (+ review_bundle None).
+    Worktree-policy update: lands at v11 (+ worktree_owned True)."""
     d = Delegation.from_dict(_minimal_record(7, status="review"))
-    assert d.schema_version == 10
+    assert d.schema_version == 11
     assert d.blocking is False
     assert d.review_request is None
     assert d.engine_session_id is None
     assert d.review_bundle is None
+    assert d.worktree_owned is True
 
 
 def test_v8_fields_round_trip():
@@ -80,7 +84,7 @@ def test_v8_fields_round_trip():
     assert back.blocking is True
     assert back.review_request is not None
     assert back.review_request["confidence"] == 0.8
-    assert back.schema_version == 10
+    assert back.schema_version == 11
 
 
 def test_waitset_fields_default():
@@ -92,11 +96,12 @@ def test_waitset_fields_default():
 
 
 def test_unknown_fields_still_dropped():
-    """The unknown-field drop (gotcha #12) still holds on the v10 set.
+    """The unknown-field drop (gotcha #12) still holds on the v11 set.
 
     M2.1-follow-up update: v8 -> v9 (engine_session_id).
-    Review Phase 1 update: v9 -> v10 (review_bundle)."""
+    Review Phase 1 update: v9 -> v10 (review_bundle).
+    Worktree-policy update: v10 -> v11 (worktree_owned)."""
     d = Delegation.from_dict(_minimal_record(8, future_field="x", blocking=True))
-    assert d.schema_version == 10
+    assert d.schema_version == 11
     assert d.blocking is True
     assert not hasattr(d, "future_field")

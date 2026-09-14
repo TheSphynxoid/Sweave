@@ -267,6 +267,7 @@ class ApiClient {
       system_prompt?: string;
       role_ref?: string | null;
       harness?: string;
+      worktree_policy?: string;
     },
     scope: "project" | "global" = "project",
   ): Promise<SpecialistSummary> {

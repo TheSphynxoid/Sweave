@@ -64,7 +64,7 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
@@ -74,6 +74,8 @@ SCHEMA_VERSION_V6 = 6  # M1.13 records (archived / archived_at)
 SCHEMA_VERSION_V7 = 7  # M2.0 records (estimate)
 SCHEMA_VERSION_V8 = 8  # M2.1 records (blocking + review_request)
 SCHEMA_VERSION_V9 = 9  # M2.1-follow-up records (engine_session_id)
+SCHEMA_VERSION_V10 = 10  # Review Phase 1 records (review_bundle)
+SCHEMA_VERSION_V11 = 11  # per-specialist worktree policy (worktree_owned)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -318,6 +320,14 @@ class Delegation:
     # (``path`` None, ``scope`` ``missing:<reason>``) so the detail
     # surface can say why instead of showing nothing.
     review_bundle: ReviewBundle | None = None
+    # Per-specialist worktree policy (user ruling): who owns this
+    # record's tree. True = this delegation created its tree and
+    # retires it at settle; False = inherited/shared (an ``inherit``
+    # child or a treeless ``none`` run) — settle must never remove a
+    # tree it doesn't own. Pre-change records all owned their trees
+    # by definition (every task tree was per-delegation) — default
+    # True via the v10→v11 migration.
+    worktree_owned: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -353,8 +363,10 @@ class Delegation:
             d = _migrate_v7_to_v8(d)
         if schema_version < SCHEMA_VERSION_V9:
             d = _migrate_v8_to_v9(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V10:
             d = _migrate_v9_to_v10(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v10_to_v11(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh record
@@ -489,6 +501,19 @@ def _migrate_v9_to_v10(d: dict[str, Any]) -> dict[str, Any]:
     only written by the live transition, never fabricated here).
     """
     d.setdefault("review_bundle", None)
+    return d
+
+
+def _migrate_v10_to_v11(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v10 record forward to the v11 field set (per-specialist
+    worktree policy).
+
+    v10 records predate tree ownership: no ``worktree_owned`` field.
+    Every pre-change task tree was per-delegation (created and retired
+    by its own record) — default True. Shared/inherited trees only
+    exist from v11 on.
+    """
+    d.setdefault("worktree_owned", True)
     return d
 
 

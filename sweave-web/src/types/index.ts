@@ -165,6 +165,9 @@ export interface SpecialistSummary {
   description: string;
   system_prompt: string;
   harness: string;
+  /** Worktree isolation policy (per-specialist user toggle, never an
+      LLM parameter): isolated | inherit | absent on legacy payloads. */
+  worktree_policy?: string;
   current_model: string | null;
   session_id: string | null;
 }
@@ -176,6 +179,7 @@ export interface SpecialistCreate {
   harness?: string;
   role_ref?: string;
   current_model?: string;
+  worktree_policy?: string;
 }
 
 // ---------- Delegations + escalations + detail ----------

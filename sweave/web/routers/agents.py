@@ -57,6 +57,9 @@ class AgentCreate(BaseModel):
     description: str = Field("", description="Human-readable description (label)")
     tools: list[str] = Field(default_factory=list, description="Additional tools")
     harness: str = Field("sweave-engine", description="Harness to use")
+    worktree_policy: Optional[str] = Field(
+        default=None, description="Worktree isolation policy"
+    )
 
 
 class AgentUpdate(BaseModel):
@@ -65,6 +68,7 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = None
     tools: Optional[list[str]] = None
     harness: Optional[str] = None
+    worktree_policy: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +92,7 @@ def _specialist_dict(rec: Specialist) -> dict:
         "system_prompt": rec.system_prompt,
         "description": rec.description,
         "harness": rec.harness,
+        "worktree_policy": rec.worktree_policy,
         "tools": [],  # Specialist doesn't carry tools today; future field
         "builtin": False,
         "dynamic": True,
@@ -184,6 +189,13 @@ async def create_agent(agent: AgentCreate, state: AppState = Depends(get_state))
         harness=agent.harness or "sweave-engine",
         current_model=agent.model or None,
     )
+    if agent.worktree_policy is not None:
+        from sweave.runtime.specialist_store import validate_worktree_policy
+
+        try:
+            rec.worktree_policy = validate_worktree_policy(agent.worktree_policy)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     try:
         resolver.create(rec, project_dir=proj_dir)
     except ValueError as e:
@@ -292,6 +304,11 @@ async def update_agent(
                 resolver.set_seed_harness(name, update.harness)
             except ValueError as e:
                 raise HTTPException(400, str(e))
+        if update.worktree_policy is not None:
+            try:
+                resolver.set_seed_worktree_policy(name, update.worktree_policy)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         if update.model is not None:
             merged = resolver.set_seed_model(name, parse_model_ref(update.model))
             await state.publish(
@@ -314,6 +331,15 @@ async def update_agent(
         existing.description = update.description
     if update.harness is not None:
         existing.harness = update.harness
+    if update.worktree_policy is not None:
+        from sweave.runtime.specialist_store import validate_worktree_policy
+
+        try:
+            existing.worktree_policy = validate_worktree_policy(
+                update.worktree_policy
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     # tools not yet on Specialist; future field
     try:
         resolver.update(existing, project_dir=proj_dir)

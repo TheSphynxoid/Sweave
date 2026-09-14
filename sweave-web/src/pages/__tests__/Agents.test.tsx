@@ -172,6 +172,20 @@ describe("AgentsPage harness badge", () => {
     expect(screen.getAllByText("Edit").length).toBe(1);
     expect(screen.queryByText("Delete")).toBeNull();
   });
+
+  it("badges non-default worktree policies, hides isolated", async () => {
+    listMock.mockResolvedValue([
+      spec({ name: "plain-one", worktree_policy: "isolated" }),
+      spec({ name: "review-one", worktree_policy: "inherit" }),
+      spec({ name: "root-one", worktree_policy: "none" }),
+    ]);
+    renderPage();
+    expect(screen.queryByTestId("policy-badge-plain-one")).toBeNull();
+    const inherit = await screen.findByTestId("policy-badge-review-one");
+    expect(inherit.textContent).toBe("inherits tree");
+    const none = await screen.findByTestId("policy-badge-root-one");
+    expect(none.textContent).toBe("no worktree");
+  });
 });
 
 describe("AgentsPage search filter", () => {

@@ -362,10 +362,26 @@ class JobRunner:
         so normal, timeout and cancel paths all converge here). The
         branch is KEPT (review forensics + future PR flow); ``review``
         keeps its tree (humans may still inspect). Chat turns never
-        own trees. Never raises.
+        own trees. Only the creator retires a tree: an ``inherit``
+        child or treeless run records ``worktree_owned=False`` and is
+        skipped here — removing a shared tree would pull the worktree
+        out from under its owner. Never raises.
         """
         try:
             if delegation.kind == "chat":
+                return
+            if getattr(delegation, "worktree_owned", True) is False:
+                try:
+                    trace.append(
+                        "worktree_not_owned",
+                        {
+                            "worktree": str(
+                                getattr(delegation, "worktree_path", None)
+                            ),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 return
             tree = getattr(delegation, "worktree_path", None)
             if not tree:
@@ -1008,61 +1024,11 @@ class JobRunner:
                 if project_dir is None:
                     project_dir = Path.home() / ".sweave"
                 worktree_path = project_dir
-                # Worktree isolation (DESIGN principle #2): an
-                # implementation delegation runs in its own git
-                # worktree + branch (sweave/{task}/{agent}), never in
-                # the live project tree. Chat turns (orchestrator)
-                # stay in the project dir.
-                if delegation.kind != "chat":
-                    try:
-                        wt_manager = self._worktree_manager_for(
-                            project_dir, delegation.project_name
-                        )
-                        worktree_info = await wt_manager.async_create_worktree(
-                            delegation.task_id, delegation.agent
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        err = (
-                            "[worktree error: cannot isolate task "
-                            f"({type(exc).__name__}: {exc}); refusing to "
-                            "run in the live tree — is the project a "
-                            "git repository?]"
-                        )
-                        logger.warning(
-                            "JobRunner: worktree creation failed for %s: %s",
-                            delegation.delegation_id, exc,
-                        )
-                        try:
-                            trace.append("worktree_failed", {"error": err})
-                        except Exception:  # noqa: BLE001
-                            pass
-                        await store.update(
-                            delegation.delegation_id,
-                            output="",
-                            error=err,
-                        )
-                        await self._transition(
-                            delegation, store, trace, "failed",
-                            completed_at=datetime.now(), error=err,
-                        )
-                        return
-                    worktree_path = Path(worktree_info.path)
-                    delegation.worktree_path = str(worktree_path)
-                    delegation.branch = worktree_info.branch
-                    await store.update(
-                        delegation.delegation_id,
-                        worktree_path=str(worktree_path),
-                        branch=worktree_info.branch,
-                    )
-                    trace.append(
-                        "worktree_created",
-                        {
-                            "worktree": str(worktree_path),
-                            "branch": worktree_info.branch,
-                        },
-                    )
                 # Task scope, not focus scope: resolve against the
                 # delegation's own project (two-file config ruling).
+                # Resolved BEFORE the tree so the specialist's
+                # worktree policy (a per-specialist user toggle, never
+                # an LLM parameter) steers isolation per task.
                 specialist = self.specialist_factory(
                     delegation.agent, delegation.project_name
                 )
@@ -1077,6 +1043,160 @@ class JobRunner:
                         harness="sweave-engine",
                         current_model=delegation.model or None,
                     )
+                # Worktree isolation (DESIGN principle #2) with a
+                # per-specialist policy: ``isolated`` runs in its own
+                # git worktree + branch (sweave/{task}/{agent}), never
+                # in the live project tree; ``inherit`` runs in the
+                # parent delegation's tree (reviewers — project root
+                # when the parent has no tree); ``none`` runs in the
+                # project root with no tree at all. Chat turns
+                # (orchestrator) always stay in the project dir.
+                # Only the creator owns (and retires) a tree: shared
+                # or treeless runs record worktree_owned=False so
+                # settle can never remove another delegation's tree.
+                worktree_owned = True
+                if delegation.kind != "chat":
+                    from sweave.runtime.specialist_store import (
+                        WORKTREE_POLICIES,
+                    )
+
+                    policy = (
+                        getattr(specialist, "worktree_policy", None) or "isolated"
+                    )
+                    if policy not in WORKTREE_POLICIES:
+                        try:
+                            trace.append(
+                                "worktree_policy_unknown",
+                                {
+                                    "policy": str(policy),
+                                    "agent": delegation.agent,
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        policy = "isolated"
+                    if policy == "none":
+                        worktree_owned = False
+                        try:
+                            trace.append(
+                                "worktree_skipped", {"policy": "none"}
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    elif policy == "inherit":
+                        parent_tree = None
+                        parent_branch = None
+                        if delegation.parent_task_id:
+                            try:
+                                parent = store.get(delegation.parent_task_id)
+                            except Exception:  # noqa: BLE001
+                                parent = None
+                            if parent is not None:
+                                candidate = (
+                                    getattr(parent, "worktree_path", None)
+                                )
+                                if candidate and Path(candidate).exists():
+                                    parent_tree = candidate
+                                    parent_branch = getattr(
+                                        parent, "branch", None
+                                    )
+                        if parent_tree:
+                            worktree_owned = False
+                            worktree_path = Path(parent_tree)
+                            delegation.worktree_path = str(worktree_path)
+                            delegation.branch = parent_branch
+                            await store.update(
+                                delegation.delegation_id,
+                                worktree_path=str(worktree_path),
+                                branch=parent_branch,
+                            )
+                            try:
+                                trace.append(
+                                    "worktree_inherited",
+                                    {
+                                        "worktree": str(worktree_path),
+                                        "branch": parent_branch,
+                                        "from": delegation.parent_task_id,
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                        else:
+                            # Parentless, treeless parent (chat turns
+                            # own no tree), or retired tree: project
+                            # root, no tree. An empty isolated tree
+                            # would be useless for review; the live
+                            # tree at least has the bundle + repo.
+                            worktree_owned = False
+                            try:
+                                trace.append(
+                                    "worktree_inherited_fallback",
+                                    {
+                                        "reason": (
+                                            "no_parent_tree"
+                                            if delegation.parent_task_id
+                                            else "parentless"
+                                        ),
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001
+                                pass
+                    else:
+                        try:
+                            wt_manager = self._worktree_manager_for(
+                                project_dir, delegation.project_name
+                            )
+                            worktree_info = await wt_manager.async_create_worktree(
+                                delegation.task_id, delegation.agent
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            err = (
+                                "[worktree error: cannot isolate task "
+                                f"({type(exc).__name__}: {exc}); refusing to "
+                                "run in the live tree — is the project a "
+                                "git repository?]"
+                            )
+                            logger.warning(
+                                "JobRunner: worktree creation failed for %s: %s",
+                                delegation.delegation_id, exc,
+                            )
+                            try:
+                                trace.append("worktree_failed", {"error": err})
+                            except Exception:  # noqa: BLE001
+                                pass
+                            await store.update(
+                                delegation.delegation_id,
+                                output="",
+                                error=err,
+                            )
+                            await self._transition(
+                                delegation, store, trace, "failed",
+                                completed_at=datetime.now(), error=err,
+                            )
+                            return
+                        worktree_path = Path(worktree_info.path)
+                        delegation.worktree_path = str(worktree_path)
+                        delegation.branch = worktree_info.branch
+                        await store.update(
+                            delegation.delegation_id,
+                            worktree_path=str(worktree_path),
+                            branch=worktree_info.branch,
+                        )
+                        trace.append(
+                            "worktree_created",
+                            {
+                                "worktree": str(worktree_path),
+                                "branch": worktree_info.branch,
+                            },
+                        )
+                    delegation.worktree_owned = worktree_owned
+                    try:
+                        await store.update(
+                            delegation.delegation_id,
+                            worktree_owned=worktree_owned,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 from sweave.runtime.specialist_store import ModelRef, parse_model_ref
 
                 model_ref: ModelRef | None = None
