@@ -246,6 +246,18 @@ class Session:
         return session
 
 
+def _migrate_default_harness(value: object) -> str:
+    """Normalise the display-only project harness label.
+
+    Missing or legacy ``"opencode"`` values become ``"sweave-engine"``
+    (the post-step-4 default); any other stored value passes through
+    untouched. Safe: nothing reads this field for selection.
+    """
+    if not value or value == "opencode":
+        return "sweave-engine"
+    return str(value)
+
+
 @dataclass
 class Project:
     """A project = a folder on disk with its own config, memory, and worktrees."""
@@ -256,7 +268,11 @@ class Project:
     updated_at: datetime = field(default_factory=datetime.now)
 
     # Project-specific settings
-    default_harness: str = "opencode"
+    # Display-only project fallback label (2026-09-14: NOTHING reads
+    # this for selection — per-specialist harness wins, then the
+    # operator config default. Default + legacy-"opencode" migrate to
+    # sweave-engine so the Settings row stops contradicting reality).
+    default_harness: str = "sweave-engine"
     memory_bank: str = ""  # Auto-set to "project-{name}" if empty
 
     # Model overrides for this project
@@ -313,7 +329,7 @@ class Project:
             description=data.get("description", ""),
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
-            default_harness=data.get("default_harness", "opencode"),
+            default_harness=_migrate_default_harness(data.get("default_harness")),
             memory_bank=data.get("memory_bank", ""),
             model_overrides=data.get("model_overrides", {}),
             routing_rules=data.get("routing_rules", []),
