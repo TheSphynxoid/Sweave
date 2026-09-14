@@ -27,7 +27,7 @@ export function sweaveToken() {
   return null;
 }
 
-async function post(path, body) {
+async function post(path, body, signal) {
   const token = sweaveToken();
   const resp = await fetch(`${sweaveApiBase()}${path}`, {
     method: "POST",
@@ -36,6 +36,7 @@ async function post(path, body) {
       ...(token ? { "X-Sweave-MCP-Token": token } : {}),
     },
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
   const text = await resp.text();
   let data = null;
@@ -51,10 +52,11 @@ async function post(path, body) {
   return data || {};
 }
 
-async function get(path) {
+async function get(path, signal) {
   const token = sweaveToken();
   const resp = await fetch(`${sweaveApiBase()}${path}`, {
     headers: { ...(token ? { "X-Sweave-MCP-Token": token } : {}) },
+    ...(signal ? { signal } : {}),
   });
   const text = await resp.text();
   let data = null;
@@ -163,7 +165,7 @@ export async function callDefer(args, runCtx) {
   if (a.estimate !== undefined) body.estimate = a.estimate;
   if (a.blocking !== undefined) body.blocking = a.blocking;
   try {
-    const data = await post("/api/v2/tasks", body);
+    const data = await post("/api/v2/tasks", body, runCtx.signal);
     return { ok: true, text: `queued: ${data.delegation_id || "?"} (target=${target})` };
   } catch (e) {
     const msg = e.message || String(e);
@@ -188,14 +190,17 @@ export async function callListSpecialists() {
   }
 }
 
-async function waitEscalation(delegationId, isAborted) {
+async function waitEscalation(delegationId, isAborted, signal) {
   for (;;) {
     if (isAborted()) throw new Error("aborted");
+    if (signal && signal.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
     await sleep(2000);
     let rec = null;
     try {
-      rec = await get(`/api/delegations/${encodeURIComponent(delegationId)}/escalation`);
-    } catch {
+      rec = await get(`/api/delegations/${encodeURIComponent(delegationId)}/escalation`, signal);
+    } catch (e) {
+      if (e && e.code === "aborted") throw e;
+      if (signal && signal.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
       continue;
     }
     const status = rec && rec.status;
@@ -222,7 +227,7 @@ export async function callAskHuman(args, runCtx) {
   if (a.options) body.options = [...a.options];
   let escalationId = "?";
   try {
-    const data = await post(`/api/delegations/${encodeURIComponent(caller)}/escalate`, body);
+    const data = await post(`/api/delegations/${encodeURIComponent(caller)}/escalate`, body, runCtx.signal);
     escalationId = data.escalation_id || "?";
   } catch (e) {
     return { ok: false, text: `error: ${e.message}` };
@@ -230,7 +235,7 @@ export async function callAskHuman(args, runCtx) {
   // BLOCK inside the call (the engine owns the ChatLoop's hold-open
   // here): no timeout per the M1.11 ruling; abort-aware.
   try {
-    const rec = await waitEscalation(caller, runCtx.isAborted);
+    const rec = await waitEscalation(caller, runCtx.isAborted, runCtx.signal);
     if (rec.status === "answered") {
       return { ok: true, text: `Human answer: ${rec.response || "(empty)"}` };
     }
@@ -259,7 +264,7 @@ export async function callEscalate(args, runCtx) {
     audience: "orchestrator",
   };
   try {
-    const data = await post(`/api/delegations/${encodeURIComponent(caller.trim())}/escalate`, body);
+    const data = await post(`/api/delegations/${encodeURIComponent(caller.trim())}/escalate`, body, runCtx.signal);
     return {
       ok: true,
       text: `escalated: ${data.escalation_id || "?"} (to orchestrator; your turn continues — state the block in your summary too)`,
@@ -272,14 +277,32 @@ export async function callEscalate(args, runCtx) {
 /**
  * Permission ask round-trip: POST /api/engine/permission (the server
  * creates the blocking human escalation and waits) -> once|always|reject.
+ * Abort-aware: a turn stop settles the wait immediately (the server
+ * side resolves the escalation as skipped via the cancel path, so no
+ * orphaned question survives either).
  */
-export async function callEnginePermission({ delegationId, question, options, metadata }, isAborted) {
-  const data = await post("/api/engine/permission", {
-    delegation_id: delegationId,
-    question,
-    options: options || ["allow once", "always allow", "deny"],
-    metadata: metadata || {},
+export async function callEnginePermission({ delegationId, question, options, metadata }, isAborted, signal) {
+  const aborted = new Promise((_, reject) => {
+    if (!signal) return;
+    if (signal.aborted) {
+      reject(Object.assign(new Error("aborted"), { code: "aborted" }));
+      return;
+    }
+    signal.addEventListener(
+      "abort",
+      () => reject(Object.assign(new Error("aborted"), { code: "aborted" })),
+      { once: true }
+    );
   });
+  const data = await Promise.race([
+    post("/api/engine/permission", {
+      delegation_id: delegationId,
+      question,
+      options: options || ["allow once", "always allow", "deny"],
+      metadata: metadata || {},
+    }, signal),
+    aborted,
+  ]);
   void isAborted;
   return data.response || "reject";
 }

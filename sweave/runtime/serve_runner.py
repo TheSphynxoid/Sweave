@@ -291,11 +291,13 @@ class ServeRunner:
             return False
 
     async def restart(self) -> None:
-        """Shutdown + start. Used when the serve is dead or unhealthy.
+        """Shutdown + start. Used when the serve is dead or unhealthy,
+        or as the OS-level kill fallback when a session abort fails
+        (no-rotation ruling: kill the serve, keep the session).
 
-        Sessions die with the serve (per M1.3 step 0 probe 4: opencode
-        stores sessions in-memory only); on restart the runner starts
-        fresh and callers must create new sessions.
+        Opencode persists sessions in its sqlite db, so the stored
+        session id normally resumes after restart; a 404 on the next
+        turn recreates (genuine loss, surfaced — never silent).
         """
         old_port = self.port
         await self.shutdown()
@@ -427,6 +429,18 @@ class ServeRunnerRegistry:
         self._tracked: dict[int, dict[str, Any]] = {}
 
     def get(self, key: tuple[str, str]) -> Optional[ServeRunner]:
+        return self._runners.get(key)
+
+    def peek(self, specialist_name: str, worktree_path: Path) -> Optional[ServeRunner]:
+        """Return the live runner for the key WITHOUT starting one.
+
+        Abort/revert paths must never spawn a serve as a side effect:
+        no runner means no live turn by definition.
+        """
+        try:
+            key = (specialist_name, str(Path(worktree_path).resolve()))
+        except Exception:  # noqa: BLE001
+            return None
         return self._runners.get(key)
 
     def known(self) -> list[ServeRunner]:

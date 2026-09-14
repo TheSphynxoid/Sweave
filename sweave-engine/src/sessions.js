@@ -56,12 +56,20 @@ export class SessionStore {
     return s;
   }
 
-  /** History for the next prompt: full listing cut after the revert pointer. */
+  /** History for the next prompt: full listing cut after the revert pointer.
+   *
+   * No-rotation invariant (user ruling): sessions are immortal — a
+   * revert rewrites history in place, never discards the session.
+   * `exclusive: true` drops the named message itself too (edit =
+   * history rewrite: the old user prompt must not survive alongside
+   * its replacement). Absent/unknown target keeps everything (never
+   * truncate blindly on a bad id).
+   */
   historyForRun(session) {
     if (!session.revert) return session.messages;
     const idx = session.messages.findIndex((m) => m.id === session.revert.to_message);
     if (idx === -1) return session.messages;
-    return session.messages.slice(0, idx + 1);
+    return session.messages.slice(0, session.revert.exclusive ? idx : idx + 1);
   }
 
   append(session, entry) {

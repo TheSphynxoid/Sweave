@@ -233,9 +233,9 @@ async def test_stall_message_carries_turn_age(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_stall_message_unchanged_without_t0(tmp_path: Path):
-    """Without t0 the legacy exact string is preserved (existing
-    callers + pinned assertions are unaffected) — plus the abort
-    outcome suffix (this fake has no abort channel, so UNCONFIRMED)."""
+    """Without t0 the stall shape is preserved (existing callers +
+    pinned assertions) — the session is kept and the kill outcome is
+    named (this fake has no abort channel, so UNCONFIRMED)."""
     from sweave.runtime.serve_runner import ServeRunnerRegistry
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
@@ -247,30 +247,32 @@ async def test_stall_message_unchanged_without_t0(tmp_path: Path):
     )
     assert out == (
         "[chat error: stalled after 0s without data "
-        "(response headers never arrived; the turn may still be "
-        "running server-side; retry starts a fresh session"
-        "; stop not attempted (kill-on-silence off; work may continue server-side))]"
+        "(response headers never arrived; the stalled work was "
+        "killed; the session is kept — retry continues it"
+        "; stop UNCONFIRMED — orphaned run possible (no abort channel))]"
     )
     events = [e["event"] for e in _trace_events("d-hang", tmp_path)]
     assert "abort_skipped" in events
 
 
-def test_kill_on_silence_default_off():
-    """The 2026-09-13 regression: kill-on-silence aborted healthy
-    slow turns mid-work (frontend trip at 9 patches deep). Default
-    is OFF until a liveness probe can classify; the flag, not a
-    code rewrite, re-enables."""
+def test_kill_on_silence_default_on():
+    """No-rotation ruling: when Sweave declares a turn stalled (or the
+    user stops one), the work is KILLED — never left running blind
+    server-side — and the session is always kept. This reverses the
+    2026-09-13 default-off (healthy slow turns were being aborted):
+    detection quality is the transparency track's problem; once
+    stalled is declared, the kill is guaranteed."""
     import sweave.runtime.specialist_runtime as rt
 
-    assert rt.KILL_ON_SILENCE is False
+    assert rt.KILL_ON_SILENCE is True
 
 
 @pytest.mark.asyncio
 async def test_stall_attempts_abort_acknowledged(tmp_path: Path, monkeypatch):
     """The stall trip POSTs /session/{id}/abort; a 2xx names the
-    acknowledged stop in the message (paradox resolved). Runs with
-    KILL_ON_SILENCE on — the mechanism stays testable while the
-    default stays off (see test_kill_on_silence_default_off)."""
+    acknowledged stop in the message (paradox resolved). Kill is on
+    by default (no-rotation ruling); the monkeypatch pins it
+    explicitly so the test holds regardless of the default."""
     import sweave.runtime.specialist_runtime as rt
     monkeypatch.setattr(rt, "KILL_ON_SILENCE", True)
     from sweave.runtime.serve_runner import ServeRunnerRegistry

@@ -164,29 +164,55 @@ async function writePath(cwd, filePath, content) {
   return ok(`wrote ${filePath}`);
 }
 
-function runBash(cwd, command, timeoutMs) {
+function runBash(cwd, command, timeoutMs, signal) {
   return new Promise((resolvePromise) => {
+    // No-rotation invariant: a kill must actually kill. An aborted
+    // turn leaves no blind work behind — the child dies here, not at
+    // its own timeout.
+    if (signal && signal.aborted) {
+      resolvePromise({ ok: false, error: "bash: aborted before start" });
+      return;
+    }
     const timeout = Math.max(1000, timeoutMs || DEFAULT_BASH_TIMEOUT_MS);
+    const onAbort = () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      // The callback above may never fire after a kill on some
+      // platforms — settle explicitly so /abort never waits.
+      settle({ ok: false, error: "bash: aborted (killed on turn stop)" });
+    };
+    const settle = (value) => {
+      if (signal) {
+        try {
+          signal.removeEventListener("abort", onAbort);
+        } catch {}
+      }
+      resolvePromise(value);
+    };
     const child = exec(
       command,
       { cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
       (error, stdout, stderr) => {
         const out = truncateOutput((stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : ""));
         if (error) {
-          if (error.killed && error.signal === "SIGTERM") {
-            resolvePromise({
+          if (error.killed && (error.signal === "SIGTERM" || error.signal === "SIGKILL")) {
+            settle({
               ok: false,
               error: `bash: timed out after ${timeout}ms (partial output kept)`,
               partial: out.text,
             });
           } else {
-            resolvePromise({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(0, 2000)}` });
+            settle({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(0, 2000)}` });
           }
         } else {
-          resolvePromise(ok(out.text));
+          settle(ok(out.text));
         }
       }
     );
+    if (signal) {
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     void child;
   });
 }
@@ -416,7 +442,7 @@ export const EXEC_TOOL_DEFS = [
  * @returns { { ok, output?|error?, partial? } }
  */
 export async function executeTool(name, args, execCtx) {
-  const { cwd, session } = execCtx;
+  const { cwd, session, signal } = execCtx;
   const a = args || {};
   switch (name) {
     case "read": {
@@ -433,7 +459,7 @@ export async function executeTool(name, args, execCtx) {
       return writePath(cwd, a.filePath || "", a.content).then((r) => ({ ...r, _abs: abs }));
     }
     case "bash":
-      return runBash(cwd, a.command || "", a.timeout);
+      return runBash(cwd, a.command || "", a.timeout, signal);
     case "glob":
       return globSearch(cwd, a.pattern || "", a.path);
     case "grep":

@@ -172,8 +172,8 @@ class Harness(ABC):
         Concrete harnesses override when their sidecar/serve offers
         a stop verb (the engine's ``POST /abort``); the default is
         ``False`` (no stop verb — callers still cancel the driving
-        asyncio task and rotate the session binding so an orphaned
-        provider-side turn can't wedge the next turn).
+        asyncio task and keep the session binding: a stop kills the
+        work, never the conversation — no-rotation invariant).
         """
         return False
 

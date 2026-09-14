@@ -212,9 +212,10 @@ async def test_cancel_running_turn_stops_subtree_and_keeps_partial(tmp_path: Pat
     # Child task actually stopped.
     assert child_task.done()
 
-    # Binding rotated (the orphaned provider tail must not wedge us).
+    # Binding KEPT (no-rotation invariant): the kill above owns
+    # stopping the work; the next turn continues the same session.
     assert pm.get_session(session.id) is not None
-    assert pm.get_session(session.id).orchestrator_session_id is None  # type: ignore[union-attr]
+    assert pm.get_session(session.id).orchestrator_session_id == "eng_old_binding"  # type: ignore[union-attr]
 
     # Pending questions resolved as skipped (parent + child).
     assert chat_rec.delegation_id in skips

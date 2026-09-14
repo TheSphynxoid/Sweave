@@ -139,15 +139,13 @@ class _ActiveTurn:
         }
 
 
-# Silence-class turn failures: the engine session may still be busy
-# server-side (a stalled turn keeps running after we stop waiting),
-# so retrying on the same binding replays the wedge (2026-09-10
-# stream-probe: two hung-tool timeouts, then a third turn that got
-# literally nothing on the reused session). A first-turn error
-# containing one of these markers rotates the orchestrator session
-# binding (fresh engine session, like edits already do). Content
-# errors (auth/model rejections, validation) are NOT here: the
-# session is healthy, and rotating would just burn context.
+# Silence-class turn failures: the declared-stalled turn is KILLED
+# (KILL_ON_SILENCE, plus an explicit kill-verify on the timeout path,
+# whose task.cancel carries no abort) and the session is ALWAYS kept.
+# No-rotation invariant (user ruling): a stop kills the work, never
+# the conversation — retry continues the same session. Content errors
+# (auth/model rejections, validation) need no kill: the session is
+# healthy and the failure is the reply.
 STALE_SESSION_ERROR_MARKERS: tuple[str, ...] = (
     "stalled after",  # stall watchdog (_send_message)
     "turn exceeded",  # turn_timeout in _run_orchestrator_turn
@@ -692,11 +690,11 @@ class ChatLoop:
         it is flagged ``metadata["superseded"] = True`` — record, not
         deletion: child delegations of superseded turns stay exactly
         as they were. When *content* differs it replaces the message
-        (edit); an edit also rotates the orchestrator session binding
-        (`orchestrator_session_id = None`) so the engine never sees
-        contradictory history, while a pure retry keeps the binding.
-        The turn then runs through the same body as a fresh turn, but
-        the existing user message is reused (no duplicate persist).
+        (edit); an edit rewrites history in place (engine ``/revert``,
+        opencode native revert — the old prompt is dropped, never left
+        beside its replacement) while the session binding is always
+        kept. The turn then runs through the same body as a fresh turn,
+        but the existing user message is reused (no duplicate persist).
         The double-send guard applies here too: a rerun while a turn
         is already running for the session raises ``TurnActiveError``.
 
@@ -760,10 +758,16 @@ class ChatLoop:
         for later in session.messages[idx + 1:]:
             later.metadata["superseded"] = True
             superseded += 1
-        rotated = False
+        # No-rotation invariant: an edit rewrites history in place
+        # (drops the superseded prompts from the provider session),
+        # never discards the session. The rewrite runs synchronously
+        # here — the session is idle (the guard above rejected an
+        # active turn), so the revert busy-guard cannot trip.
+        history_rewrite = "not_edited"
         if edited:
-            session.orchestrator_session_id = None
-            rotated = True
+            history_rewrite = await self._rewrite_superseded_history(
+                session=session, from_index=idx
+            )
         self.project_manager.save_session(session)
 
         delegation_id = f"chat-{uuid.uuid4().hex[:12]}"
@@ -778,7 +782,7 @@ class ChatLoop:
                     rerun_info={
                         "from_message_id": from_message_id,
                         "edited": edited,
-                        "session_rotated": rotated,
+                        "history_rewrite": history_rewrite,
                         "superseded_count": superseded,
                     },
                 )
@@ -920,6 +924,123 @@ class ChatLoop:
             },
         )
 
+    async def _kill_parent_turn(
+        self, session_id: str, delegation_id: str
+    ) -> str:
+        """Kill one turn's work, keep its session (never rotate).
+
+        Resolves the turn's engine session id from its delegation
+        record and kills via the runtime (sidecar abort, or serve
+        abort with a serve-restart fallback on the opencode path).
+        The outcome is traced as ``turn_killed``. Never raises.
+        """
+        from sweave.runtime.trace_log import TraceLog
+
+        try:
+            session = self.project_manager.get_session(session_id)
+            if session is None:
+                return "no_session"
+            project_dir = (
+                self.project_dir_resolver(session.project_name)
+                if session.project_name
+                else None
+            )
+            worktree = project_dir or Path.home() / ".sweave"
+            store = await self.delegation_stores.for_project(worktree)
+            rec = store.get(delegation_id)
+            engine_sid = (
+                getattr(rec, "engine_session_id", None)
+                if rec is not None
+                else None
+            )
+            agent = (
+                getattr(rec, "agent", None) or "orchestrator"
+                if rec is not None
+                else "orchestrator"
+            )
+            helper = getattr(self.runtime, "abort_live_turn", None)
+            if helper is not None:
+                outcome = await helper(
+                    specialist_name=agent,
+                    worktree_path=worktree,
+                    engine_session_id=engine_sid,
+                )
+            else:
+                # Legacy doubles (tests): engine-only abort, never spawn.
+                try:
+                    from sweave.harness.engine import abort_engine_session
+
+                    ok = await abort_engine_session(engine_sid)
+                    outcome = "acknowledged" if ok else "no_live_turn"
+                except Exception as exc:  # noqa: BLE001
+                    outcome = f"abort_failed:{type(exc).__name__}"
+            try:
+                TraceLog(delegation_id).append(
+                    "turn_killed", {"outcome": outcome}
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return outcome
+        except Exception as exc:  # noqa: BLE001
+            return f"abort_failed:{type(exc).__name__}"
+
+    async def _rewrite_superseded_history(
+        self, *, session: Any, from_index: int
+    ) -> str:
+        """Rewrite provider history for an edit-rerun (never rotate).
+
+        Collects the traced prompt ids of the superseded turns (chat
+        delegations after *from_index*, oldest first) and drops them
+        from the provider session via the runtime, so the re-run's
+        replacement prompt does not sit beside the superseded
+        original. The binding is kept on every outcome; without an id
+        mapping the caller falls back to a rewrite preamble (named in
+        the returned outcome). Never raises.
+        """
+        from sweave.runtime.trace_log import read_trace
+
+        dep_ids: list[str] = []
+        for later in session.messages[from_index + 1:]:
+            meta = getattr(later, "metadata", None) or {}
+            did = meta.get("delegation_id")
+            if did and did not in dep_ids:
+                dep_ids.append(did)
+        before_ids: list[str] = []
+        for did in dep_ids:
+            try:
+                events = read_trace(did)
+            except Exception:  # noqa: BLE001
+                continue
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                if ev.get("event") == "engine_user_message" and ev.get("id"):
+                    before_ids.append(str(ev["id"]))
+                elif ev.get("event") == "opencode_user_messages":
+                    before_ids.extend(
+                        str(i) for i in (ev.get("ids") or [])
+                    )
+        if not before_ids:
+            return "preamble_fallback:no_mapping"
+        try:
+            project_dir = self.project_dir_resolver(session.project_name)
+        except Exception:  # noqa: BLE001
+            project_dir = None
+        worktree = project_dir or Path.home() / ".sweave"
+        helper = getattr(self.runtime, "rewrite_history_before", None)
+        if helper is None:
+            return "preamble_fallback:no_runtime"
+        try:
+            return await helper(
+                specialist_name="orchestrator",
+                worktree_path=worktree,
+                session_id=session.orchestrator_session_id,
+                before_ids=before_ids,
+                trace=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"preamble_fallback:{type(exc).__name__}"
+
     async def cancel_turn(self, session_id: str) -> dict[str, Any]:
         """Stop the live turn for *session_id* (Stop button).
 
@@ -971,31 +1092,48 @@ class ChatLoop:
                     await self.escalation_store.skip(delegation_id=did)
                 except Exception:  # noqa: BLE001
                     continue
-        # Best-effort engine abort for the parent's live turn (the
-        # asyncio cancel below is the real guarantee; this shortens
-        # the orphaned provider-side tail).
+        # Kill the work, keep the session (no-rotation invariant).
+        # The asyncio cancel below is the waiting guarantee; this
+        # owns stopping the provider-side work: engine turns die via
+        # the sidecar abort, opencode turns via serve abort with a
+        # serve-restart fallback. Best-effort per id, never raising.
         try:
-            session = self.project_manager.get_session(session_id)
-            project_dir = (
-                self.project_dir_resolver(session.project_name)
-                if session is not None
-                else None
+            await self._kill_parent_turn(session_id, delegation_id)
+        except Exception as kill_err:  # noqa: BLE001
+            logger.warning(
+                "ChatLoop: parent kill failed for %s: %s",
+                delegation_id, kill_err,
             )
-            store = await self.delegation_stores.for_project(
-                project_dir or Path.home() / ".sweave"
-            )
-            rec = store.get(delegation_id)
-            if rec is not None:
+        if cancelled_ids:
+            try:
                 from sweave.harness.engine import abort_engine_session
 
-                await abort_engine_session(
-                    getattr(rec, "engine_session_id", None)
+                session = self.project_manager.get_session(session_id)
+                project_dir = (
+                    self.project_dir_resolver(session.project_name)
+                    if session is not None and session.project_name
+                    else None
                 )
-        except Exception as abort_err:  # noqa: BLE001
-            logger.warning(
-                "ChatLoop: engine abort failed for %s: %s",
-                delegation_id, abort_err,
-            )
+                store = await self.delegation_stores.for_project(
+                    project_dir or Path.home() / ".sweave"
+                )
+                for did in cancelled_ids:
+                    try:
+                        rec = store.get(did)
+                        sid = (
+                            getattr(rec, "engine_session_id", None)
+                            if rec is not None
+                            else None
+                        )
+                        if sid and sid.startswith("eng_"):
+                            await abort_engine_session(sid)
+                    except Exception:  # noqa: BLE001
+                        continue
+            except Exception as child_kill_err:  # noqa: BLE001
+                logger.warning(
+                    "ChatLoop: child kill failed for %s: %s",
+                    delegation_id, child_kill_err,
+                )
 
         self._cancel_requested.add(delegation_id)
         task.cancel()
@@ -1026,12 +1164,13 @@ class ChatLoop:
         """Persist a user-stopped turn (single writer).
 
         Runs inside the dying turn task (flag consumed by the
-        caller): marks the chat delegation failed/cancelled, rotates
-        the orchestrator binding (an orphaned provider-side tail may
-        still run — same remedy as the stall rotation), and persists
-        the already-streamed partial text as a ``cancelled``
-        assistant bubble so the thread shows the stop instead of a
-        hole. Mirrors :meth:`_finalise_turn`'s event contract.
+        caller): marks the chat delegation failed/cancelled, verifies
+        the kill (the cancel path already attempted it; this is the
+        backstop), and persists the already-streamed partial text as a
+        ``cancelled`` assistant bubble so the thread shows the stop
+        instead of a hole. The orchestrator binding is KEPT
+        (no-rotation invariant) — the next turn continues the same
+        session. Mirrors :meth:`_finalise_turn`'s event contract.
         """
         from sweave.runtime.trace_log import TraceLog
 
@@ -1069,10 +1208,13 @@ class ChatLoop:
             TraceLog(delegation_id).append("turn_cancelled", {"by": "user"})
         except Exception:  # noqa: BLE001
             pass
-        # The provider-side turn may still run orphaned: rotate the
-        # binding so the next turn starts fresh instead of queueing
-        # behind it (same remedy as the stall rotation).
-        session.orchestrator_session_id = None
+        # No rotation: the kill was attempted on the cancel path;
+        # verify it here (the dying task's backstop) and keep the
+        # binding unconditionally.
+        try:
+            await self._kill_parent_turn(session_id, delegation_id)
+        except Exception:  # noqa: BLE001
+            pass
         stripped = partial.strip()
         content = (
             stripped + "\n\n[turn stopped by user — partial reply kept]"
@@ -1209,6 +1351,20 @@ class ChatLoop:
                 f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
                 + composed.to_body()
             )
+            # Preamble fallback (edit-rerun without an id mapping):
+            # the binding was kept but the superseded prompts could
+            # not be reverted — name the rewrite explicitly so the
+            # model does not treat stale history as live intent.
+            if rerun_info is not None and str(
+                rerun_info.get("history_rewrite", "")
+            ).startswith("preamble_fallback"):
+                first_turn_body = (
+                    "[sweave: history rewrite — the user edited an "
+                    "earlier message. Treat the user content below as "
+                    "replacing the superseded turns; ignore any "
+                    "contradicted instructions in the conversation "
+                    "history.]\n\n" + first_turn_body
+                )
 
             # M1.8: streaming coalescer. The chat loop wraps the
             # harness's on_chunk callback in a coalescer that
@@ -1422,17 +1578,23 @@ class ChatLoop:
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.
                 if _is_stale_session_error(first_turn_text):
-                    # The engine session may still be busy with the
-                    # dead turn server-side: rotate the binding so the
-                    # NEXT turn (and any user retry) starts fresh
-                    # instead of queueing behind the wedge. Same
-                    # mechanism as edit-rotation, same audit shape as
-                    # rerun (trace event, no schema change).
-                    session.orchestrator_session_id = None
-                    self.project_manager.save_session(session)
+                    # Silence-class failure: the stall kill already ran
+                    # inside the runtime — verify it here for the
+                    # timeout path (whose task.cancel carries no abort)
+                    # and KEEP the binding. No-rotation invariant: retry
+                    # continues the same session.
+                    try:
+                        kill_outcome = await self._kill_parent_turn(
+                            session_id, delegation.delegation_id
+                        )
+                    except Exception:  # noqa: BLE001
+                        kill_outcome = "abort_failed:unverified"
                     trace.append(
-                        "session_rotated_after_stall",
-                        {"delegation_id": delegation.delegation_id},
+                        "stall_killed",
+                        {
+                            "delegation_id": delegation.delegation_id,
+                            "kill": kill_outcome,
+                        },
                     )
                 return await _finish(
                     delegation_id=delegation.delegation_id,

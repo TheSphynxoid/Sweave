@@ -54,11 +54,25 @@
 - ✅ **Turn cancel — Stop button is live (2026-09-14)**: `POST
   /api/sessions/{id}/turn/cancel` stops the whole subtree (live
   children first, then the parent turn), resolves pending questions
-  as skipped, best-effort aborts live engine turns, rotates the
-  orchestrator binding, and persists the partial reply as a
-  `cancelled` bubble — stopping never loses the thread (the
-  2026-09-14 incident: a wedged defer-loop turn with no stop path
-  forced a server kill that lost the turn). 404 when idle.
+  as skipped, kills live turns (sidecar abort; serve abort +
+  serve-restart fallback on opencode), keeps the orchestrator binding
+  always (no-rotation ruling — a stop kills the work, never the
+  conversation), and persists the partial reply as a `cancelled`
+  bubble — stopping never loses the thread (the 2026-09-14 incident:
+  a wedged defer-loop turn with no stop path forced a server kill
+  that lost the turn). 404 when idle.
+- ✅ **No-rotation invariant (user ruling)**: sessions are immortal —
+  harness resources (serves, sidecar connections) rotate freely, the
+  conversation never does. Pruned all three binding resets (cancel,
+  stall, edit-rerun). Stall → kill + kept session (`stall_killed` /
+  `turn_killed` traces; `KILL_ON_SILENCE=True`, reversing the
+  2026-09-13 default-off). Edit → history rewrite in place (engine
+  `/revert before_message`, protocol v3 with `user_message_id` on
+  `done`; opencode native revert to predecessor; explicit rewrite
+  preamble when no id mapping exists). Kill guarantee is
+  sidecar-enforced (abort signal into tools, bash child kill,
+  abort-aware permission/fetch). 993 pytest green (5 pre-existing
+  seed/YAML failures from another thread, proven on clean HEAD).
 - ✅ **Chat-turn defers join synthesis by default (2026-09-14,
   user ruling)**: omitted `blocking` on a chat-turn defer resolves
   to True (`resolve_blocking`; explicit flags still win; record

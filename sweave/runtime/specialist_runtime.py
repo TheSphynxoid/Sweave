@@ -92,11 +92,15 @@ logger = logging.getLogger(__name__)
 # now the failure names the symptom instead of "ReadTimeout".
 STALL_TIMEOUT_SECONDS = 300.0
 
-# Kill-on-silence gate — see _attempt_engine_stop. OFF by default
-# after the 2026-09-13 regression (healthy slow turns were being
-# aborted mid-work); the abort mechanism stays implemented, tested,
-# and one flag away when the liveness probe lands.
-KILL_ON_SILENCE = False
+# Kill-on-silence gate — see _attempt_engine_stop. ON: when Sweave
+# declares a turn stalled or the user stops one, the work is KILLED —
+# never left running blind server-side (no-rotation ruling: a kill
+# must actually kill, and the session is always kept — retry continues
+# the same session). History: OFF by default after the 2026-09-13
+# regression (healthy slow turns aborted mid-work); the detection side
+# (byte-silence vs real idleness) is the transparency track's problem,
+# not the kill's — once stalled is declared, the kill is guaranteed.
+KILL_ON_SILENCE = True
 
 # Pre-model bound (incident 2026-09-13, session
 # Sweave-20260912-214940-2f4ca6): the serve does LEGITIMATE pre-model
@@ -149,17 +153,11 @@ async def _attempt_engine_stop(
     """Best-effort ``POST /session/{id}/abort``. Returns a message
     suffix naming the outcome. NEVER raises.
 
-    INCIDENT OFF (2026-09-13, user-identified regression): kill-on-
-    silence converted previously-survivable slow turns into kills —
-    the 05:20 frontend trip aborted an alive, 9-patches-deep turn
-    mid-work. Byte-silence cannot classify patient-vs-wedged. Until
-    a liveness probe exists, Sweave trips the bound, records the
-    failure loudly, rotates for retry — and lets the specialist
-    continue server-side (the pre-watchdog semantics that "used to
-    work": late-failed but completed). When the probe ships, set
-    KILL_ON_SILENCE=True (the mechanism below stays live and tested
-    via the flag); an acknowledged stop then resolves the paradox,
-    anything else stays LOUD (UNCONFIRMED) instead of silent.
+    NO-ROTATION RULING: the session is always kept — a stop kills the
+    work, never the conversation. The suffix tells the user the kill
+    outcome; an UNCONFIRMED kill stays LOUD (retry continues the same
+    session once the orphan settles, or Stop escalates to a serve
+    restart on the opencode path).
     """
     if not KILL_ON_SILENCE:
         if trace is not None:
@@ -583,6 +581,160 @@ class SpecialistRuntime:
             on_reasoning=on_reasoning,
         )
 
+    async def abort_live_turn(
+        self,
+        *,
+        specialist_name: str,
+        worktree_path: Path,
+        engine_session_id: str | None,
+    ) -> str:
+        """Kill a live turn's work without touching any session binding.
+
+        No-rotation invariant: abort kills the work, never the
+        conversation — the caller keeps the session id regardless of
+        the outcome; failures stay LOUD via the returned outcome.
+
+        * ``eng_*`` → sidecar ``POST /abort`` (guaranteed to settle
+          fast: signal into tools, bash child kill).
+        * ``ses_*`` → serve ``POST /session/{id}/abort`` on the live
+          runner (peeked, never spawned). When the abort itself fails,
+          the runner is RESTARTED (OS-level kill — the forced fallback
+          for external harnesses; sessions persist in sqlite and the
+          same id resumes).
+        * anything else → ``"no_live_turn"`` (nothing to kill).
+
+        Returns ``"acknowledged"`` | ``"serve_restarted"`` |
+        ``"no_live_turn"`` | ``"abort_failed:<detail>"``. Never raises.
+        """
+        if not engine_session_id:
+            return "no_live_turn"
+        if engine_session_id.startswith("eng_"):
+            try:
+                from sweave.harness.engine import abort_engine_session
+
+                ok = await abort_engine_session(engine_session_id)
+                return "acknowledged" if ok else "abort_failed:sidecar_rejected"
+            except Exception as exc:  # noqa: BLE001
+                return f"abort_failed:{type(exc).__name__}"
+        if not engine_session_id.startswith("ses_"):
+            return "no_live_turn"
+        try:
+            runner = self.runners.peek(specialist_name, worktree_path)
+        except Exception:  # noqa: BLE001
+            runner = None
+        if runner is None or not runner.base_url:
+            return "no_live_turn"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{runner.base_url}/session/{engine_session_id}/abort"
+                )
+            if 200 <= resp.status_code < 300:
+                return "acknowledged"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SpecialistRuntime: opencode abort failed for %s: %s",
+                engine_session_id, exc,
+            )
+        # Forced fallback: OS-level kill of the serve. The orphaned
+        # turn dies with it; the session persists in sqlite and the
+        # same id resumes on the next turn.
+        try:
+            await runner.restart()
+            return "serve_restarted"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SpecialistRuntime: serve restart failed for %s: %s",
+                specialist_name, exc,
+            )
+            return f"abort_failed:{type(exc).__name__}"
+
+    async def rewrite_history_before(
+        self,
+        *,
+        specialist_name: str,
+        worktree_path: Path,
+        session_id: str | None,
+        before_ids: list[str],
+        trace: Any | None = None,
+    ) -> str:
+        """Rewrite session history before an edit-rerun (never rotate).
+
+        Drops the earliest id in *before_ids* (ordered oldest-first)
+        and everything after it, so the re-run's replacement prompt
+        does not sit beside the superseded original. Returns
+        ``"reverted"`` or ``"preamble_fallback:<reason>"`` (caller keeps
+        the binding either way and notes the rewrite). Never raises.
+        """
+        ordered = [i for i in (before_ids or []) if i]
+        if not session_id or not ordered:
+            return "preamble_fallback:no_mapping"
+        earliest = ordered[0]
+
+        def _trace(event: str, payload: dict[str, Any]) -> None:
+            if trace is not None:
+                try:
+                    trace.append(event, payload)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if session_id.startswith("eng_"):
+            try:
+                from sweave.harness.engine import revert_engine_session
+
+                ok, reason = await revert_engine_session(session_id, earliest)
+            except Exception as exc:  # noqa: BLE001
+                ok, reason = False, f"revert_failed:{type(exc).__name__}"
+            _trace(
+                "history_rewritten" if ok else "history_rewrite_fallback",
+                {"session_id": session_id, "before": earliest, "detail": reason},
+            )
+            return "reverted" if ok else f"preamble_fallback:{reason}"
+        if not session_id.startswith("ses_"):
+            return "preamble_fallback:unknown_session_kind"
+        # Opencode native revert keeps the named message: revert to the
+        # message preceding the earliest superseded prompt (any role —
+        # usually the kept turn's assistant reply). Editing the very
+        # first message has no predecessor — preamble fallback (revert
+        # cannot truncate to empty).
+        try:
+            runner = self.runners.peek(specialist_name, worktree_path)
+        except Exception:  # noqa: BLE001
+            runner = None
+        if runner is None or not runner.base_url:
+            return "preamble_fallback:no_runner"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                listing = await _list_opencode_msg_ids_raw(
+                    client, runner.base_url, session_id
+                )
+                if earliest not in listing:
+                    return "preamble_fallback:no_mapping"
+                idx = listing.index(earliest)
+                if idx == 0:
+                    _trace(
+                        "history_rewrite_fallback",
+                        {"session_id": session_id, "detail": "first_prompt"},
+                    )
+                    return "preamble_fallback:first_prompt"
+                resp = await client.post(
+                    f"{runner.base_url}/session/{session_id}/revert",
+                    json={"messageID": listing[idx - 1]},
+                )
+                if resp.status_code == 200:
+                    _trace(
+                        "history_rewritten",
+                        {
+                            "session_id": session_id,
+                            "before": earliest,
+                            "detail": "opencode_revert",
+                        },
+                    )
+                    return "reverted"
+                return f"preamble_fallback:revert_rejected_{resp.status_code}"
+        except Exception as exc:  # noqa: BLE001
+            return f"preamble_fallback:{type(exc).__name__}"
+
     async def _run_engine_attempt(
         self,
         *,
@@ -731,6 +883,17 @@ class SpecialistRuntime:
             result = await process.send(
                 msg, on_chunk=on_chunk, trace=probe, on_reasoning=on_reasoning
             )
+
+            # No-rotation invariant: trace this turn's prompt id so a
+            # later edit-rerun can rewrite history (sidecar /revert
+            # before_message) instead of rotating the session. One
+            # event per turn; synthesis turns append their own.
+            try:
+                _umid = (result.metadata or {}).get("user_message_id")
+                if _umid:
+                    probe.append("engine_user_message", {"id": _umid})
+            except Exception:  # noqa: BLE001
+                pass
 
             # Persist the engine session binding (best-effort, like
             # the opencode path) + record it on the delegation.
@@ -1097,8 +1260,8 @@ class SpecialistRuntime:
             return (
                 f"[chat error: stalled after {PRE_MODEL_TIMEOUT_SECONDS:.0f}s "
                 f"without data (system-prompt send hung with zero bytes; "
-                f"the turn may still be running server-side; retry starts "
-                f"a fresh session{age_suffix}{stop_suffix})]"
+                f"the stalled work was killed; the session is kept — retry "
+                f"continues it{age_suffix}{stop_suffix})]"
             )
         if not getattr(result, "success", True):
             err = getattr(result, "error", None) or "unknown error"
@@ -1271,6 +1434,16 @@ class SpecialistRuntime:
                 f"starting with 'ses_'. _ensure_session must resolve "
                 f"the id before _send_message is called."
             )
+        # No-rotation invariant (opencode half): snapshot the session's
+        # user-message ids before the send so the ids this turn appends
+        # can be traced (edit-rerun rewrites via native revert instead
+        # of rotating). Best-effort: never fail a turn on it.
+        try:
+            _user_ids_before = set(
+                await _list_opencode_user_ids(process._client, wire_session_id)
+            )
+        except Exception:  # noqa: BLE001
+            _user_ids_before = set()
         try:
             headers_fn = getattr(process, "_default_headers", None)
             headers = headers_fn() if callable(headers_fn) else {}
@@ -1344,8 +1517,8 @@ class SpecialistRuntime:
                 )
                 return (
                     f"[chat error: stalled after {header_bound:.0f}s without "
-                    f"data (response headers never arrived; the turn may "
-                    f"still be running server-side; retry starts a fresh session"
+                    f"data (response headers never arrived; the stalled work "
+                    f"was killed; the session is kept — retry continues it"
                     f"{age_suffix}{stop_suffix})]"
                 )
             if trace is not None:
@@ -1506,10 +1679,9 @@ class SpecialistRuntime:
             # Wire silence for stall_seconds (hung tool approval,
             # dead serve, wedged upstream): not an answer, even with
             # partial text -- persisting a fragment as success would
-            # be worse than failing. The "stalled after" marker tells
-            # the chat loop to rotate the engine session (a stalled
-            # turn may still be running server-side and would poison
-            # a retry on the same binding).
+            # be worse than failing. The stalled work is killed (no
+            # blind work, no-rotation ruling) and the session is kept:
+            # a retry continues the same conversation.
             got = sum(len(t) for t in text_parts)
             try:
                 trace.append(
@@ -1547,8 +1719,8 @@ class SpecialistRuntime:
             )
             return (
                 f"[chat error: stalled after {stall_seconds:.0f}s without "
-                f"data (the turn may still be running server-side; retry "
-                f"starts a fresh session{age_suffix}{stop_suffix})]"
+                f"data (the stalled work was killed; the session is kept — "
+                f"retry continues it{age_suffix}{stop_suffix})]"
             )
         if info_error:
             # Upstream rejection carried on a 200 stream (401
@@ -1578,6 +1750,13 @@ class SpecialistRuntime:
                 "(stream ended without info.time.completed + "
                 "info.finish; mid-stream or empty response?)]"
             )
+        try:
+            _ids_after = await _list_opencode_user_ids(process._client, wire_session_id)
+            _new_user_ids = [i for i in _ids_after if i not in _user_ids_before]
+            if _new_user_ids:
+                trace.append("opencode_user_messages", {"ids": _new_user_ids})
+        except Exception:  # noqa: BLE001
+            pass
         trace.append("output_text", {"chunks": len(text_parts), "length": sum(len(t) for t in text_parts), "reasoning_chunks": len(reasoning_parts), "reasoning_length": sum(len(t) for t in reasoning_parts)})
         return "".join(text_parts)
 
@@ -1879,6 +2058,94 @@ class SpecialistRuntime:
         except Exception:  # noqa: BLE001
             pass
         return recovered
+
+
+async def _list_opencode_user_ids(client: Any, session_id: str) -> list[str]:
+    """Best-effort: user-role message ids in an opencode session.
+
+    Tolerates the listing's wrapper shapes (``{messages: [...]}`` /
+    ``{info: [...]}`` / bare list; rows as ``{info: {...}}`` or bare).
+    Never raises — callers treat id tracing as audit, not control.
+    """
+    try:
+        resp = await client.get(f"/session/{session_id}/message")
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        if getattr(resp, "status_code", None) != 200:
+            return []
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return []
+    return _user_ids_from_listing(data)
+
+
+async def _list_opencode_user_ids_raw(
+    client: Any, base_url: str, session_id: str
+) -> list[str]:
+    """Ordered user ids via an absolute base URL (audit helper)."""
+    try:
+        resp = await client.get(f"{base_url}/session/{session_id}/message")
+        if getattr(resp, "status_code", None) != 200:
+            return []
+        data = resp.json()
+        if isinstance(data, dict):
+            items = data.get("messages", data.get("info", []))
+        else:
+            items = data
+        return [
+            str(m["id"])
+            for m in (_unwrap_msg_row(r) for r in (items or []))
+            if isinstance(m, dict) and m.get("role") == "user" and m.get("id")
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+async def _list_opencode_msg_ids_raw(
+    client: Any, base_url: str, session_id: str
+) -> list[str]:
+    """Ordered message ids of ANY role (rewrite path: the revert target
+    is the last kept message, usually an assistant reply)."""
+    try:
+        resp = await client.get(f"{base_url}/session/{session_id}/message")
+        if getattr(resp, "status_code", None) != 200:
+            return []
+        data = resp.json()
+        if isinstance(data, dict):
+            items = data.get("messages", data.get("info", []))
+        else:
+            items = data
+        return [
+            str(m["id"])
+            for m in (_unwrap_msg_row(r) for r in (items or []))
+            if isinstance(m, dict) and m.get("id")
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _unwrap_msg_row(row: Any) -> Any:
+    if isinstance(row, dict) and isinstance(row.get("info"), dict):
+        return row["info"]
+    return row
+
+
+def _user_ids_from_listing(data: Any) -> list[str]:
+    """Pull ordered user-role ids from a tolerant listing shape."""
+    try:
+        if isinstance(data, dict):
+            items = data.get("messages", data.get("info", []))
+        else:
+            items = data
+        ids: list[str] = []
+        for row in items or []:
+            msg = row.get("info") if isinstance(row, dict) and isinstance(row.get("info"), dict) else row
+            if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("id"):
+                ids.append(str(msg["id"]))
+        return ids
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _system_message(content: str) -> "Message":

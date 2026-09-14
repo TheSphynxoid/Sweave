@@ -5,9 +5,9 @@ Covers ``ChatLoop.rerun_turn`` + the ``POST /sessions/{id}/rerun`` route:
 * Retry (no content): same user text, orchestrator session binding
   kept (trace shows ``session_resumed``), later messages flagged
   ``metadata["superseded"]`` — record, not deletion.
-* Edit (new content): user text replaced, binding rotated (trace
-  shows ``session_created`` on the new turn + the ``rerun`` audit
-  event with ``edited=True``).
+* Edit (new content): user text replaced, binding KEPT (no-rotation
+  invariant — history is rewritten via revert, never discarded; the
+  ``rerun`` audit event carries ``edited=True`` + ``history_rewrite``).
 * Only user messages are rerunnable (assistant -> TypeError/400);
   unknown ids -> ValueError/404.
 * Child delegations of superseded turns are never touched.
@@ -143,13 +143,14 @@ async def test_retry_reruns_same_content_and_keeps_session(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_edit_replaces_content_and_rotates_session(tmp_path: Path):
+async def test_edit_rewrites_history_and_keeps_session(tmp_path: Path):
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"])
 
     await chat.run_turn(session_id=session.id, user_content="hi")
-    assert pm.get_session(session.id).orchestrator_session_id
+    binding = pm.get_session(session.id).orchestrator_session_id
+    assert binding
 
     user_id = pm.get_session(session.id).messages[0].id
     result = await chat.rerun_turn(
@@ -160,18 +161,53 @@ async def test_edit_replaces_content_and_rotates_session(tmp_path: Path):
     loaded = pm.get_session(session.id)
     assert loaded.messages[0].content == "hi, edited"
     assert loaded.messages[1].metadata.get("superseded") is True
+    # No-rotation invariant: the same session continues. The canned
+    # wire traces no prompt ids, so the rewrite lands via the explicit
+    # preamble fallback (input-side, named, never silent).
+    assert loaded.orchestrator_session_id == binding
     new_chat_id = loaded.messages[2].metadata["delegation_id"]
     events = _trace_events(new_chat_id)
-    # Rotation: the engine session was recreated for the edited turn.
-    assert "session_created" in events
-    # ... via the loop's own reset (not a stale binding surviving).
+    assert "session_resumed" in events
+    assert "session_created" not in events
     from sweave.runtime.trace_log import read_trace
 
     reruns = [e for e in read_trace(new_chat_id) if e.get("event") == "rerun"]
     assert len(reruns) == 1
     assert reruns[0]["edited"] is True
-    assert reruns[0]["session_rotated"] is True
+    assert reruns[0]["history_rewrite"] == "preamble_fallback:no_mapping"
+    assert "session_rotated" not in reruns[0]
     assert reruns[0]["superseded_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_preamble_fallback_reaches_the_prompt(tmp_path: Path):
+    """Without an id mapping the rewrite preamble is composed into the
+    re-run's sent prompt (input-side): the model is told the edit
+    replaces the superseded turns."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"])
+    sent_bodies: list[str] = []
+    orig_send = chat.runtime._send_message
+
+    async def _recording_send(self, body=None, trace=None, **kwargs):
+        try:
+            parts = (body or {}).get("parts", [{}])
+            sent_bodies.append(str(parts[0].get("text", "")))
+        except Exception:  # noqa: BLE001
+            pass
+        return await orig_send(body=body, trace=trace, **kwargs)
+
+    chat.runtime._send_message = _recording_send  # type: ignore[assignment]
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    user_id = pm.get_session(session.id).messages[0].id
+    await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi, edited"
+    )
+    assert len(sent_bodies) == 2
+    assert "[sweave: history rewrite" in sent_bodies[1]
+    assert "hi, edited" in sent_bodies[1]
 
 
 @pytest.mark.asyncio
@@ -291,26 +327,32 @@ async def test_no_thinking_key_without_reasoning(tmp_path: Path):
     assert result["content"] == "answer"
     assert "thinking" not in result["metadata"]
 
-STALL_TEXT = "[chat error: stalled after 300s without data (the turn may still be running server-side; retry starts a fresh session)]"
+STALL_TEXT = "[chat error: stalled after 300s without data (the stalled work was killed; the session is kept — retry continues it)]"
 AUTH_TEXT = "[chat error: APIError: Insufficient balance.]"
 
 
 @pytest.mark.asyncio
-async def test_stall_error_rotates_engine_session(tmp_path: Path):
-    """A silence-class first-turn failure rotates the orchestrator
-    session binding (the stalled turn may still be running
-    server-side and would poison a retry on the same binding).
-    Regression for the stream-probe cascade (two hung-tool
-    timeouts, then a third turn that got nothing on reuse)."""
+async def test_stall_error_kills_and_keeps_session(tmp_path: Path):
+    """A silence-class first-turn failure kills the work and KEEPS the
+    binding (no-rotation invariant): retry continues the same session.
+    Regression for the stream-probe cascade (two hung-tool timeouts,
+    then a third turn that got nothing) — now fixed by killing, not
+    by discarding the conversation."""
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["first ok", STALL_TEXT])
 
     await chat.run_turn(session_id=session.id, user_content="hi")
-    assert pm.get_session(session.id).orchestrator_session_id
+    binding = pm.get_session(session.id).orchestrator_session_id
+    assert binding
     result = await chat.run_turn(session_id=session.id, user_content="hi again")
     assert result["content"] == STALL_TEXT
-    assert pm.get_session(session.id).orchestrator_session_id is None
+    assert pm.get_session(session.id).orchestrator_session_id == binding
+    new_chat_id = pm.get_session(session.id).messages[3].metadata["delegation_id"]
+    events = _trace_events(new_chat_id)
+    assert "stall_killed" in events
+    assert "turn_killed" in events
+    assert "session_rotated_after_stall" not in events
 
 
 @pytest.mark.asyncio

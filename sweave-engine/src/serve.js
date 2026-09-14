@@ -18,7 +18,7 @@ import {
 } from "./responses.js";
 import { extractReasoningDelta, historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
-const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "2";
+const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "3";
 const VERSION_HEADER = "X-Sweave-Engine-Protocol";
 
 const args = process.argv.slice(2);
@@ -101,7 +101,7 @@ function sseEvent(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-async function runLoopTurn(sessionId, session, body, res, turn, finish, timer) {
+async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMessageId) {
   const emit = (obj) => {
     try {
       sseEvent(res, obj);
@@ -137,7 +137,10 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer) {
     clearTimeout(timer);
     if (turn.finished) return; // timeout/abort path already answered
     finish();
-    emit({ event: "done", output, model_used: { provider: body.model.provider, model_id: body.model.model_id } });
+    // user_message_id (protocol v3): lets the orchestrator name this
+    // turn's prompt in a later /revert (edit = history rewrite, never
+    // a session rotation).
+    emit({ event: "done", output, user_message_id: userMessageId || null, model_used: { provider: body.model.provider, model_id: body.model.model_id } });
     const hasUsage = usage && (usage.input > 0 || usage.output > 0);
     emit({
       event: "tokens_used",
@@ -222,7 +225,7 @@ async function runTurn(sessionId, body, res) {
   // requested). The legacy single-shot chat path below stays
   // byte-identical for tool-less non-orchestrator turns.
   if (needsLoop(body)) {
-    await runLoopTurn(sessionId, session, body, res, turn, finish, timer);
+    await runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMsg.id);
     return;
   }
 
@@ -310,6 +313,7 @@ async function runTurn(sessionId, body, res) {
       event: "done",
       output,
       message_id: assistantId,
+      user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
     });
     sseEvent(res, {
@@ -418,6 +422,7 @@ async function runTurn(sessionId, body, res) {
       event: "done",
       output,
       message_id: assistantId,
+      user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
     });
     // tokens_used terminal — identical shape to the M1.9 audit anchor.
@@ -536,18 +541,23 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 400, { error: "bad_request", reason: String((e && e.message) || e) });
       }
       if (!body.session_id) return sendJson(res, 400, { error: "bad_request", reason: "missing:session_id" });
-      if (!body.to_message) return sendJson(res, 400, { error: "bad_request", reason: "missing:to_message" });
+      // Rewrite mode (no-rotation invariant): `before_message` drops
+      // the named message itself too — the old prompt must not survive
+      // alongside its replacement. Plain `to_message` keeps opencode
+      // pointer semantics (keep named, drop after).
+      const target = body.before_message || body.to_message;
+      if (!target) return sendJson(res, 400, { error: "bad_request", reason: "missing:to_message" });
       const session = store.get(body.session_id);
       if (!session) return sendJson(res, 404, { error: "unknown_session", reason: body.session_id });
       if (live.has(body.session_id)) {
         return sendJson(res, 409, { error: "turn_active", reason: "cannot revert mid-turn" });
       }
-      if (!session.messages.some((m) => m.id === body.to_message)) {
-        return sendJson(res, 400, { error: "unknown_message", reason: body.to_message });
+      if (!session.messages.some((m) => m.id === target)) {
+        return sendJson(res, 400, { error: "unknown_message", reason: target });
       }
-      session.revert = { to_message: body.to_message, at: Date.now() };
+      session.revert = { to_message: target, exclusive: Boolean(body.before_message), at: Date.now() };
       store.save();
-      return sendJson(res, 200, { ok: true, to_message: body.to_message });
+      return sendJson(res, 200, { ok: true, to_message: target });
     }
     return sendJson(res, 404, { error: "not_found", reason: url.pathname });
   } catch (e) {

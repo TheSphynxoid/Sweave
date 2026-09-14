@@ -21,7 +21,11 @@ from typing import Any
 #: ``X-Sweave-Engine-Protocol`` header on every request/response.
 #: v2 (2026-09-14, thinking-inclusion ruling): adds the ``reasoning``
 #: SSE event (engine thinking text, vercel/ai-pattern baseline).
-PROTOCOL_VERSION = "2"
+#: v3 (no-rotation ruling): ``done`` carries ``user_message_id`` (the
+#: turn's prompt id, naming the unit a later ``/revert`` rewrites)
+#: and ``/revert`` accepts ``before_message`` (drop the named message
+#: itself too — edit is history rewrite, never session rotation).
+PROTOCOL_VERSION = "3"
 
 #: Header carrying :data:`PROTOCOL_VERSION` on every protocol message.
 PROTOCOL_VERSION_HEADER = "X-Sweave-Engine-Protocol"
@@ -198,7 +202,11 @@ ABORT_OUTCOMES: tuple[str, ...] = ("acknowledged", "UNCONFIRMED")
 #: enable only in git repos — Sweave projects always are, but the
 #: capability probe verifies vcs before promising file-undo).
 #: Whole-message granularity in v1; busy-guard 409 mid-turn.
-REVERT_REQUIRED: tuple[str, ...] = ("session_id", "to_message")
+#: v3 adds ``before_message`` (no-rotation ruling): drop the named
+#: message itself too — an edit rewrites the old prompt away instead
+#: of leaving it beside its replacement. Exactly one of the two is
+#: required.
+REVERT_REQUIRED: tuple[str, ...] = ("session_id",)
 
 
 def validate_revert_request(body: dict[str, Any]) -> dict[str, Any]:
@@ -208,4 +216,6 @@ def validate_revert_request(body: dict[str, Any]) -> dict[str, Any]:
     for field_name in REVERT_REQUIRED:
         if field_name not in body or body[field_name] is None:
             raise ValueError(f"missing:{field_name}")
+    if not body.get("to_message") and not body.get("before_message"):
+        raise ValueError("missing:to_message")
     return body

@@ -40,6 +40,27 @@ function approxTokens(text) {
   return Math.max(1, Math.floor(String(text).split(/\s+/).length * 4 / 3));
 }
 
+/**
+ * Settles (rejects with an `aborted` error) the moment `signal`
+ * fires; never settles otherwise. Races tool execution so a turn
+ * stop can't wait out a long tool — the kill is prompt, and the
+ * tool's own signal handling stops the underlying work.
+ */
+function abortThrow(signal) {
+  return new Promise((_, reject) => {
+    if (!signal) return; // no signal: never settles, race keeps the tool
+    if (signal.aborted) {
+      reject(Object.assign(new Error("aborted"), { code: "aborted" }));
+      return;
+    }
+    signal.addEventListener(
+      "abort",
+      () => reject(Object.assign(new Error("aborted"), { code: "aborted" })),
+      { once: true }
+    );
+  });
+}
+
 function withTimeout(promise, ms, onTimeout) {
   let timer = null;
   const timeout = new Promise((resolve) => {
@@ -248,7 +269,8 @@ async function resolveAsk(execCtx, gate, toolName, callId, input) {
     ". Answer 'allow once' / 'always allow' / 'deny' (or skip = deny).";
   const response = await callEnginePermission(
     { delegationId, question, options: ["allow once", "always allow", "deny"], metadata: { requestId, permission: gate.permission, patterns: gate.patterns, tool: toolName } },
-    isAborted
+    isAborted,
+    sweaveCtx.signal
   );
   if (response === "always") {
     session.approvals = [...(session.approvals || []), { permission: gate.permission, pattern: gate.patterns[0] }];
@@ -280,8 +302,9 @@ export async function runLoop(loopCtx) {
   const sweaveCtx = {
     delegationId: body.delegation_id || null,
     isAborted,
+    signal,
   };
-  const execCtxBase = { session, saveSession, emit, sweaveCtx, isAborted, cwd };
+  const execCtxBase = { session, saveSession, emit, sweaveCtx, isAborted, cwd, signal };
 
   let totalIn = 0;
   let totalOut = 0;
@@ -425,12 +448,17 @@ export async function runLoop(loopCtx) {
           continue;
         }
       }
-      const runExec = () => executeTool(call.name, call.args || {}, { cwd, session });
-      const settled = await withTimeout(runExec(), PER_TOOL_BUDGET_MS, () => ({
-        ok: false,
-        error: `tool budget exceeded (${PER_TOOL_BUDGET_MS}ms) — partial output kept`,
-        partial: "",
-      }));
+      const runExec = () => executeTool(call.name, call.args || {}, { cwd, session, signal });
+      // No blind work: an abort during a tool settles the turn now —
+      // the tool's own signal handling (bash kill) stops the work.
+      const settled = await Promise.race([
+        withTimeout(runExec(), PER_TOOL_BUDGET_MS, () => ({
+          ok: false,
+          error: `tool budget exceeded (${PER_TOOL_BUDGET_MS}ms) — partial output kept`,
+          partial: "",
+        })),
+        abortThrow(signal),
+      ]);
       if (settled.ok) {
         const out = settled.output || "";
         emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: out } });

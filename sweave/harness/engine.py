@@ -208,6 +208,11 @@ class SweaveEngineProcess:
                     success=False, output="", error=f"engine bad_request: {e}"
                 )
             output_parts: list[str] = []
+            # No-rotation invariant: the turn's prompt id names the unit
+            # a later /revert rewrites (protocol v3). Captured from the
+            # `done` event into the result metadata — the runtime traces
+            # it per delegation so edit-rerun can rewrite history.
+            user_message_id: str | None = None
             try:
                 async with self._client.stream(
                     "POST", "/run", json=body, timeout=turn_timeout + 30.0
@@ -316,14 +321,19 @@ class SweaveEngineProcess:
                         elif kind == "error":
                             code = event.get("code", "error")
                             msg = event.get("message", "")
-                            return AgentResult(
+                            err_result = AgentResult(
                                 success=False,
                                 output="".join(output_parts).strip(),
                                 error=f"[chat error: {code}: {msg}]",
                             )
+                            if user_message_id:
+                                err_result.metadata["user_message_id"] = user_message_id
+                            return err_result
                         elif kind == "done":
                             # Turn complete — keep draining: tokens_used
                             # follows done on the wire, then EOF ends us.
+                            if isinstance(event.get("user_message_id"), str):
+                                user_message_id = event["user_message_id"]
                             pass
             except ProtocolMismatch:
                 raise
@@ -349,7 +359,10 @@ class SweaveEngineProcess:
                     output="",
                     error="[chat error: incomplete_turn: engine returned no text]",
                 )
-            return AgentResult(success=True, output=output)
+            result = AgentResult(success=True, output=output)
+            if user_message_id:
+                result.metadata["user_message_id"] = user_message_id
+            return result
         except ProtocolMismatch:
             raise
         except Exception as e:  # noqa: BLE001
@@ -463,10 +476,10 @@ async def abort_engine_session(engine_session_id: str | None) -> bool:
     Returns True when the sidecar was asked to stop; False when
     there is nothing to stop (no id, non-engine id, no harness) or
     the abort failed. Never raises — the asyncio task cancel the
-    caller also issues is the real guarantee; this only shortens
-    the orphaned provider-side tail. The caller still rotates the
-    session binding (an UNCONFIRMED-or-worse tail must never wedge
-    the next turn).
+    caller also issues is the real guarantee; the kill path (signal
+    into tools, bash child kill) settles the sidecar turn promptly.
+    No-rotation invariant: the caller keeps the session binding
+    regardless — a stop kills the work, never the conversation.
     """
     if not engine_session_id or not engine_session_id.startswith("eng_"):
         return False
@@ -481,6 +494,47 @@ async def abort_engine_session(engine_session_id: str | None) -> bool:
             engine_session_id, abort_err,
         )
         return False
+
+
+async def revert_engine_session(
+    engine_session_id: str | None, before_message_id: str
+) -> tuple[bool, str]:
+    """Rewrite engine history: drop *before_message_id* and everything
+    after it (edit = history rewrite, never session rotation).
+
+    Returns ``(True, "reverted")`` or ``(False, reason)``. Spawns the
+    shared sidecar when needed (a rewrite targets an idle session, so
+    starting the sidecar is safe — unlike abort, which never spawns).
+    Never raises.
+    """
+    if not engine_session_id or not engine_session_id.startswith("eng_"):
+        return False, "not_engine_id"
+    if not before_message_id:
+        return False, "no_message_id"
+    try:
+        sidecar = await _ensure_sidecar()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"sidecar_unavailable: {type(exc).__name__}"
+    try:
+        async with httpx.AsyncClient(
+            base_url=sidecar.base_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/revert",
+                json={
+                    "session_id": engine_session_id,
+                    "before_message": before_message_id,
+                },
+            )
+        if resp.status_code == 200:
+            return True, "reverted"
+        return False, f"revert_rejected_{resp.status_code}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "revert_engine_session failed for %s: %s",
+            engine_session_id, exc,
+        )
+        return False, f"revert_failed: {type(exc).__name__}"
 
 
 harness_registry.register(SweaveEngineHarness())
