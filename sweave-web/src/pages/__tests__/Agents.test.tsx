@@ -16,6 +16,7 @@ import type { SpecialistSummary } from "@/types";
 vi.mock("@/api/client", () => ({
   api: {
     listSpecialists: vi.fn(),
+    getSpecialist: vi.fn().mockResolvedValue(null),
     listHarnesses: vi.fn().mockResolvedValue([]),
     getModels: vi.fn().mockResolvedValue({ default: "opencode-go/glm-5.3-flash" }),
     setSpecialistModel: vi.fn(),
@@ -47,6 +48,7 @@ function spec(overrides?: Partial<SpecialistSummary>): SpecialistSummary {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.getSpecialist).mockResolvedValue(null as unknown as SpecialistSummary);
   listMock.mockResolvedValue([
     spec(), // seed
     spec({
@@ -99,10 +101,11 @@ describe("AgentsPage seed model overrides", () => {
     expect(orch.hasAttribute("disabled")).toBe(true);
   });
 
-  it("shows Edit/Delete only on the project card (seed + orchestrator hide them)", async () => {
+  it("shows Edit on project + seed cards, Delete only on project (orchestrator hides both)", async () => {
     renderPage();
     await waitForPicker("sql-expert", "project");
-    expect(screen.getAllByText("Edit").length).toBe(1);
+    expect(screen.getAllByText("Edit").length).toBe(2);
+    expect(screen.getAllByText("Delete").length).toBe(1);
   });
 });
 
@@ -145,6 +148,29 @@ describe("AgentsPage harness badge", () => {
     expect(native.textContent).toBe("sweave-engine");
     expect(legacy.textContent).toBe("opencode");
     expect(native.className).not.toBe(legacy.className);
+  });
+
+  it("shows the orchestrator singleton from its own branch, locked", async () => {
+    const getMock = vi.mocked(api.getSpecialist);
+    getMock.mockResolvedValue(
+      spec({
+        name: "orchestrator",
+        scope: "project",
+        is_orchestrator: true,
+        role_ref: "orchestrator",
+        description: "Supervisor",
+        system_prompt: "You are the orchestrator",
+        harness: "sweave-engine",
+      }),
+    );
+    // The list never carries the singleton — only the branch provides it.
+    listMock.mockResolvedValue([spec()]);
+    renderPage();
+    const badge = await screen.findByTestId("harness-badge-orchestrator");
+    expect(badge.textContent).toBe("sweave-engine");
+    // Only the seed card offers Edit — the locked singleton offers none.
+    expect(screen.getAllByText("Edit").length).toBe(1);
+    expect(screen.queryByText("Delete")).toBeNull();
   });
 });
 

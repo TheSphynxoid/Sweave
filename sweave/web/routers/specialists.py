@@ -103,8 +103,9 @@ def _orchestrator_409(name: str | None = None) -> HTTPException:
 def _seed_read_only_400(name: str) -> HTTPException:
     return HTTPException(
         400,
-        f"'{name}' is a seed view; its prompt/description/harness live in "
-        "sweave/agents/*/config.yaml and cannot be edited here",
+        f"'{name}' is a seed view; its prompt/description live in "
+        "sweave/agents/*/config.yaml and cannot be edited here "
+        "(model + harness are settable per-seed)",
     )
 
 
@@ -155,6 +156,25 @@ async def list_specialists(
 
 @router.get("/api/specialists/{name}")
 async def get_specialist(name: str, state: AppState = Depends(get_state)):
+    # The orchestrator singleton lives outside the routing pool
+    # (resolve() deliberately excludes it), so it gets its own branch
+    # — otherwise its harness/model are invisible anywhere in the UI.
+    # Read-only: auto_seed=False (a GET never creates the singleton;
+    # the first chat turn seeds it).
+    if name == ORCHESTRATOR_NAME:
+        proj_dir = _resolve_active_project_dir(state)
+        if proj_dir is None:
+            raise HTTPException(
+                404, "no active project — the orchestrator is per-project"
+            )
+        rec = _resolver(state).resolve_orchestrator(proj_dir, auto_seed=False)
+        if rec is None:
+            raise HTTPException(
+                404,
+                "orchestrator not initialized for this project yet "
+                "(it seeds on the first chat turn)",
+            )
+        return rec.public_dict()
     proj_dir = _resolve_active_project_dir(state)
     rec = _resolver(state).resolve(name, project_dir=proj_dir)
     if rec is None:
@@ -220,33 +240,51 @@ async def update_specialist(
     state: AppState = Depends(get_state),
 ):
     """PUT updates a specialist's fields. Default scope is the active
-    project; ``?scope=global`` allows editing a global record."""
+    project; ``?scope=global`` allows editing a global record.
+
+    Location-aware (2026-09-14): the lookup searches the active
+    project store first, then the global store — the ``scope`` LABEL
+    is not trusted, because pre-2026-09-11 records can live in the
+    project file while labelled ``scope="global"`` (a scope-hinted
+    global lookup missed them and PUT 400d on the seed view). The
+    write goes back to the store the record was found in.
+    """
     if name == ORCHESTRATOR_NAME:
         raise _orchestrator_409("update")
-    proj_dir = _resolve_active_project_dir(state) if scope != "global" else None
-    target_scope = "global" if scope == "global" else "project"
+    proj_dir = _resolve_active_project_dir(state)
     # Resolve the existing record to copy + update
     resolver = _resolver(state)
-    existing = resolver.resolve(name, project_dir=proj_dir if target_scope == "project" else None)
-    if existing is None:
+    existing, location = resolver.locate(name, project_dir=proj_dir)
+    if existing is None or location is None:
         raise HTTPException(404, f"specialist '{name}' not found")
     # Seed gate (2026-09-11): seeds are read-only views over
     # sweave/agents/*/config.yaml. Writing a seed view into a store
     # would materialize a full shadow copy that hides the seed (this
     # is exactly how the backend-specialist seed got demoted to
-    # "global"). Model-only changes route through the seed override;
-    # prompt/description/harness edits are refused.
+    # "global"). Model + harness route through the seed overrides;
+    # prompt/description/role edits are refused.
     if existing.scope == "seed":
-        model_only = (
-            body.role_ref is None
-            and body.description is None
-            and body.system_prompt is None
-            and body.harness is None
-        )
-        if not model_only:
+        if (
+            body.role_ref is not None
+            or body.description is not None
+            or body.system_prompt is not None
+        ):
             raise _seed_read_only_400(name)
+        if body.harness is None and body.current_model is None:
+            raise _seed_read_only_400(name)
+        if body.harness is not None:
+            try:
+                resolver.set_seed_harness(name, body.harness)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            await state.publish(
+                "specialist.updated", {"name": name, "scope": "seed"}
+            )
         if body.current_model is None:
-            raise _seed_read_only_400(name)
+            merged = resolver.resolve(name)
+            if merged is None:  # pragma: no cover - seed def vanished mid-call
+                raise HTTPException(404, f"specialist '{name}' not found")
+            return merged.public_dict()
         if "/" not in body.current_model:
             raise HTTPException(
                 400,
@@ -265,8 +303,11 @@ async def update_specialist(
         existing.harness = body.harness
     if body.current_model is not None:
         existing.current_model = body.current_model
+    # Write back to the store the record came from (location, not the
+    # scope label — see the docstring).
+    write_dir = proj_dir if location == "project" else None
     try:
-        resolver.update(existing, project_dir=proj_dir)
+        resolver.update(existing, project_dir=write_dir)
     except ValueError as e:
         raise HTTPException(409, str(e))
     await state.publish(
@@ -282,12 +323,32 @@ async def update_specialist(
 
 
 @router.delete("/api/specialists/{name}")
-async def delete_specialist(name: str, state: AppState = Depends(get_state)):
+async def delete_specialist(
+    name: str,
+    scope: Optional[str] = None,
+    state: AppState = Depends(get_state),
+):
+    """Delete a specialist from the store it lives in.
+
+    Location-aware like PUT (2026-09-14): previously the lookup used
+    only the active project store, so global records 404d even though
+    the UI sends ``?scope=global``. Seeds refuse (config.yaml owns
+    them); the orchestrator refuses (singleton).
+    """
+    del scope  # lookup is location-aware; the hint is accepted + ignored
     if name == ORCHESTRATOR_NAME:
         raise _orchestrator_409("delete")
     proj_dir = _resolve_active_project_dir(state)
+    resolver = _resolver(state)
+    _, location = resolver.locate(name, project_dir=proj_dir)
+    if location is None:
+        raise HTTPException(404, f"specialist '{name}' not found")
+    if location == "seed":
+        raise _seed_read_only_400(name)
     try:
-        removed = _resolver(state).delete(name, project_dir=proj_dir)
+        removed = resolver.delete(
+            name, project_dir=proj_dir if location == "project" else None
+        )
     except ValueError as e:
         raise HTTPException(409, str(e))
     if not removed:

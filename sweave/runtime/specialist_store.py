@@ -212,6 +212,13 @@ class Specialist:
     # records that already persist "opencode" keep it — only the
     # default for records that never chose changes).
     harness: str = ENGINE_HARNESS_NAME
+    # Per-seed harness choice (2026-09-14, mirrors the per-seed model
+    # override): meaningful ONLY on ``scope="seed"`` override records
+    # in the global store. ``None`` = inherit the seed YAML; a value
+    # = the user's explicit pick, merged into the derived seed view
+    # by ``_seed_view``. Separate from ``harness`` (whose baked
+    # default can never distinguish "user chose" from "never chose").
+    harness_override: str | None = None
     current_model: str | None = None
     session_id: str | None = None  # M1.3 fills
     created_at: datetime = field(default_factory=_now)
@@ -459,8 +466,10 @@ class GlobalSpecialistStore(_BaseSpecialistStore):
         if rec.name not in seed_roles:
             return rec
         # Materialized seed copy -> fold-migrate to a seed override,
-        # preserving the user's model choice and dropping the stale
-        # full-record copy (prompt/description/session_id).
+        # preserving the user's model choice AND harness choice (the
+        # full record's harness WAS the effective value while it
+        # shadowed the seed) and dropping the stale full-record copy
+        # (prompt/description/session_id).
         logger.info(
             "GlobalSpecialistStore: fold-migrating materialized seed copy "
             "'%s' (scope=global) to a seed override",
@@ -471,6 +480,7 @@ class GlobalSpecialistStore(_BaseSpecialistStore):
             name=rec.name,
             role_ref=rec.role_ref or seed_roles[rec.name],
             model_ref=rec.model_ref,
+            harness_override=rec.harness or None,
         )
 
 
@@ -533,12 +543,13 @@ def _make_seed_override(
     name: str,
     role_ref: str | None,
     model_ref: ModelRef | None,
+    harness_override: str | None = None,
 ) -> Specialist:
     """Build a minimal **seed override** record for the global store.
 
-    An override carries ONLY the user's per-seed model choice (via
-    :meth:`Specialist.set_model_ref`, the JSON ModelRef shape) plus
-    identity metadata. It deliberately does NOT copy prompt,
+    An override carries ONLY the user's per-seed choices (model via
+    :meth:`Specialist.set_model_ref`, harness via ``harness_override``)
+    plus identity metadata. It deliberately does NOT copy prompt,
     description or session state from the seed: ``sweave/agents/*/
     config.yaml`` stays the single source of truth for those. It is
     merged into the derived seed view at resolve time; an explicit
@@ -551,6 +562,7 @@ def _make_seed_override(
         role_ref=role_ref,
         description="",
         system_prompt="",
+        harness_override=harness_override,
     )
     ov.set_model_ref(model_ref)
     return ov
@@ -631,9 +643,50 @@ class SpecialistResolver:
             and ov.current_model
         ):
             view.current_model = ov.current_model
+        if (
+            ov is not None
+            and ov.scope == "seed"
+            and ov.harness_override
+        ):
+            # Explicit per-seed harness choice (None = inherit YAML).
+            view.harness = ov.harness_override
         return view
 
     # ---- resolution -----------------------------------------------------
+
+    def locate(
+        self,
+        name: str,
+        project_dir: Path | None = None,
+    ) -> tuple[Specialist | None, str | None]:
+        """Find *name* and say WHERE it lives.
+
+        Returns ``(rec, location)`` with ``location`` one of
+        ``"project"`` | ``"global"`` | ``"seed"`` (``(None, None)`` when
+        unknown). Same precedence as :meth:`resolve` (project ->
+        global -> seed), but location-aware: the ``scope`` LABEL is
+        untrustworthy for pre-2026-09-11 records (the live
+        ``Sweave/.sweave/agents.json`` holds full ``scope="global"``
+        copies — list shows "global", a scope-hinted global lookup
+        misses the project file, and PUT 400s on the seed view).
+
+        A global ``scope="seed"`` record is a model-only override, not
+        a specialist — it resolves to the derived seed view
+        (``"seed"``), mirroring :meth:`resolve`.
+        """
+        if name == ORCHESTRATOR_NAME:
+            return None, None
+        if project_dir is not None:
+            rec = self._project_store(project_dir).get(name)
+            if rec is not None:
+                return rec, "project"
+        rec = self.global_store.get(name)
+        if rec is not None and rec.scope != "seed":
+            return rec, "global"
+        view = self._seed_view(name)
+        if view is not None:
+            return view, "seed"
+        return None, None
 
     def resolve(
         self,
@@ -641,18 +694,16 @@ class SpecialistResolver:
         project_dir: Path | None = None,
     ) -> Specialist | None:
         """project -> global -> seed (seed view = yaml + model override).
-        Returns None if no match."""
-        if name == ORCHESTRATOR_NAME:
-            # Orchestrator is only resolved via resolve_orchestrator().
-            return None
-        if project_dir is not None:
-            rec = self._project_store(project_dir).get(name)
-            if rec is not None:
-                return rec
-        rec = self.global_store.get(name)
-        if rec is not None:
-            return rec
-        return self._seed_view(name)
+        Returns None if no match.
+
+        Single source of truth is :meth:`locate` — the only deliberate
+        difference from the pre-2026-09-14 shape: a global
+        ``scope="seed"`` override now resolves to the MERGED seed view
+        (full prompt + merged model/harness) instead of the raw hollow
+        override record.
+        """
+        rec, _ = self.locate(name, project_dir=project_dir)
+        return rec
 
     def resolve_orchestrator(
         self,
@@ -723,6 +774,15 @@ class SpecialistResolver:
             ):
                 _add(r)
         for r in sorted(self.global_store.list(), key=lambda r: r.name):
+            # A scope="seed" record here is a model/harness OVERRIDE,
+            # not a specialist — skip it and let the seed loop below
+            # add the merged view (this also stops stale baked harness
+            # defaults on old overrides leaking into the list). The
+            # name is deliberately NOT marked seen: the view still
+            # needs adding. (Orphan overrides with no seed def simply
+            # disappear from the pool.)
+            if r.scope == "seed":
+                continue
             _add(r)
         if include_seeds:
             for seed_name in sorted(self._seed_defs):
@@ -778,10 +838,11 @@ class SpecialistResolver:
             # Defence in depth: a seed VIEW must never be written back to
             # a persistent store (that materializes a shadow copy that
             # hides the seed -- the 2026-09-03 backend-specialist leak).
-            # Per-seed model choices go through set_seed_model().
+            # Per-seed model/harness choices go through set_seed_model()
+            # / set_seed_harness().
             raise ValueError(
                 "'seed' is a read-only view; edit the config.yaml, or use "
-                "set_seed_model() for the per-seed model choice"
+                "set_seed_model()/set_seed_harness() for the per-seed choices"
             )
         store = self._project_store(project_dir) if project_dir is not None else None
         if store is None:
@@ -803,15 +864,60 @@ class SpecialistResolver:
         store; the derived seed view picks it up at resolve time. The
         returned record is a transient merged view (scope stays
         "seed"); it must never be re-persisted via :meth:`update`.
+        A pre-existing harness choice on the override is preserved.
         """
         seed_def = self._find_seed_def(name)
         if seed_def is None:
             raise ValueError(f"'{name}' is not a seed specialist")
         ov = _make_seed_override(
-            name=seed_def.name, role_ref=seed_def.role, model_ref=ref
+            name=seed_def.name,
+            role_ref=seed_def.role,
+            model_ref=ref,
+            harness_override=self._seed_harness_choice(seed_def.name),
         )
         self.global_store.upsert(ov)
         return self._seed_view(seed_def.name) or ov
+
+    def set_seed_harness(self, name: str, harness: str | None) -> Specialist:
+        """Persist the per-seed harness choice for seed *name*.
+
+        ``None`` (or empty) clears the choice back to inheriting the
+        seed YAML; otherwise the name must be a registered harness
+        (validated here so a typo can't strand a seed). Merges with
+        any pre-existing model choice on the override. Returns the
+        merged seed view (transient — never re-persist via
+        :meth:`update`).
+        """
+        from sweave.harness.base import harness_registry
+
+        seed_def = self._find_seed_def(name)
+        if seed_def is None:
+            raise ValueError(f"'{name}' is not a seed specialist")
+        clean = (harness or "").strip() or None
+        if clean is not None and harness_registry.get(clean) is None:
+            known = ", ".join(sorted(harness_registry.list())) or "(none)"
+            raise ValueError(f"unknown harness {clean!r} (known: {known})")
+        existing = self.global_store.get(seed_def.name)
+        model_ref = (
+            existing.model_ref
+            if existing is not None and existing.scope == "seed"
+            else None
+        )
+        ov = _make_seed_override(
+            name=seed_def.name,
+            role_ref=seed_def.role,
+            model_ref=model_ref,
+            harness_override=clean,
+        )
+        self.global_store.upsert(ov)
+        return self._seed_view(seed_def.name) or ov
+
+    def _seed_harness_choice(self, name: str) -> str | None:
+        """Current harness choice on the seed override (None = inherit)."""
+        existing = self.global_store.get(name)
+        if existing is not None and existing.scope == "seed":
+            return existing.harness_override
+        return None
 
     def delete(
         self,
