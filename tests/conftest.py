@@ -105,3 +105,72 @@ def _fast_system_send_bound(monkeypatch):
     import sweave.runtime.specialist_runtime as rt
 
     monkeypatch.setattr(rt, "PRE_MODEL_TIMEOUT_SECONDS", 1.0)
+
+
+def repo_config_pair(tmp_path: Path, src: Path | None = None) -> Path:
+    """Tmp copies of the repo config + registry (or a synthetic seed).
+
+    Hygiene: no test loads the live repo CWD (config.yaml is a working
+    artifact; models.yaml / models.meta.json are generated). Copies
+    ``config.yaml`` / ``models.yaml`` / ``rules.yaml`` /
+    ``models.custom.yaml`` / ``models.meta.json`` from the repo root
+    when present, rewires the tmp config's registry/rules paths to
+    the tmp copies, and returns the tmp config path.
+
+    Fresh-clone resilience: ``models.yaml`` is untracked and may be
+    absent — then a minimal synthetic registry (plus a matching
+    ``models.default``) is planted so live-data assertions
+    (non-empty qualified registry, default in registry) still hold.
+    ``src`` overrides the repo root (tests the fallback itself).
+    """
+    import shutil
+
+    import yaml
+
+    root = src if src is not None else Path(__file__).parent.parent
+    for name in (
+        "config.yaml",
+        "models.yaml",
+        "rules.yaml",
+        "models.custom.yaml",
+        "models.meta.json",
+    ):
+        origin = root / name
+        if origin.exists():
+            shutil.copy(origin, tmp_path / name)
+    if not (tmp_path / "models.yaml").exists():
+        (tmp_path / "models.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "models": {
+                        "providers": {
+                            "opencode": ["a-model"],
+                            "ollama": ["b-model"],
+                        }
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+    if not (tmp_path / "config.yaml").exists():
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"models": {}}, sort_keys=False), encoding="utf-8"
+        )
+    cfg_doc = yaml.safe_load(
+        (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    )
+    if not isinstance(cfg_doc, dict):
+        cfg_doc = {}
+    models = cfg_doc.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        cfg_doc["models"] = models
+    models["registry_path"] = str(tmp_path / "models.yaml")
+    models["rules_path"] = str(tmp_path / "rules.yaml")
+    if not models.get("default"):
+        models["default"] = "opencode/a-model"
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
+    )
+    return tmp_path / "config.yaml"

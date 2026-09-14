@@ -80,6 +80,14 @@ playwright-report/
 # (User ruling: working artifact, not repo work.)
 /config.yaml
 
+# Generated model registry + metadata sidecar (`sweave models sync`
+# from models.dev + serve overlay). Regenerate after clone; never
+# commit (user ruling: generated artifacts, not repo work).
+# Hand entries belong in models.custom.yaml (also untracked).
+/models.yaml
+/models.meta.json
+/models.custom.yaml
+
 # UI build artifacts (vite.config compiled by tsc)
 sweave-web/vite.config.js
 sweave-web/vite.config.d.ts

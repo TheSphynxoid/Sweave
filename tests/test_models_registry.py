@@ -23,37 +23,19 @@ from sweave.config.manager import ConfigManager
 
 
 def _manager(tmp_path: Path) -> ConfigManager:
-    """ConfigManager over tmp COPIES of the repo files.
+    """ConfigManager over tmp COPIES of the repo files (or a synthetic
+    seed on fresh clones without the generated registry).
 
-    Hygiene (user ruling: config.yaml is a working artifact, never
-    repo work): no test may load — let alone write — the live repo
-    files. ``load()`` persists legacy adoption and ``set_default``
-    writes, so even read-looking tests copy first. The copies keep
-    the live-data assertions (real registry shape); writes land in
-    tmp and die with it.
+    Hygiene (user ruling: config.yaml is a working artifact, generated
+    files are untracked): no test may load — let alone write — the
+    live repo files. ``load()`` persists legacy adoption and
+    ``set_default`` writes, so even read-looking tests copy first.
+    The copies keep the live-data assertions (real registry shape);
+    writes land in tmp and die with it.
     """
-    import shutil
+    from tests.conftest import repo_config_pair
 
-    root = Path(__file__).parent.parent
-    for name in (
-        "config.yaml",
-        "models.yaml",
-        "rules.yaml",
-        "models.custom.yaml",
-        "models.meta.json",
-    ):
-        src = root / name
-        if src.exists():
-            shutil.copy(src, tmp_path / name)
-    cfg_doc = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-    models = cfg_doc.get("models")
-    if isinstance(models, dict):
-        models["registry_path"] = str(tmp_path / "models.yaml")
-        models["rules_path"] = str(tmp_path / "rules.yaml")
-        (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
-        )
-    cm = ConfigManager(config_path=tmp_path / "config.yaml")
+    cm = ConfigManager(config_path=repo_config_pair(tmp_path))
     cm.load()
     return cm
 
@@ -151,6 +133,21 @@ def test_set_default_model_rejects_unknown(tmp_path: Path):
     cm = _manager(tmp_path)
     with pytest.raises(ValueError, match="unknown model"):
         cm.set_default_model("nope/nothing-here-xyz")
+
+
+def test_repo_pair_synthetic_seed_without_generated_registry(tmp_path: Path):
+    """Fresh-clone resilience: with no repo models.yaml (generated,
+    untracked), the helper plants a minimal synthetic registry so
+    live-data assertions still hold and nothing touches live files."""
+    from tests.conftest import repo_config_pair
+
+    empty = tmp_path / "empty-root"
+    empty.mkdir()
+    config_path = repo_config_pair(tmp_path, src=empty)
+    cm = ConfigManager(config_path=config_path)
+    cm.load()
+    assert set(cm.get_all_models()) == {"opencode/a-model", "ollama/b-model"}
+    assert cm.get_default_model() == "opencode/a-model"
 
 
 def test_load_with_default_present_writes_nothing(tmp_path: Path):

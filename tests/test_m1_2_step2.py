@@ -29,36 +29,13 @@ from sweave.tools import DelegateTaskTool
 
 
 def _make_config_manager(tmp_path: Path) -> ConfigManager:
-    """Load tmp COPIES of the on-disk config so the tests track
-    models.yaml edits without touching the live repo files (hygiene:
-    config.yaml is a working artifact — ``load()`` persists legacy
-    adoption and must never see the repo CWD).
+    """Tmp copies of the repo files (or a synthetic seed without the
+    generated registry) — hygiene: live working files are never
+    loaded, let alone written (``load()`` persists legacy adoption).
     """
-    import shutil
-    import yaml as _yaml
+    from tests.conftest import repo_config_pair
 
-    root = Path(__file__).parent.parent
-    for name in (
-        "config.yaml",
-        "models.yaml",
-        "rules.yaml",
-        "models.custom.yaml",
-        "models.meta.json",
-    ):
-        src = root / name
-        if src.exists():
-            shutil.copy(src, tmp_path / name)
-    cfg_doc = _yaml.safe_load(
-        (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    )
-    models = cfg_doc.get("models")
-    if isinstance(models, dict):
-        models["registry_path"] = str(tmp_path / "models.yaml")
-        models["rules_path"] = str(tmp_path / "rules.yaml")
-        (tmp_path / "config.yaml").write_text(
-            _yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
-        )
-    cm = ConfigManager(config_path=tmp_path / "config.yaml")
+    cm = ConfigManager(config_path=repo_config_pair(tmp_path))
     cm.load()
     return cm
 

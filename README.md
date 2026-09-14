@@ -108,7 +108,8 @@ Key sections:
 - `routing` — Routing rules (loaded from rules.yaml)
 
 ### models.yaml
-Model registry with roles and aliases. Generated from models.dev:
+Model registry with roles and aliases. GENERATED and untracked —
+regenerate after clone (likewise `models.meta.json`):
 
 ```bash
 python scripts/generate_models.py

@@ -545,17 +545,21 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    first-line only as a fallback.
 
 5. **config.yaml / models.yaml / models.meta.json are LIVE user
-   state — never stash, checkout, or restore them** (2026-09-13:
-   a `git stash` + `pop` round-trip collided with the user's live
-   edits — the models default switched mid-session — and a
+   state — untracked, never stash, checkout, or restore them**
+   (user ruling: working artifacts, not repo work —
+   `config.example.yaml` is the tracked template; the registry is
+   regenerated via `sweave models sync`). History: 2026-09-13, a
+   `git stash` + `pop` round-trip collided with live edits and a
    `checkout -- config.yaml` destroyed the live default; recovery
-   was byte-compare against a TEMP backup). With
-   `core.autocrlf=true` the merge friction is worse (phantom-dirty
-   files abort the pop while partial changes stay applied).
-   Rules: treat these three as read-only; back them up to TEMP
-   before any git operation that could touch them; verify with
-   byte hashes, never `git status` alone; conflicting content
-   always resolves in favor of the live file, never HEAD.
+   was byte-compare against a TEMP backup. Untracking removes the
+   git half of the hazard; the test half is closed separately —
+   no test may load the repo CWD (bare `ConfigManager()` rewrote
+   the live file via load-time legacy adoption; use the
+   `repo_config_pair` helper in `tests/conftest.py`, which copies
+   or plants a synthetic seed). Rules: treat these files as
+   read-only; verify with byte hashes, never `git status` alone;
+   conflicting content always resolves in favor of the live file,
+   never HEAD.
 
 ## sweave-web UI
 

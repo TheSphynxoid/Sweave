@@ -215,33 +215,11 @@ async def test_task_override_beats_specialist_current_model(tmp_path: Path):
 
 def _make_config_manager(tmp_path: Path) -> "ConfigManager":
     from sweave.config.manager import ConfigManager
-    import shutil
-    import yaml as _yaml
+    from tests.conftest import repo_config_pair
 
-    # Tmp copies of the repo files (hygiene: config.yaml is a working
-    # artifact — no test loads the live repo CWD).
-    root = Path(__file__).parent.parent
-    for name in (
-        "config.yaml",
-        "models.yaml",
-        "rules.yaml",
-        "models.custom.yaml",
-        "models.meta.json",
-    ):
-        src = root / name
-        if src.exists():
-            shutil.copy(src, tmp_path / name)
-    cfg_doc = _yaml.safe_load(
-        (tmp_path / "config.yaml").read_text(encoding="utf-8")
-    )
-    models = cfg_doc.get("models")
-    if isinstance(models, dict):
-        models["registry_path"] = str(tmp_path / "models.yaml")
-        models["rules_path"] = str(tmp_path / "rules.yaml")
-        (tmp_path / "config.yaml").write_text(
-            _yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
-        )
-    cm = ConfigManager(config_path=tmp_path / "config.yaml")
+    # Tmp copies of the repo files (or a synthetic seed without the
+    # generated registry) — hygiene: no test loads the live repo CWD.
+    cm = ConfigManager(config_path=repo_config_pair(tmp_path))
     cm.load()
     return cm
 
