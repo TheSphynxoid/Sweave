@@ -51,6 +51,22 @@
 - ⚠️ Memory recall/reflect/retain operations (R4.4 re-cut 2026-09-10: page exists but POSTs 422 and no backend is usable by default — backend + contract are the plan)
 - ✅ Global error handlers that show errors on screen for debugging
 - ✅ Backend-driven file browser (no "Folder picker not supported" error)
+- ✅ **Turn cancel — Stop button is live (2026-09-14)**: `POST
+  /api/sessions/{id}/turn/cancel` stops the whole subtree (live
+  children first, then the parent turn), resolves pending questions
+  as skipped, best-effort aborts live engine turns, rotates the
+  orchestrator binding, and persists the partial reply as a
+  `cancelled` bubble — stopping never loses the thread (the
+  2026-09-14 incident: a wedged defer-loop turn with no stop path
+  forced a server kill that lost the turn). 404 when idle.
+- ✅ **Chat-turn defers join synthesis by default (2026-09-14,
+  user ruling)**: omitted `blocking` on a chat-turn defer resolves
+  to True (`resolve_blocking`; explicit flags still win; record
+  schema unchanged). Orchestrator owns read-only `read`/`grep`/
+  `glob` for repo-factual Q&A (charter narrowed from "never
+  implement" to "never edit/write/run"); defer contract gained the
+  no-poll clause (queued → end the turn, never re-defer while the
+  child runs).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
