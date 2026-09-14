@@ -64,11 +64,14 @@ def _make_runner(project_dir: Path, *, runtime: StubRuntime | None = None):
         "project_dir_resolver": lambda name: project_dir,
     }
     if runtime is not None:
+        from tests.conftest import fake_worktree_manager_factory
+
         kwargs.update(
             delegate_tool=None,
             specialist_runtime=runtime,
             specialist_factory=lambda name, project=None: None,
             specialist_saver=lambda specialist, project_name: None,
+            worktree_manager_factory=fake_worktree_manager_factory()[0],
         )
     else:
         kwargs["delegate_tool"] = StubDelegateTool()

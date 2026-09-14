@@ -875,6 +875,22 @@ async def promote_delegation(
                 },
             )
         trace.close()
+        # Worktree isolation lifecycle: human promotion to done
+        # retires the task tree like the runner's own settle path
+        # (review kept it for inspection; the branch is kept).
+        # Best-effort via the runner helper; never fails promotion.
+        try:
+            runner = getattr(state, "job_runner", None)
+            remover = getattr(runner, "_remove_task_worktree", None)
+            if remover is not None:
+                from sweave.runtime.trace_log import TraceLog as _TraceLog
+
+                await remover(
+                    rec,
+                    _TraceLog(delegation_id, base_dir=state.traces_dir),
+                )
+        except Exception:  # noqa: BLE001
+            pass
         # UI v1 compat bridge: update the ChildSession.status in the
         # parent session so the Children tab re-renders. The bridge
         # write-through is best-effort: a missing parent (orphan

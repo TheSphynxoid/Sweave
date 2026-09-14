@@ -1,5 +1,4 @@
 """Two-file config tests (user ruling: global + per-project layers).
-
 Global ``config.yaml`` holds defaults for every project;
 ``{project}/.sweave/config.yaml`` overlays ``models`` / ``routing`` /
 ``harness`` field-by-field. Task-scoped resolution (the delegation's
@@ -23,6 +22,13 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+
+from tests.conftest import fake_worktree_manager_factory
+
+
+def _wt_factory():
+    """Fake worktree lifecycle (real dirs, no git) for JobRunner sites."""
+    return fake_worktree_manager_factory()[0]
 
 
 def _write_global(tmp_path: Path):
@@ -237,6 +243,7 @@ async def test_factory_receives_delegation_project(tmp_path: Path):
         specialist_runtime=_StubRuntime(),  # type: ignore[arg-type]
         specialist_factory=_ok,  # type: ignore[arg-type]
         turn_timeout=30.0,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(agent="backend", task="t", project_name="proj-A")
     terminal = await runner.wait(d.delegation_id, timeout=10)
@@ -276,6 +283,7 @@ async def test_per_delegation_budget_and_harness_tier(tmp_path: Path):
         specialist_factory=lambda agent, project=None: None,
         turn_timeout=900,
         project_config_resolver=_overlay_config,
+        worktree_manager_factory=_wt_factory(),
     )
     from sweave.runtime.delegation_store import Delegation
 

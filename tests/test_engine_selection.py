@@ -23,6 +23,12 @@ import pytest
 from sweave.engine.protocol import ENGINE_HARNESS_NAME
 from sweave.harness.base import AgentResult, harness_registry, resolve_harness_name
 from sweave.runtime.specialist_store import Specialist
+from tests.conftest import fake_worktree_manager_factory
+
+
+def _wt_factory():
+    """Fake worktree lifecycle (real dirs, no git) for JobRunner sites."""
+    return fake_worktree_manager_factory()[0]
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -577,6 +583,7 @@ async def test_submit_threads_harness_override_to_run(tmp_path: Path):
         project_dir_resolver=lambda _name: project_dir,
         specialist_runtime=_StubRuntime(),  # type: ignore[arg-type]
         specialist_factory=_factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(
         agent="worker", task="t", project_name="p", harness="sweave-engine"

@@ -30,6 +30,12 @@ from sweave.runtime.specialist_store import (
     ModelRef,
     Specialist,
 )
+from tests.conftest import fake_worktree_manager_factory
+
+
+def _wt_factory():
+    """Fake worktree lifecycle (real dirs, no git) for JobRunner sites."""
+    return fake_worktree_manager_factory()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +188,7 @@ async def test_job_runner_runtime_path_when_wired(tmp_path: Path):
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(
         agent="backend",
@@ -217,6 +224,7 @@ async def test_job_runner_legacy_path_when_specialist_unknown(tmp_path: Path):
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(agent="ghost", task="x", model=None)
     await runner.wait(d.delegation_id, timeout=5)
@@ -250,6 +258,7 @@ async def test_job_runner_runtime_path_legacy_model_string(tmp_path: Path):
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(agent="a", task="x", model="qwen3:8b")
     await runner.wait(d.delegation_id, timeout=5)
@@ -307,6 +316,7 @@ async def test_runtime_runner_is_mocked_no_real_subprocess(tmp_path: Path):
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(agent="alpha", task="x", model=None)
     await runner.wait(d.delegation_id, timeout=5)
@@ -325,8 +335,11 @@ async def test_runtime_runner_is_mocked_no_real_subprocess(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_job_runner_two_sequential_delegations_share_runner(tmp_path: Path):
-    """Two sequential delegations to the same specialist through the
-    runtime use the same per-specialist serve (key: (name, worktree))."""
+    """Two sequential delegations to the same specialist get ISOLATED
+    task worktrees (worktree isolation ruling): same agent, different
+    trees (and hence different per-(specialist, worktree) serves).
+    Both land in review with their trees kept for inspection.
+    """
     from sweave.runtime.delegation_store import PerProjectDelegationStores as _P
 
     stores = _P()
@@ -344,15 +357,22 @@ async def test_job_runner_two_sequential_delegations_share_runner(tmp_path: Path
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
-    d1 = await runner.submit(agent="alpha", task="one", model=None)
+    d1 = await runner.submit(agent="alpha", task="one", model=None, project_name="p1")
     await runner.wait(d1.delegation_id, timeout=5)
-    d2 = await runner.submit(agent="alpha", task="two", model=None)
+    d2 = await runner.submit(agent="alpha", task="two", model=None, project_name="p1")
     await runner.wait(d2.delegation_id, timeout=5)
-    # Two sequential runs; same agent; same worktree -> same runner.
-    assert len(runners.known()) == 1
-    runner = runners.known()[0]
-    assert runner.specialist_name == "alpha"
+    store = await stores.for_project(tmp_path)
+    r1 = store.get(d1.delegation_id)
+    r2 = store.get(d2.delegation_id)
+    assert r1 is not None and r2 is not None
+    assert r1.worktree_path and r2.worktree_path
+    assert r1.worktree_path != r2.worktree_path
+    assert r1.branch and r1.branch.startswith("sweave/")
+    # One serve per (specialist, worktree): isolation, not sharing.
+    assert len(runners.known()) == 2
+    assert {r.specialist_name for r in runners.known()} == {"alpha"}
 
 
 @pytest.mark.asyncio
@@ -374,6 +394,7 @@ async def test_job_runner_different_specialists_different_runners(tmp_path: Path
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     d1 = await runner.submit(agent="alpha", task="x", model=None)
     await runner.wait(d1.delegation_id, timeout=5)

@@ -561,6 +561,23 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    conflicting content always resolves in favor of the live file,
    never HEAD.
 
+6. **Task worktrees: base, git dir, and lifecycle.** The effective
+   base is the project override when absolute, anchored at the
+   project dir when relative, else `{project}/.worktrees` — always
+   resolved absolute. The git dir is ALWAYS the project dir
+   (`WorktreeManager(base, git_dir=project)`), because
+   `create_worktree` inherits the process CWD otherwise and a
+   multi-project server would plant trees in the wrong repo.
+   Creation failure fails the delegation loud (non-git projects
+   must init — no silent in-tree fallback). Removal centralizes in
+   `JobRunner._transition` on done/failed (normal, timeout, cancel)
+   plus the promote endpoint; crash-recovery (`recover_interrupted`,
+   boot sweep) does NOT remove — trees orphaned by a crash need
+   manual `git worktree prune` + dir removal (a sweep is future
+   work). Tests driving `_run` inject the conftest fake lifecycle
+   (`fake_worktree_manager_factory`); the one real-git proof lives
+   in `test_task_worktrees.py`.
+
 ## sweave-web UI
 
 1. **React StrictMode + WS connections in dev** (R4 step 1). The WSProvider

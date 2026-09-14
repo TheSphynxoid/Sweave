@@ -194,6 +194,14 @@ def _build_state(monkeypatch, tmp_path: Path):
 def client(monkeypatch, tmp_path: Path) -> TestClient:
     app = _build_state(monkeypatch, tmp_path)
     with TestClient(app) as c:
+        # Worktree isolation runs in lifespan _run: point it at the
+        # in-memory lifecycle double (real dirs, no git) so the
+        # suite never shells git for these turns.
+        from tests.conftest import fake_worktree_manager_factory
+
+        c.app.state.app_state.job_runner.worktree_manager_factory = (
+            fake_worktree_manager_factory()[0]
+        )
         yield c
 
 

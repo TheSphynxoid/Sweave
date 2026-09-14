@@ -158,6 +158,17 @@ class JobRunner:
         # per-delegation turn budget + project harness tier below.
         # None = global singletons (legacy/tests).
         project_config_resolver: Callable[[str | None], Any | None] | None = None,
+        # Worktree isolation (DESIGN principle #2): resolves a project
+        # name to its worktree-base override (or None). The effective
+        # base is the override when absolute, the override anchored at
+        # the project dir when relative, else {project}/.worktrees.
+        # The AppState supplies a closure over the ProjectManager +
+        # global config. None = every project uses .worktrees.
+        worktree_base_resolver: Callable[[str | None], str | None] | None = None,
+        # Test seam for worktree lifecycle: (base, git_dir) ->
+        # manager with async_create_worktree / async_remove_worktree.
+        # None = the real WorktreeManager (git CLI).
+        worktree_manager_factory: Callable[[str, Path], Any] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -215,6 +226,8 @@ class JobRunner:
         self.delegation_manager = delegation_manager
         self.permission_roots_resolver = permission_roots_resolver
         self.project_config_resolver = project_config_resolver
+        self.worktree_base_resolver = worktree_base_resolver
+        self.worktree_manager_factory = worktree_manager_factory
         # Step 4: transient per-task harness overrides
         # (submit(harness=...) -> _run pops). In-memory only: a
         # restart mid-flight loses the override and the recovered
@@ -297,7 +310,7 @@ class JobRunner:
         return f"{raw:g}" if isinstance(raw, float) else str(raw)
 
     def _project_harness_for(self, delegation: Delegation) -> str | None:
-        """Project overlay harness.default for the harness tier."""
+        """Project overlay ``harness.default`` for the harness tier."""
         effective = self._effective_config_for(delegation)
         try:
             if effective is not None:
@@ -306,6 +319,81 @@ class JobRunner:
         except Exception:  # noqa: BLE001
             pass
         return None
+
+    def _worktree_manager_for(
+        self, project_dir: Path, project_name: str | None
+    ) -> Any:
+        """WorktreeManager scoped to one project (base + git dir).
+
+        Effective base: the project override when absolute, the
+        override anchored at the project dir when relative, else
+        ``{project}/.worktrees`` (the permission map's built-in
+        assumption). The git dir is always the project dir, so
+        creation/removal run in the right repo whatever the process
+        CWD is. Uses the injected factory in tests, else the real
+        WorktreeManager.
+        """
+        base_raw: str | None = None
+        if self.worktree_base_resolver is not None:
+            try:
+                base_raw = self.worktree_base_resolver(project_name)
+            except Exception:  # noqa: BLE001
+                base_raw = None
+        if base_raw:
+            base = Path(base_raw)
+            if not base.is_absolute():
+                base = project_dir / base
+        else:
+            base = project_dir / ".worktrees"
+        base = base.resolve()
+        base.mkdir(parents=True, exist_ok=True)
+        if self.worktree_manager_factory is not None:
+            return self.worktree_manager_factory(str(base), project_dir)
+        from sweave.workspace.manager import WorktreeManager
+
+        return WorktreeManager(str(base), git_dir=str(project_dir))
+
+    async def _remove_task_worktree(
+        self, delegation: Delegation, trace: "TraceLog"
+    ) -> None:
+        """Best-effort removal of the task worktree at settle.
+
+        Runs on ``done``/``failed`` (centralized in :meth:`_transition`,
+        so normal, timeout and cancel paths all converge here). The
+        branch is KEPT (review forensics + future PR flow); ``review``
+        keeps its tree (humans may still inspect). Chat turns never
+        own trees. Never raises.
+        """
+        try:
+            if delegation.kind == "chat":
+                return
+            tree = getattr(delegation, "worktree_path", None)
+            if not tree:
+                return
+            project_dir = self._project_dir_for(delegation)
+            manager = self._worktree_manager_for(
+                project_dir, delegation.project_name
+            )
+            removed = await manager.async_remove_worktree(
+                delegation.task_id, delegation.agent
+            )
+            try:
+                trace.append(
+                    "worktree_removed",
+                    {
+                        "worktree": str(tree),
+                        "branch": getattr(delegation, "branch", None),
+                        "branch_kept": True,
+                        "removed": bool(removed),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "JobRunner: worktree removal failed for %s: %s",
+                delegation.delegation_id, exc,
+            )
 
     async def submit(
         self,
@@ -916,9 +1004,63 @@ class JobRunner:
                 and self.specialist_factory is not None
                 and self.project_dir_resolver is not None
             ):
-                worktree_path = self.project_dir_resolver(delegation.project_name)
-                if worktree_path is None:
-                    worktree_path = Path.home() / ".sweave"
+                project_dir = self.project_dir_resolver(delegation.project_name)
+                if project_dir is None:
+                    project_dir = Path.home() / ".sweave"
+                worktree_path = project_dir
+                # Worktree isolation (DESIGN principle #2): an
+                # implementation delegation runs in its own git
+                # worktree + branch (sweave/{task}/{agent}), never in
+                # the live project tree. Chat turns (orchestrator)
+                # stay in the project dir.
+                if delegation.kind != "chat":
+                    try:
+                        wt_manager = self._worktree_manager_for(
+                            project_dir, delegation.project_name
+                        )
+                        worktree_info = await wt_manager.async_create_worktree(
+                            delegation.task_id, delegation.agent
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        err = (
+                            "[worktree error: cannot isolate task "
+                            f"({type(exc).__name__}: {exc}); refusing to "
+                            "run in the live tree — is the project a "
+                            "git repository?]"
+                        )
+                        logger.warning(
+                            "JobRunner: worktree creation failed for %s: %s",
+                            delegation.delegation_id, exc,
+                        )
+                        try:
+                            trace.append("worktree_failed", {"error": err})
+                        except Exception:  # noqa: BLE001
+                            pass
+                        await store.update(
+                            delegation.delegation_id,
+                            output="",
+                            error=err,
+                        )
+                        await self._transition(
+                            delegation, store, trace, "failed",
+                            completed_at=datetime.now(), error=err,
+                        )
+                        return
+                    worktree_path = Path(worktree_info.path)
+                    delegation.worktree_path = str(worktree_path)
+                    delegation.branch = worktree_info.branch
+                    await store.update(
+                        delegation.delegation_id,
+                        worktree_path=str(worktree_path),
+                        branch=worktree_info.branch,
+                    )
+                    trace.append(
+                        "worktree_created",
+                        {
+                            "worktree": str(worktree_path),
+                            "branch": worktree_info.branch,
+                        },
+                    )
                 # Task scope, not focus scope: resolve against the
                 # delegation's own project (two-file config ruling).
                 specialist = self.specialist_factory(
@@ -954,6 +1096,15 @@ class JobRunner:
                         )
                     except Exception:  # noqa: BLE001 — fail-safe map
                         permission_roots = None
+                # The task's own tree is always an allowed root (its
+                # designated work area, whatever the base). This also
+                # covers override bases outside the project, which the
+                # built-in worktrees glob would otherwise miss.
+                if delegation.kind != "chat" and delegation.worktree_path:
+                    permission_roots = [
+                        str(delegation.worktree_path),
+                        *(permission_roots or []),
+                    ]
                 ok, output = await self._bounded_turn(
                     self.specialist_runtime.run(
                         specialist=specialist,
@@ -963,7 +1114,7 @@ class JobRunner:
                         trace=trace,
                         model_ref=model_ref,
                         harness=harness_override,
-                        project_dir=worktree_path,
+                        project_dir=project_dir,
                         permission_roots=permission_roots,
                         project_harness_default=self._project_harness_for(
                             delegation
@@ -1443,12 +1594,16 @@ class JobRunner:
         # the cache is per-process, so a missed call only affects the
         # current process's view of the chain (the persisted record
         # is the source of truth and ``rebuild_chain_state`` recovers
-        # on next defer in the same process).
+        # on next defer in the same process). The in-memory status is
+        # set first so downstream readers (manager, worktree removal)
+        # see the settled state even without a manager wired.
+        if new_status in {"done", "failed"}:
+            try:
+                delegation.status = new_status
+            except Exception:  # noqa: BLE001
+                pass
         if new_status in {"done", "failed"} and self.delegation_manager is not None:
             try:
-                # Use the post-update status so the manager's view
-                # matches the persisted record.
-                delegation.status = new_status
                 self.delegation_manager.record_terminal(delegation)
             except Exception:  # noqa: BLE001
                 logger.warning(
@@ -1456,6 +1611,13 @@ class JobRunner:
                     delegation.delegation_id,
                     exc_info=True,
                 )
+        # Worktree isolation lifecycle: the task tree is removed at
+        # settle (done/failed) — review keeps its tree for human
+        # inspection; the branch is always kept. Centralized here so
+        # normal, timeout and cancel paths converge (best-effort,
+        # never fails the settled state).
+        if new_status in {"done", "failed"}:
+            await self._remove_task_worktree(delegation, trace)
 
     async def _publish(self, event: str, data: dict[str, Any]) -> None:
         if self.event_bus is not None:

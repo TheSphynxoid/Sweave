@@ -225,6 +225,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | Component | Status | Notes |
 |---|---|---|
 | WorktreeManager (create/remove/list/PR) | ✅ | server, CLI, delegate all call it |
+| **Task worktree isolation (runtime path)** | ✅ | Restored: `JobRunner._run` creates `sweave/{task}/{agent}` + tree per implementation delegation (chat stays in-tree); record carries worktree_path/branch; the runtime runs IN the tree with project scope (permission map + own-tree allow root); the tree retires at settle (`done`/`failed`, incl. cancel + human promote) with the branch kept, `review` keeps its tree. Creation failure fails loud (non-git projects must init). Base: project override (absolute as-is, relative anchored at project) else `{project}/.worktrees`; git dir is always the project (CWD-independent). Engine turns share the sidecar (per-turn cwd, no new processes); opencode spawns per-task serves reaped by idle TTL |
 | RuleRouter matching + `{{templates}}` | ✅ | first-match regex/keyword |
 | RuleRouter `_llm_fallback` | ⚠️ | keyword heuristic, no LLM call |
 | Task delegation → opencode serve | ✅ | real subprocess + HTTP session |

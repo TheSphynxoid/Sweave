@@ -269,7 +269,10 @@ def _make_runtime_runner(
     tmp_path: Path, factory, saver_calls: list
 ) -> JobRunner:
     """JobRunner on the SpecialistRuntime path with an isolated
-    traces dir (never the real ~/.sweave/traces)."""
+    traces dir (never the real ~/.sweave/traces) and a fake
+    worktree lifecycle (real dirs, no git)."""
+    from tests.conftest import fake_worktree_manager_factory
+
     return JobRunner(
         delegate_tool=StubDelegateTool(),
         delegation_stores=PerProjectDelegationStores(),
@@ -281,6 +284,7 @@ def _make_runtime_runner(
         specialist_saver=lambda spec, project: saver_calls.append(
             (spec.name, spec.scope, spec.session_id, project)
         ),
+        worktree_manager_factory=fake_worktree_manager_factory()[0],
     )
 
 

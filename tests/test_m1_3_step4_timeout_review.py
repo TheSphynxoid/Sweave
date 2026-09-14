@@ -21,6 +21,12 @@ from sweave.runtime.job_runner import JobRunner
 from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
 from sweave.runtime.serve_runner import ServeRunner, ServeRunnerRegistry
+from tests.conftest import fake_worktree_manager_factory
+
+
+def _wt_factory():
+    """Fake worktree lifecycle (real dirs, no git) for JobRunner sites."""
+    return fake_worktree_manager_factory()[0]
 
 
 class _FakeDelegateTool:
@@ -206,6 +212,7 @@ async def test_runtime_path_respects_turn_timeout(tmp_path: Path):
         specialist_runtime=runtime,
         specialist_factory=factory,
         turn_timeout=0.1,
+        worktree_manager_factory=_wt_factory(),
     )
     d = await runner.submit(agent="a", task="x", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=10)

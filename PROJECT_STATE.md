@@ -73,6 +73,15 @@
   sidecar-enforced (abort signal into tools, bash child kill,
   abort-aware permission/fetch). 993 pytest green (5 pre-existing
   seed/YAML failures from another thread, proven on clean HEAD).
+- ✅ **Task worktree isolation restored (user ruling)**: specialists
+  work in per-task git worktrees again (`sweave/{task}/{agent}` +
+  tree at run start; record carries the pointer; runtime runs IN the
+  tree with project scope). The live runtime path never created trees
+  (only the legacy delegate tool did) — parallel specialists shared
+  the live tree. Settle retires the tree (`done`/`failed`, incl.
+  cancel + promote; branch kept, `review` keeps its tree); creation
+  failure fails loud (non-git projects must init). No PR automation
+  yet (phased). 6 new tests incl. a real-git proof.
 - ✅ **Two-file config (user ruling)**: global `config.yaml` holds
   defaults; `{project}/.sweave/config.yaml` overlays `models` /
   `routing` / `harness` per field (`server` / `memory` / `git` never

@@ -151,6 +151,27 @@ def _project_dir_for_name(project_manager: Any, project_name: str | None) -> Any
     return None
 
 
+def _worktree_base_for_name(
+    config_manager: Any, project_manager: Any, project_name: str | None
+) -> str | None:
+    """Worktree base for one project: the record override, else the
+    global ``config.git.worktree_base``. None when neither resolves
+    (the runner defaults to ``{project}/.worktrees``)."""
+    try:
+        override: str | None = None
+        if project_name:
+            proj = project_manager.get_project(project_name)
+            if proj is not None:
+                override = proj.worktree_base or None
+        if override:
+            return override
+        cfg = config_manager.get()
+        base = (cfg.git.worktree_base or "").strip()
+        return base or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ============================================================================
 # Lifespan: build AppState and attach to the app
 # ============================================================================
@@ -296,6 +317,13 @@ async def lifespan(app: FastAPI):
             config_manager.get_for_project(
                 _project_dir_for_name(project_manager, name)
             )
+        ),
+        # Worktree isolation (DESIGN principle #2): the delegation's
+        # own project names its worktree base (record override, else
+        # the global default; the runner anchors relatives at the
+        # project dir and defaults to {project}/.worktrees).
+        worktree_base_resolver=lambda name: _worktree_base_for_name(
+            config_manager, project_manager, name
         ),
     )
     # One-time legacy import: if the anchored file is absent but the

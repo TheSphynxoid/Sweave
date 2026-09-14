@@ -26,6 +26,12 @@ from sweave.runtime.serve_runner import ServeRunnerRegistry
 from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
 from sweave.tools import DelegateTaskTool, DelegationResult
+from tests.conftest import fake_worktree_manager_factory
+
+
+def _wt_factory():
+    """Fake worktree lifecycle (real dirs, no git) for JobRunner sites."""
+    return fake_worktree_manager_factory()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +142,7 @@ async def test_switch_between_delegations_uses_new_model_on_next_call(
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
 
     # Delegation 1: no task_override; specialist.current_model = m1.
@@ -184,6 +191,7 @@ async def test_task_override_beats_specialist_current_model(tmp_path: Path):
         project_dir_resolver=_project_resolver(tmp_path),
         specialist_runtime=runtime,
         specialist_factory=factory,
+        worktree_manager_factory=_wt_factory(),
     )
     # task_override forces gmi/MiniMaxAI/MiniMax-M3.
     d1 = await runner.submit(
