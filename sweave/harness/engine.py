@@ -424,5 +424,63 @@ class SweaveEngineHarness(Harness):
         except Exception:  # noqa: BLE001
             return False
 
+    async def abort_turn(self, session_id: str) -> bool:
+        """POST /abort to the sidecar for *session_id* (best-effort).
+
+        Returns True when the sidecar stopped (``acknowledged``) or
+        attempted the stop (``UNCONFIRMED`` — the asyncio cancel the
+        caller also issues is the real guarantee); False when there
+        is no live turn (409), no sidecar, or the call fails. Never
+        starts a sidecar just to abort: no sidecar means no live
+        turn by definition.
+        """
+        import os
+
+        existing_url = os.environ.get("SWEAVE_ENGINE_URL")
+        if existing_url:
+            base_url = existing_url.rstrip("/")
+        else:
+            if _sidecar is None:
+                return False
+            base_url = _sidecar.base_url
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as client:
+                resp = await client.post("/abort", json={"session_id": session_id})
+            if resp.status_code == 200:
+                return True
+            return False
+        except Exception as abort_err:  # noqa: BLE001
+            logger.warning(
+                "SweaveEngineHarness.abort_turn failed for %s: %s",
+                session_id, abort_err,
+            )
+            return False
+
+
+async def abort_engine_session(engine_session_id: str | None) -> bool:
+    """Best-effort abort of one live engine turn (user-stop assist).
+
+    Returns True when the sidecar was asked to stop; False when
+    there is nothing to stop (no id, non-engine id, no harness) or
+    the abort failed. Never raises — the asyncio task cancel the
+    caller also issues is the real guarantee; this only shortens
+    the orphaned provider-side tail. The caller still rotates the
+    session binding (an UNCONFIRMED-or-worse tail must never wedge
+    the next turn).
+    """
+    if not engine_session_id or not engine_session_id.startswith("eng_"):
+        return False
+    try:
+        harness = harness_registry.get(ENGINE_HARNESS_NAME)
+        if harness is None:
+            return False
+        return await harness.abort_turn(engine_session_id)
+    except Exception as abort_err:  # noqa: BLE001
+        logger.warning(
+            "abort_engine_session failed for %s: %s",
+            engine_session_id, abort_err,
+        )
+        return False
+
 
 harness_registry.register(SweaveEngineHarness())

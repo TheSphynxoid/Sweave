@@ -202,6 +202,24 @@ class ApiClient {
     return r.data;
   }
 
+  /**
+   * Stop the live turn (Stop button). Cancels the whole subtree
+   * server-side and persists the partial reply as a `cancelled`
+   * assistant bubble; the WS `message.added` + status events drive
+   * the thread back to idle. 404 when no turn is running (a raced
+   * double-tap lands here — not an error worth surfacing).
+   */
+  async cancelTurn(
+    sessionId: string,
+  ): Promise<{ success: boolean; assistant: SessionMessage }> {
+    const r = await this.client.post(
+      `/sessions/${encodeURIComponent(sessionId)}/turn/cancel`,
+      {},
+      { timeout: 60_000 },
+    );
+    return r.data;
+  }
+
   // ---- Specialists ----
 
   async listSpecialists(): Promise<SpecialistSummary[]> {

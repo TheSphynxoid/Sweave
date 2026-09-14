@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from sweave.runtime.delegation_store import (
+    CANCELLED_BY_USER_ERROR,
     Delegation,
     Estimate,
     PerProjectDelegationStores,
@@ -211,6 +212,11 @@ class JobRunner:
         # persisted — no Delegation schema change).
         self._harness_overrides: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        # User-cancel ownership (Stop button): ids being cancelled by
+        # cancel_subtree. The _run CancelledError branch skips its own
+        # transition for these (the subtree pass is the single
+        # writer, so the error text + events stay uniform).
+        self._user_cancelled: set[str] = set()
 
     async def _store_for(self, delegation: Delegation) -> Any:
         """Return the :class:`DelegationStore` for *delegation*'s project."""
@@ -408,6 +414,143 @@ class JobRunner:
         # project names here (the AppState would have to expose them);
         # the fast path above covers the same-process case.
         return None
+
+    # Canonical user-cancel error (Stop button). Distinct from the
+    # crash-recovery "interrupted by ..." text so forensics can tell
+    # a deliberate stop from a server death; the status stays
+    # "failed" (the closed VALID_STATUSES set is untouched — no
+    # schema, join, or recovery change required).
+    USER_CANCEL_ERROR = CANCELLED_BY_USER_ERROR
+
+    # Live statuses a user-cancel may claim. ``review`` is excluded
+    # on purpose: it is user-facing promotion state (a human owns
+    # the next move), not in-flight work.
+    CANCELABLE_STATUSES = frozenset({"queued", "running"})
+
+    async def cancel_subtree(
+        self, root_delegation_id: str, reason: str = USER_CANCEL_ERROR
+    ) -> list[str]:
+        """Cancel a delegation and its live descendants (user Stop).
+
+        Collects the root + every ``queued``/``running`` descendant
+        (by ``parent_task_id`` walk across known stores), best-effort
+        aborts their engine turns, cancels their asyncio tasks, and
+        transitions each to ``failed`` with the cancel error (single
+        writer: the tasks' own CancelledError branches stand down
+        via ``_user_cancelled``). Pending escalations are NOT
+        resolved here — the caller (ChatLoop, which owns the
+        EscalationStore) skips them so attention flags clear.
+
+        Returns the cancelled delegation ids (root first). Unknown
+        or already-terminal roots return [].
+        """
+        # 1) Collect the live subtree across known stores.
+        hits: list[tuple[Any, Any]] = []  # (store, record)
+        seen: set[str] = set()
+        queue = [root_delegation_id]
+        while queue:
+            did = queue.pop(0)
+            if did in seen:
+                continue
+            seen.add(did)
+            for store in self.stores.known_projects_stores():
+                rec = store.get(did)
+                if rec is None:
+                    continue
+                if rec.status in self.CANCELABLE_STATUSES:
+                    hits.append((store, rec))
+                # Descend regardless of the parent's own status (a
+                # terminal parent may still own live children).
+                for child in store.list():
+                    if child.parent_task_id == did and child.delegation_id not in seen:
+                        queue.append(child.delegation_id)
+                break
+        if not hits:
+            return []
+        ids = [rec.delegation_id for _, rec in hits]
+        self._user_cancelled.update(ids)
+        try:
+            # 2) Best-effort engine abort per live engine session.
+            try:
+                from sweave.harness.engine import abort_engine_session
+            except Exception:  # noqa: BLE001
+                abort_engine_session = None  # type: ignore[assignment]
+            if abort_engine_session is not None:
+                for _, rec in hits:
+                    try:
+                        await abort_engine_session(
+                            getattr(rec, "engine_session_id", None)
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+            # 3) Cancel the driving tasks; their CancelledError
+            # branches stand down (single writer: step 4 below).
+            live_tasks = [
+                t for did in ids
+                if (t := self._tasks.get(did)) is not None and not t.done()
+            ]
+            for t in live_tasks:
+                t.cancel()
+            if live_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*live_tasks, return_exceptions=True),
+                        timeout=10.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "JobRunner: %d task(s) did not settle after cancel of %s",
+                        len(live_tasks), root_delegation_id,
+                    )
+            # 4) Transition whatever is still live (a settled task's
+            # branch already stood down; a taskless record — e.g. a
+            # queued delegation whose worker never started — lands
+            # here directly).
+            cancelled: list[str] = []
+            for store, rec in hits:
+                try:
+                    fresh = store.get(rec.delegation_id)
+                except Exception:  # noqa: BLE001
+                    fresh = None
+                if fresh is not None and fresh.status not in self.CANCELABLE_STATUSES:
+                    # Task branch already terminal (or raced us):
+                    # normalise the error text to the canonical one.
+                    if fresh.status == "failed" and fresh.error == "cancelled":
+                        try:
+                            await store.update(rec.delegation_id, error=reason)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    cancelled.append(rec.delegation_id)
+                    continue
+                trace = TraceLog(rec.delegation_id, base_dir=self.traces_dir)
+                try:
+                    trace.append(
+                        "turn_cancelled",
+                        {"by": "user", "agent": rec.agent},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    await self._transition(
+                        rec,
+                        store,
+                        trace,
+                        "failed",
+                        completed_at=datetime.now(),
+                        error=reason,
+                    )
+                except Exception as transition_err:  # noqa: BLE001
+                    logger.warning(
+                        "JobRunner: cancel transition failed for %s: %s",
+                        rec.delegation_id, transition_err,
+                    )
+                    continue
+                cancelled.append(rec.delegation_id)
+            # Root first for the caller's convenience.
+            cancelled.sort(key=lambda did: (did != root_delegation_id, did))
+            return cancelled
+        finally:
+            self._user_cancelled.difference_update(ids)
 
     # ------------------------------------------------------------------
     # Worker
@@ -967,6 +1110,10 @@ class JobRunner:
                 completed_at=datetime.now(),
             )
         except asyncio.CancelledError:
+            if delegation.delegation_id in self._user_cancelled:
+                # Owned by cancel_subtree (single writer): the subtree
+                # pass already transitioned + traced; just propagate.
+                raise
             await self._transition(
                 delegation, store, trace, "failed", error="cancelled",
                 completed_at=datetime.now(),

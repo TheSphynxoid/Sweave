@@ -275,6 +275,29 @@ async def api_get_session_turn(
     return {"active": snapshot is not None, "turn": snapshot}
 
 
+@router.post("/api/sessions/{session_id}/turn/cancel")
+async def api_cancel_session_turn(
+    session_id: str,
+    state: AppState = Depends(get_state),
+):
+    """Stop the live turn for a session (Stop button).
+
+    Cancels the whole subtree (live children first, then the parent
+    turn) and persists the already-streamed partial text as a
+    ``cancelled`` assistant bubble — the thread shows the stop
+    instead of losing the turn. 404 when no turn is running.
+    """
+    if state.chat_loop is None:
+        raise HTTPException(500, "chat loop unavailable")
+    try:
+        assistant_msg = await state.chat_loop.cancel_turn(session_id=session_id)
+        return {"success": True, "assistant": assistant_msg}
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"chat cancel error: {e}") from e
+
+
 def _turn_active_409_err(e: Exception) -> HTTPException:
     """Map ChatLoop.TurnActiveError to HTTP 409 with the active turn's
     snapshot. The double-send is REJECTED (never silently queued): a

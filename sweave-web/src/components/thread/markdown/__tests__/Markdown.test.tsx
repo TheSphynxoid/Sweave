@@ -145,13 +145,15 @@ describe("ChatLab (real-Thread visual test)", () => {
     );
   });
 
-  it("mid-stream: composer swaps send for the disabled stop affordance", () => {
+  it("mid-stream: composer swaps send for the live stop affordance", () => {
     render(<ChatLab />);
     fireEvent.click(screen.getByTestId("lab-btn-stream"));
-    // The stop affordance appears while the run is in flight
-    // (disabled-with-tooltip per the 2026-09-07 ruling).
+    // The stop affordance appears while the run is in flight (live
+    // since 2026-09-14: POSTs the turn-cancel endpoint; no actions
+    // context in the lab so the tap is a guarded no-op).
     const stop = screen.getByTestId("chat-composer-stop");
-    expect(stop.hasAttribute("disabled")).toBe(true);
+    expect(stop.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(stop);
   });
 
   it("mid-stream: turn status bar names the phase with elapsed + live state", () => {

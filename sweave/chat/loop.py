@@ -56,6 +56,7 @@ from typing import Any, Callable, Optional
 
 from sweave.projects import ProjectManager, Session
 from sweave.runtime.delegation_store import (
+    CANCELLED_BY_USER_ERROR,
     Delegation,
     PerProjectDelegationStores,
     in_join_set,
@@ -200,6 +201,11 @@ class ChatLoop:
         # returns immediately but the turn stays open (no assistant
         # persisted) until answered | skipped. None = legacy path.
         escalation_store: Any = None,
+        # Stop button (2026-09-14): the JobRunner owns the child
+        # delegation tasks, so subtree cancel routes through it.
+        # None = legacy path (parent turn cancels, live children
+        # keep running into the Children lane).
+        job_runner: Any = None,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -233,6 +239,8 @@ class ChatLoop:
         self.stream_char_threshold = stream_char_threshold
         # M1.11 blocking questions
         self.escalation_store = escalation_store
+        # Stop button (2026-09-14)
+        self.job_runner = job_runner
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -251,6 +259,24 @@ class ChatLoop:
         # can never both pass the guard (the registry entry itself
         # only appears after the task acquires the lock).
         self._turn_inflight: set[str] = set()
+        # Live turn tasks by session (Stop button): registered alongside
+        # _turn_inflight BEFORE the task is spawned, discarded in the
+        # turn's finally. Lets cancel_turn drive task.cancel() on the
+        # actual driver instead of only marking records.
+        self._turn_tasks: dict[str, asyncio.Task] = {}
+        # Delegation id per live session (pre-registration window: the
+        # registry entry only appears after lock acquisition, but the
+        # delegation id is minted up front in run_turn/rerun_turn).
+        self._turn_delegations: dict[str, str] = {}
+        # User-cancel ownership (Stop button): delegation ids whose
+        # CancelledError must finalise as a deliberate stop (bubble
+        # persisted, binding rotated) rather than a crash. Consumed
+        # by the turn task itself; cancel_turn only sets.
+        self._cancel_requested: set[str] = set()
+        # Cancel-finalised bubbles by delegation id: _cancel_finalise
+        # stashes here, cancel_turn pops (bounded: one entry per
+        # cancel, popped on read).
+        self._cancel_results: dict[str, dict[str, Any]] = {}
         # How often (seconds) the accumulated partial reply is
         # persisted onto the chat delegation record (``output``) so a
         # hard server death leaves the already-streamed text on disk.
@@ -284,6 +310,8 @@ class ChatLoop:
     def _unregister_active_turn(self, session_id: str) -> None:
         self._active_turns.pop(session_id, None)
         self._turn_inflight.discard(session_id)
+        self._turn_tasks.pop(session_id, None)
+        self._turn_delegations.pop(session_id, None)
 
     def _set_question_flag(self, session_id: str, pending: bool) -> None:
         entry = self._active_turns.get(session_id)
@@ -635,6 +663,8 @@ class ChatLoop:
                     delegation_id=delegation_id,
                 )
             )
+            self._turn_tasks[session_id] = task
+            self._turn_delegations[session_id] = delegation_id
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             # The HTTP handler is being cancelled (client refresh /
@@ -753,6 +783,8 @@ class ChatLoop:
                     },
                 )
             )
+            self._turn_tasks[session_id] = task
+            self._turn_delegations[session_id] = delegation_id
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             logger.info(
@@ -784,6 +816,9 @@ class ChatLoop:
         lock = await self._lock_for(session_id)
         async with lock:
             self._register_active_turn(session_id, delegation_id)
+            entry = self._active_turns.get(session_id)
+            if entry is not None:
+                entry.task = asyncio.current_task()
             # M1.8: streaming coalescers are created once per turn
             # and closed on every exit path via try/finally. The
             # coalescers' close_and_flush is idempotent.
@@ -800,6 +835,24 @@ class ChatLoop:
                     rerun_info=rerun_info,
                 )
             except asyncio.CancelledError:
+                if delegation_id in self._cancel_requested:
+                    # User Stop (single writer: cancel_turn owns the
+                    # subtree + engine abort; this branch only
+                    # persists the stopped bubble).
+                    self._cancel_requested.discard(delegation_id)
+                    try:
+                        result = await self._cancel_finalise(
+                            session_id=session_id,
+                            delegation_id=delegation_id,
+                        )
+                    except Exception as finalise_err:  # noqa: BLE001
+                        logger.warning(
+                            "ChatLoop: cancel finalise failed for %s: %s",
+                            delegation_id, finalise_err,
+                        )
+                        raise
+                    self._cancel_results[delegation_id] = result
+                    raise
                 # Server shutdown / task cancel: mark the delegation
                 # cleanly failed (no phantom running record), then
                 # propagate.
@@ -866,6 +919,189 @@ class ChatLoop:
                 "error": text,
             },
         )
+
+    async def cancel_turn(self, session_id: str) -> dict[str, Any]:
+        """Stop the live turn for *session_id* (Stop button).
+
+        Cancels the whole subtree: live child delegations first
+        (via the JobRunner — their tasks are cancelled and their
+        records transition to failed/cancelled), then the parent
+        turn task itself. The stopped turn persists a ``cancelled``
+        assistant bubble carrying the already-streamed partial text,
+        so unlike a server kill nothing is lost from the thread.
+        Pending escalations of the stopped subtree resolve as
+        skipped (the human stopped instead of answering).
+
+        Raises ``ValueError`` when no turn is running for the
+        session (the router maps it to 404).
+        """
+        entry = self._active_turns.get(session_id)
+        task = self._turn_tasks.get(session_id)
+        if task is None and entry is None and session_id not in self._turn_inflight:
+            raise ValueError(f"No active turn for session '{session_id}'")
+        if task is None:
+            # Pre-registration window (guard passed, lock not yet
+            # acquired): nothing cancellable exists yet.
+            raise ValueError(
+                f"Turn for session '{session_id}' is not yet running"
+            )
+        delegation_id = (
+            entry.delegation_id
+            if entry is not None and entry.delegation_id
+            else self._turn_delegations.get(session_id)
+        )
+        if delegation_id is None:
+            raise ValueError(f"No active turn for session '{session_id}'")
+
+        cancelled_ids: list[str] = []
+        if self.job_runner is not None:
+            try:
+                cancelled_ids = await self.job_runner.cancel_subtree(delegation_id)
+            except Exception as subtree_err:  # noqa: BLE001
+                logger.warning(
+                    "ChatLoop: subtree cancel failed for %s: %s",
+                    delegation_id, subtree_err,
+                )
+        # Pending questions on the stopped subtree resolve as
+        # skipped (the human stopped instead of answering); without
+        # this the attention flag would strand on dead delegations.
+        if self.escalation_store is not None:
+            for did in [delegation_id, *cancelled_ids]:
+                try:
+                    await self.escalation_store.skip(delegation_id=did)
+                except Exception:  # noqa: BLE001
+                    continue
+        # Best-effort engine abort for the parent's live turn (the
+        # asyncio cancel below is the real guarantee; this shortens
+        # the orphaned provider-side tail).
+        try:
+            session = self.project_manager.get_session(session_id)
+            project_dir = (
+                self.project_dir_resolver(session.project_name)
+                if session is not None
+                else None
+            )
+            store = await self.delegation_stores.for_project(
+                project_dir or Path.home() / ".sweave"
+            )
+            rec = store.get(delegation_id)
+            if rec is not None:
+                from sweave.harness.engine import abort_engine_session
+
+                await abort_engine_session(
+                    getattr(rec, "engine_session_id", None)
+                )
+        except Exception as abort_err:  # noqa: BLE001
+            logger.warning(
+                "ChatLoop: engine abort failed for %s: %s",
+                delegation_id, abort_err,
+            )
+
+        self._cancel_requested.add(delegation_id)
+        task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(task, return_exceptions=True),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "ChatLoop: turn task did not settle after cancel of %s",
+                delegation_id,
+            )
+        result = self._cancel_results.pop(delegation_id, None)
+        if result is None:
+            raise RuntimeError(
+                f"Turn for session '{session_id}' stopped but the "
+                "stopped bubble was not persisted"
+            )
+        return result
+
+    async def _cancel_finalise(
+        self,
+        *,
+        session_id: str,
+        delegation_id: str,
+    ) -> dict[str, Any]:
+        """Persist a user-stopped turn (single writer).
+
+        Runs inside the dying turn task (flag consumed by the
+        caller): marks the chat delegation failed/cancelled, rotates
+        the orchestrator binding (an orphaned provider-side tail may
+        still run — same remedy as the stall rotation), and persists
+        the already-streamed partial text as a ``cancelled``
+        assistant bubble so the thread shows the stop instead of a
+        hole. Mirrors :meth:`_finalise_turn`'s event contract.
+        """
+        from sweave.runtime.trace_log import TraceLog
+
+        entry = self._active_turns.get(session_id)
+        partial = entry.stream_text if entry is not None else ""
+        thinking = (
+            entry.thinking_text if entry is not None and entry.thinking_text else None
+        )
+        round_no = entry.round if entry is not None else 0
+        session = self.project_manager.get_session(session_id)
+        if session is None:
+            raise ValueError(f"Session '{session_id}' not found")
+        store = await self.delegation_stores.for_project(
+            session.project_name
+            and self.project_dir_resolver(session.project_name)
+            or Path.home() / ".sweave"
+        )
+        await store.update(
+            delegation_id,
+            status="failed",
+            completed_at=datetime.now(),
+            output=partial,
+            error=CANCELLED_BY_USER_ERROR,
+        )
+        await self._emit(
+            "delegation.status_changed",
+            {
+                "delegation_id": delegation_id,
+                "status": "failed",
+                "kind": "chat",
+                "session_id": session_id,
+            },
+        )
+        try:
+            TraceLog(delegation_id).append("turn_cancelled", {"by": "user"})
+        except Exception:  # noqa: BLE001
+            pass
+        # The provider-side turn may still run orphaned: rotate the
+        # binding so the next turn starts fresh instead of queueing
+        # behind it (same remedy as the stall rotation).
+        session.orchestrator_session_id = None
+        stripped = partial.strip()
+        content = (
+            stripped + "\n\n[turn stopped by user — partial reply kept]"
+            if stripped
+            else "[turn stopped by user before any output]"
+        )
+        metadata: dict[str, Any] = {
+            "delegation_id": delegation_id,
+            "turn_round": round_no,
+            "turn_final": True,
+            "cancelled": True,
+        }
+        if thinking:
+            metadata["thinking"] = thinking
+        assistant_msg = session.add_message(
+            role="assistant",
+            content=content,
+            agent="orchestrator",
+            metadata=metadata,
+        )
+        self.project_manager.save_session(session)
+        await self._emit(
+            "message.added",
+            {
+                "session_id": session_id,
+                "message": assistant_msg.to_dict(),
+            },
+        )
+        return assistant_msg.to_dict()
 
     async def _run_turn_body(
         self,
@@ -1484,6 +1720,16 @@ class ChatLoop:
                         },
                     )
                     remaining = self.turn_timeout
+        except asyncio.CancelledError:
+            # The turn task is being cancelled (user Stop, server
+            # shutdown): the shield above protected the inner runtime
+            # task from the outer cancel, so cancel it explicitly —
+            # otherwise the provider stream leaks orphaned. The
+            # caller's CancelledError branch (crash vs user-cancel
+            # finalise) still owns the record + bubble.
+            if not task.done():
+                task.cancel()
+            raise
         except Exception as e:  # noqa: BLE001
             return f"[chat error: {type(e).__name__}: {e}]"
 

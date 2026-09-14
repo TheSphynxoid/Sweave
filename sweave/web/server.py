@@ -328,6 +328,9 @@ async def lifespan(app: FastAPI):
         event_bus=state.event_bus,
         turn_timeout=state.job_runner.turn_timeout,
         model_resolver=lambda agent: config_manager.resolve_model(agent),
+        # Stop button (2026-09-14): subtree cancel routes through the
+        # runner that owns the child tasks (built above, before us).
+        job_runner=state.job_runner,
         # M1.7 step 4: transcript system hooks
         memory_recall=state.memory_tool.memory,
         memory_bank_id_resolver=lambda name: (

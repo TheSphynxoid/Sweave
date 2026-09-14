@@ -251,6 +251,15 @@ export function useSweaveChatRuntime(sessionId: string | null) {
   // runs. isSendDisabled below is the SAME invariant.
   const isRunning = state.turn === "running" || state.turn === "queued";
 
+  const cancel = useCallback(() => {
+    if (!sessionId) return;
+    // Fire-and-forget: the server's `message.added` (cancelled
+    // bubble) + `delegation.status_changed` settle the thread back
+    // to idle. A 404 (turn already settled between render and tap)
+    // is not worth surfacing.
+    api.cancelTurn(sessionId).catch(() => {});
+  }, [sessionId]);
+
   return {
     runtime: useExternalStoreRuntime({
       messages,
@@ -261,6 +270,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
     }),
     rerun,
     onNew,
+    cancel,
     /** Projected thread for tests/telemetry; the Thread renders `runtime`. */
     messages,
     /** Exposed for tests/telemetry only -- the Thread renders `runtime`. */

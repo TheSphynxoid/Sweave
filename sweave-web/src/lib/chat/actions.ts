@@ -16,6 +16,13 @@ export interface ChatActions {
    * for the new turn drive the rest.
    */
   rerun: (messageId: string, content?: string) => void;
+  /**
+   * Stop the live turn (Stop button). Fire-and-forget: the server
+   * cancels the subtree and persists the partial reply as a
+   * `cancelled` bubble; the WS events settle the thread. A raced
+   * double-tap 404s server-side and is swallowed here.
+   */
+  cancel: () => void;
 }
 
 export const ChatActionsContext = createContext<ChatActions | null>(null);

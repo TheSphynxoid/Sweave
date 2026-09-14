@@ -26,8 +26,9 @@
  *
  * Rulings (2026-09-07): the action bar is REAL affordances only
  * (copy + timestamp); edit/regenerate/fork are R4.3 (no disabled fake
- * buttons); the composer stop affordance is disabled-with-tooltip
- * (no backend cancel path yet; opencode /abort verified for R4.3).
+ * buttons). Amended 2026-09-14: the composer stop affordance is live
+ * (POSTs the turn-cancel endpoint; the server stops the whole
+ * subtree and keeps the partial reply as a `cancelled` bubble).
  */
 
 import {
@@ -899,12 +900,15 @@ function UserMessage() {
 
 // ---------------------------------------------------------------------------
 // Composer (Enter sends / Shift+Enter newline via ComposerPrimitive;
-// stop affordance disabled-with-tooltip per the 2026-09-07 ruling)
+// the stop affordance POSTs the turn-cancel endpoint: the server
+// stops the whole subtree and persists the partial reply as a
+// `cancelled` bubble, so stopping never loses the thread).
 // ---------------------------------------------------------------------------
 
 function Composer() {
   const isEmpty = useAuiState((s) => s.composer.isEmpty);
   const isRunning = useAuiState((s) => s.thread.isRunning);
+  const actions = useChatActions();
 
   return (
     <div className="bg-gradient-to-t from-background via-background/95 to-transparent px-4 pb-4 pt-2">
@@ -925,14 +929,15 @@ function Composer() {
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  disabled
+                  aria-label="Stop the turn"
                   data-testid="chat-composer-stop"
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-muted text-muted-foreground opacity-60"
+                  onClick={() => actions?.cancel()}
+                  className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-destructive to-destructive/70 text-destructive-foreground shadow-md shadow-destructive/25 transition-all hover:-translate-y-px hover:shadow-lg hover:shadow-destructive/30 active:translate-y-0"
                 >
                   <OctagonX size={16} />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top">Stop lands with R4.3 (cancel path)</TooltipContent>
+              <TooltipContent side="top">Stop the turn (keeps the partial reply)</TooltipContent>
             </Tooltip>
           </TooltipProvider>
         ) : (

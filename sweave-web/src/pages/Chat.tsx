@@ -29,7 +29,7 @@ import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 export function ChatPage() {
   const { activeProject, activeSession } = useApp();
   const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
-  const { runtime, rerun } = useSweaveChatRuntime(activeSession?.id ?? null);
+  const { runtime, rerun, cancel } = useSweaveChatRuntime(activeSession?.id ?? null);
 
   if (!activeProject) {
     return (
@@ -71,7 +71,7 @@ export function ChatPage() {
     <div className="flex h-full flex-col" data-testid="chat-page">
       <div className="min-h-0 flex-1">
         <AssistantRuntimeProvider runtime={runtime}>
-          <ChatActionsContext.Provider value={{ rerun }}>
+          <ChatActionsContext.Provider value={{ rerun, cancel }}>
             <Thread />
           </ChatActionsContext.Provider>
         </AssistantRuntimeProvider>
