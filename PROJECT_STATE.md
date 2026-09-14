@@ -103,6 +103,53 @@
   implement" to "never edit/write/run"); defer contract gained the
   no-poll clause (queued → end the turn, never re-defer while the
   child runs).
+- ✅ **Chat tool transparency — opencode-style tool rows in the
+  thread (2026-09-14)**: assistant bubbles show what the turn did
+  (`Read src/foo.ts` one-liners; `Edit …` with an expandable diff)
+  via `chat.tool` WS events (live) + `metadata.tools` (persisted,
+  reload-safe, per-round). Delegation-generic pipeline
+  (harness `on_tool` → runtime → loop); UI-only — the composer
+  never reads it, so rows can't leak into the model context
+  (regression-pinned). 17 pytest (`tests/test_chat_tools.py`) +
+  16 vitest (state machine + `TurnTools` render); 353 vitest +
+  1046 pytest green (6 pre-existing failures on clean HEAD:
+  broken orchestrator seed YAML, refactored SessionPicker, other
+  thread's sidecar-spawn fake).
+- ✅ **Ordered timeline + sticky lanes + modal portal
+  (2026-09-14)**: tool rows render inline at arrival positions
+  (think → read → think → answer, live and persisted, no
+  finalize jump); children/question lanes stay mounted while the
+  turn is live (specialist box survives the deferral gap, no
+  reload needed; intermediate rounds auto-expand while live);
+  detail modal portals to `document.body` (no longer under the
+  composer). 361 vitest + 1054 pytest green (same 6 pre-existing
+  failures); build green; 13/13 `run.py --check`.
+- ✅ **Output cap + real cache telemetry + usage ledger
+  (2026-09-14)**: `executeTool` caps ALL exec-tool outputs at 32K
+  (only bash did — a 607K-char limit-less read caused ~2M of a
+  5.4M-token turn); loop-turn `tokens_used` reports real
+  `cached_tokens` (was hardcoded 0); `/stats` page over a pure
+  projector (totals + day/model/project/agent splits + failure
+  classes, counts only). Compaction stays limit-triggered future
+  work, never blind.
+- ✅ **Role-aware loop budget + stuckness trip + handoff
+  (2026-09-14)**: flat 50-cap killed healthy work (2 confirmed
+  deaths) — now orchestrator 50 / specialist 150, plus a
+  5-straight-failed-iterations `no_progress` trip (catches the
+  doom-guard-dodging alternation; doom rejections feed the
+  streak) and a resumption handoff on every trip (totals + tool
+  count + files touched, existing vocab). Trips stay loud.
+- ✅ **Orchestrator mailbox — escalation auto-seen (2026-09-14)**:
+  specialist notices (`audience: orchestrator`) resolve as `seen`
+  once synthesis incorporates them — no more human ack on
+  orchestrator mail; questions/permission untouched, failed
+  synthesis keeps the human fallback. Notice cards render FYI
+  with dismiss (was "skip = deny").
+- ✅ **Per-specialist worktree policy (2026-09-14, user ruling:
+  per-specialist toggle, never an LLM parameter)**: `isolated` /
+  `inherit` (parent tree, else project root) / `none` (project
+  root); reviewer seed flippable via override; creator-only
+  retire (schema v11 `worktree_owned`); Agents dialogs + badges.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
