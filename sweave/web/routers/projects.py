@@ -449,8 +449,10 @@ async def api_rerun_turn(
 ):
     """Re-run the turn starting at a past user message (edit + resend /
     retry). Later messages are flagged superseded (record, not
-    deletion); an edit rotates the orchestrator session binding while
-    a pure retry keeps it. Returns the new assistant message."""
+    deletion); an edit appends a revision user message with fork
+    linkage (the original prompt survives) while a pure retry reuses
+    the target row; the session binding is always kept. Returns the
+    new assistant message."""
     if state.chat_loop is None:
         raise HTTPException(500, "chat loop unavailable")
     try:

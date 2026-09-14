@@ -1,13 +1,27 @@
 """Chat rerun tests: edit + resend / retry (supersede, don't delete).
 
-Covers ``ChatLoop.rerun_turn`` + the ``POST /sessions/{id}/rerun`` route:
+Covers ``ChatLoop.rerun_turn`` + the ``POST /sessions/{id}/rerun`` route
+under the revision-preserving rule (chat timeline step 1, 2026-09-14 —
+``docs/CHAT_TIMELINE_PLAN.md`` Phase 1):
 
-* Retry (no content): same user text, orchestrator session binding
-  kept (trace shows ``session_resumed``), later messages flagged
-  ``metadata["superseded"]`` — record, not deletion.
-* Edit (new content): user text replaced, binding KEPT (no-rotation
-  invariant — history is rewritten via revert, never discarded; the
-  ``rerun`` audit event carries ``edited=True`` + ``history_rewrite``).
+* Retry (no content, or identical text): the target row stays live,
+  later messages are flagged ``metadata["superseded"]`` — record, not
+  deletion — and NO duplicate user row is appended. The orchestrator
+  session binding is kept (trace shows ``session_resumed``).
+* Edit (content differs): APPENDS a new user message at the end of the
+  thread carrying ``metadata.fork_from`` (the original message id) +
+  ``metadata.revision``, flags the original target PLUS its tail
+  superseded, and runs the turn against the new row. The original
+  prompt text survives on record — never mutated in place — so the
+  pager has something to flip between.
+* History rewrite is in place (engine revert, binding always kept; the
+  ``rerun`` audit event carries ``edited`` + ``revision`` + ``fork_from``
+  + ``new_message_id`` + ``history_rewrite`` + ``superseded_count``; no
+  ``session_rotated``).
+* ``message.added`` is emitted exactly once for the appended revision —
+  the turn body reuses ``existing_user_msg`` and must NOT re-emit it.
+* The transcript reference keeps excluding superseded rows (the live
+  thread defines LLM context; view-only change).
 * Only user messages are rerunnable (assistant -> TypeError/400);
   unknown ids -> ValueError/404.
 * Child delegations of superseded turns are never touched.
@@ -17,7 +31,6 @@ Covers ``ChatLoop.rerun_turn`` + the ``POST /sessions/{id}/rerun`` route:
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +59,17 @@ def _mock_opencode_env():
             os.environ["SWEAVE_MOCK_OPENCODE"] = old
 
 
+class _Bus:
+    """Recording event bus (same shape others in this file + the chat
+    loop suites use: ``await publish(event, data)``)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def publish(self, event: str, data: dict[str, Any]) -> None:
+        self.events.append((event, data))
+
+
 def _orchestrator_specialist() -> Specialist:
     return Specialist(
         name="orchestrator",
@@ -62,6 +86,7 @@ def _build_chat_loop(
     pm: ProjectManager,
     send_responses: list[str] | None = None,
     reason_responses: list[str] | None = None,
+    event_bus: Any | None = None,
 ):
     """ChatLoop with a canned wire (copy of the M1.7 step-2 helper)."""
     from sweave.chat.loop import ChatLoop
@@ -96,7 +121,7 @@ def _build_chat_loop(
         specialist_factory=lambda agent_name, project_name=None: factories.get(agent_name),
         project_dir_resolver=resolver,
         delegation_stores=PerProjectDelegationStores(),
-        event_bus=None,
+        event_bus=event_bus,
         turn_timeout=10.0,
         model_resolver=lambda agent, project=None: "deepseek-flash",
     )
@@ -114,8 +139,20 @@ def _trace_events(delegation_id: str) -> list[str]:
     return [e.get("event") for e in read_trace(delegation_id)]
 
 
+def _rerun_events(delegation_id: str) -> list[dict[str, Any]]:
+    from sweave.runtime.trace_log import read_trace
+
+    return [e for e in read_trace(delegation_id) if e.get("event") == "rerun"]
+
+
+# ---------------------------------------------------------------------------
+# Retry (same / omitted text): reuse the live target row
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_retry_reruns_same_content_and_keeps_session(tmp_path: Path):
+    """Omitted content = retry: no duplicate row, binding kept."""
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["first", "second"])
@@ -132,18 +169,66 @@ async def test_retry_reruns_same_content_and_keeps_session(tmp_path: Path):
     loaded = pm.get_session(session.id)
     # Same text, same binding, no duplicate user row.
     assert [m.role for m in loaded.messages] == ["user", "assistant", "assistant"]
+    assert loaded.messages[0].id == user_id
     assert loaded.messages[0].content == "hi"
     assert loaded.messages[0].metadata.get("superseded") is not True
+    # No revision marker: a retry is not a new version.
+    assert "fork_from" not in loaded.messages[0].metadata
+    assert "revision" not in loaded.messages[0].metadata
     assert loaded.messages[1].metadata.get("superseded") is True
     assert loaded.messages[2].metadata.get("superseded") is not True
     assert loaded.orchestrator_session_id == binding
     # Retry reuses the engine session (no rotation).
     new_chat_id = loaded.messages[2].metadata["delegation_id"]
-    assert "session_resumed" in _trace_events(new_chat_id)
+    events = _trace_events(new_chat_id)
+    assert "session_resumed" in events
+    assert "session_created" not in events
+    reruns = _rerun_events(new_chat_id)
+    assert len(reruns) == 1
+    assert reruns[0]["edited"] is False
+    assert reruns[0]["revision"] is False
+    assert reruns[0]["fork_from"] is None
+    assert reruns[0]["new_message_id"] is None
+    assert reruns[0]["history_rewrite"] == "not_edited"
+    assert reruns[0]["superseded_count"] == 1
 
 
 @pytest.mark.asyncio
-async def test_edit_rewrites_history_and_keeps_session(tmp_path: Path):
+async def test_retry_same_text_is_not_an_edit(tmp_path: Path):
+    """An explicit content identical to the target is still a retry:
+    the row is reused, never appended (edit = text actually differs)."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "second"])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    user_id = pm.get_session(session.id).messages[0].id
+    result = await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi"
+    )
+    assert result["content"] == "second"
+
+    loaded = pm.get_session(session.id)
+    assert [m.role for m in loaded.messages] == ["user", "assistant", "assistant"]
+    assert loaded.messages[0].id == user_id
+    assert loaded.messages[0].content == "hi"
+    assert loaded.messages[0].metadata.get("superseded") is not True
+    assert len(loaded.messages) == 3  # no appended revision row
+    new_chat_id = loaded.messages[2].metadata["delegation_id"]
+    reruns = _rerun_events(new_chat_id)
+    assert reruns[0]["edited"] is False
+    assert reruns[0]["history_rewrite"] == "not_edited"
+
+
+# ---------------------------------------------------------------------------
+# Edit: append a revision row, preserve the original
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_appends_revision_and_preserves_original(tmp_path: Path):
+    """Edit APPENDS (never mutates): original text survives on record,
+    the revision carries fork_from + revision, the tail is superseded."""
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"])
@@ -152,31 +237,107 @@ async def test_edit_rewrites_history_and_keeps_session(tmp_path: Path):
     binding = pm.get_session(session.id).orchestrator_session_id
     assert binding
 
-    user_id = pm.get_session(session.id).messages[0].id
+    before = pm.get_session(session.id)
+    user_id = before.messages[0].id
+    first_assistant_id = before.messages[1].id
+
     result = await chat.rerun_turn(
         session_id=session.id, from_message_id=user_id, content="hi, edited"
     )
     assert result["content"] == "edited reply"
 
     loaded = pm.get_session(session.id)
-    assert loaded.messages[0].content == "hi, edited"
+    # Appended at the END of the thread; roles/shape unchanged.
+    assert [m.role for m in loaded.messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+    # 1) Original preserved — same row, same id, same text, live thread
+    #    exit signalled by the superseded flag (not deletion).
+    original = loaded.messages[0]
+    assert original.id == user_id
+    assert original.content == "hi"
+    assert original.metadata.get("superseded") is True
+
+    # 2) The superseded tail keeps its row + id too.
+    assert loaded.messages[1].id == first_assistant_id
     assert loaded.messages[1].metadata.get("superseded") is True
-    # No-rotation invariant: the same session continues. The canned
-    # wire traces no prompt ids, so the rewrite lands via the explicit
-    # preamble fallback (input-side, named, never silent).
+
+    # 3) The revision is a NEW row with fork linkage.
+    revision = loaded.messages[2]
+    assert revision.role == "user"
+    assert revision.content == "hi, edited"
+    assert revision.id != user_id
+    assert revision.metadata["fork_from"] == user_id
+    assert revision.metadata["revision"] is True
+    assert revision.metadata.get("superseded") is not True
+    assert loaded.messages[3].metadata.get("superseded") is not True
+
+    # 4) No-rotation invariant: same binding, no session_rotated.
     assert loaded.orchestrator_session_id == binding
-    new_chat_id = loaded.messages[2].metadata["delegation_id"]
+    new_chat_id = loaded.messages[3].metadata["delegation_id"]
     events = _trace_events(new_chat_id)
     assert "session_resumed" in events
     assert "session_created" not in events
-    from sweave.runtime.trace_log import read_trace
 
-    reruns = [e for e in read_trace(new_chat_id) if e.get("event") == "rerun"]
+    # 5) The rerun audit event carries the edit + revision info. The
+    #    canned wire traces no prompt ids, so the history rewrite lands
+    #    via the explicit preamble fallback (input-side, never silent).
+    reruns = _rerun_events(new_chat_id)
     assert len(reruns) == 1
     assert reruns[0]["edited"] is True
+    assert reruns[0]["revision"] is True
+    assert reruns[0]["from_message_id"] == user_id
+    assert reruns[0]["fork_from"] == user_id
+    assert reruns[0]["new_message_id"] == revision.id
     assert reruns[0]["history_rewrite"] == "preamble_fallback:no_mapping"
+    assert reruns[0]["superseded_count"] == 2
     assert "session_rotated" not in reruns[0]
-    assert reruns[0]["superseded_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_emits_message_added_once_for_the_appended_row(tmp_path: Path):
+    """``rerun_turn`` emits ``message.added`` for the revision — the
+    turn body reuses ``existing_user_msg`` and must NOT re-emit it
+    (a second add would duplicate the bubble client-side)."""
+    bus = _Bus()
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"], event_bus=bus)
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    user_id = pm.get_session(session.id).messages[0].id
+    bus.events.clear()
+
+    await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi, edited"
+    )
+
+    user_adds = [
+        data
+        for event, data in bus.events
+        if event == "message.added" and data["message"]["role"] == "user"
+    ]
+    assert len(user_adds) == 1, user_adds
+    added = user_adds[0]["message"]
+    assert added["content"] == "hi, edited"
+    assert added["metadata"]["fork_from"] == user_id
+    assert added["metadata"]["revision"] is True
+    # Every message.added for this session is scoped + unique by id.
+    ids = [
+        data["message"]["id"]
+        for event, data in bus.events
+        if event == "message.added" and data["session_id"] == session.id
+    ]
+    assert len(ids) == len(set(ids)) == 2  # revision user + assistant reply
+
+
+# ---------------------------------------------------------------------------
+# History rewrite (edit): in place, binding kept, preamble names it
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -211,6 +372,99 @@ async def test_edit_preamble_fallback_reaches_the_prompt(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_edit_history_rewrite_collects_the_superseded_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``_rewrite_superseded_history(from_index=target)`` still collects
+    the *superseded tail's* prompt ids and reverts in place (binding
+    kept). The appended revision row sits after the target but carries
+    no delegation trace, so it is not dragged into the revert list."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    first_assistant_id = pm.get_session(session.id).messages[1].id
+    tail_chat_id = pm.get_session(session.id).messages[1].metadata["delegation_id"]
+    binding = pm.get_session(session.id).orchestrator_session_id
+
+    # The canned wire traces no prompt ids, so teach the trace reader
+    # that the superseded tail's turn sent one engine prompt.
+    from sweave.runtime import trace_log
+
+    real_read = trace_log.read_trace
+
+    def fake_read(did: str):
+        events = list(real_read(did))
+        if did == tail_chat_id:
+            events.append({"event": "engine_user_message", "id": "engine-msg-1"})
+        return events
+
+    monkeypatch.setattr(trace_log, "read_trace", fake_read)
+
+    captured: list[dict[str, Any]] = []
+
+    async def fake_rewrite(**kwargs):
+        captured.append(kwargs)
+        return "revert:ok"
+
+    chat.runtime.rewrite_history_before = fake_rewrite  # type: ignore[assignment]
+
+    user_id = pm.get_session(session.id).messages[0].id
+    await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi, edited"
+    )
+
+    # Reverted exactly once, in place, against the kept binding, with
+    # the superseded tail's prompt ids — the revision contributes none.
+    assert len(captured) == 1
+    assert captured[0]["specialist_name"] == "orchestrator"
+    assert captured[0]["session_id"] == binding
+    assert captured[0]["worktree_path"] == tmp_path
+    assert captured[0]["before_ids"] == ["engine-msg-1"]
+
+    loaded = pm.get_session(session.id)
+    assert loaded.orchestrator_session_id == binding
+    assert loaded.messages[1].id == first_assistant_id
+    assert loaded.messages[1].metadata.get("superseded") is True
+    new_chat_id = loaded.messages[3].metadata["delegation_id"]
+    assert _rerun_events(new_chat_id)[0]["history_rewrite"] == "revert:ok"
+
+
+# ---------------------------------------------------------------------------
+# Transcript exclusion (unchanged): only the live thread defines context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_edit_transcript_reference_uses_only_the_live_thread(tmp_path: Path):
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "edited reply"])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    user_id = pm.get_session(session.id).messages[0].id
+    await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi, edited"
+    )
+
+    from sweave.chat.transcript import _transcript_reference
+
+    loaded = pm.get_session(session.id)
+    ref = _transcript_reference(transcript_messages=list(loaded.messages), budget=200)
+    # 4 rows on record, 2 live: the superseded pair is excluded from
+    # the count and from "most recent user message".
+    assert len(loaded.messages) == 4
+    assert "Conversation has 2 messages" in ref
+    assert "Most recent user message: hi, edited" in ref
+
+
+# ---------------------------------------------------------------------------
+# Rejections + children
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
 async def test_rerun_rejects_non_user_and_unknown_ids(tmp_path: Path):
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
@@ -227,15 +481,22 @@ async def test_rerun_rejects_non_user_and_unknown_ids(tmp_path: Path):
     with pytest.raises(ValueError):
         await chat.rerun_turn(session_id="no-session", from_message_id="x")
 
+    # A rejected rerun never appends or supersedes anything.
+    after = pm.get_session(session.id)
+    assert [m.id for m in after.messages] == [m.id for m in loaded.messages]
+    assert all(m.metadata.get("superseded") is not True for m in after.messages)
+
 
 @pytest.mark.asyncio
 async def test_superseded_turn_children_untouched(tmp_path: Path):
-    """Child delegations of a superseded turn stay exactly as they were."""
+    """Child delegations of a superseded turn stay exactly as they were
+    — on the retry path and on the edit path (they keep pointing at
+    their own attempt's ``chat-*`` id, never the tip's)."""
     from sweave.runtime.delegation_store import Delegation
 
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
-    chat = _build_chat_loop(pm=pm, send_responses=["first", "second"])
+    chat = _build_chat_loop(pm=pm, send_responses=["first", "second", "third"])
 
     await chat.run_turn(session_id=session.id, user_content="hi")
     chat_id = pm.get_session(session.id).messages[1].metadata["delegation_id"]
@@ -244,14 +505,38 @@ async def test_superseded_turn_children_untouched(tmp_path: Path):
         agent="backend", task="old work", parent_task_id=chat_id, status="review",
     )
     await store.add(child)
+    before = store.get(child.delegation_id)
+    assert before is not None
 
     user_id = pm.get_session(session.id).messages[0].id
-    await chat.rerun_turn(session_id=session.id, from_message_id=user_id)
 
+    # Retry: tail superseded, children untouched.
+    await chat.rerun_turn(session_id=session.id, from_message_id=user_id)
     kept = store.get(child.delegation_id)
     assert kept is not None
     assert kept.status == "review"
     assert kept.task == "old work"
+    assert kept.parent_task_id == chat_id
+    assert kept.archived is False
+
+    # Edit of the ORIGINAL prompt: original + tail superseded, the
+    # child still hangs off the first attempt's chat id.
+    await chat.rerun_turn(
+        session_id=session.id, from_message_id=user_id, content="hi, edited"
+    )
+    kept_after_edit = store.get(child.delegation_id)
+    assert kept_after_edit is not None
+    assert kept_after_edit.status == "review"
+    assert kept_after_edit.task == "old work"
+    assert kept_after_edit.parent_task_id == chat_id
+    assert kept_after_edit.archived is False
+    # The first attempt's chat delegation is still on record.
+    assert store.get(chat_id) is not None
+
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

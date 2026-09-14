@@ -754,17 +754,22 @@ class ChatLoop:
         """Re-run the turn starting at a past user message.
 
         The target message must be role=user (`TypeError` otherwise;
-        unknown session/message is `ValueError`). Every message after
-        it is flagged ``metadata["superseded"] = True`` — record, not
-        deletion: child delegations of superseded turns stay exactly
-        as they were. When *content* differs it replaces the message
-        (edit); an edit rewrites history in place (engine ``/revert``,
-        opencode native revert — the old prompt is dropped, never left
-        beside its replacement) while the session binding is always
-        kept. The turn then runs through the same body as a fresh turn,
-        but the existing user message is reused (no duplicate persist).
-        The double-send guard applies here too: a rerun while a turn
-        is already running for the session raises ``TurnActiveError``.
+        unknown session/message is `ValueError`). Supersede is record,
+        not deletion: child delegations of superseded turns stay exactly
+        as they were. A retry (no *content*, or identical text) keeps
+        the target live, flags every message after it
+        ``metadata["superseded"] = True``, and reuses the existing user
+        message (no duplicate persist). An edit (*content* differs)
+        APPENDS a new user message (``metadata.fork_from`` links the
+        target, ``metadata.revision`` marks the revision) and flags the
+        target plus its tail superseded - the original prompt text
+        survives on record so the pager has something to flip between
+        (revision-preserving rerun, 2026-09-14). An edit rewrites
+        history in place (engine ``/revert``, opencode native revert)
+        while the session binding is always kept. The turn then runs
+        through the same body as a fresh turn. The double-send guard
+        applies here too: a rerun while a turn is already running for
+        the session raises ``TurnActiveError``.
 
         Returns the new assistant message dict.
         """
@@ -820,12 +825,41 @@ class ChatLoop:
                 f"Can only rerun from a user message (got role '{target.role}')"
             )
         edited = content is not None and content != target.content
+        # Revision-preserving rerun (2026-09-14): a retry reuses the
+        # live target row; an edit APPENDS a new user message with
+        # fork linkage and supersedes the target plus its tail, so
+        # the original prompt text survives for the pager.
+        rerun_user_msg = target
+        new_message_id: str | None = None
         if edited:
-            target.content = content
-        superseded = 0
-        for later in session.messages[idx + 1:]:
-            later.metadata["superseded"] = True
-            superseded += 1
+            assert content is not None
+            target.metadata["superseded"] = True
+            superseded = 1
+            for later in session.messages[idx + 1:]:
+                later.metadata["superseded"] = True
+                superseded += 1
+            rerun_user_msg = session.add_message(
+                role="user",
+                content=content,
+                metadata={
+                    "fork_from": from_message_id,
+                    "revision": True,
+                },
+            )
+            new_message_id = rerun_user_msg.id
+            self.project_manager.save_session(session)
+            await self._emit(
+                "message.added",
+                {
+                    "session_id": session_id,
+                    "message": rerun_user_msg.to_dict(),
+                },
+            )
+        else:
+            superseded = 0
+            for later in session.messages[idx + 1:]:
+                later.metadata["superseded"] = True
+                superseded += 1
         # No-rotation invariant: an edit rewrites history in place
         # (drops the superseded prompts from the provider session),
         # never discards the session. The rewrite runs synchronously
@@ -844,12 +878,15 @@ class ChatLoop:
             task = asyncio.create_task(
                 self._turn_owner_runner(
                     session_id=session_id,
-                    user_content=target.content,
+                    user_content=rerun_user_msg.content,
                     delegation_id=delegation_id,
-                    existing_user_msg=target,
+                    existing_user_msg=rerun_user_msg,
                     rerun_info={
                         "from_message_id": from_message_id,
                         "edited": edited,
+                        "revision": edited,
+                        "fork_from": from_message_id if edited else None,
+                        "new_message_id": new_message_id,
                         "history_rewrite": history_rewrite,
                         "superseded_count": superseded,
                     },
