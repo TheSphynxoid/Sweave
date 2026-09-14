@@ -9,7 +9,7 @@ about credentials is broadcast; callers refetch on mutation).
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -20,6 +20,7 @@ from sweave.credentials import (
     credential_source,
     opencode_auth_paths,
     read_opencode_store,
+    resolve_provider,
     sync_with_opencode,
     write_opencode_store,
 )
@@ -40,6 +41,15 @@ class CredentialSetRequest(BaseModel):
 
 class CredentialImportRequest(BaseModel):
     providers: Optional[list[str]] = None
+
+
+class CredentialResolveRequest(BaseModel):
+    provider: str = Field(..., min_length=1, max_length=64)
+    choice: str = Field(..., description="'mine' (push ours everywhere) or 'theirs' (adopt + converge)")
+    source: Optional[str] = Field(
+        default=None,
+        description="Optional opencode-store path to adopt from (choice='theirs')",
+    )
 
 
 @router.get("/api/providers")
@@ -91,17 +101,26 @@ async def list_providers(state: AppState = Depends(get_state)):
     return {"providers": out, "pending_imports": pending}
 
 
-def sync_pending_snapshot(store: CredentialStore) -> list[dict[str, str]]:
-    seen: set[str] = set()
-    out: list[dict[str, str]] = []
+def sync_pending_snapshot(store: CredentialStore) -> list[dict[str, Any]]:
+    # Per-provider merge across BOTH opencode stores (isolated copy +
+    # real). The stores can genuinely disagree (fp-divergence seen live
+    # 2026-09-14: isolated vs real held different opencode keys), and a
+    # plain provider-name list ping-pongs forever — adopting store A's
+    # key makes store B "rotated" and vice versa. So each item carries
+    # the disagreeing `sources` + the first-seen `reason`; resolution
+    # (POST /api/credentials/resolve) converges all stores at once.
+    merged: dict[str, dict[str, Any]] = {}
     for path in opencode_auth_paths():
         if not path.is_file():
             continue
         for item in store.pending_imports(read_opencode_store(path)):
-            if item["provider"] not in seen:
-                seen.add(item["provider"])
-                out.append(item)
-    return sorted(out, key=lambda r: r["provider"])
+            name = item["provider"]
+            entry = merged.setdefault(
+                name, {"provider": name, "reason": item.get("reason", ""), "sources": []}
+            )
+            if str(path) not in entry["sources"]:
+                entry["sources"].append(str(path))
+    return sorted(merged.values(), key=lambda r: r["provider"])
 
 
 @router.get("/api/credentials/pending")
@@ -192,3 +211,24 @@ async def sync_credentials(state: AppState = Depends(get_state)):
     """Run the boot sync on demand (adopt-in + push-out)."""
     del state
     return sync_with_opencode()
+
+
+@router.post("/api/credentials/resolve", status_code=200)
+async def resolve_credential(
+    request: CredentialResolveRequest, state: AppState = Depends(get_state)
+):
+    """Converge one diverged provider (the Adopt-All ping-pong fix).
+
+    When the isolated + real opencode stores disagree, bulk import
+    flips which side reads "rotated" forever. This picks a winner and
+    writes it to every store at once (backups kept): ``mine`` pushes
+    our key out; ``theirs`` adopts the disagreeing store's key
+    (optionally from ``source``) and converges the rest onto it.
+    """
+    del state
+    try:
+        return resolve_provider(
+            request.provider, request.choice, source=request.source
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e

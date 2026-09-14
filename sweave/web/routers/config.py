@@ -93,18 +93,41 @@ async def get_harnesses():
 
     harnesses = await detect_all_harnesses()
     models = await get_opencode_models()
-    return {
-        "harnesses": [
+    entries = [
+        {
+            "name": h.name,
+            "display_name": h.display_name,
+            "command": h.command,
+            "version": h.version,
+            "providers": h.providers,
+            "models": h.models,
+        }
+        for h in harnesses
+    ]
+    # The native engine is not an external binary, so the detector
+    # above never sees it — but it is always available (zero-dep
+    # Node sidecar, spawned lazily) and it is the default harness
+    # since the step-4 flip. List it first so pickers default sanely
+    # even when no external binary is installed.
+    if not any(e["name"] == "sweave-engine" for e in entries):
+        from sweave.engine.protocol import ENGINE_HARNESS_NAME, PROTOCOL_VERSION
+
+        entries.insert(
+            0,
             {
-                "name": h.name,
-                "display_name": h.display_name,
-                "command": h.command,
-                "version": h.version,
-                "providers": h.providers,
-                "models": h.models,
-            }
-            for h in harnesses
-        ],
+                "name": ENGINE_HARNESS_NAME,
+                "display_name": "Sweave Engine",
+                "command": "sweave-engine (native sidecar)",
+                "version": f"protocol {PROTOCOL_VERSION}",
+                # The engine serves the global registry (Models tab),
+                # not a per-harness model list — pickers merge the
+                # registry independently (Agents page modelOptions).
+                "providers": [],
+                "models": [],
+            },
+        )
+    return {
+        "harnesses": entries,
         "opencode_models": models,
     }
 

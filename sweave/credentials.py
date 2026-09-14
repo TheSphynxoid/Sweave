@@ -456,6 +456,113 @@ class CredentialStore:
         return {"key": entry["key"], "type": "api"}
 
 
+def resolve_provider(
+    provider: str,
+    choice: str,
+    store: CredentialStore | None = None,
+    source: str | None = None,
+) -> dict[str, Any]:
+    """Converge one provider across ours + every opencode store.
+
+    Fixes the bulk-adopt ping-pong: with two disagreeing opencode
+    stores (isolated copy vs real — fp-divergence seen live), adopting
+    store A's key makes store B read "rotated" and vice versa, so the
+    pending banner never clears. Resolution picks a winner and writes
+    it EVERYWHERE (backups kept, ledger converged):
+
+    * ``choice="mine"`` — ours (must be an ``api_key`` entry) is
+      pushed to all existing opencode stores.
+    * ``choice="theirs"`` — the differing opencode entry (explicit
+      ``source`` path, else the first disagreeing store) is adopted
+      (forced — this is the user-approved path) then pushed to the
+      remaining stores so all three copies agree.
+
+    Returns ``{"provider", "choice", "key_suffix", "pushed",
+    "adopted_from"}``. Raises :class:`ValueError` on bad input
+    (unknown provider, unusable key material, no disagreeing store).
+    """
+    store = store or CredentialStore()
+    name = (provider or "").strip()
+    if not name:
+        raise ValueError("provider must be a non-empty string")
+    if choice not in ("mine", "theirs"):
+        raise ValueError(f"choice must be 'mine' or 'theirs', got {choice!r}")
+
+    paths = [p for p in opencode_auth_paths() if p.is_file()]
+    if not paths:
+        raise ValueError("no opencode auth store exists")
+
+    def _push(key_entry: dict[str, Any]) -> list[str]:
+        pushed: list[str] = []
+        for path in paths:
+            current = read_opencode_store(path)
+            merged = dict(current)
+            prior = merged.get(name)
+            merged[name] = (
+                {**prior, **key_entry} if isinstance(prior, dict) else dict(key_entry)
+            )
+            write_opencode_store(path, merged, backup=True)
+            pushed.append(str(path))
+        store.mark_pushed(name)
+        return pushed
+
+    if choice == "mine":
+        rendered = store.render_push_entry(name)
+        if rendered is None:
+            raise ValueError(
+                f"no Sweave api_key for {name!r} to push (oauth/local providers "
+                "have nothing to converge)"
+            )
+        pushed = _push(rendered)
+        suffix = (store.load()["providers"].get(name) or {}).get("key_suffix")
+        return {
+            "provider": name,
+            "choice": "mine",
+            "key_suffix": suffix,
+            "pushed": pushed,
+            "adopted_from": None,
+        }
+
+    # choice == "theirs": find the disagreeing store.
+    own_fp: str | None = None
+    own = store.load()["providers"].get(name)
+    if isinstance(own, dict):
+        own_fp = own.get("fingerprint")
+    candidates: list[tuple[Path, dict[str, Any]]] = []
+    for path in paths:
+        entry = read_opencode_store(path).get(name)
+        ok, _reason = CredentialStore._adoptable(name, entry)
+        if not ok or not isinstance(entry, dict):
+            continue
+        fp = fingerprint_key(entry["key"].strip())
+        if own_fp is not None and fp == own_fp:
+            continue  # converged already, not a divergence source
+        candidates.append((path, entry))
+    if source is not None:
+        wanted = str(source)
+        hit = next((c for c in candidates if str(c[0]) == wanted), None)
+        if hit is None:
+            raise ValueError(
+                f"{wanted!r} holds no differing key for {name!r}"
+            )
+        candidates = [hit]
+    if not candidates:
+        raise ValueError(f"no disagreeing opencode key for {name!r}")
+    chosen_path, chosen_entry = candidates[0]
+    result = store.adopt({name: chosen_entry}, force=True)
+    if name not in result["adopted"]:
+        raise ValueError(f"could not adopt {name!r} from {chosen_path}")
+    pushed = _push({"key": chosen_entry["key"].strip(), "type": "api"})
+    suffix = (store.load()["providers"].get(name) or {}).get("key_suffix")
+    return {
+        "provider": name,
+        "choice": "theirs",
+        "key_suffix": suffix,
+        "pushed": pushed,
+        "adopted_from": str(chosen_path),
+    }
+
+
 def sync_with_opencode(
     store: CredentialStore | None = None,
 ) -> dict[str, Any]:

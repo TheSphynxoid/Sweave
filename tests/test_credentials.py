@@ -268,6 +268,7 @@ def test_router_paths_registered():
     assert "/api/providers" in paths
     assert "/api/credentials/pending" in paths
     assert "/api/credentials/import" in paths
+    assert "/api/credentials/resolve" in paths
     assert "/api/credentials" in paths
     assert "/api/credentials/{provider}" in paths
 
@@ -298,3 +299,127 @@ def test_opencode_paths_order_and_read_missing(tmp_path: Path):
     assert read_opencode_store(tmp_path / "missing.json") == {}
     (tmp_path / "bad.json").write_text("not json{{", encoding="utf-8")
     assert read_opencode_store(tmp_path / "bad.json") == {}
+
+
+def _two_stores(tmp_path: Path, isolated_entries: dict, real_entries: dict) -> Path:
+    """Fake home with BOTH opencode stores planted (divergence fixture)."""
+    home = _opencode_home(tmp_path, isolated_entries)
+    real = home / ".local" / "share" / "opencode" / "auth.json"
+    real.parent.mkdir(parents=True, exist_ok=True)
+    real.write_text(json.dumps(real_entries), encoding="utf-8")
+    return home
+
+
+def _fake_home(monkeypatch, home: Path) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+
+def test_pending_snapshot_carries_disagreeing_sources(tmp_path: Path, monkeypatch):
+    """The Adopt-All ping-pong, pinned: two stores disagree → one item,
+    both sources named, so the UI can offer a converging resolve."""
+    from sweave.web.routers.credentials import sync_pending_snapshot
+
+    home = _two_stores(
+        tmp_path,
+        {"opencode": {"key": "sk-isolated", "type": "api"}},
+        {"opencode": {"key": "sk-real", "type": "api"}},
+    )
+    _fake_home(monkeypatch, home)
+    store = CredentialStore()
+    store.adopt({"opencode": {"key": "sk-real", "type": "api"}})
+    snap = sync_pending_snapshot(store)
+    assert len(snap) == 1
+    item = snap[0]
+    assert item["provider"] == "opencode"
+    assert item["reason"] == "rotated in opencode"
+    # Only the isolated store disagrees (real == ledger == ours).
+    isolated = str(home / ".sweave" / "opencode-data" / "opencode" / "auth.json")
+    assert item["sources"] == [isolated]
+    # The ping-pong, pinned: bulk import (force, like the endpoint)
+    # adopts isolated — and the REAL store now reads rotated.
+    store.adopt(
+        {"opencode": {"key": "sk-isolated", "type": "api"}}, force=True
+    )
+    snap2 = sync_pending_snapshot(store)
+    assert len(snap2) == 1
+    real = str(home / ".local" / "share" / "opencode" / "auth.json")
+    assert snap2[0]["sources"] == [real]
+
+
+def test_resolve_mine_pushes_ours_to_both_stores(tmp_path: Path, monkeypatch):
+    from sweave.credentials import resolve_provider
+
+    home = _two_stores(
+        tmp_path,
+        {"opencode": {"key": "sk-isolated", "type": "api"}},
+        {"opencode": {"key": "sk-real", "type": "api"}},
+    )
+    _fake_home(monkeypatch, home)
+    store = CredentialStore()
+    store.adopt({"opencode": {"key": "sk-real", "type": "api"}})
+    store.set_api_key("opencode", "sk-mine", source="manual")
+    out = resolve_provider("opencode", "mine", store=store)
+    assert out["choice"] == "mine" and len(out["pushed"]) == 2
+    for path in opencode_auth_paths():
+        assert read_opencode_store(path)["opencode"]["key"] == "sk-mine"
+    # Converged: nothing pending anywhere.
+    from sweave.web.routers.credentials import sync_pending_snapshot
+
+    assert sync_pending_snapshot(store) == []
+
+
+def test_resolve_theirs_adopts_and_converges(tmp_path: Path, monkeypatch):
+    from sweave.credentials import resolve_provider
+    from sweave.web.routers.credentials import sync_pending_snapshot
+
+    home = _two_stores(
+        tmp_path,
+        {"opencode": {"key": "sk-isolated", "type": "api"}},
+        {"opencode": {"key": "sk-real", "type": "api"}},
+    )
+    _fake_home(monkeypatch, home)
+    store = CredentialStore()
+    store.adopt({"opencode": {"key": "sk-real", "type": "api"}})
+    out = resolve_provider("opencode", "theirs", store=store)
+    assert out["choice"] == "theirs"
+    assert out["adopted_from"].endswith("auth.json")
+    assert store.get_key("opencode") == "sk-isolated"  # first path wins by default
+    for path in opencode_auth_paths():
+        assert read_opencode_store(path)["opencode"]["key"] == "sk-isolated"
+    assert sync_pending_snapshot(store) == []
+
+
+def test_resolve_theirs_explicit_source(tmp_path: Path, monkeypatch):
+    from sweave.credentials import resolve_provider
+
+    home = _two_stores(
+        tmp_path,
+        {"opencode": {"key": "sk-isolated", "type": "api"}},
+        {"opencode": {"key": "sk-real", "type": "api"}},
+    )
+    _fake_home(monkeypatch, home)
+    store = CredentialStore()
+    store.adopt({"opencode": {"key": "sk-real", "type": "api"}})
+    real_path = str(home / ".local" / "share" / "opencode" / "auth.json")
+    # Real store already agrees with ours → not a divergence source.
+    with pytest.raises(ValueError):
+        resolve_provider("opencode", "theirs", store=store, source=real_path)
+    isolated = str(home / ".sweave" / "opencode-data" / "opencode" / "auth.json")
+    out = resolve_provider("opencode", "theirs", store=store, source=isolated)
+    assert out["adopted_from"] == isolated
+    assert store.get_key("opencode") == "sk-isolated"
+
+
+def test_resolve_rejects_garbage(tmp_path: Path, monkeypatch):
+    from sweave.credentials import resolve_provider
+
+    home = _opencode_home(tmp_path, {"openrouter": {"key": "sk-a", "type": "api"}})
+    _fake_home(monkeypatch, home)
+    store = CredentialStore()
+    with pytest.raises(ValueError):
+        resolve_provider("   ", "mine", store=store)
+    with pytest.raises(ValueError):
+        resolve_provider("openrouter", "sideways", store=store)
+    with pytest.raises(ValueError):
+        resolve_provider("never-heard-of-it", "mine", store=store)
