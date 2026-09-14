@@ -628,3 +628,100 @@ async def test_read_output_truncated_before_history(sidecar, worktree):
 
 
 @needs_node
+async def test_specialist_ceiling_beyond_fifty(sidecar, worktree):
+    """Role-aware ceiling: a healthy 55-iteration specialist turn
+    completes (the flat 50 killed succeeding read loops). No handoff
+    is recorded on success."""
+    _reset_stub()
+    reads = [
+        {"filePath": "notes.txt", "offset": 1},
+        {"filePath": "notes.txt", "offset": 2},
+        {"filePath": "src/main.py"},
+    ]
+    STUB["script"] = (
+        [{"calls": [_call("read", reads[i % 3])]} for i in range(55)]
+        + [{"text": "LONG DONE"}]
+    )
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("keep reading"), trace=trace)
+    assert result.success, result.error
+    assert result.output == "LONG DONE"
+    assert all("handoff" not in p for p in trace.of("step.boundary"))
+
+
+@needs_node
+async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
+    """The orchestrator keeps the 50-iteration ceiling (its read-only
+    turns never needed more observed) and trips loud with a handoff
+    record naming what ran."""
+    _reset_stub()
+    reads = [
+        {"filePath": "notes.txt", "offset": 1},
+        {"filePath": "notes.txt", "offset": 2},
+        {"filePath": "src/main.py"},
+    ]
+    STUB["script"] = (
+        [{"calls": [_call("read", reads[i % 3])]} for i in range(55)]
+        + [{"text": "NEVER REACHED"}]
+    )
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message("keep reading", metadata={"role": "orchestrator"}), trace=trace
+    )
+    assert not result.success
+    assert "max_steps" in (result.error or "")
+    handoffs = [p for p in trace.of("step.boundary") if "handoff" in p]
+    assert len(handoffs) == 1
+    hand = handoffs[0]["handoff"]
+    assert hand["iterations"] == 50
+    assert hand["toolCalls"] == 50
+    assert any("notes.txt" in f for f in hand["filesTouched"])
+
+
+@needs_node
+async def test_no_progress_trips_early(sidecar, worktree):
+    """Stuckness trip: alternating failing calls dodge the identical-
+    call doom guard but five straight all-failed iterations fail fast
+    with ``no_progress`` instead of burning all 50."""
+    _reset_stub()
+    cmds = ["exit 1", "exit 2"]
+    STUB["script"] = (
+        [{"calls": [_call("bash", {"command": cmds[i % 2]})]} for i in range(8)]
+        + [{"text": "NEVER REACHED"}]
+    )
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["bash"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("run failing commands"), trace=trace)
+    assert not result.success
+    assert "no_progress" in (result.error or "")
+    assert len(STUB["requests"]) == 5
+    handoffs = [p for p in trace.of("step.boundary") if "handoff" in p]
+    assert len(handoffs) == 1
+    assert handoffs[0]["reason"] == "no_progress"
+
+
+@needs_node
+async def test_doom_rejections_feed_the_streak(sidecar, worktree):
+    """Identical repeats hit the doom guard (rejected without
+    executing), and those rejections count as failures: a model that
+    ignores five straight 'try a different approach' tells trips
+    ``no_progress`` instead of rattling to the ceiling."""
+    _reset_stub()
+    same = {"calls": [_call("read", {"filePath": "notes.txt"})]}
+    STUB["script"] = [dict(same) for _ in range(10)] + [{"text": "NEVER REACHED"}]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("read the same file forever"), trace=trace)
+    assert not result.success
+    assert "no_progress" in (result.error or "")
+    assert len(STUB["requests"]) < 10

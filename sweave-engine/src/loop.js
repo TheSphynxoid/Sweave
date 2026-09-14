@@ -39,6 +39,20 @@ import {
 
 const MAX_ITERATIONS = 50;
 const DOOM_REPEATS = 3;
+// Role-aware ceiling (2026-09-14): the flat 50 killed healthy
+// implementation turns (two confirmed max_steps deaths on
+// succeeding read/edit/probe loops). Specialists doing
+// implementation get 3x headroom; the orchestrator's read-only
+// turns never needed more than ~20 observed. The ceiling stays a
+// cost backstop — stuckness trips earlier via NO_PROGRESS_LIMIT.
+const MAX_ITERATIONS_SPECIALIST = 150;
+// Stuckness trip (2026-09-14): consecutive tool iterations with
+// zero successes (every executed call errored/denied/rejected).
+// Catches the A-B-A-B alternation the identical-call doom guard
+// misses. Thinking-only iterations break the streak (reconsidering
+// is not stuck); successful sweave-tool calls (defer/escalate)
+// count as progress (handing work off is forward motion).
+const NO_PROGRESS_LIMIT = 5;
 
 function approxTokens(text) {
   if (!text) return 0;
@@ -349,14 +363,44 @@ export async function runLoop(loopCtx) {
   let totalIn = 0;
   let totalOut = 0;
   let totalReason = 0;
+  let totalCacheRead = 0;
   let lastRepeat = { key: "", count: 0 };
   let finalText = "";
   let iterations = 0;
+  // Trip state (2026-09-14 rework): role-aware ceiling +
+  // stuckness streak + resumption handoff. toolCallCount counts
+  // every processed call; filesTouched collects executed file
+  // targets in first-seen order (capped) for the handoff record.
+  const maxIterations = body.role === "orchestrator" ? MAX_ITERATIONS : MAX_ITERATIONS_SPECIALIST;
+  let noProgressStreak = 0;
+  let toolCallCount = 0;
+  const filesTouched = [];
+  const noteFile = (p) => {
+    if (!p || filesTouched.length >= 50 || filesTouched.includes(p)) return;
+    filesTouched.push(p);
+  };
+  // Resumption handoff (graceful trip): the turn still fails loud
+  // (fail-loud ruling — no silent continuation), but the trace keeps
+  // a machine-readable record of what ran so a follow-up turn (or a
+  // human) resumes instead of re-walking the ground. Turn totals
+  // ride along (per-iteration tokens are already on the boundary).
+  const handoffPayload = (reason) => ({
+    event: "step.boundary",
+    reason,
+    cost: 0,
+    tokens: { input: totalIn, output: totalOut, reasoning: totalReason, cache: { read: totalCacheRead, write: 0 } },
+    handoff: {
+      iterations,
+      toolCalls: toolCallCount,
+      filesTouched: [...filesTouched],
+    },
+  });
 
   for (;;) {
     if (isAborted()) throw Object.assign(new Error("aborted"), { code: "aborted" });
-    if (iterations >= MAX_ITERATIONS) {
-      throw Object.assign(new Error(`max loop iterations (${MAX_ITERATIONS}) exceeded`), { code: "max_steps" });
+    if (iterations >= maxIterations) {
+      emit(handoffPayload("max_steps"));
+      throw Object.assign(new Error(`max loop iterations (${maxIterations}) exceeded`), { code: "max_steps" });
     }
     iterations += 1;
     // Full live history every iteration (base + this turn's user
@@ -394,9 +438,14 @@ export async function runLoop(loopCtx) {
     const inTok = stepUsage?.prompt_tokens || 0;
     const outTok = stepUsage?.completion_tokens || 0;
     const reasonTok = stepUsage?.completion_tokens_details?.reasoning_tokens || 0;
+    // Cache telemetry (real numbers, not the hardcoded zeros the
+    // terminal anchor used to emit): prompt_tokens_details is the
+    // normalized shape on both flavors (missing = 0, honest).
+    const cacheReadTok = stepUsage?.prompt_tokens_details?.cached_tokens || 0;
     totalIn += inTok;
     totalOut += outTok;
     totalReason += reasonTok;
+    totalCacheRead += cacheReadTok;
     finalText = stepText;
 
     if (stepCalls.length === 0) {
@@ -426,9 +475,11 @@ export async function runLoop(loopCtx) {
     };
     store.append(session, assistantEntry);
 
+    let iterSuccess = 0;
     for (const call of stepCalls) {
       if (isAborted()) throw Object.assign(new Error("aborted"), { code: "aborted" });
       const callId = call.id || newCallId();
+      toolCallCount += 1;
       const isSweaveKnown = SWEAVE_TOOL_NAMES.has(call.name);
       // Offered-set gate (structural, per role): a tool the loop did
       // not offer does not exist for this turn — specialists calling
@@ -461,6 +512,7 @@ export async function runLoop(loopCtx) {
         const result = await callSweaveTool(call.name, call.args, { ...sweaveCtx, session });
         const text = result.text;
         if (result.ok) {
+          iterSuccess += 1;
           emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: text } });
         } else {
           emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: text } });
@@ -502,10 +554,13 @@ export async function runLoop(loopCtx) {
         abortThrow(signal),
       ]);
       if (settled.ok) {
+        iterSuccess += 1;
+        if (isPath && target) noteFile(absPath || target);
         const out = settled.output || "";
         emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: out } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: out || "(no output)", at: Date.now() });
       } else {
+        if (isPath && target) noteFile(absPath || target);
         const errText = settled.partial ? `${settled.error}\nPartial output:\n${settled.partial}` : settled.error;
         emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
@@ -517,10 +572,23 @@ export async function runLoop(loopCtx) {
       cost: 0,
       tokens: { input: inTok, output: outTok, reasoning: reasonTok, cache: { read: stepUsage?.prompt_tokens_details?.cached_tokens || 0, write: 0 } },
     });
+    // Stuckness trip: iterations that executed tools with zero
+    // successes lengthen the streak; any success resets it.
+    // (Thinking-only iterations exit via the done branch above, so
+    // everything reaching here ran at least one call.) Trips loud
+    // with a handoff, like the ceiling — never a silent stall.
+    noProgressStreak = iterSuccess > 0 ? 0 : noProgressStreak + 1;
+    if (noProgressStreak >= NO_PROGRESS_LIMIT) {
+      emit(handoffPayload("no_progress"));
+      throw Object.assign(
+        new Error(`no progress after ${NO_PROGRESS_LIMIT} tool iterations (every executed call failed) — partial work is kept; re-dispatch with narrower scope`),
+        { code: "no_progress" },
+      );
+    }
   }
 
   return {
     output: finalText,
-    usage: { input: totalIn, output: totalOut, reasoning: totalReason },
+    usage: { input: totalIn, output: totalOut, reasoning: totalReason, cache_read: totalCacheRead, cache_write: 0 },
   };
 }
