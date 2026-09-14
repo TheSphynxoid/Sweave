@@ -268,9 +268,33 @@ async function runTurn(sessionId, body, res) {
       output = step.text;
       usage = step.usage;
     } catch (err) {
-      throw new Error(
-        `provider ${String((err && err.message) || err).slice(0, 300)}`
-      );
+      // Terminal provider failure on the responses flavor: end the
+      // turn loudly HERE (failed record + error SSE + res.end),
+      // never re-throw past the already-committed SSE headers — a
+      // throw lands in the request catch whose sendJson(500) cannot
+      // run after headers, leaving the client blocked until the
+      // turn timeout (the 2026-09-14 zen-suite hang: ~30 min of
+      // silence on a provider 404). Mirrors the chat branch below.
+      clearTimeout(timer);
+      if (turn.finished) return; // timeout/abort path already answered
+      finish();
+      const failed = err && err.message === "turn_timeout";
+      const text = `provider ${String((err && err.message) || err).slice(0, 300)}`;
+      store.append(session, {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        failed: true,
+        error: failed ? `turn_timeout_exceeded_${body.turn_timeout}s` : text,
+        at: Date.now(),
+      });
+      if (!(err && err.name === "AbortError") && !failed) {
+        sseEvent(res, { event: "error", code: "provider_error", message: text });
+      }
+      try {
+        res.end();
+      } catch {}
+      return;
     }
     clearTimeout(timer);
     if (turn.finished) return; // timeout/abort path already answered

@@ -21,14 +21,18 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import httpx
 import pytest
+
+from tests.sidecars import (
+    read_port_line,
+    spawn_sidecar,
+    stop_sidecar,
+    wait_for_health,
+)
 
 node_missing = shutil.which("node") is None
 needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
@@ -117,11 +121,8 @@ def sidecar(stub_url, tmp_path_factory):
     home = tmp_path_factory.mktemp("go-fake-home")
     data_dir = tmp_path_factory.mktemp("go-data")
     repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
+    proc = spawn_sidecar(
         ["node", str(repo_root / "sweave-engine" / "src" / "serve.js"), "--port", "0", "--data-dir", str(data_dir)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
         env={
             **os.environ,
             "HOME": str(home),
@@ -132,16 +133,10 @@ def sidecar(stub_url, tmp_path_factory):
             "SWEAVE_MCP_TOKEN": "stub-token",
         },
     )
-    assert proc.stdout is not None
-    line = proc.stdout.readline().strip()
+    line = read_port_line(proc)
     assert line.startswith("SWEAVE_ENGINE_PORT="), line
     url = f"http://127.0.0.1:{line.split('=', 1)[1]}"
-    for _ in range(50):
-        try:
-            if httpx.get(f"{url}/health", timeout=2.0).status_code == 200:
-                break
-        except httpx.ConnectError:
-            time.sleep(0.1)
+    wait_for_health(url)
     saved = os.environ.get("SWEAVE_ENGINE_URL")
     os.environ["SWEAVE_ENGINE_URL"] = url
     try:
@@ -151,7 +146,7 @@ def sidecar(stub_url, tmp_path_factory):
             os.environ.pop("SWEAVE_ENGINE_URL", None)
         else:
             os.environ["SWEAVE_ENGINE_URL"] = saved
-        proc.kill()
+        stop_sidecar(proc)
 
 
 def _spec(model: str):
@@ -245,11 +240,8 @@ async def test_go_no_credential_is_auth_missing(sidecar, stub_url, monkeypatch):
     HITS.clear()
     empty_home = tempfile.mkdtemp(prefix="go-noauth-home-")
     repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
+    proc = spawn_sidecar(
         ["node", str(repo_root / "sweave-engine" / "src" / "serve.js"), "--port", "0"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
         env={
             **os.environ,
             "HOME": empty_home,
@@ -260,8 +252,7 @@ async def test_go_no_credential_is_auth_missing(sidecar, stub_url, monkeypatch):
         },
     )
     try:
-        assert proc.stdout is not None
-        line = proc.stdout.readline().strip()
+        line = read_port_line(proc)
         assert line.startswith("SWEAVE_ENGINE_PORT="), line
         url = f"http://127.0.0.1:{line.split('=', 1)[1]}"
         monkeypatch.setenv("SWEAVE_ENGINE_URL", url)
@@ -270,7 +261,7 @@ async def test_go_no_credential_is_auth_missing(sidecar, stub_url, monkeypatch):
         )
         result = await engine_proc.send(_message("hi"), trace=_Trace())
     finally:
-        proc.kill()
+        stop_sidecar(proc)
     assert not result.success
     assert "auth_missing" in (result.error or "")
     assert HITS == []
@@ -331,17 +322,13 @@ async def test_go_sweave_store_tier(stub_url, tmp_path):
     }
     env.pop("SWEAVE_ENGINE_KEY_OPENCODE_GO", None)
     env.pop("OPENCODE_GO_API_KEY", None)
-    proc = subprocess.Popen(
+    proc = spawn_sidecar(
         ["node", str(repo_root / "sweave-engine" / "src" / "serve.js"), "--port", "0"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
         env=env,
     )
     saved = os.environ.get("SWEAVE_ENGINE_URL")
     try:
-        assert proc.stdout is not None
-        line = proc.stdout.readline().strip()
+        line = read_port_line(proc)
         assert line.startswith("SWEAVE_ENGINE_PORT="), line
         os.environ["SWEAVE_ENGINE_URL"] = (
             f"http://127.0.0.1:{line.split('=', 1)[1]}"
@@ -355,6 +342,6 @@ async def test_go_sweave_store_tier(stub_url, tmp_path):
             os.environ.pop("SWEAVE_ENGINE_URL", None)
         else:
             os.environ["SWEAVE_ENGINE_URL"] = saved
-        proc.kill()
+        stop_sidecar(proc)
     assert result.success, result.error
     assert HITS and HITS[0]["auth"] == "Bearer store-tier-key"

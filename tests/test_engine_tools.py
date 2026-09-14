@@ -18,14 +18,18 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import httpx
 import pytest
+
+from tests.sidecars import (
+    read_port_line,
+    spawn_sidecar,
+    stop_sidecar,
+    wait_for_health,
+)
 
 node_missing = shutil.which("node") is None
 needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
@@ -176,11 +180,8 @@ def sidecar(tmp_path_factory, env_urls):
         pytest.skip("node not on PATH")
     data_dir = tmp_path_factory.mktemp("engine-tools-data")
     repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
+    proc = spawn_sidecar(
         ["node", str(repo_root / "sweave-engine" / "src" / "serve.js"), "--port", "0", "--data-dir", str(data_dir)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
         env={
             **os.environ,
             "SWEAVE_ENGINE_BASE_OPENROUTER": env_urls,
@@ -188,16 +189,10 @@ def sidecar(tmp_path_factory, env_urls):
             "SWEAVE_MCP_TOKEN": "stub-token",
         },
     )
-    assert proc.stdout is not None
-    line = proc.stdout.readline().strip()
+    line = read_port_line(proc)
     assert line.startswith("SWEAVE_ENGINE_PORT=")
     url = f"http://127.0.0.1:{line.split('=', 1)[1]}"
-    for _ in range(50):
-        try:
-            if httpx.get(f"{url}/health", timeout=2.0).status_code == 200:
-                break
-        except httpx.ConnectError:
-            time.sleep(0.1)
+    wait_for_health(url)
     saved = {k: os.environ.get(k) for k in ("SWEAVE_ENGINE_URL",)}
     os.environ["SWEAVE_ENGINE_URL"] = url
     try:
@@ -208,7 +203,7 @@ def sidecar(tmp_path_factory, env_urls):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        proc.kill()
+        stop_sidecar(proc)
 
 
 @pytest.fixture

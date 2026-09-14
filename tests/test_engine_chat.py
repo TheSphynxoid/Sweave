@@ -22,7 +22,6 @@ import json
 import os
 import shutil
 import socket
-import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +29,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+
+from tests.sidecars import (
+    read_port_line,
+    spawn_sidecar,
+    stop_sidecar,
+    wait_for_health,
+)
 
 node_missing = shutil.which("node") is None
 needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
@@ -132,7 +138,7 @@ def sidecar(tmp_path_factory, stub_url):
         pytest.skip("node not on PATH")
     data_dir = tmp_path_factory.mktemp("engine-data")
     repo_root = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
+    proc = spawn_sidecar(
         [
             "node",
             str(repo_root / "sweave-engine" / "src" / "serve.js"),
@@ -141,27 +147,17 @@ def sidecar(tmp_path_factory, stub_url):
             "--data-dir",
             str(data_dir),
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
         env={
             **os.environ,
             "SWEAVE_ENGINE_BASE_OPENROUTER": stub_url,
         },
     )
-    assert proc.stdout is not None
-    line = proc.stdout.readline().strip()
+    line = read_port_line(proc)
     assert line.startswith("SWEAVE_ENGINE_PORT=")
     port = line.split("=", 1)[1]
     url = f"http://127.0.0.1:{port}"
-    # Wait for health.
-    for _ in range(50):
-        try:
-            resp = httpx.get(f"{url}/health", timeout=2.0)
-            if resp.status_code == 200:
-                break
-        except httpx.ConnectError:
-            time.sleep(0.1)
+    # Wait for health (bounded; a dead sidecar fails loudly on the turn).
+    wait_for_health(url)
     monkeypatch_vars = {
         "SWEAVE_ENGINE_URL": url,
         "SWEAVE_ENGINE_BASE_OPENROUTER": stub_url,
@@ -176,7 +172,7 @@ def sidecar(tmp_path_factory, stub_url):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        proc.kill()
+        stop_sidecar(proc)
 
 
 class _FakeTrace:
