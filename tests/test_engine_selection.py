@@ -1,15 +1,15 @@
-"""Engine step 4 tests: per-specialist selection + opencode fallback.
+"""Engine step 4 tests: per-specialist selection (fallback removed).
 
 Hermetic: fake Harness objects stand in for both engines in the
-registry (no node, no sidecar, no LLM). The opencode fallback path
-runs through the per-instance ``_send_message`` double (never the
-wire), mirroring the M1.3 step-3 pattern.
+registry (no node, no sidecar, no LLM).
 
 Covers the step-4 done-gate shape: resolver tier order
-(override > mock > specialist > config > fallback), the
+(override > mock > specialist > config > selection-default), the
 step-4 default flip, engine dispatch with identical Message
-metadata, the no-double-execution fallback guard (fallback ONLY
-before any work), and the JobRunner transient override channel.
+metadata, the 2026-09-14 fallback REMOVAL (engine death fails loud,
+the opencode path is never entered — fail loud across harnesses),
+the after-work loud-failure guard, and the JobRunner transient
+override channel.
 """
 
 from __future__ import annotations
@@ -92,8 +92,9 @@ class _FakeEngineProcess:
         self._session_id = "eng_fake_1"
         self.pid = -1
 
-    async def send(self, message, on_chunk=None, trace=None):
+    async def send(self, message, on_chunk=None, trace=None, on_reasoning=None):
         self._seen.append(message)
+        self._seen_reasoning_cb = on_reasoning
         return await self._script(message, trace)
 
     async def terminate(self):
@@ -181,7 +182,7 @@ def _runtime():
 
 
 # ---------------------------------------------------------------------------
-# _run_engine_attempt: dispatch shape + fallback guard
+# _run_engine_attempt: dispatch shape + after-work loud-failure guard
 # ---------------------------------------------------------------------------
 
 
@@ -396,17 +397,26 @@ async def test_run_selects_engine_via_override_and_skips_fallback(
 
 
 @pytest.mark.asyncio
-async def test_run_falls_back_to_opencode_on_engine_death(
+async def test_run_fails_loud_on_engine_death_without_fallback(
     monkeypatch, tmp_path: Path
 ):
+    """No automatic cross-harness fallback (user ruling 2026-09-14,
+    removal executed same day): an engine-selected turn whose engine
+    dies before any work fails LOUD with the engine error. The
+    opencode path is never entered (no ``fallback_used`` trace, no
+    second session, no double bill)."""
     _register_fake(
         monkeypatch, None, [], fail_spawn=RuntimeError("node gone")
     )
     runtime = _runtime()
 
+    opencode_entered = False
+
     async def fake_send(
         self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs
     ):
+        nonlocal opencode_entered
+        opencode_entered = True
         return "opencode-fallback-output"
 
     runtime._send_message = fake_send  # type: ignore[assignment]
@@ -420,11 +430,10 @@ async def test_run_falls_back_to_opencode_on_engine_death(
         harness="sweave-engine",
         project_dir=tmp_path,
     )
-    assert out == "opencode-fallback-output"
-    used = trace.kinds("fallback_used")
-    assert len(used) == 1
-    assert used[0]["from"] == "sweave-engine"
-    assert used[0]["to"] == "opencode"
+    assert "node gone" in out
+    assert out.startswith("[chat error:")
+    assert opencode_entered is False
+    assert trace.kinds("fallback_used") == []
 
 
 @pytest.mark.asyncio
@@ -449,6 +458,63 @@ async def test_run_mock_stays_opencode_without_override(tmp_path: Path):
     # …but the mock seam pins opencode so the suite never spawns node.
     assert out == "mock-opencode-output"
     assert trace.kinds("harness_selected")[0]["source"] == "mock"
+
+
+@pytest.mark.asyncio
+async def test_run_engine_attempt_forwards_on_reasoning(
+    monkeypatch, tmp_path: Path
+):
+    """The runtime wires the chat loop's on_reasoning through to the
+    engine send (protocol v2 thinking text reaches chat.thinking)."""
+    captured: dict = {}
+
+    class _Proc:
+        _session_id = "eng_probe"
+
+        async def send(
+            self, message, on_chunk=None, trace=None, on_reasoning=None, **kw
+        ):
+            captured["cb"] = on_reasoning
+            if on_reasoning is not None:
+                # Same sync-or-async contract as the real send.
+                res = on_reasoning("hmm")
+                if hasattr(res, "__await__"):
+                    await res
+            return AgentResult(success=True, output="ok")
+
+    class _Harness:
+        name = ENGINE_HARNESS_NAME
+
+        async def spawn(self, spec):
+            return _Proc()
+
+        async def attach(self, sid, spec):
+            return _Proc()
+
+        def get_default_tools(self):
+            return []
+
+        async def health_check(self):
+            return True
+
+    monkeypatch.setitem(
+        harness_registry._harnesses, ENGINE_HARNESS_NAME, _Harness()
+    )
+    runtime = _runtime()
+    trace = _Trace()
+    got: list = []
+    out, reason = await runtime._run_engine_attempt(
+        specialist=_specialist(),
+        delegation=_delegation(),
+        worktree_path=tmp_path,
+        message="hi",
+        trace=trace,  # type: ignore[arg-type]
+        project_dir=tmp_path,
+        on_reasoning=got.append,
+    )
+    assert (out, reason) == ("ok", None)
+    assert captured.get("cb") is not None
+    assert got == ["hmm"]
 
 
 # ---------------------------------------------------------------------------

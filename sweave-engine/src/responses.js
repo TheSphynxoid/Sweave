@@ -62,6 +62,7 @@ export async function providerResponsesStream({
   defs,
   signal,
   onToken,
+  onReasoning,
 }) {
   const resp = await fetch(`${baseURL}/responses`, {
     method: "POST",
@@ -122,6 +123,21 @@ export async function providerResponsesStream({
         } else if (type === "response.function_call_arguments.delta") {
           const id = obj.item_id || "";
           argDeltas.set(id, (argDeltas.get(id) || "") + (obj.delta || ""));
+        } else if (
+          type === "response.reasoning_summary_text.delta" ||
+          type === "response.reasoning_text.delta" ||
+          type === "response.reasoning.delta" ||
+          type === "response.reasoning_summary.delta"
+        ) {
+          // Thinking capture (official carrier +
+          // compat-server variants): reasoning summaries stream
+          // here, never as output_text. Forwarded, never output.
+          const rdelta = typeof obj.delta === "string" ? obj.delta : "";
+          if (rdelta && onReasoning) {
+            try {
+              onReasoning(rdelta);
+            } catch {}
+          }
         } else if (type === "response.output_item.done") {
           const item = obj.item || {};
           if (item.type === "function_call") {

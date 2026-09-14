@@ -39,7 +39,7 @@ needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
 # Stub provider (OpenAI-compatible SSE)
 # ---------------------------------------------------------------------------
 
-STUB: dict = {"bodies": [], "hold_second_chunk": threading.Event(), "delay": 0.0}
+STUB: dict = {"bodies": [], "hold_second_chunk": threading.Event(), "delay": 0.0, "reasoning_mode": None}
 
 
 class _StubHandler(BaseHTTPRequestHandler):
@@ -69,6 +69,29 @@ class _StubHandler(BaseHTTPRequestHandler):
             {"choices": [{"delta": {"content": " world"}}]},
             {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}},
         ]
+        # Thinking-inclusion probe (protocol v2): when the mode is
+        # set, chunk 0 carries reasoning deltas in a real provider
+        # shape instead of text — the sidecar must forward them as
+        # `reasoning` SSE (never as token text).
+        mode = STUB.get("reasoning_mode")
+        if mode == "deepseek":
+            chunks = [
+                {"choices": [{"delta": {"reasoning_content": "Let me "}}]},
+                {"choices": [{"delta": {"reasoning_content": "think"}}]},
+                {"choices": [{"delta": {"content": "Hello"}}]},
+                {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}},
+            ]
+        elif mode == "openrouter":
+            chunks = [
+                {"choices": [{"delta": {
+                    "reasoning": "We",
+                    "reasoning_details": [
+                        {"type": "reasoning.text", "text": "We", "format": "unknown", "index": 0},
+                    ],
+                }}]},
+                {"choices": [{"delta": {"content": "done"}}]},
+                {"choices": [{"delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 3}},
+            ]
         for i, c in enumerate(chunks):
             if i == 1 and not STUB["hold_second_chunk"].is_set():
                 STUB["hold_second_chunk"].wait(timeout=15)
@@ -223,6 +246,77 @@ async def test_tokens_used_matches_stub_usage(sidecar):
 
 
 @needs_node
+async def test_reasoning_content_forwarded_not_output(sidecar):
+    """DeepSeek-native shape (`reasoning_content`): thinking text
+    reaches on_reasoning + the trace, never the turn output."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["reasoning_mode"] = "deepseek"
+    try:
+        proc = await SweaveEngineHarness().spawn(_spec())
+        chunks: list[str] = []
+        thinkings: list[str] = []
+        trace = _FakeTrace()
+        result = await proc.send(
+            _message("think"),
+            on_chunk=chunks.append,
+            on_reasoning=thinkings.append,
+            trace=trace,
+        )
+    finally:
+        STUB["reasoning_mode"] = None
+    assert result.success, result.error
+    assert "".join(thinkings) == "Let me think"
+    assert result.output == "Hello"
+    assert "".join(chunks) == "Hello"
+    reasoned = [p for n, p in trace.events if n == "reasoning"]
+    assert [p["text"] for p in reasoned] == ["Let me ", "think"]
+
+
+@needs_node
+async def test_openrouter_reasoning_not_doubled(sidecar):
+    """OpenRouter shape (`reasoning` + `reasoning_details` carrying
+    the same text): forwarded exactly once per delta."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["reasoning_mode"] = "openrouter"
+    try:
+        proc = await SweaveEngineHarness().spawn(_spec())
+        thinkings: list[str] = []
+        trace = _FakeTrace()
+        result = await proc.send(
+            _message("think"), on_reasoning=thinkings.append, trace=trace
+        )
+    finally:
+        STUB["reasoning_mode"] = None
+    assert result.success, result.error
+    assert "".join(thinkings) == "We"
+    assert result.output == "done"
+
+
+@needs_node
+async def test_single_shot_path_forwards_reasoning(sidecar):
+    """Tool-less specialist turn (single-shot pump in serve.js, not
+    the loop): same reasoning contract."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["reasoning_mode"] = "deepseek"
+    try:
+        proc = await SweaveEngineHarness().spawn(
+            _spec(role="specialist", name="worker")
+        )
+        thinkings: list[str] = []
+        result = await proc.send(
+            _message("think"), on_reasoning=thinkings.append
+        )
+    finally:
+        STUB["reasoning_mode"] = None
+    assert result.success, result.error
+    assert "".join(thinkings) == "Let me think"
+    assert result.output == "Hello"
+
+
+@needs_node
 async def test_model_mapping_and_per_message_override(sidecar):
     from sweave.harness.base import Message
     from sweave.harness.engine import SweaveEngineHarness
@@ -247,11 +341,13 @@ async def test_model_mapping_and_per_message_override(sidecar):
 
 @needs_node
 async def test_health_carries_protocol_version(sidecar):
+    from sweave.engine.protocol import PROTOCOL_VERSION
+
     async with httpx.AsyncClient(base_url=sidecar, timeout=5.0) as client:
         resp = await client.get("/health")
     assert resp.status_code == 200
-    assert resp.headers["X-Sweave-Engine-Protocol"] == "1"
-    assert resp.json()["protocol_version"] == "1"
+    assert resp.headers["X-Sweave-Engine-Protocol"] == PROTOCOL_VERSION
+    assert resp.json()["protocol_version"] == PROTOCOL_VERSION
 
 
 @needs_node

@@ -19,7 +19,9 @@ from typing import Any
 #: refuse loudly at connect (``ProtocolMismatch``), never fail turns
 #: cryptically. Carried as ``GET /health`` ``protocol_version`` AND the
 #: ``X-Sweave-Engine-Protocol`` header on every request/response.
-PROTOCOL_VERSION = "1"
+#: v2 (2026-09-14, thinking-inclusion ruling): adds the ``reasoning``
+#: SSE event (engine thinking text, vercel/ai-pattern baseline).
+PROTOCOL_VERSION = "2"
 
 #: Header carrying :data:`PROTOCOL_VERSION` on every protocol message.
 PROTOCOL_VERSION_HEADER = "X-Sweave-Engine-Protocol"
@@ -62,13 +64,16 @@ SWEAVE_NATIVE_TOOLS: tuple[str, ...] = (
 
 #: Exact SSE event vocabulary. ``token`` is the only engine-native
 #: addition (true token streaming — the liveness the opencode wire
-#: lacks); every other name is adopted verbatim from the M1.9 harness
+#: lacks); ``reasoning`` (v2) carries engine thinking text under the
+#: same contract as opencode ``reasoning`` parts; every other name is
+#: adopted verbatim from the M1.9 harness
 #: vocabulary (``sweave/harness/opencode.py``) per the
 #: identical-trace-events invariant. Vocabulary owner is the
 #: transparency track — new shapes are proposed there first, never
 #: invented here.
 TRACE_EVENT_NAMES: tuple[str, ...] = (
     "token",
+    "reasoning",
     "tool.started",
     "tool.updated",
     "tool.completed",

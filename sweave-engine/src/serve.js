@@ -16,9 +16,9 @@ import {
   historyToResponsesInput,
   providerResponsesStream,
 } from "./responses.js";
-import { historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
+import { extractReasoningDelta, historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
-const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "1";
+const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "2";
 const VERSION_HEADER = "X-Sweave-Engine-Protocol";
 
 const args = process.argv.slice(2);
@@ -261,6 +261,9 @@ async function runTurn(sessionId, body, res) {
           output += t;
           sseEvent(res, { event: "token", text: t });
         },
+        onReasoning: (t) => {
+          sseEvent(res, { event: "reasoning", text: t });
+        },
       });
       output = step.text;
       usage = step.usage;
@@ -359,6 +362,10 @@ async function runTurn(sessionId, body, res) {
             output += delta;
             sseEvent(res, { event: "token", text: delta });
           }
+          // Thinking capture (single-shot chat path mirrors the
+          // loop's providerStream): reasoning never joins output.
+          const rdelta = extractReasoningDelta(obj?.choices?.[0]?.delta);
+          if (rdelta) sseEvent(res, { event: "reasoning", text: rdelta });
           if (obj?.usage) usage = obj.usage;
         }
         if (turn.finished) {

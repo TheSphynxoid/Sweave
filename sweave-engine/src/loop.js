@@ -93,7 +93,7 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onToolDelta }) {
+async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta }) {
   // `messages` is flavor-appropriate input (chat messages or Responses
   // input items — the caller maps history for the resolved flavor).
   // Both transports return { text, calls: [{id, name, args}], usage }.
@@ -161,6 +161,11 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
         text += delta.content;
         onToken(delta.content);
       }
+      // Thinking capture: reasoning deltas ride the same stream in a
+      // provider-specific field (see extractReasoningDelta). Forwarded
+      // as-is; never mixed into `text` (the turn output).
+      const rtext = extractReasoningDelta(delta);
+      if (rtext && onReasoning) onReasoning(rtext);
       for (const tc of delta.tool_calls || []) {
         const slot = toolDeltas.get(tc.index ?? 0) || { id: "", name: "", arguments: "" };
         if (tc.id) slot.id = tc.id;
@@ -197,6 +202,35 @@ function approvalMatches(approvals, permission, target) {
   return (approvals || []).some(
     (a) => a.permission === permission && (a.pattern === target || a.pattern === "*")
   );
+}
+
+/**
+ * Reasoning-delta extractor (vercel/ai-pattern baseline, pinned
+ * v7.0.99 — re-implemented, no dependency). Providers disagree on
+ * the chat-completions field: DeepSeek-native sends
+ * `reasoning_content`, OpenRouter sends `reasoning` plus a
+ * structured `reasoning_details` array carrying the same text.
+ * Structured details win when present (they distinguish text vs
+ * summary and let us skip opaque `encrypted` entries); otherwise
+ * first non-empty string wins so thinking is never doubled.
+ */
+export function extractReasoningDelta(delta) {
+  if (!delta || typeof delta !== "object") return "";
+  const details = delta.reasoning_details;
+  if (Array.isArray(details)) {
+    let out = "";
+    for (const d of details) {
+      if (!d || typeof d !== "object") continue;
+      if (typeof d.text === "string") out += d.text;
+      else if (typeof d.summary === "string") out += d.summary;
+    }
+    if (out) return out;
+  }
+  if (typeof delta.reasoning === "string" && delta.reasoning) return delta.reasoning;
+  if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+    return delta.reasoning_content;
+  }
+  return "";
 }
 
 async function resolveAsk(execCtx, gate, toolName, callId, input) {
@@ -287,6 +321,7 @@ export async function runLoop(loopCtx) {
       defs: all,
       signal,
       onToken: (t) => emit({ event: "token", text: t }),
+      onReasoning: (t) => emit({ event: "reasoning", text: t }),
     });
     stepText = stepResult.text;
     stepCalls = stepResult.calls;
