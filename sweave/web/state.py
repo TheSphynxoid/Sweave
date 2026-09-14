@@ -252,7 +252,7 @@ class AppState:
                     role_ref=None,
                     description="",
                     system_prompt=spec.system_prompt,
-                    harness=spec.harness or "opencode",
+                    harness=spec.harness or "sweave-engine",
                     current_model=spec.model or None,
                 )
                 resolver.create(rec)

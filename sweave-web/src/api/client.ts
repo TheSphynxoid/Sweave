@@ -23,8 +23,10 @@ import type {
   EscalationRecord,
   HarnessInfo,
   ModelsConfig,
+  PendingImport,
   ProjectCreate,
   ProjectSummary,
+  ProviderAvailability,
   SessionCreate,
   SessionDetail,
   SessionMessage,
@@ -207,6 +209,14 @@ class ApiClient {
       "/specialists",
     );
     return r.data.specialists;
+  }
+
+  /** Read one specialist — incl. the orchestrator singleton (its own branch). */
+  async getSpecialist(name: string): Promise<SpecialistSummary> {
+    const r = await this.client.get<SpecialistSummary>(
+      `/specialists/${encodeURIComponent(name)}`,
+    );
+    return r.data;
   }
 
   async createSpecialist(
@@ -417,6 +427,70 @@ class ApiClient {
   async listHarnesses(): Promise<HarnessInfo[]> {
     const r = await this.client.get<{ harnesses: HarnessInfo[] }>("/harnesses");
     return r.data.harnesses;
+  }
+
+  // ---- Provider credentials (Sweave-canonical keychain) ----
+
+  /** Universe × availability: every catalog provider + its credential state. */
+  async listProviders(): Promise<{ providers: ProviderAvailability[]; pending_imports: PendingImport[] }> {
+    const r = await this.client.get<{ providers: ProviderAvailability[]; pending_imports: PendingImport[] }>(
+      "/providers",
+    );
+    return r.data;
+  }
+
+  /** Store an API key for a provider (Sweave-canonical; push-through to opencode stores). */
+  async setCredential(
+    provider: string,
+    key: string,
+  ): Promise<{ credential: unknown; pushed: string[] }> {
+    const r = await this.client.post<{ credential: unknown; pushed: string[] }>(
+      "/credentials",
+      { provider, key },
+    );
+    return r.data;
+  }
+
+  async deleteCredential(provider: string): Promise<{ success: boolean; provider: string }> {
+    const r = await this.client.delete<{ success: boolean; provider: string }>(
+      `/credentials/${encodeURIComponent(provider)}`,
+    );
+    return r.data;
+  }
+
+  async importCredentials(
+    providers?: string[],
+  ): Promise<{ adopted: string[]; skipped: unknown[] }> {
+    const r = await this.client.post<{ adopted: string[]; skipped: unknown[] }>(
+      "/credentials/import",
+      providers?.length ? { providers } : {},
+    );
+    return r.data;
+  }
+
+  /**
+   * Converge one diverged provider (the Adopt-All ping-pong fix).
+   * `mine` pushes our key to every opencode store; `theirs` adopts
+   * the disagreeing store's key and converges the rest onto it.
+   */
+  async resolveCredential(
+    provider: string,
+    choice: "mine" | "theirs",
+    source?: string,
+  ): Promise<{ provider: string; choice: string; key_suffix: string | null; pushed: string[]; adopted_from: string | null }> {
+    const r = await this.client.post<{
+      provider: string;
+      choice: string;
+      key_suffix: string | null;
+      pushed: string[];
+      adopted_from: string | null;
+    }>("/credentials/resolve", { provider, choice, ...(source ? { source } : {}) });
+    return r.data;
+  }
+
+  async syncCredentials(): Promise<unknown> {
+    const r = await this.client.post("/credentials/sync", {});
+    return r.data;
   }
 
   async getMemoryBanks(): Promise<{ banks: { id: string; scope: string; name: string }[] }> {

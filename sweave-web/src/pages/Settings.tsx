@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Settings as SettingsIcon, Palette, Folder, Cpu, SlidersHorizontal } from "lucide-react";
+import { Settings as SettingsIcon, Palette, Folder, Cpu, SlidersHorizontal, KeyRound } from "lucide-react";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
 import {
@@ -20,7 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CustomColorEditor } from "@/components/CustomColorEditor";
 import { ModelWithEffort } from "@/components/EffortSelect";
 import { cn } from "@/utils/cn";
-import type { HarnessInfo, ModelsConfig } from "@/types";
+import type { HarnessInfo, ModelsConfig, ProviderAvailability } from "@/types";
 
 export function SettingsPage() {
   const { activeProject } = useApp();
@@ -70,6 +70,9 @@ export function SettingsPage() {
           <TabsTrigger value="models">
             <SlidersHorizontal size={14} className="mr-1.5" /> Models
           </TabsTrigger>
+          <TabsTrigger value="providers">
+            <KeyRound size={14} className="mr-1.5" /> Providers
+          </TabsTrigger>
           <TabsTrigger value="system">
             <Cpu size={14} className="mr-1.5" /> System
           </TabsTrigger>
@@ -85,6 +88,10 @@ export function SettingsPage() {
 
         <TabsContent value="models">
           <ModelsSettings models={models} />
+        </TabsContent>
+
+        <TabsContent value="providers">
+          <ProvidersSettings />
         </TabsContent>
 
         <TabsContent value="system">
@@ -298,6 +305,11 @@ function ProjectSettings() {
             <span className="max-w-[60%] truncate text-right font-mono text-xs" title={v}>{v}</span>
           </div>
         ))}
+        <p className="text-xs text-muted-foreground">
+          Effective default is the Sweave engine: specialists created without an
+          explicit harness run on <span className="font-mono">sweave-engine</span>.
+          Change it per specialist on the Agents tab.
+        </p>
         <div>
           <p className="text-sm text-muted-foreground mb-1">Model overrides</p>
           {Object.keys(activeProject.model_overrides).length === 0 ? (
@@ -458,6 +470,279 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
         </Card>
       ))}
     </div>
+    </div>
+  );
+}
+
+/** Short label for an opencode-store path: isolated copy vs real store. */
+function shortStoreName(path: string): string {
+  if (path.includes("opencode-data")) return "isolated copy";
+  return "real store";
+}
+
+export function ProvidersSettings() {
+  const qc = useQueryClient();
+  const { pushNotification } = useApp();
+  const [keys, setKeys] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["providers"],
+    queryFn: () => api.listProviders(),
+  });
+
+  const refresh = () => qc.invalidateQueries({ queryKey: ["providers"] });
+
+  const save = async (provider: string) => {
+    const key = (keys[provider] ?? "").trim();
+    if (!key) {
+      pushNotification("warning", `Paste an API key for ${provider} first.`);
+      return;
+    }
+    setSaving(provider);
+    try {
+      const res = await api.setCredential(provider, key);
+      setKeys((prev) => ({ ...prev, [provider]: "" }));
+      await refresh();
+      const pushed = res.pushed.length ? ` (pushed to ${res.pushed.length} opencode store${res.pushed.length === 1 ? "" : "s"})` : "";
+      pushNotification("success", `Key saved for ${provider}${pushed}.`);
+    } catch (err) {
+      pushNotification("error", `Failed to save key: ${(err as Error).message}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const remove = async (provider: string) => {
+    try {
+      await api.deleteCredential(provider);
+      await refresh();
+      pushNotification("success", `Sweave key removed for ${provider}.`);
+    } catch (err) {
+      pushNotification("error", `Failed to remove key: ${(err as Error).message}`);
+    }
+  };
+
+  const importAll = async (providers?: string[]) => {
+    try {
+      const res = await api.importCredentials(providers);
+      await refresh();
+      const skipped = (res.skipped ?? []) as { provider?: string; reason?: string }[];
+      const skippedNote = skipped.length
+        ? ` Skipped: ${skipped.map((s) => `${s.provider ?? "?"} (${s.reason ?? "?"})`).join(", ")}.`
+        : "";
+      if (res.adopted.length) {
+        pushNotification(
+          "success",
+          `Adopted keys for: ${res.adopted.join(",")}.${skippedNote}`,
+        );
+      } else if (skipped.length) {
+        // Nothing adoptable (OAuth / keyless entries): say why instead
+        // of the banner silently persisting.
+        pushNotification("warning", `Nothing adopted.${skippedNote}`);
+      } else {
+        pushNotification("success", "Nothing new to adopt.");
+      }
+    } catch (err) {
+      pushNotification("error", `Import failed: ${(err as Error).message}`);
+    }
+  };
+
+  const resolve = async (provider: string, choice: "mine" | "theirs") => {
+    try {
+      const res = await api.resolveCredential(provider, choice);
+      await refresh();
+      pushNotification(
+        "success",
+        choice === "mine"
+          ? `${provider}: kept ours everywhere (${res.pushed.length} store${res.pushed.length === 1 ? "" : "s"}).`
+          : `${provider}: took theirs; all stores converged.`,
+      );
+    } catch (err) {
+      pushNotification("error", `Resolve failed: ${(err as Error).message}`);
+    }
+  };
+
+  const sync = async () => {
+    try {
+      await api.syncCredentials();
+      await refresh();
+      pushNotification("success", "Credential stores synced.");
+    } catch (err) {
+      pushNotification("error", `Sync failed: ${(err as Error).message}`);
+    }
+  };
+
+  if (isLoading || !data) {
+    return (
+      <div className="grid gap-3 sm:grid-cols-2" data-testid="providers-loading">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="rounded-xl border border-border bg-card p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-3.5 w-20" />
+              <Skeleton className="h-5 w-16 rounded-full" />
+            </div>
+            <Skeleton className="h-2.5 w-full" />
+            <Skeleton className="h-8 w-full rounded-lg" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3" data-testid="providers-settings">
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">Provider keys</CardTitle>
+              <CardDescription>
+                Sweave-canonical keychain: keys live in ~/.sweave/credentials.json and are
+                pushed through to the opencode auth stores. Suffixes only — secrets never
+                come back to the UI.
+              </CardDescription>
+            </div>
+            <button
+              type="button"
+              onClick={() => void sync()}
+              data-testid="providers-sync"
+              title="Adopt new opencode-side keys and push Sweave-side keys out"
+              className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+            >
+              Sync stores
+            </button>
+          </div>
+        </CardHeader>
+        {(data.pending_imports ?? []).length > 0 && (
+          <CardContent className="pt-0">
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs">
+                  {data.pending_imports.length} opencode-side key{data.pending_imports.length === 1 ? "" : "s"} not
+                  yet adopted
+                </p>
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void importAll()}
+                    data-testid="providers-import-all"
+                    className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted"
+                  >
+                    Adopt all
+                  </button>
+                </div>
+              </div>
+              {data.pending_imports.map((p) => (
+                <div
+                  key={p.provider}
+                  data-testid={`provider-pending-${p.provider}`}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-1.5"
+                >
+                  <p className="text-xs">
+                    <span className="font-mono font-medium">{p.provider}</span>
+                    {p.reason && <span className="text-muted-foreground"> — {p.reason}</span>}
+                    {(p.sources ?? []).length > 0 && (
+                      <span className="text-muted-foreground">
+                        {" "}({(p.sources ?? []).map(shortStoreName).join(" vs ")})
+                      </span>
+                    )}
+                  </p>
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void resolve(p.provider, "mine")}
+                      data-testid={`provider-keep-${p.provider}`}
+                      title="Push our key to every opencode store (backups kept)"
+                      className="rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                    >
+                      Keep mine
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void resolve(p.provider, "theirs")}
+                      data-testid={`provider-take-${p.provider}`}
+                      title="Adopt their key and converge all stores onto it (backups kept)"
+                      className="rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted"
+                    >
+                      Take theirs
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-muted-foreground">
+                Adopt-all flips a two-store disagreement forever (each adopt makes the other
+                side "rotated"). Keep-mine / take-theirs writes the winner everywhere at once.
+              </p>
+            </div>
+          </CardContent>
+        )}
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {data.providers.map((p: ProviderAvailability) => (
+          <Card key={p.id} data-testid={`provider-card-${p.id}`}>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="font-mono text-sm">{p.id}</CardTitle>
+                {p.local ? (
+                  <Badge variant="muted" data-testid={`provider-status-${p.id}`}>local · no key</Badge>
+                ) : p.connected ? (
+                  <Badge
+                    variant="success"
+                    data-testid={`provider-status-${p.id}`}
+                    title={`Credential source: ${p.via ?? "unknown"}${p.key_suffix ? ` · …${p.key_suffix}` : ""}`}
+                  >
+                    connected{p.via ? ` · ${p.via}` : ""}{p.key_suffix ? ` · …${p.key_suffix}` : ""}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" data-testid={`provider-status-${p.id}`}>no key</Badge>
+                )}
+              </div>
+              <CardDescription>{p.models.length} models in catalog</CardDescription>
+            </CardHeader>
+            {!p.local && (
+              <CardContent className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    value={keys[p.id] ?? ""}
+                    onChange={(e) => setKeys((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void save(p.id);
+                    }}
+                    placeholder={p.connected ? "Replace key…" : "Paste API key…"}
+                    autoComplete="off"
+                    data-testid={`provider-key-${p.id}`}
+                    aria-label={`API key for ${p.id}`}
+                    className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 font-mono text-xs placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void save(p.id)}
+                    disabled={saving === p.id}
+                    data-testid={`provider-save-${p.id}`}
+                    className="h-8 shrink-0 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+                  >
+                    {saving === p.id ? "Saving…" : "Save"}
+                  </button>
+                  {p.connected && p.via === "sweave" && (
+                    <button
+                      type="button"
+                      onClick={() => void remove(p.id)}
+                      data-testid={`provider-delete-${p.id}`}
+                      title="Remove the Sweave-stored key (env/opencode copies untouched)"
+                      className="h-8 shrink-0 rounded-md border border-border px-2.5 text-xs font-medium text-destructive hover:bg-muted"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </CardContent>
+            )}
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

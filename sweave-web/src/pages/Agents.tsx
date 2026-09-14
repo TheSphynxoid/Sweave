@@ -52,6 +52,13 @@ export function AgentsPage() {
     queryKey: ["specialists"],
     queryFn: () => api.listSpecialists(),
   });
+  // The orchestrator singleton lives outside the routing pool, so the
+  // list above never contains it — fetch it on its own branch (404 =
+  // not seeded yet for this project, no card). Read-only: locked.
+  const { data: orchestrator = null } = useQuery<SpecialistSummary | null>({
+    queryKey: ["specialist", "orchestrator"],
+    queryFn: () => api.getSpecialist("orchestrator").catch(() => null),
+  });
   const { data: harnesses = [] } = useQuery<HarnessInfo[]>({
     queryKey: ["harnesses"],
     queryFn: () => api.listHarnesses(),
@@ -80,22 +87,24 @@ export function AgentsPage() {
       seed: [],
     };
     const q = query.trim().toLowerCase();
-    specialists.forEach((s) => {
-      if (
-        q.length > 0 &&
-        !s.name.toLowerCase().includes(q) &&
-        !(s.description ?? "").toLowerCase().includes(q) &&
-        !(s.harness ?? "").toLowerCase().includes(q)
-      ) {
-        return;
-      }
+    const matches = (s: SpecialistSummary) =>
+      q.length === 0 ||
+      s.name.toLowerCase().includes(q) ||
+      (s.description ?? "").toLowerCase().includes(q) ||
+      (s.harness ?? "").toLowerCase().includes(q);
+    // The singleton never comes through the list — merge it into its
+    // group (guarded: tests + future lists may include it already).
+    const all = [...specialists];
+    if (orchestrator && !all.some((s) => s.is_orchestrator)) all.push(orchestrator);
+    all.forEach((s) => {
+      if (!matches(s)) return;
       const key = s.is_orchestrator ? "orchestrator" : s.scope;
       (map[key] ??= []).push(s);
     });
     return order
       .map((k) => ({ key: k, items: map[k] ?? [] }))
       .filter((g) => g.items.length > 0);
-  }, [specialists, query]);
+  }, [specialists, orchestrator, query]);
 
   const setModel = async (s: SpecialistSummary, model: string) => {
     try {
@@ -244,9 +253,9 @@ function HarnessBadge({ harness, name }: { harness: string; name: string }) {
       variant={native ? "success" : "muted"}
       className="mr-1 align-middle"
       data-testid={`harness-badge-${name}`}
-      title={native ? "Runs on the native Sweave engine (opencode fallback)" : "Runs on opencode"}
+      title={native ? "Runs on the native Sweave engine" : "Runs on opencode"}
     >
-      {harness || "opencode"}
+      {harness || "sweave-engine"}
     </Badge>
   );
 }
@@ -271,10 +280,13 @@ function SpecialistCard({
 }) {
   const [open, setOpen] = useState(false);
   // Seeds keep a read-only prompt/description (config.yaml is the
-  // source of truth) but their model picker IS editable: it persists a
-  // minimal per-seed override via PUT /api/specialists/{name}/model.
+  // source of truth) but their model picker IS editable (per-seed
+  // override) — and since 2026-09-14 their harness too (seed
+  // override; the dialog locks everything else in seed mode).
   const locked = specialist.is_orchestrator;
-  const editable = !locked && specialist.scope !== "seed";
+  const isSeed = specialist.scope === "seed";
+  const editable = !locked;
+  const deletable = !locked && !isSeed;
 
   return (
     <Card className="overflow-hidden hover:shadow-md transition-shadow">
@@ -333,14 +345,16 @@ function SpecialistCard({
               >
                 <Pencil size={13} /> Edit
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-destructive hover:text-destructive"
-                onClick={onDelete}
-              >
-                <Trash2 size={13} /> Delete
-              </Button>
+              {deletable && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-destructive hover:text-destructive"
+                  onClick={onDelete}
+                >
+                  <Trash2 size={13} /> Delete
+                </Button>
+              )}
             </div>
           )}
         </div>

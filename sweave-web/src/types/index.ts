@@ -293,6 +293,32 @@ export interface HarnessInfo {
   models: string[];
 }
 
+/**
+ * Provider credential availability (2026-09-14 credential-ownership:
+ * `~/.sweave/credentials.json` canonical). From `GET /api/providers`:
+ * the absolute catalog (universe) annotated with availability.
+ * Secrets never leave the server — only suffix + tier source.
+ */
+export interface ProviderAvailability {
+  id: string;
+  models: string[];
+  /** true = credential in some tier, false = none, null = local/keyless. */
+  connected: boolean | null;
+  /** Credential tier: env | sweave | opencode-legacy (null when unconnected). */
+  via: string | null;
+  key_suffix: string | null;
+  local: boolean;
+}
+
+export interface PendingImport {
+  provider: string;
+  source: string;
+  /** Why it is pending ("new in opencode" | "rotated in opencode" | oauth…). */
+  reason?: string;
+  /** Opencode-store paths that disagree (isolated copy + real store). */
+  sources?: string[];
+}
+
 export interface Worktree {
   path: string;
   branch: string;

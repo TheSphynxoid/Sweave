@@ -181,7 +181,7 @@ async def create_agent(agent: AgentCreate, state: AppState = Depends(get_state))
         role_ref=None,  # explicit `role` in the legacy model != models.yaml role
         description=agent.description,
         system_prompt=agent.system_prompt,
-        harness=agent.harness or "opencode",
+        harness=agent.harness or "sweave-engine",
         current_model=agent.model or None,
     )
     try:
@@ -211,7 +211,7 @@ async def get_agent(name: str, state: AppState = Depends(get_state)):
             "role": ORCHESTRATOR_NAME,
             "model": state.config_manager.resolve_model(ORCHESTRATOR_NAME),
             "description": "Project supervisor (singleton; auto-seeded on first use)",
-            "harness": "opencode",
+            "harness": "sweave-engine",
             "tools": [],
             "builtin": True,
             "dynamic": False,
@@ -242,7 +242,7 @@ async def get_agent(name: str, state: AppState = Depends(get_state)):
             "role": name,
             "model": state.config_manager.resolve_model(name),
             "description": f"Built-in {name} specialist",
-            "harness": "opencode",
+            "harness": "sweave-engine",
             "tools": [],
             "builtin": True,
             "dynamic": False,
@@ -278,15 +278,20 @@ async def update_agent(
         prompt_edits = (
             update.system_prompt is not None
             or update.description is not None
-            or update.harness is not None
             or update.tools is not None
         )
         if prompt_edits:
             raise HTTPException(
                 400,
                 f"'{name}' is a seed view; its prompt/description live in "
-                "sweave/agents/*/config.yaml and cannot be edited here",
+                "sweave/agents/*/config.yaml and cannot be edited here "
+                "(model + harness are settable per-seed)",
             )
+        if update.harness is not None:
+            try:
+                resolver.set_seed_harness(name, update.harness)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         if update.model is not None:
             merged = resolver.set_seed_model(name, parse_model_ref(update.model))
             await state.publish(
