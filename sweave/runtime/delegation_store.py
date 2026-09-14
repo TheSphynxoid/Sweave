@@ -94,6 +94,14 @@ VALID_STATUSES = {"queued", "running", "review", "done", "failed"}
 JOIN_SETTLED_STATUSES = frozenset({"done", "failed", "review"})
 
 
+#: Canonical user-cancel error (Stop button, 2026-09-14). The status
+#: stays ``"failed"`` — the closed VALID_STATUSES set is untouched,
+#: so joins, boot recovery, and the archive sweep need no change.
+#: Forensics distinguishes a deliberate stop (this text) from a
+#: server death (``interrupted by ...``).
+CANCELLED_BY_USER_ERROR = "[chat error: cancelled by user]"
+
+
 def is_join_settled(status: str | None) -> bool:
     """True when a child in *status* counts as settled for the join."""
     return status in JOIN_SETTLED_STATUSES
@@ -108,6 +116,27 @@ def in_join_set(record: Any) -> bool:
     doubles) without the field read as non-blocking.
     """
     return bool(getattr(record, "blocking", False))
+
+
+def resolve_blocking(requested: bool | None, parent: Any | None) -> bool:
+    """Resolve the wait-set flag for one submit (2026-09-14 ruling).
+
+    An explicit ``True``/``False`` always wins. When omitted (``None``)
+    a child of a chat-turn delegation (``parent.kind == "chat"`` — the
+    orchestrator's own turn) joins the synthesis wait-set by default:
+    the orchestrator defers because it needs the answer, and an
+    un-joined child strands the turn with an empty synthesis. Every
+    other submit (top-level tasks, nested specialist defers, unknown
+    parent) keeps the M2.1 fire-and-forget default (``False``).
+
+    ``getattr``-based so duck-typed parents without ``kind`` read as
+    non-chat (legacy behaviour, never a crash on the submit path).
+    """
+    if requested is not None:
+        return requested
+    if parent is not None and getattr(parent, "kind", "task") == "chat":
+        return True
+    return False
 
 
 def _now() -> datetime:

@@ -26,6 +26,7 @@ from sweave.runtime.delegation_store import (
     PerProjectDelegationStores,
     in_join_set,
     is_join_settled,
+    resolve_blocking,
 )
 
 
@@ -44,6 +45,28 @@ def test_in_join_set_defaults_to_nonblocking():
     # Duck-typed doubles / pre-M2.1 records without the field read
     # as non-blocking (getattr-based).
     assert not in_join_set(SimpleNamespace(status="done"))
+
+
+def test_resolve_blocking_explicit_wins():
+    chat_parent = SimpleNamespace(kind="chat")
+    task_parent = SimpleNamespace(kind="task")
+    assert resolve_blocking(True, chat_parent) is True
+    assert resolve_blocking(False, chat_parent) is False
+    assert resolve_blocking(True, task_parent) is True
+    assert resolve_blocking(False, task_parent) is False
+    assert resolve_blocking(True, None) is True
+    assert resolve_blocking(False, None) is False
+
+
+def test_resolve_blocking_omitted_chat_parent_joins():
+    # 2026-09-14 ruling: an omitted flag on a chat-turn defer joins
+    # the synthesis wait-set (the orchestrator defers because it
+    # needs the answer); everything else stays fire-and-forget.
+    assert resolve_blocking(None, SimpleNamespace(kind="chat")) is True
+    assert resolve_blocking(None, SimpleNamespace(kind="task")) is False
+    assert resolve_blocking(None, None) is False
+    # Duck-typed parents without kind read as non-chat (legacy).
+    assert resolve_blocking(None, SimpleNamespace()) is False
 
 
 def _chat_loop(stores: PerProjectDelegationStores, turn_timeout: float):

@@ -27,7 +27,7 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from sweave.runtime.delegation_store import Manifest
+from sweave.runtime.delegation_store import Manifest, resolve_blocking
 from sweave.runtime.subagent_store import SubAgentRun, SubAgentStatus
 from sweave.web.deps import get_state
 from sweave.web.state import AppState
@@ -90,9 +90,13 @@ class TaskSubmitV2(BaseModel):
     # is a 422.
     estimate: Optional[EstimateIn] = None
     # M2.1: wait-set opt-in. True = this child joins the synthesis
-    # join set; False (default) = fire-and-forget into the Children
-    # lane (ruling 1).
-    blocking: bool = False
+    # join set; False = fire-and-forget into the Children lane.
+    # None (omitted) = resolve at submit: a child of a chat-turn
+    # delegation joins by default (2026-09-14 ruling — the
+    # orchestrator defers because it needs the answer), everything
+    # else stays fire-and-forget. See
+    # ``sweave.runtime.delegation_store.resolve_blocking``.
+    blocking: Optional[bool] = None
     # Step 4: per-task harness override (transient — resolved at
     # turn start, never persisted on the record). Unknown names are
     # a 400 (fail fast on operator typos, never silently default).
@@ -322,6 +326,9 @@ async def submit_task_v2(
     # chain rules raise specific ChainError subclasses; we map each to
     # the right HTTP code + a "rejected: <reason>" string so the MCP
     # ``defer`` tool can surface the actionable error verbatim.
+    # ``parent`` stays None for top-level submits (the wait-set
+    # resolver below treats that as non-chat).
+    parent = None
     if request.parent_task_id:
         if state.delegation_manager is None:
             raise HTTPException(503, "delegation manager not initialised")
@@ -394,8 +401,11 @@ async def submit_task_v2(
             if request.estimate is not None
             else None
         ),
-        # M2.1: wait-set flag (default False — fire-and-forget).
-        blocking=request.blocking,
+        # M2.1: wait-set flag. Omitted resolves by parent kind:
+        # chat-turn children join the synthesis wait-set by default
+        # (2026-09-14 ruling); everything else stays
+        # fire-and-forget.
+        blocking=resolve_blocking(request.blocking, parent),
         # Step 4: per-task harness override (transient). Unknown
         # names fail fast here so a typo never becomes a mystery
         # default three layers down.

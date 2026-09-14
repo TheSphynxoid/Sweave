@@ -73,7 +73,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const SWEAVE_TOOL_DEFS = [
   {
     name: "defer",
-    description: "Hand implementation work to a specialist (queued; end your turn after).",
+    description: "Hand implementation work to a specialist (queued; end your turn after — the call never blocks, your follow-up turn gets the results; do NOT poll by re-deferring).",
     parameters: {
       type: "object",
       properties: {
@@ -81,7 +81,11 @@ export const SWEAVE_TOOL_DEFS = [
         task: { type: "string" },
         reason: { type: "string" },
         estimate: { type: "object" },
-        blocking: { type: "boolean" },
+        blocking: {
+          type: "boolean",
+          description:
+            "true = your turn waits for this child and the follow-up turn synthesizes it; false = fire-and-forget into the Children lane. Omitted on a chat-turn defer joins by default.",
+        },
       },
       required: ["target", "task"],
     },

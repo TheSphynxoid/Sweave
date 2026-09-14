@@ -248,7 +248,9 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
       without).
     * ``blocking`` (bool, optional, M2.1): wait-set opt-in. True =
       this child joins the synthesis join set (the turn waits on
-      it); absent/False = fire-and-forget into the Children lane.
+      it); False = fire-and-forget into the Children lane. Omitted
+      on a chat-turn defer defaults to True (2026-09-14 ruling);
+      omitted elsewhere defaults to False.
       Must be a bool when present (else a ``rejected:`` line, same
       discipline as the estimate non-dict guard).
 
@@ -285,8 +287,9 @@ async def _defer(ctx: Any, params: types.CallToolRequestParams) -> types.CallToo
     if blocking is not None and not isinstance(blocking, bool):
         return _result_text(
             "rejected: 'blocking' must be a boolean when present "
-            "(true = join the synthesis wait-set, false/absent = "
-            "fire-and-forget)",
+            "(true = join the synthesis wait-set, false = "
+            "fire-and-forget; omitted on a chat-turn defer joins "
+            "by default)",
             is_error=True,
         )
 

@@ -216,11 +216,13 @@ async def test_defer_sends_no_blocking_key(monkeypatch):
 
 
 def test_submit_model_has_no_blocking():
-    """M2.1 step 3 update: TaskSubmitV2 now carries optional
-    ``blocking`` (default False — ruling 1). Absent flag =
+    """M2.1 step 3 update (amended 2026-09-14): TaskSubmitV2 carries
+    tri-state ``blocking`` (default None = resolve at submit: a child
+    of a chat-turn delegation joins, everything else stays
+    fire-and-forget). Absent flag without a chat parent =
     fire-and-forget, same as the pre-M2.1 behavior this test used
     to pin by absence."""
     from sweave.web.routers.delegations import TaskSubmitV2
 
     assert "blocking" in TaskSubmitV2.model_fields
-    assert TaskSubmitV2.model_fields["blocking"].default is False
+    assert TaskSubmitV2.model_fields["blocking"].default is None
