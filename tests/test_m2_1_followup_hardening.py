@@ -810,12 +810,12 @@ def _handoff_chat_loop(pm, stores, runtime, capture: list):
     return ChatLoop(
         project_manager=pm,
         specialist_runtime=runtime,
-        specialist_factory=lambda agent_name: factories.get(agent_name),
+        specialist_factory=lambda agent_name, project_name=None: factories.get(agent_name),
         project_dir_resolver=resolver,
         delegation_stores=stores,
         event_bus=None,
         turn_timeout=10.0,
-        model_resolver=lambda agent: "deepseek-flash",
+        model_resolver=lambda agent, project=None: "deepseek-flash",
     )
 
 

@@ -73,6 +73,19 @@
   sidecar-enforced (abort signal into tools, bash child kill,
   abort-aware permission/fetch). 993 pytest green (5 pre-existing
   seed/YAML failures from another thread, proven on clean HEAD).
+- ✅ **Two-file config (user ruling)**: global `config.yaml` holds
+  defaults; `{project}/.sweave/config.yaml` overlays `models` /
+  `routing` / `harness` per field (`server` / `memory` / `git` never
+  overridable; bad overlays fall back loudly). Task scope, not focus
+  scope: specialist factories take `(agent, project)` and resolve
+  against the delegation's/session's own project (the old closures
+  read the UI-focused active project — cross-project leak, fixed),
+  and per-turn timeout/retries/harness-tier/model-default come from
+  the turn's project overlay (harness tier gains `project` between
+  `specialist` and `config`).   `GET
+  /api/projects/{name}/config/effective` + Settings honesty note;
+  project editor deferred. `config.yaml` itself untracked (live
+  working artifact; `config.example.yaml` is the template).
 - ✅ **Chat-turn defers join synthesis by default (2026-09-14,
   user ruling)**: omitted `blocking` on a chat-turn defer resolves
   to True (`resolve_blocking`; explicit flags still win; record

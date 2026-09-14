@@ -567,7 +567,7 @@ async def test_submit_threads_harness_override_to_run(tmp_path: Path):
             seen.append(kwargs)
             return "stub-output"
 
-    def _factory(name: str):
+    def _factory(name: str, project_name: str | None = None):
         return _specialist(name=name)
 
     runner = JobRunner(

@@ -67,7 +67,7 @@ def _make_runner(project_dir: Path, *, runtime: StubRuntime | None = None):
         kwargs.update(
             delegate_tool=None,
             specialist_runtime=runtime,
-            specialist_factory=lambda name: None,
+            specialist_factory=lambda name, project=None: None,
             specialist_saver=lambda specialist, project_name: None,
         )
     else:

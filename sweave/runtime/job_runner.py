@@ -143,7 +143,7 @@ class JobRunner:
         project_dir_resolver: Callable[[str | None], Path | None] | None = None,
         child_session_adder: Callable[[Any], None] | None = None,
         specialist_runtime: "SpecialistRuntime | None" = None,
-        specialist_factory: Callable[[str], "Specialist | None"] | None = None,
+        specialist_factory: "Callable[[str, str | None], Specialist | None] | None" = None,
         turn_timeout: float | None = None,
         specialist_saver: "Callable[[Specialist, str | None], None] | None" = None,
         delegation_manager: "DelegationManager | None" = None,
@@ -153,6 +153,11 @@ class JobRunner:
         # mirroring project_dir_resolver. None = engine turns render
         # the map without user roots (fail-safe: ask, never allow).
         permission_roots_resolver: Callable[[str | None], Any | None] | None = None,
+        # Two-file config ruling: resolves a project name to its
+        # EFFECTIVE config (global + project overlay file). Drives the
+        # per-delegation turn budget + project harness tier below.
+        # None = global singletons (legacy/tests).
+        project_config_resolver: Callable[[str | None], Any | None] | None = None,
     ) -> None:
         self.delegate_tool = delegate_tool
         self.stores = delegation_stores
@@ -178,8 +183,12 @@ class JobRunner:
         # non-runtime callers keep working.
         self.specialist_runtime = specialist_runtime
         # Resolves an agent name to a Specialist record (M1.2 store,
-        # project→global→seed). The AppState supplies a closure that
-        # calls ``ensure_specialist_resolver().resolve(name, project_dir)``.
+        # project to global to seed). Signature (agent_name,
+        # project_name): the factory MUST resolve against the
+        # delegation's own project, never the UI-focused active
+        # project (two-file config ruling: task scope, not focus
+        # scope). The AppState supplies a closure over the resolver
+        # + ProjectManager.
         # When None, the runtime path is bypassed and the legacy
         # delegate_tool path runs.
         self.specialist_factory = specialist_factory
@@ -205,6 +214,7 @@ class JobRunner:
         # the delegation result stands on its own.
         self.delegation_manager = delegation_manager
         self.permission_roots_resolver = permission_roots_resolver
+        self.project_config_resolver = project_config_resolver
         # Step 4: transient per-task harness overrides
         # (submit(harness=...) -> _run pops). In-memory only: a
         # restart mid-flight loses the override and the recovered
@@ -240,6 +250,62 @@ class JobRunner:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def _effective_config_for(self, delegation: Delegation) -> Any | None:
+        """Effective config for delegation's own project (two-file
+        ruling: global + project overlay), or None when no resolver
+        is wired (legacy/tests keep the global singletons)."""
+        if self.project_config_resolver is None:
+            return None
+        try:
+            return self.project_config_resolver(delegation.project_name)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "JobRunner: project config resolve failed for %s",
+                delegation.project_name,
+            )
+            return None
+
+    def _turn_budget_raw_for(self, delegation: Delegation) -> Any:
+        """Raw budget value: the project overlay routing timeout when
+        present and positive, else the runner turn_timeout VERBATIM
+        (type preserved: legacy pins like 900s and trace payloads must
+        never change shape for the non-overlay path)."""
+        effective = self._effective_config_for(delegation)
+        try:
+            if effective is not None:
+                value = effective.routing.turn_timeout_s
+                if value and float(value) > 0:
+                    return value
+        except Exception:  # noqa: BLE001
+            pass
+        return self.turn_timeout
+
+    def _turn_budget_for(self, delegation: Delegation) -> float:
+        """Per-delegation turn budget in seconds for the wait math."""
+        try:
+            return float(
+                self._turn_budget_raw_for(delegation)
+                or self.DEFAULT_TURN_TIMEOUT
+            )
+        except Exception:  # noqa: BLE001
+            return float(self.DEFAULT_TURN_TIMEOUT)
+
+    def _turn_budget_label_for(self, delegation: Delegation) -> str:
+        """Display form for turn_timeout_exceeded_* (900, never 900.0)."""
+        raw = self._turn_budget_raw_for(delegation)
+        return f"{raw:g}" if isinstance(raw, float) else str(raw)
+
+    def _project_harness_for(self, delegation: Delegation) -> str | None:
+        """Project overlay harness.default for the harness tier."""
+        effective = self._effective_config_for(delegation)
+        try:
+            if effective is not None:
+                value = (effective.harness.default or "").strip()
+                return value or None
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     async def submit(
         self,
@@ -585,7 +651,11 @@ class JobRunner:
             return False
 
     async def _bounded_turn(
-        self, coro, delegation: Delegation, trace: "TraceLog"
+        self,
+        coro,
+        delegation: Delegation,
+        trace: "TraceLog",
+        budget_override: float | None = None,
     ) -> "tuple[bool, str | object]":
         """Run one agent turn under ``turn_timeout`` with a shielded
         re-arm: a turn exceeding the cap is NOT silently killed —
@@ -608,7 +678,14 @@ class JobRunner:
         import asyncio as _aio
 
         task = _aio.ensure_future(coro)
-        budget = float(self.turn_timeout or self.DEFAULT_TURN_TIMEOUT)
+        # Two-file config ruling: the caller passes the delegation's
+        # own project budget; without it the runner singleton applies.
+        base_budget = float(
+            budget_override
+            if budget_override
+            else (self.turn_timeout or self.DEFAULT_TURN_TIMEOUT)
+        )
+        budget = base_budget
         extensions = 0
         holds = 0
         rearm = False
@@ -633,9 +710,7 @@ class JobRunner:
                         # waited on.
                         holds += 1
                         rearm = True
-                        budget = float(
-                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
-                        )
+                        budget = base_budget
                         trace.append(
                             "turn_extended",
                             {
@@ -659,9 +734,7 @@ class JobRunner:
                             and not soft_extended
                         ):
                             soft_extended = True
-                            budget = float(
-                                self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
-                            )
+                            budget = base_budget
                             trace.append(
                                 "turn_soft_limit_extended",
                                 {"budget": budget},
@@ -690,9 +763,7 @@ class JobRunner:
                         # a FULL budget once so post-answer work is not
                         # capped by leftover time (user ruling).
                         rearm = False
-                        budget = float(
-                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
-                        )
+                        budget = base_budget
                         trace.append(
                             "turn_extended",
                             {
@@ -709,9 +780,7 @@ class JobRunner:
                         )
                     ):
                         extensions += 1
-                        budget = float(
-                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
-                        )
+                        budget = base_budget
                         trace.append(
                             "turn_extended",
                             {
@@ -727,9 +796,7 @@ class JobRunner:
                         # window re-arms a full budget; the outcome is
                         # consumed once, above.
                         soft_open = True
-                        budget = float(
-                            self.turn_timeout or self.DEFAULT_TURN_TIMEOUT
-                        )
+                        budget = base_budget
                         continue
                     task.cancel()
                     await _aio.gather(task, return_exceptions=True)
@@ -852,7 +919,11 @@ class JobRunner:
                 worktree_path = self.project_dir_resolver(delegation.project_name)
                 if worktree_path is None:
                     worktree_path = Path.home() / ".sweave"
-                specialist = self.specialist_factory(delegation.agent)
+                # Task scope, not focus scope: resolve against the
+                # delegation's own project (two-file config ruling).
+                specialist = self.specialist_factory(
+                    delegation.agent, delegation.project_name
+                )
                 if specialist is None:
                     from sweave.runtime.specialist_store import Specialist as _Spec
 
@@ -894,22 +965,27 @@ class JobRunner:
                         harness=harness_override,
                         project_dir=worktree_path,
                         permission_roots=permission_roots,
+                        project_harness_default=self._project_harness_for(
+                            delegation
+                        ),
                     ),
                     delegation,
                     trace,
+                    budget_override=self._turn_budget_for(delegation),
                 )
                 if not ok:
                     stopped = output == USER_STOPPED
+                    turn_timeout_raw = self._turn_budget_raw_for(delegation)
                     await store.update(
                         delegation.delegation_id,
                         output="",
                         error=(
                             "turn_stopped_by_user"
                             if stopped
-                            else f"turn_timeout_exceeded_{self.turn_timeout}s"
+                            else f"turn_timeout_exceeded_{self._turn_budget_label_for(delegation)}s"
                         ),
                     )
-                    trace.append("turn_timeout", {"timeout": self.turn_timeout})
+                    trace.append("turn_timeout", {"timeout": turn_timeout_raw})
                     await self._transition(delegation, store, trace, "failed",
                                            completed_at=datetime.now())
                     return

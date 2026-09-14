@@ -87,12 +87,12 @@ def _build_chat_loop(*, pm: ProjectManager, responses: list[str], bus: _Bus):
     chat = ChatLoop(
         project_manager=pm,
         specialist_runtime=runtime,
-        specialist_factory=lambda agent_name: _orchestrator_specialist(),
+        specialist_factory=lambda agent_name, project_name=None: _orchestrator_specialist(),
         project_dir_resolver=resolver,
         delegation_stores=stores,
         event_bus=bus,
         turn_timeout=10.0,
-        model_resolver=lambda agent: "deepseek-flash",
+        model_resolver=lambda agent, project=None: "deepseek-flash",
     )
     return chat, stores
 

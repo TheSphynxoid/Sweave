@@ -170,7 +170,7 @@ async def test_job_runner_runtime_path_when_wired(tmp_path: Path):
     delegate = _FakeDelegateTool()
     runtime, runners, sent_calls = _make_runtime_with_mock_send(tmp_path)
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(
             name=name, scope="project", is_orchestrator=False,
             system_prompt="", harness="opencode", current_model=None,
@@ -208,7 +208,7 @@ async def test_job_runner_legacy_path_when_specialist_unknown(tmp_path: Path):
     delegate = _FakeDelegateTool()
     runtime, _runners, _calls = _make_runtime_with_mock_send(tmp_path)
 
-    def factory(agent_name: str) -> Specialist | None:
+    def factory(agent_name: str, project_name: str | None = None) -> Specialist | None:
         return None  # agent not in any store
 
     runner = JobRunner(
@@ -241,7 +241,7 @@ async def test_job_runner_runtime_path_legacy_model_string(tmp_path: Path):
     delegate = _FakeDelegateTool()
     runtime, _runners, sent_calls = _make_runtime_with_mock_send(tmp_path)
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(name=name, system_prompt="", harness="opencode")
 
     runner = JobRunner(
@@ -298,7 +298,7 @@ async def test_runtime_runner_is_mocked_no_real_subprocess(tmp_path: Path):
     stores = _P()
     runtime, runners, _calls = _make_runtime_with_mock_send(tmp_path)
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(name=name, system_prompt="", harness="opencode")
 
     runner = JobRunner(
@@ -335,7 +335,7 @@ async def test_job_runner_two_sequential_delegations_share_runner(tmp_path: Path
     # Use the same registry the runtime will use
     runtime.runners = runners
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(name=name, system_prompt="", harness="opencode")
 
     runner = JobRunner(
@@ -365,7 +365,7 @@ async def test_job_runner_different_specialists_different_runners(tmp_path: Path
     runtime, _r, _c = _make_runtime_with_mock_send(tmp_path)
     runtime.runners = runners
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(name=name, system_prompt="", harness="opencode")
 
     runner = JobRunner(

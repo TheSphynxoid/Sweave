@@ -409,7 +409,9 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
             <div>
               <CardTitle className="text-sm">Default model</CardTitle>
               <CardDescription>
-                Used by the orchestrator and any specialist without an explicit model.
+                Global default for the orchestrator and specialists without an
+                explicit model. A project may override it in its own
+                .sweave/config.yaml (project layer wins for that project).
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">

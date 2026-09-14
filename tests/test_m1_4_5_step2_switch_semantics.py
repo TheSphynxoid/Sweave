@@ -125,7 +125,7 @@ async def test_switch_between_delegations_uses_new_model_on_next_call(
         current_model="ollama/qwen3:8b",
     )
 
-    def factory(name: str):
+    def factory(name: str, project_name: str | None = None):
         if name == "alpha":
             return record
         return None
@@ -173,7 +173,7 @@ async def test_task_override_beats_specialist_current_model(tmp_path: Path):
         current_model="ollama/qwen3:8b",
     )
 
-    def factory(name: str):
+    def factory(name: str, project_name: str | None = None):
         if name == "alpha":
             return record
         return None
@@ -366,7 +366,7 @@ async def test_switch_records_source_specialist_current_model_on_second_call(
             current_model="ollama/qwen3:8b",
         )
 
-        def factory(name: str):
+        def factory(name: str, project_name: str | None = None):
             if name == "alpha":
                 return record
             return None

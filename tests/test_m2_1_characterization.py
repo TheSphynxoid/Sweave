@@ -126,7 +126,7 @@ async def test_chat_wait_settles_on_review_child():
     chat = ChatLoop(
         project_manager=None,
         specialist_runtime=None,
-        specialist_factory=lambda name: None,
+        specialist_factory=lambda name, project=None: None,
         project_dir_resolver=lambda name: None,
         delegation_stores=stores,
         event_bus=None,
@@ -164,7 +164,7 @@ async def test_chat_wait_joins_every_child_unscoped():
     chat = ChatLoop(
         project_manager=None,
         specialist_runtime=None,
-        specialist_factory=lambda name: None,
+        specialist_factory=lambda name, project=None: None,
         project_dir_resolver=lambda name: None,
         delegation_stores=stores,
         event_bus=None,

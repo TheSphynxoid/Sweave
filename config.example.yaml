@@ -46,6 +46,11 @@ models:
 routing:
   routes: []  # Populated from rules.yaml
   fallback: "llm"
+  # NOTE: the global routing scalars (chain_budget, max_depth,
+  # turn_timeout_s, turn_retries) are read from rules.yaml, not from
+  # this block — load() builds the live routing config from the rules
+  # file (config.yaml's routing block is superseded). Set them in
+  # rules.yaml alongside routes, or per-project below.
   # M1.6: deferral chain constraints (the orchestrator->specialist->defer
   # path). chain_budget is coordination-token-only (orchestrator turns +
   # defer payloads + result summaries; specialist internal work is opaque).
@@ -56,3 +61,17 @@ routing:
   # rate-limit / network-down / timeouts); auth, bad-request,
   # quota-exhausted and context-overflow never retry. 0 disables.
   turn_retries: 3
+
+# Per-project overlay (two-file ruling): a project may carry
+# {project}/.sweave/config.yaml with any subset of the `models` /
+# `routing` / `harness` sections. Present fields win per field for
+# that project; everything else inherits this global file.
+# `server` / `memory` / `git` are process-global and never overridable.
+# Example project overlay:
+#   models:
+#     default: ollama/qwen3:8b
+#   routing:
+#     turn_timeout_s: 600
+#     turn_retries: 5
+#   harness:
+#     default: opencode

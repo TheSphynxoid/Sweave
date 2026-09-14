@@ -205,11 +205,14 @@ def resolve_harness_name(
     override: str | None = None,
     specialist_harness: str | None = None,
     config_default: str | None = None,
+    *,
+    project_default: str | None = None,
 ) -> tuple[str, str]:
     """Resolve which harness runs one turn. Returns ``(name, source)``.
 
     Step-4 selection semantics (custom-engine plan; no schema — the
-    ``Specialist.harness`` field predates both tracks):
+    ``Specialist.harness`` field predates both tracks), plus the
+    per-project tier (two-file config ruling):
 
     1. ``override`` (per-task, e.g. ``POST /api/v2/tasks {harness}``)
        wins — even under the test mock. Explicit is explicit.
@@ -218,11 +221,13 @@ def resolve_harness_name(
        real LLM; no test may spawn it implicitly).
     3. The specialist's own ``harness`` when it names a registered
        harness (unknown names fall through, never crash a turn).
-    4. The operator's config default when registered.
-    5. ``"opencode"`` — the guaranteed fallback, always registered.
+    4. ``project_default`` (the task's project overlay
+       ``harness.default``) when registered.
+    5. The operator's config default when registered.
+    6. ``"opencode"`` — the guaranteed fallback, always registered.
 
     ``source`` names the winning tier (``override`` | ``mock`` |
-    ``specialist`` | ``config`` | ``fallback``) for the
+    ``specialist`` | ``project`` | ``config`` | ``fallback``) for the
     ``harness_selected`` trace event.
     """
     import os
@@ -233,6 +238,8 @@ def resolve_harness_name(
         return "opencode", "mock"
     if specialist_harness and harness_registry.get(specialist_harness) is not None:
         return specialist_harness, "specialist"
+    if project_default and harness_registry.get(project_default) is not None:
+        return project_default, "project"
     if config_default and harness_registry.get(config_default) is not None:
         return config_default, "config"
     return "opencode", "fallback"

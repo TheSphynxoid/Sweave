@@ -172,12 +172,12 @@ class ChatLoop:
         *,
         project_manager: ProjectManager,
         specialist_runtime: SpecialistRuntime,
-        specialist_factory: Callable[[str], Specialist | None],
+        specialist_factory: Callable[[str, str | None], Specialist | None],
         project_dir_resolver: Callable[[str | None], Path | None],
         delegation_stores: PerProjectDelegationStores,
         event_bus: Any = None,
         turn_timeout: float = 1800.0,
-        model_resolver: Callable[[str], str | None] | None = None,
+        model_resolver: Callable[[str, str | None], str | None] | None = None,
         synthesis_token_cap: int = 8_000,
         # M1.7 step 4: transcript system hooks. The ChatLoop is the
         # composer driver; the backend hooks are passed in so the
@@ -207,8 +207,12 @@ class ChatLoop:
         # Retry budget (turn_retries setting, default 3): retries AFTER
         # the first provider attempt on engine turns (opencode retries
         # inside its own stack). Hot-reloaded like turn_timeout; None
-        # keeps the sidecar default.
+        # keeps the sidecar default. A per-turn project overlay value
+        # wins over this singleton when project_config_resolver is set.
         turn_retries: int | None = 3,
+        # Two-file config ruling: (project_name) -> effective
+        # SweaveConfig (global + project overlay) or None.
+        project_config_resolver: Callable[[str | None], Any | None] | None = None,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -217,11 +221,17 @@ class ChatLoop:
         self.delegation_stores = delegation_stores
         self.event_bus = event_bus
         self.turn_timeout = turn_timeout
-        # model_resolver(agent) -> model string (the same chain the
-        # /api/v2/tasks endpoint uses). For chat we resolve against
-        # "orchestrator" by default; an explicit model on the chat
-        # delegation would override (none today).
+        # model_resolver(agent, project_name) -> model string (the same
+        # chain the /api/v2/tasks endpoint uses, project-aware). For
+        # chat we resolve against "orchestrator" in the turn's own
+        # project (task scope, not focus scope); an explicit model on
+        # the chat delegation would override (none today).
         self.model_resolver = model_resolver
+        # project_config_resolver(project_name) -> effective SweaveConfig
+        # (global + project overlay) or None. Drives the per-turn
+        # routing (timeout bound, retry budget) and the project harness
+        # tier. None = global singletons (legacy/tests).
+        self.project_config_resolver = project_config_resolver
         # M1.7 step 3: synthesis prompt token cap. The synthesis
         # prompt is the per-section budget for the orchestrator's
         # second turn (per-child truncation is oldest-first when
@@ -246,6 +256,9 @@ class ChatLoop:
         self.job_runner = job_runner
         # Retry budget (turn_retries setting)
         self.turn_retries = turn_retries
+        # Two-file config ruling: project overlay resolver (see the
+        # model_resolver note above for the contract).
+        self.project_config_resolver = project_config_resolver
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -382,7 +395,11 @@ class ChatLoop:
                 logger.warning("ChatLoop: event_bus publish failed for %s: %s", event, e)
 
     async def _wait_for_children(
-        self, store: Any, parent_delegation_id: str, trace: Any = None
+        self,
+        store: Any,
+        parent_delegation_id: str,
+        trace: Any = None,
+        timeout: float | None = None,
     ) -> list:
         """Wait until every JOIN-SET child (``blocking == True``) with
         parent_task_id == *parent_delegation_id* reaches a join-settled
@@ -398,8 +415,9 @@ class ChatLoop:
         ``JOIN_SETTLED_STATUSES`` rule, same as the JobRunner parent
         gate.
 
-        Bounded by ``self.turn_timeout`` (the same cap the runtime
-        uses) so a wedged join-set child can't stall the chat
+        Bounded by the turn timeout (the same cap the runtime
+        uses; ``timeout`` overrides the singleton for project-scoped
+        turns) so a wedged join-set child can't stall the chat
         forever. Late-arriving children are silently absorbed --
         whatever is terminal when the deadline hits is what we
         synthesise on.
@@ -407,7 +425,8 @@ class ChatLoop:
         Returns the list of JOIN-SET child records (in completion
         order) — the synthesis input.
         """
-        deadline = asyncio.get_running_loop().time() + self.turn_timeout
+        cap = float(timeout) if timeout else float(self.turn_timeout)
+        deadline = asyncio.get_running_loop().time() + cap
         poll_interval = 0.25
         children_found = False
         scoped_logged = False
@@ -462,7 +481,7 @@ class ChatLoop:
                     "ChatLoop: child wait timed out for %s after %.0fs; "
                     "proceeding with %d children (some may not be terminal)",
                     parent_delegation_id,
-                    self.turn_timeout,
+                    cap,
                     len(join),
                 )
                 return sorted(
@@ -540,23 +559,63 @@ class ChatLoop:
             )
         return f"Human Q&A ({kind}) resolved as {status}: Q: {q} A: {resp}"
 
-    async def _resolve_model(self) -> str | None:
+    def _turn_scope_for(self, project_name: str | None) -> dict[str, Any]:
+        """Per-turn scope: timeout, retries, project harness tier.
+
+        Two-file config ruling: the turn's own project overlay wins;
+        without a resolver (legacy/tests) the singletons apply. Never
+        raises — every field falls back independently.
+        """
+        scope: dict[str, Any] = {
+            "timeout": float(self.turn_timeout),
+            "retries": self.turn_retries,
+            "project_harness": None,
+        }
+        if self.project_config_resolver is None:
+            return scope
+        try:
+            effective = self.project_config_resolver(project_name)
+        except Exception:  # noqa: BLE001
+            return scope
+        if effective is None:
+            return scope
+        try:
+            timeout = float(effective.routing.turn_timeout_s)
+            if timeout > 0:
+                scope["timeout"] = timeout
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            retries = effective.routing.turn_retries
+            if retries is not None and int(retries) >= 0:
+                scope["retries"] = int(retries)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            harness = (effective.harness.default or "").strip()
+            scope["project_harness"] = harness or None
+        except Exception:  # noqa: BLE001
+            pass
+        return scope
+
+    async def _resolve_model(self, project_name: str | None = None) -> str | None:
         """Resolve the orchestrator's model via the precedence chain.
 
         Uses the same ``model_resolver`` the legacy /api/tasks path
-        uses (orchestrator -> backend -> ...). Returns None when no
+        uses (orchestrator -> backend -> ...), in the turn's own
+        project (task scope, not focus scope). Returns None when no
         resolver is wired; the runtime's bare-name fallback then
         applies.
         """
         if self.model_resolver is None:
             return None
         try:
-            return self.model_resolver("orchestrator")
+            return self.model_resolver("orchestrator", project_name)
         except Exception:  # noqa: BLE001
             return None
 
     async def _resolve_orchestrator_specialist(
-        self, project_dir: Path | None
+        self, project_dir: Path | None, project_name: str | None = None
     ) -> Specialist:
         """Resolve the orchestrator specialist via the factory.
 
@@ -564,11 +623,13 @@ class ChatLoop:
         None (test fixtures, edge cases). The orchestrator singleton
         is auto-seeded via SpecialistResolver.resolve_orchestrator in
         production; the fallback here matches JobRunner's pattern.
+        Resolution is task-scoped: the turn's own project, never the
+        UI-focused active project.
         """
         spec = None
         if self.specialist_factory is not None:
             try:
-                spec = self.specialist_factory("orchestrator")
+                spec = self.specialist_factory("orchestrator", project_name)
             except Exception:  # noqa: BLE001
                 spec = None
         if spec is not None:
@@ -1286,8 +1347,11 @@ class ChatLoop:
                 user_msg = existing_user_msg
 
             project_dir = self.project_dir_resolver(session.project_name)
-            specialist = await self._resolve_orchestrator_specialist(project_dir)
-            model_str = await self._resolve_model()
+            specialist = await self._resolve_orchestrator_specialist(
+                project_dir, session.project_name
+            )
+            model_str = await self._resolve_model(session.project_name)
+            turn_scope = self._turn_scope_for(session.project_name)
             store = await self.delegation_stores.for_project(
                 project_dir or Path.home() / ".sweave"
             )
@@ -1543,6 +1607,9 @@ class ChatLoop:
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
                 on_reasoning=_on_reasoning,
+                timeout=turn_scope["timeout"],
+                max_retries=turn_scope["retries"],
+                project_harness=turn_scope["project_harness"],
             )
 
             # Update the Session's "what's new" anchors for the
@@ -1678,7 +1745,10 @@ class ChatLoop:
             # blocking children; the trace carries the
             # wait_set_scoped audit event naming the skipped set.
             children = await self._wait_for_children(
-                store, delegation.delegation_id, trace
+                store,
+                delegation.delegation_id,
+                trace,
+                timeout=turn_scope["timeout"],
             )
             # M2.1 follow-up §A step 3 (backend half): empty join set
             # with still-running fire-and-forget children. The
@@ -1771,6 +1841,9 @@ class ChatLoop:
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
                 on_reasoning=_on_reasoning,
+                timeout=turn_scope["timeout"],
+                max_retries=turn_scope["retries"],
+                project_harness=turn_scope["project_harness"],
             )
             if synthesis_turn_text.startswith("[chat error:"):
                 # Synthesis turn hard-failed. Return the explicit
@@ -1812,6 +1885,12 @@ class ChatLoop:
         # chat.thinking events; the full text is persisted on the
         # assistant message metadata (see _finalise_turn).
         on_reasoning: "Callable[[str], Any] | None" = None,
+        # Per-turn scope (two-file config ruling): timeout bound,
+        # retry budget, and project harness tier for THIS turn's
+        # project. None = the loop singletons (legacy/tests).
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        project_harness: str | None = None,
     ) -> str:
         """Run one orchestrator turn via SpecialistRuntime.
 
@@ -1839,6 +1918,8 @@ class ChatLoop:
                 permission_roots = list(proj.permission_roots or [])
         except Exception:  # noqa: BLE001
             permission_roots = None
+        turn_timeout = float(timeout) if timeout else float(self.turn_timeout)
+        turn_retries = self.turn_retries if max_retries is None else max_retries
         inner = self.runtime.run(
             specialist=specialist,
             delegation=delegation,
@@ -1852,10 +1933,11 @@ class ChatLoop:
             on_reasoning=on_reasoning,
             project_dir=worktree_path,
             permission_roots=permission_roots,
-            max_retries=self.turn_retries,
+            max_retries=turn_retries,
+            project_harness_default=project_harness,
         )
         task = asyncio.ensure_future(inner)
-        remaining = self.turn_timeout
+        remaining = turn_timeout
         try:
             # M1.12: the turn timer SUSPENDS while a human question
             # for this turn is unresolved (user ruling 2026-09-10:
@@ -1876,7 +1958,7 @@ class ChatLoop:
                         await asyncio.gather(task, return_exceptions=True)
                         return (
                             f"[chat error: orchestrator turn exceeded "
-                            f"{self.turn_timeout:.0f}s timeout]"
+                            f"{turn_timeout:.0f}s timeout]"
                         )
                     # Permission question outstanding: re-arm with the
                     # FULL budget (the countdown suspends, not shrinks)
@@ -1889,7 +1971,7 @@ class ChatLoop:
                             "kind": pending_q.get("kind", "permission"),
                         },
                     )
-                    remaining = self.turn_timeout
+                    remaining = turn_timeout
         except asyncio.CancelledError:
             # The turn task is being cancelled (user Stop, server
             # shutdown): the shield above protected the inner runtime

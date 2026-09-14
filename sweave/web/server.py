@@ -19,6 +19,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import jinja2
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -111,6 +112,43 @@ _jinja_env = jinja2.Environment(
 def render_template(template_name: str, context: dict) -> str:
     template = _jinja_env.get_template(template_name)
     return template.render(context)
+
+
+def _project_dir_for_config(project_manager: Any, project_name: str | None) -> Any:
+    """Project name -> project dir for task-scoped resolution.
+
+    Two-file config ruling: the delegation's/session's own project
+    names the store; the UI-focused active project is only the
+    fallback for un-scoped tasks (project_name None). Returns None
+    when neither resolves (callers treat None as global scope).
+    """
+    try:
+        if project_name:
+            proj = project_manager.get_project(project_name)
+            if proj is not None:
+                return proj.path
+        active = project_manager.get_active_project()
+        if active is not None:
+            proj = project_manager.get_project(active.name)
+            if proj is not None:
+                return proj.path
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _project_dir_for_name(project_manager: Any, project_name: str | None) -> Any:
+    """Strict variant: the named project's dir, or None (no active
+    fallback). For config-layer resolution, where falling back to
+    another project's overlay would be a scope leak."""
+    try:
+        if project_name:
+            proj = project_manager.get_project(project_name)
+            if proj is not None:
+                return proj.path
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 # ============================================================================
@@ -206,16 +244,15 @@ async def lifespan(app: FastAPI):
         ),
         # M1.2: resolve an agent name to a Specialist record
         # (project -> global -> seed). None = unknown name (the runner
-        # falls back to a transient Specialist).
-        specialist_factory=lambda agent_name: (
+        # falls back to a transient Specialist). Task scope, not focus
+        # scope (two-file config ruling): the delegation's own project
+        # names the project store; the active project is only the
+        # fallback for un-scoped tasks.
+        specialist_factory=lambda agent_name, project_name=None: (
             state.specialist_resolver.resolve(
                 agent_name,
-                project_dir=(
-                    project_manager.get_project(
-                        project_manager.get_active_project().name
-                    ).path
-                    if project_manager.get_active_project() is not None
-                    else None
+                project_dir=_project_dir_for_config(
+                    project_manager, project_name
                 ),
             )
         ),
@@ -251,6 +288,14 @@ async def lifespan(app: FastAPI):
             )
             if project_manager.get_project(name) is not None
             else None
+        ),
+        # Two-file config ruling: the delegation's own project names
+        # its effective config (strict: no active-project fallback —
+        # another project's overlay must never leak in).
+        project_config_resolver=lambda name: (
+            config_manager.get_for_project(
+                _project_dir_for_name(project_manager, name)
+            )
         ),
     )
     # One-time legacy import: if the anchored file is absent but the
@@ -307,15 +352,13 @@ async def lifespan(app: FastAPI):
     state.chat_loop = ChatLoop(
         project_manager=project_manager,
         specialist_runtime=specialist_runtime,
-        specialist_factory=lambda agent_name: (
+        # Task scope, not focus scope (two-file config ruling): the
+        # turn's own session project names the store.
+        specialist_factory=lambda agent_name, project_name=None: (
             state.specialist_resolver.resolve(
                 agent_name,
-                project_dir=(
-                    project_manager.get_project(
-                        project_manager.get_active_project().name
-                    ).path
-                    if project_manager.get_active_project() is not None
-                    else None
+                project_dir=_project_dir_for_config(
+                    project_manager, project_name
                 ),
             )
         ),
@@ -327,11 +370,23 @@ async def lifespan(app: FastAPI):
         delegation_stores=state.delegation_stores,
         event_bus=state.event_bus,
         turn_timeout=state.job_runner.turn_timeout,
-        model_resolver=lambda agent: config_manager.resolve_model(agent),
+        # Project-aware model chain (two-file config ruling): the
+        # turn's own project overlay selects the default.
+        model_resolver=lambda agent, project=None: config_manager.resolve_model(
+            agent,
+            project_dir=_project_dir_for_name(project_manager, project),
+        ),
         # Retry budget (routing.turn_retries, default 3): retries AFTER
         # the first provider attempt on engine turns. Hot-reloaded
         # below alongside turn_timeout.
         turn_retries=config_manager.get_routing().turn_retries,
+        # Per-turn scope (two-file config ruling): strict, no
+        # active-project fallback.
+        project_config_resolver=lambda name: (
+            config_manager.get_for_project(
+                _project_dir_for_name(project_manager, name)
+            )
+        ),
         # Stop button (2026-09-14): subtree cancel routes through the
         # runner that owns the child tasks (built above, before us).
         job_runner=state.job_runner,

@@ -75,7 +75,7 @@ def _chat_loop(stores: PerProjectDelegationStores, turn_timeout: float):
     return ChatLoop(
         project_manager=None,
         specialist_runtime=None,
-        specialist_factory=lambda name: None,
+        specialist_factory=lambda name, project=None: None,
         project_dir_resolver=lambda name: None,
         delegation_stores=stores,
         event_bus=None,

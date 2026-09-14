@@ -28,6 +28,39 @@ async def get_config(state: AppState = Depends(get_state)):
     return state.config_manager.get().model_dump(exclude_none=True)
 
 
+@router.get("/api/projects/{name}/config/effective")
+async def get_effective_project_config(
+    name: str, state: AppState = Depends(get_state)
+):
+    """Effective config for one project (two-file ruling).
+
+    Global defaults + that project's ``.sweave/config.yaml`` overlay,
+    plus which top-level sections the overlay provides (so the UI can
+    show global-vs-project provenance instead of implying everything
+    is global). 404 for unknown projects; no overlay file simply
+    returns the global config with an empty overlay list.
+    """
+    from pathlib import Path
+
+    from sweave.projects import project_manager
+
+    proj = project_manager.get_project(name)
+    if proj is None:
+        raise HTTPException(404, f"unknown project {name!r}")
+    project_dir = Path(proj.path)
+    effective = state.config_manager.get_for_project(project_dir)
+    return {
+        "project": name,
+        "config": effective.model_dump(exclude_none=True),
+        "overlay_sections": state.config_manager.overlay_sections_for(
+            project_dir
+        ),
+        "overlay_present": bool(
+            state.config_manager.overlay_sections_for(project_dir)
+        ),
+    }
+
+
 @router.get("/api/models")
 async def get_models(state: AppState = Depends(get_state)):
     models = state.config_manager.get_models()

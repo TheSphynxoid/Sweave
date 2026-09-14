@@ -295,12 +295,12 @@ def _build_loop_with_store(pm, stores, esc_store, bodies: list[str], sends: list
     return ChatLoop(
         project_manager=pm,
         specialist_runtime=runtime,
-        specialist_factory=lambda n: factories.get(n),
+        specialist_factory=lambda n, project=None: factories.get(n),
         project_dir_resolver=lambda name: None,
         delegation_stores=stores,
         event_bus=None,
         turn_timeout=10.0,
-        model_resolver=lambda agent: "deepseek-flash",
+        model_resolver=lambda agent, project=None: "deepseek-flash",
         escalation_store=esc_store,
     )
 
@@ -317,7 +317,7 @@ def test_wait_for_escalation_none_paths(tmp_path):
     loop = ChatLoop(
         project_manager=pm,
         specialist_runtime=SpecialistRuntime(runners=ServeRunnerRegistry()),
-        specialist_factory=lambda n: None,
+        specialist_factory=lambda n, project=None: None,
         project_dir_resolver=lambda n: None,
         delegation_stores=PerProjectDelegationStores(),
     )
@@ -327,7 +327,7 @@ def test_wait_for_escalation_none_paths(tmp_path):
     loop2 = ChatLoop(
         project_manager=pm,
         specialist_runtime=SpecialistRuntime(runners=ServeRunnerRegistry()),
-        specialist_factory=lambda n: None,
+        specialist_factory=lambda n, project=None: None,
         project_dir_resolver=lambda n: None,
         delegation_stores=PerProjectDelegationStores(),
         escalation_store=esc,

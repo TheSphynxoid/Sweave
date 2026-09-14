@@ -119,7 +119,7 @@ def _build_chat_loop(
         runtime._send_message = fake_send  # type: ignore[assignment]
 
     factories = {"orchestrator": _orchestrator_specialist()}
-    factory = lambda agent_name: factories.get(agent_name)  # noqa: E731
+    factory = lambda agent_name, project_name=None: factories.get(agent_name)  # noqa: E731
 
     def resolver(name: str | None) -> Path | None:
         if name is None:
@@ -136,7 +136,7 @@ def _build_chat_loop(
         delegation_stores=stores,
         event_bus=None,
         turn_timeout=10.0,
-        model_resolver=lambda agent: "deepseek-flash",
+        model_resolver=lambda agent, project=None: "deepseek-flash",
     )
     return chat, stores
 

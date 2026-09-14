@@ -196,7 +196,7 @@ async def test_runtime_path_respects_turn_timeout(tmp_path: Path):
 
     runtime.run = slow_run  # type: ignore[assignment]
 
-    def factory(name: str) -> Specialist:
+    def factory(name: str, project_name: str | None = None) -> Specialist:
         return Specialist(name=name, system_prompt="", harness="opencode")
 
     runner = JobRunner(

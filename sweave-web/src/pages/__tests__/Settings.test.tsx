@@ -1,10 +1,11 @@
 /**
- * Settings models tab: Sync models button.
+ * Settings models tab: Sync models button + global-vs-project honesty.
  *
  * Pins: the button calls POST /models/regenerate (long budget),
  * invalidates the ["models"] query on success with an added/removed
  * summary notification, and surfaces failures without touching the
- * registry display.
+ * registry display. The default-model card names the two-file
+ * layering (global default, per-project override).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
@@ -50,6 +51,13 @@ function renderSection() {
 }
 
 describe("Settings models sync", () => {
+  it("names the global default with its per-project override path", () => {
+    renderSection();
+    expect(
+      screen.getByText(/Global default for the orchestrator/)
+    ).toBeTruthy();
+    expect(screen.getByText(/\.sweave\/config\.yaml/)).toBeTruthy();
+  });
   it("syncs and notifies with the added/removed summary", async () => {
     regenerate.mockResolvedValue({
       success: true,

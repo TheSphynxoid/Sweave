@@ -224,7 +224,7 @@ def _build_chat_loop(
         harness="opencode",
         current_model=None,
     )}
-    factory = lambda agent_name: factories.get(agent_name)  # noqa: E731
+    factory = lambda agent_name, project_name=None: factories.get(agent_name)  # noqa: E731
 
     def resolver(name: str | None) -> Path | None:
         if name is None:
@@ -243,7 +243,7 @@ def _build_chat_loop(
         delegation_stores=PerProjectDelegationStores(),
         event_bus=event_bus,
         turn_timeout=10.0,
-        model_resolver=lambda agent: "deepseek-flash",
+        model_resolver=lambda agent, project=None: "deepseek-flash",
         stream_coalesce_ms=coalesce_ms,
         stream_char_threshold=char_threshold,
     )

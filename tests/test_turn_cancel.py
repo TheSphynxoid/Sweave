@@ -87,7 +87,7 @@ def _chat_loop(pm, stores, runtime, project_dir: Path, **kw):
     return ChatLoop(
         project_manager=pm,
         specialist_runtime=runtime,
-        specialist_factory=lambda name: None,
+        specialist_factory=lambda name, project=None: None,
         project_dir_resolver=lambda name: project_dir,
         delegation_stores=stores,
         event_bus=None,

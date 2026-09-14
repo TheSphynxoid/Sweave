@@ -517,6 +517,10 @@ class SpecialistRuntime:
         # provider attempt, engine turns only (opencode retries inside
         # its own stack). None = sidecar default (3).
         max_retries: int | None = None,
+        # Project harness tier (two-file config ruling): the task's
+        # project overlay ``harness.default``, between the specialist
+        # record and the operator default. None = no overlay.
+        project_harness_default: str | None = None,
     ) -> str:
         """Run one delegation on the selected harness.
 
@@ -531,13 +535,15 @@ class SpecialistRuntime:
         harnesses; fail over only within one.
         """
         selected, source = resolve_harness_name(
-            harness, specialist.harness, self.harness_default
+            harness, specialist.harness, self.harness_default,
+            project_default=project_harness_default,
         )
         trace.append(
             "harness_selected",
             {
                 "requested": harness,
                 "specialist_harness": specialist.harness,
+                "project_harness": project_harness_default,
                 "selected": selected,
                 "source": source,
             },

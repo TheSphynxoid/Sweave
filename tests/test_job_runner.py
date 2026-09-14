@@ -258,6 +258,7 @@ class _StubSpecialistRuntime:
         project_dir=None,
         permission_roots=None,
         max_retries=None,
+        project_harness_default=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"
@@ -304,7 +305,7 @@ async def test_seed_specialist_session_never_persisted(tmp_path: Path):
     The delegation still succeeds; only the saver call is skipped,
     with a `session_id_transient` trace note."""
     saver_calls: list = []
-    runner = _make_runtime_runner(tmp_path, lambda name: _seed_backend(), saver_calls)
+    runner = _make_runtime_runner(tmp_path, lambda name, project=None: _seed_backend(), saver_calls)
 
     d = await runner.submit("backend-specialist", "do work", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=10)
@@ -329,7 +330,7 @@ async def test_project_specialist_session_persisted(tmp_path: Path):
         system_prompt="p",
         harness="opencode",
     )
-    runner = _make_runtime_runner(tmp_path, lambda name: rec, saver_calls)
+    runner = _make_runtime_runner(tmp_path, lambda name, project=None: rec, saver_calls)
 
     d = await runner.submit("alpha", "do work", project_name="p1")
     final = await runner.wait(d.delegation_id, timeout=10)

@@ -5,7 +5,7 @@ import yaml
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from .schemas import SweaveConfig, RoutingConfig, ModelsConfig, RoutingRule
+from .schemas import SweaveConfig, RoutingConfig, ModelsConfig, RoutingRule, HarnessSettings
 
 
 def _set_models_default_line(text: str, scalar: str) -> str | None:
@@ -523,3 +523,176 @@ class ConfigManager:
         if self._routing_config is None:
             self.load()
         return self._routing_config
+
+    def _read_project_overlay(self, project_dir: Path | None) -> dict:
+        """Parse the project overlay file, or {} when absent/unusable.
+
+        Never raises: missing file, bad YAML, or non-dict docs all
+        mean "no overlay" (warning-logged, except the missing case).
+        """
+        import logging
+
+        if project_dir is None:
+            return {}
+        try:
+            path = Path(project_dir) / ".sweave" / PROJECT_CONFIG_FILENAME
+        except Exception:  # noqa: BLE001
+            return {}
+        try:
+            if not path.exists():
+                return {}
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "Project config overlay unreadable (%s); using global: %s",
+                path, exc,
+            )
+            return {}
+        if not isinstance(data, dict):
+            logging.getLogger(__name__).warning(
+                "Project config overlay not a mapping (%s); using global", path
+            )
+            return {}
+        return data
+
+    def overlay_sections_for(
+        self, project_dir: Path | str | None
+    ) -> list[str]:
+        """Sorted overlay section names that are mappings (provenance
+        for the effective-config endpoint: which layers the project
+        actually provides)."""
+        overlay = self._read_project_overlay(
+            Path(project_dir) if project_dir is not None else None
+        )
+        return sorted(k for k, v in overlay.items() if isinstance(v, dict))
+
+    def get_for_project(self, project_dir: Path | str | None) -> SweaveConfig:
+        """Effective config for a project: global + project overlay.
+
+        ``None`` (or no overlay file) returns the global config
+        unchanged. Only :data:`OVERRIDABLE_SECTIONS` merge, field by
+        field; anything else in the overlay is ignored with a warning.
+        Section values that fail validation fall back to the global
+        section loudly (warning), never failing the caller.
+        """
+        import logging
+
+        base = self.get()
+        overlay = self._read_project_overlay(
+            Path(project_dir) if project_dir is not None else None
+        )
+        if not overlay:
+            return base
+        merged = base.model_copy(deep=True)
+        section_models = {
+            "models": ModelsConfig,
+            "routing": RoutingConfig,
+            "harness": HarnessSettings,
+        }
+        for key, value in overlay.items():
+            if key not in OVERRIDABLE_SECTIONS:
+                if key in ("server", "memory", "git"):
+                    logging.getLogger(__name__).warning(
+                        "Project overlay section %r is process-global and "
+                        "ignored (project %s)",
+                        key, project_dir,
+                    )
+                else:
+                    logging.getLogger(__name__).warning(
+                        "Project overlay has unknown section %r; ignored "
+                        "(project %s)", key, project_dir,
+                    )
+                continue
+            if not isinstance(value, dict):
+                logging.getLogger(__name__).warning(
+                    "Project overlay section %r must be a mapping; ignored "
+                    "(project %s)", key, project_dir,
+                )
+                continue
+            try:
+                current = getattr(merged, key).model_dump()
+                current.update(value)
+                setattr(merged, key, section_models[key](**current))
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "Project overlay section %r invalid (%s); using global "
+                    "(project %s)", key, exc, project_dir,
+                )
+                continue
+        return merged
+
+    def get_routing_for_project(
+        self, project_dir: Path | str | None
+    ) -> RoutingConfig:
+        """Effective routing for a project (overlay-aware)."""
+        if project_dir is None:
+            return self.get_routing()
+        return self.get_for_project(project_dir).routing
+
+    def get_default_model_for_project(
+        self, project_dir: Path | str | None
+    ) -> str:
+        """Default model with the project overlay applied.
+
+        Same precedence as :meth:`get_default_model`, but the stored
+        default is read from the merged ``models`` section (project
+        ``models.default`` wins when selectable; otherwise the global
+        chain applies unchanged).
+        """
+        if project_dir is None:
+            return self.get_default_model()
+        effective = self.get_for_project(project_dir)
+        fallback = self.get_default_model()
+        candidate = effective.models.default
+        if candidate:
+            try:
+                available = set(self.get_all_models())
+            except Exception:  # noqa: BLE001
+                available = set()
+            if available and self._is_selectable_model(candidate, available):
+                return candidate
+            if not available and candidate:
+                return candidate
+        return fallback
+
+    def resolve_model(
+        self,
+        role: str,
+        override: str | None = None,
+        project_dir: Path | str | None = None,
+    ) -> str:
+        """Resolve model for a role, with optional override.
+
+        Now ignores role and returns the default model unless overridden
+        (kept). ``project_dir`` selects the project overlay for the
+        default; ``None`` keeps the global behavior exactly.
+        """
+        if override:
+            return override
+        if project_dir is None:
+            return self.get_default_model()
+        return self.get_default_model_for_project(project_dir)
+
+    # -- Per-project layer (user ruling: two files) ----------------------
+    #
+    # Global ``config.yaml`` holds defaults for every project. A project
+    # may overlay ``{project_dir}/.sweave/config.yaml`` with any subset
+    # of the OVERRIDABLE_SECTIONS below; present fields win per field,
+    # absent fields inherit global. ``server`` / ``memory`` / ``git``
+    # are process-global and never overridable (a project file naming
+    # them is ignored with a warning, never an error). Unknown
+    # top-level keys are ignored the same way (forward compatibility).
+    #
+    # The overlay is read fresh on every resolution (one small YAML
+    # read per turn when the file exists, one stat when it does not) —
+    # no cache to invalidate, so project edits apply without restart
+    # or watcher. A malformed overlay falls back to global loudly
+    # (warning log), never failing the turn.
+
+
+#: Project overlay filename (inside the project's ``.sweave/`` dir,
+# alongside ``agents.json`` / ``delegations.json``).
+PROJECT_CONFIG_FILENAME = "config.yaml"
+
+#: Top-level sections a project file may override (field-level merge).
+OVERRIDABLE_SECTIONS = ("models", "routing", "harness")
