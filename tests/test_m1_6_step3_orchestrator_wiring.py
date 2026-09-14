@@ -55,7 +55,10 @@ def test_orchestrator_prompt_contains_defer_tool_contract():
         "caller_delegation_id",
         "target",
         "rejected:",
-        "Never implement",
+        # 2026-09-14: narrowed from "Never implement" (the
+        # orchestrator now owns read-only inspection; the ban is on
+        # mutating/running, not on reading).
+        "Never edit, write, or run commands yourself",
     ):
         assert phrase in prompt, f"orchestrator prompt missing: {phrase!r}"
 

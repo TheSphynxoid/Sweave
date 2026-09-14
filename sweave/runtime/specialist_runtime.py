@@ -108,6 +108,16 @@ KILL_ON_SILENCE = False
 PRE_MODEL_TIMEOUT_SECONDS = 950.0
 
 
+# Orchestrator read-only exec tools (2026-09-14 ruling): the
+# orchestrator answers repo-factual questions itself with
+# read/grep/glob instead of spawning a delegation for them. No
+# edit/write/bash/todo — implementation work still always defers
+# (the charter's "never implement" narrows to "never mutate/run").
+# Subset of TOOL_BASELINE, so the engine protocol accepts it
+# unchanged and the permission map gates it like specialists.
+ORCHESTRATOR_READONLY_TOOLS: tuple[str, ...] = ("read", "grep", "glob")
+
+
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
 # different specialists + worktrees don't block each other. The
 # lock is a simple per-key asyncio.Lock; the dict is process-local.
@@ -693,7 +703,7 @@ class SpecialistRuntime:
                 worktree_path=Path(worktree_path),
                 memory_bank="",
                 tools=(
-                    []
+                    list(ORCHESTRATOR_READONLY_TOOLS)
                     if specialist.is_orchestrator
                     else list(harness_obj.get_default_tools())
                 ),

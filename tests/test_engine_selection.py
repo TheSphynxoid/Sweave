@@ -107,14 +107,17 @@ class _FakeEngineProcess:
 class _FakeEngineHarness:
     name = ENGINE_HARNESS_NAME
 
-    def __init__(self, script, seen, fail_spawn=None):
+    def __init__(self, script, seen, fail_spawn=None, specs=None):
         self._script = script
         self._seen = seen
         self._fail_spawn = fail_spawn
+        self._specs = specs
 
     async def spawn(self, spec):
         if self._fail_spawn is not None:
             raise self._fail_spawn
+        if self._specs is not None:
+            self._specs.append(spec)
         return _FakeEngineProcess(spec, self._script, self._seen)
 
     async def attach(self, session_id, spec):
@@ -129,11 +132,11 @@ class _FakeEngineHarness:
         return True
 
 
-def _register_fake(monkeypatch, script, seen, fail_spawn=None):
+def _register_fake(monkeypatch, script, seen, fail_spawn=None, specs=None):
     monkeypatch.setitem(
         harness_registry._harnesses,
         ENGINE_HARNESS_NAME,
-        _FakeEngineHarness(script, seen, fail_spawn),
+        _FakeEngineHarness(script, seen, fail_spawn, specs),
     )
 
 
@@ -226,13 +229,14 @@ async def test_engine_attempt_success_shape(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_engine_attempt_orchestrator_tools_empty_and_charter(monkeypatch, tmp_path: Path):
+async def test_engine_attempt_orchestrator_readonly_tools_and_charter(monkeypatch, tmp_path: Path):
     seen: list = []
+    specs: list = []
 
     async def script(message, trace):
         return AgentResult(success=True, output="ok")
 
-    _register_fake(monkeypatch, script, seen)
+    _register_fake(monkeypatch, script, seen, specs=specs)
     runtime = _runtime()
     trace = _Trace()
     out, fallback = await runtime._run_engine_attempt(
@@ -252,6 +256,12 @@ async def test_engine_attempt_orchestrator_tools_empty_and_charter(monkeypatch, 
     # New session: the charter rides along (no per-message agent pin
     # on this protocol); reused sessions remember it.
     assert "ORCHESTRATOR CHARTER" in seen[0].content
+    # 2026-09-14 ruling: the orchestrator gets read-only exec tools
+    # (factual Q&A without a delegation); never mutate/run tools.
+    from sweave.runtime.specialist_runtime import ORCHESTRATOR_READONLY_TOOLS
+
+    assert specs and list(specs[0].tools) == list(ORCHESTRATOR_READONLY_TOOLS)
+    assert "edit" not in specs[0].tools and "bash" not in specs[0].tools
 
 
 @pytest.mark.asyncio
