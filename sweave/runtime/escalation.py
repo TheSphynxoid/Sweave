@@ -439,6 +439,47 @@ class EscalationStore:
         await self._flag(delegation_id, False)
         return dict(rec)
 
+    async def mark_seen(
+        self,
+        *,
+        delegation_id: str,
+    ) -> dict[str, Any] | None:
+        """Record orchestrator consumption of a notice (mailbox rule).
+
+        Called by the chat loop after a synthesis turn that incorporated
+        the notice: a specialist's ``escalate`` record (kind
+        ``escalation``, audience ``orchestrator``) resolves as ``seen``
+        instead of waiting for a human ack that was never its audience.
+        Only pending records transition (anything else returns as-is);
+        callers filter by kind — the store does not second-guess which
+        records are notices. Emits ``specialist.escalation_resolved``
+        (status ``seen``) so lanes clear, and clears
+        ``needs_attention`` through the same review-aware flagger as
+        every other resolution path. Returns the updated record or
+        None when no record exists.
+        """
+        async with self._lock:
+            rec = self._records.get(delegation_id)
+            if rec is None:
+                return None
+            if rec["status"] != "pending":
+                return dict(rec)
+            rec["status"] = "seen"
+            rec["response"] = "seen by orchestrator at synthesis — no action needed"
+            rec["answered_at"] = _now_iso()
+            await self._persist(delegation_id)
+        await self._emit(
+            "specialist.escalation_resolved",
+            {
+                "escalation_id": rec["escalation_id"],
+                "delegation_id": delegation_id,
+                "status": "seen",
+                "response": rec["response"],
+            },
+        )
+        await self._flag(delegation_id, False)
+        return dict(rec)
+
     async def list_open(self) -> list[dict[str, Any]]:
         """Every pending escalation. The Children tab's escalation
         lane reads from this for the initial render; subsequent

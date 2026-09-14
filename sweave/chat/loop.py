@@ -2010,11 +2010,75 @@ class ChatLoop:
                     round=1,
                 )
 
+            # Mailbox rule: the synthesis body incorporated every
+            # pending child notice, so the orchestrator has consumed
+            # its mail — resolve those records as seen (questions and
+            # permission asks are never touched).
+            await self._mark_child_notices_seen(children, trace)
+
             return await _finish(
                 delegation_id=delegation.delegation_id,
                 assistant_text=synthesis_turn_text,
                 round=1,
             )
+
+    async def _mark_child_notices_seen(
+        self, children: list, trace: Any
+    ) -> list[str]:
+        """Resolve the orchestrator's consumed mail (mailbox rule).
+
+        After a SUCCESSFUL synthesis turn, every child record that is
+        still a pending specialist notice (kind ``escalation``,
+        audience ``orchestrator``) resolves as ``seen``: the synthesis
+        body already incorporated the notice text, so no human ack was
+        ever its audience. Question/permission records are never
+        touched (human decisions), nor are already-resolved records.
+        Failed synthesis never reaches here — the notices stay pending
+        for the human fallback. Returns the marked delegation ids.
+        Never raises.
+        """
+        seen: list[str] = []
+        store = self.escalation_store
+        if store is None:
+            return seen
+        mark = getattr(store, "mark_seen", None)
+        if mark is None:
+            return seen
+        for child in children or []:
+            child_id = getattr(child, "delegation_id", None)
+            if not child_id:
+                continue
+            try:
+                rec = await store.get(delegation_id=child_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if (
+                rec is None
+                or rec.get("status") != "pending"
+                or rec.get("kind") != "escalation"
+                or rec.get("audience") != "orchestrator"
+            ):
+                continue
+            try:
+                result = mark(delegation_id=child_id)
+                if hasattr(result, "__await__"):
+                    await result
+                seen.append(child_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "ChatLoop: mark_seen failed for %s", child_id
+                )
+        if seen and trace is not None:
+            try:
+                trace.append(
+                    "escalation_auto_seen",
+                    {"delegation_ids": seen},
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "ChatLoop: escalation_auto_seen trace append failed"
+                )
+        return seen
 
     async def _run_orchestrator_turn(
         self,

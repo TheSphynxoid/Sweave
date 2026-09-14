@@ -313,8 +313,15 @@ function TimeoutNotice({ error, hasOutput }: { error: string | null; hasOutput: 
  * "ask card") instead of bouncing the user to the Children audit
  * log — the question can outlive the turn's own UI surface, and
  * the asking turn holds until answered, so the card must answer.
+ *
+ * Mailbox rule: kind `escalation` records are notices FOR the
+ * orchestrator, not decisions for the human — they render as FYI
+ * (no options ever exist on them; the orchestrator consumes them at
+ * synthesis and they auto-resolve as seen). Only question /
+ * permission kinds ask anything of the reader. Exported for the
+ * unit test (RoundBlock precedent).
  */
-function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
+export function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
   const [rec, setRec] = useState<EscalationRecord | null | "error">(null);
   const [busy, setBusy] = useState(false);
 
@@ -355,8 +362,16 @@ function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
   };
 
   const skip = async () => {
-    // Same system-confirm guard the M1.11 Question card uses.
-    if (!window.confirm("Skip this question? Skip = deny.")) return;
+    // Same system-confirm guard the M1.11 Question card uses —
+    // reworded for notices (dismissing one denies nothing).
+    if (
+      !window.confirm(
+        isNotice
+          ? "Dismiss this notice? It stays on record."
+          : "Skip this question? Skip = deny.",
+      )
+    )
+      return;
     setBusy(true);
     try {
       await api.skipEscalation(delegationId);
@@ -370,19 +385,27 @@ function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
 
   if (rec === "error") return null;
   if (!rec) return null;
-  const label = rec.kind === "escalation" ? "Escalation" : "Question";
+  const isNotice = rec.kind === "escalation";
+  const label = isNotice ? "Notice" : rec.kind === "permission" ? "Permission" : "Question";
   return (
     <div
       data-testid="turn-delegation-escalation"
+      data-escalation-kind={rec.kind}
       className="space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/[0.07] px-2.5 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
     >
       <p>
         {label} ({rec.status}):{" "}
         {rec.question.length > 280 ? `${rec.question.slice(0, 280)}…` : rec.question}
       </p>
-      {rec.status === "pending" && rec.options && (
+      {isNotice && rec.status === "pending" && (
+        <p className="text-[11px] text-muted-foreground" data-testid="turn-escalation-notice-hint">
+          For the orchestrator — no decision needed. It clears once picked up at
+          synthesis; stragglers can be dismissed below.
+        </p>
+      )}
+      {(rec.status === "pending" && (rec.options || isNotice)) && (
         <div className="flex flex-wrap items-center gap-1.5">
-          {rec.options.map((opt) => (
+          {(isNotice ? [] : (rec.options ?? [])).map((opt) => (
             <button
               key={opt}
               type="button"
@@ -401,7 +424,9 @@ function ChildEscalationPreview({ delegationId }: { delegationId: string }) {
             data-testid="turn-escalation-skip"
             className="text-[11px] text-muted-foreground underline hover:text-foreground disabled:opacity-50"
           >
-            skip = deny
+            {/* Notices carry no decision: dismissing one only clears
+                the card (skip = deny applies to questions). */}
+            {isNotice ? "dismiss" : "skip = deny"}
           </button>
         </div>
       )}

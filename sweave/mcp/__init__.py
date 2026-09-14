@@ -416,10 +416,12 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
 # Specialist -> orchestrator non-blocking notice. A blocked
 # specialist (missing context, conflicting instructions, needs a
 # re-plan) reports up instead of guessing or failing silently.
-# The specialist's own turn finishes normally; the record stays
-# pending in the global audit log (Children tab) with
-# ``needs_attention`` until a human acknowledges it, and the
-# orchestrator sees it via the child's flag on the next synthesis.
+# The specialist's own turn finishes normally. Mailbox rule: the
+# chat loop resolves the notice as ``seen`` once a synthesis turn
+# incorporates it (no human ack — the human was never its
+# audience); questions and permission asks are never touched.
+# Stragglers (filed after their turn's synthesis) stay pending for
+# the human lanes until dismissed.
 #
 # Permission: the only sweave MCP tool specialists may call
 # (``agent_permission.py`` denies defer/list/ask_human explicitly
