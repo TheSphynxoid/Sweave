@@ -316,15 +316,79 @@ async def test_run_turn_persists_thinking_metadata(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_no_thinking_key_without_reasoning(tmp_path: Path):
-    """Without reasoning parts the metadata carries no thinking key
-    (payloads stay small; the UI renders no Thinking block)."""
+async def test_segments_keep_think_act_think_order(tmp_path: Path):
+    """Interleaved callbacks persist arrival-ordered segments (think,
+    text, think) instead of one Thinking blob + one answer — plus the
+    joined back-compat thinking copy."""
+    from sweave.chat.loop import ChatLoop
+    from sweave.runtime.delegation_store import PerProjectDelegationStores
+    from sweave.runtime.serve_runner import ServeRunnerRegistry
+    from sweave.runtime.specialist_runtime import SpecialistRuntime
+
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    runners = ServeRunnerRegistry()
+    runtime = SpecialistRuntime(runners=runners)
+
+    async def interleaved_send(self, body=None, trace=None, on_chunk=None,
+                               on_reasoning=None, **kwargs):
+        if on_chunk is not None:
+            on_chunk("First. ")
+        if on_reasoning is not None:
+            on_reasoning("hmm, ")
+            on_reasoning("wait, ")
+        if on_chunk is not None:
+            on_chunk("Second.")
+        return "First. Second."
+
+    runtime._send_message = interleaved_send  # type: ignore[assignment]
+    factories = {"orchestrator": _orchestrator_specialist()}
+
+    def resolver(name: str | None):
+        if name is None:
+            return None
+        proj = pm.get_project(name)
+        return proj.path if proj else None
+
+    chat = ChatLoop(
+        project_manager=pm,
+        specialist_runtime=runtime,
+        specialist_factory=lambda agent_name, project_name=None: factories.get(agent_name),
+        project_dir_resolver=resolver,
+        delegation_stores=PerProjectDelegationStores(),
+        event_bus=None,
+        turn_timeout=10.0,
+        model_resolver=lambda agent, project=None: "deepseek-flash",
+    )
+    result = await chat.run_turn(session_id=session.id, user_content="hi")
+    assert result["content"] == "First. Second."
+    kinds = [(s["kind"], s["text"]) for s in result["metadata"]["segments"]]
+    assert kinds == [
+        ("text", "First. "),
+        ("reasoning", "hmm, "),
+        ("reasoning", "wait, "),
+        ("text", "Second."),
+    ]
+    # Joined back-compat copy intact.
+    assert result["metadata"]["thinking"] == "hmm, wait, "
+    # Persisted identically.
+    loaded = pm.get_session(session.id)
+    assistant = next(m for m in loaded.messages if m.role == "assistant")
+    assert assistant.metadata["segments"] == result["metadata"]["segments"]
+    assert assistant.metadata["thinking"] == "hmm, wait, "
+
+
+@pytest.mark.asyncio
+async def test_no_segments_key_without_reasoning(tmp_path: Path):
+    """Text-only turns carry no segments key (payloads stay small;
+    the UI keeps the single-block path)."""
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["answer"])
 
     result = await chat.run_turn(session_id=session.id, user_content="hi")
     assert result["content"] == "answer"
+    assert "segments" not in result["metadata"]
     assert "thinking" not in result["metadata"]
 
 STALL_TEXT = "[chat error: stalled after 300s without data (the stalled work was killed; the session is kept — retry continues it)]"

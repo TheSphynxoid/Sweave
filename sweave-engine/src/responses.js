@@ -76,6 +76,16 @@ export async function providerResponsesStream({
       model: modelId,
       input,
       stream: true,
+      // Reasoning summary (opencode parity, public source:
+      // sst/opencode transform.ts sends reasoningSummary:"auto" for
+      // every opencode-family model). Without it the gateway never
+      // opens the reasoning channel and inlines thinking into
+      // output_text (observed live on muse-spark-contributor: 7.5k
+      // reasoning tokens, zero reasoning events, thinking fragments
+      // leading the persisted reply). Effort is deliberately unset
+      // (gateway default); summary only unlocks the plaintext
+      // deltas, parsed above into `reasoning` SSE, never output.
+      reasoning: { summary: "auto" },
       ...(defs && defs.length > 0 ? { tools: responsesToolDefs(defs) } : {}),
     }),
     signal,

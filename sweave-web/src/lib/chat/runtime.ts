@@ -342,6 +342,21 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
   const thinking =
     entry.thinking ??
     (typeof persistedThinking === "string" && persistedThinking ? persistedThinking : null);
+  // Ordered segments (arrival-ordered text/reasoning log, persisted
+  // as metadata.segments): interleave fidelity for think/act/think
+  // turns. Absent on legacy messages and non-final bubbles — readers
+  // fall back to the single thinking block + full-text body.
+  const rawSegments = message.metadata?.segments;
+  const segments = Array.isArray(rawSegments)
+    ? rawSegments.filter(
+        (s): s is { kind: string; text: string } =>
+          !!s &&
+          typeof s === "object" &&
+          (s.kind === "thinking" || s.kind === "text") &&
+          typeof s.text === "string" &&
+          s.text.length > 0,
+      )
+    : null;
   // assistant-ui expects content as Part[] for all messages; the
   // sanctioned metadata bag is `metadata.custom` (surfaced to the UI
   // components via the message state; R4.2 step 2-pre).
@@ -355,6 +370,7 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
         delegationId: entry.delegationId ?? delegationIdOf(message),
         superseded: isSuperseded(message),
         thinking,
+        segments,
         round: entry.round ?? roundOf(message),
         turnFinal: isFinal(message),
       },

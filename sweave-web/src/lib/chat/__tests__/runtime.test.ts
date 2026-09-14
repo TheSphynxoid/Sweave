@@ -298,6 +298,45 @@ describe("thinking: chat.thinking accumulates on the bubble", () => {
     const custom = projected[0].metadata as { custom?: { thinking?: string | null } };
     expect(custom.custom?.thinking).toBeNull();
   });
+
+  it("projects ordered segments into metadata.custom, dropping junk", () => {
+    const persisted = {
+      ...assistantMessage("a1", "A then B", "chat-abc"),
+      metadata: {
+        delegation_id: "chat-abc",
+        thinking: "r1r2",
+        segments: [
+          { kind: "thinking", text: "r1" },
+          { kind: "text", text: "A " },
+          { kind: "thinking", text: "r2" },
+          { kind: "text", text: "B" },
+          { kind: "nonsense", text: "x" },
+          { kind: "text", text: "" },
+          null,
+        ],
+      },
+    };
+    const projected = projectThread(stateFromHistory([persisted]));
+    const custom = projected[0].metadata as {
+      custom?: { segments?: { kind: string; text: string }[] | null };
+    };
+    expect(custom.custom?.segments).toEqual([
+      { kind: "thinking", text: "r1" },
+      { kind: "text", text: "A " },
+      { kind: "thinking", text: "r2" },
+      { kind: "text", text: "B" },
+    ]);
+  });
+
+  it("projects null segments for legacy messages", () => {
+    const projected = projectThread(
+      stateFromHistory([assistantMessage("a1", "plain", "chat-1")]),
+    );
+    const custom = projected[0].metadata as {
+      custom?: { segments?: { kind: string; text: string }[] | null };
+    };
+    expect(custom.custom?.segments).toBeNull();
+  });
 });
 
 describe("rerun: edit + resend / retry (supersede, don't delete)", () => {

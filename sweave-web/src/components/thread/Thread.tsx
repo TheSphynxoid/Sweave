@@ -65,6 +65,7 @@ import { api } from "@/api/client";
 import { useChatActions } from "@/lib/chat/actions";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AssistantTextPart } from "./markdown/AssistantTextPart";
+import { Markdown } from "./markdown/Markdown";
 import { TurnDelegations } from "./TurnDelegations";
 import { TurnQuestions } from "./TurnQuestions";
 import { CopyIdBadge } from "@/components/CopyId";
@@ -442,6 +443,10 @@ interface SweaveCustom {
   superseded?: boolean;
   /** Live or persisted reasoning text (chat.thinking / metadata.thinking). */
   thinking?: string | null;
+  /** Arrival-ordered text/reasoning segments (metadata.segments).
+      Renders think/act/think turns in stream order; absent on legacy
+      messages, which keep the single thinking block + body. */
+  segments?: { kind: string; text: string }[] | null;
   /** Multi-message turns (2026-09-11): orchestrator round (0 = first
       turn, 1 = synthesis). Absent on legacy messages — readers treat
       it as 0. */
@@ -476,13 +481,19 @@ function AssistantMessage() {
 
   const body = (
     <>
-      {custom.thinking ? (
-        <ThinkingBlock thinking={custom.thinking} streaming={isRunning} />
-      ) : null}
-      <div className="text-sm leading-relaxed">
-        <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
-        {isRunning && <span className="streaming-cursor" aria-hidden />}
-      </div>
+      {custom.segments && custom.segments.length > 0 ? (
+        <SegmentedBody segments={custom.segments} streaming={isRunning} />
+      ) : (
+        <>
+          {custom.thinking ? (
+            <ThinkingBlock thinking={custom.thinking} streaming={isRunning} />
+          ) : null}
+          <div className="text-sm leading-relaxed">
+            <MessagePrimitive.Parts components={{ Text: AssistantTextPart }} />
+            {isRunning && <span className="streaming-cursor" aria-hidden />}
+          </div>
+        </>
+      )}
 
       {custom.delegationId && custom.turnFinal !== false && (
         <TurnQuestions delegationId={custom.delegationId} />
@@ -651,6 +662,50 @@ function SupersededBlock({
   );
 }
 
+/**
+ * Ordered segment body (interleave fidelity).
+ *
+ * Groups contiguous same-kind segments and renders them in stream
+ * order: each thinking run gets its own ThinkingBlock, each text run
+ * its own Markdown — so think, act, think, answer reads in that
+ * order instead of collapsing to one Thinking blob + one answer.
+ * Used only when the message carries metadata.segments (new turns);
+ * legacy messages keep the single-block path above. Exported for the
+ * segment-order unit test (RoundBlock precedent).
+ */
+export function SegmentedBody({
+  segments,
+  streaming,
+}: {
+  segments: { kind: string; text: string }[];
+  streaming: boolean;
+}) {
+  const groups: { kind: string; text: string }[] = [];
+  for (const seg of segments) {
+    const last = groups[groups.length - 1];
+    if (last && last.kind === seg.kind) {
+      last.text += seg.text;
+    } else {
+      groups.push({ kind: seg.kind, text: seg.text });
+    }
+  }
+  return (
+    <>
+      {groups.map((g, i) =>
+        g.kind === "thinking" ? (
+          <ThinkingBlock key={i} thinking={g.text} streaming={streaming} />
+        ) : (
+          <div key={i} className="text-sm leading-relaxed">
+            <Markdown source={g.text} />
+            {streaming && i === groups.length - 1 && (
+              <span className="streaming-cursor" aria-hidden />
+            )}
+          </div>
+        ),
+      )}
+    </>
+  );
+}
 /**
  * Thinking block (reasoning capture).
  *

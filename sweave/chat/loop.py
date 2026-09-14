@@ -1529,16 +1529,19 @@ class ChatLoop:
             coalescer_box[0] = coalescer
 
             def _on_chunk(text: str) -> None:
+                segments.append(("text", text))
                 coalescer.push(text)
 
             # Thinking capture: a second coalescer over the
             # runtime's on_reasoning callback emits chat.thinking
             # events (same shape as chat.delta) so the UI can
-            # render a live Thinking block. A plain accumulator
-            # keeps the full text for the persisted message
-            # metadata; only providers that emit reasoning parts
-            # produce any events here.
-            thinking_parts: list[str] = []
+            # render a live Thinking block. An ordered segment log
+            # records text/reasoning chunks in ARRIVAL order so the
+            # persisted message keeps interleave fidelity (think, act,
+            # think, answer renders in that order — never coalesced
+            # into one Thinking blob + one answer). Only providers
+            # that emit reasoning parts produce reasoning segments.
+            segments: list[tuple[str, str]] = []
 
             async def _emit_thinking(text: str) -> None:
                 entry = self._active_turns.get(session_id)
@@ -1569,7 +1572,7 @@ class ChatLoop:
             thinking_box[0] = thinking_coalescer
 
             def _on_reasoning(text: str) -> None:
-                thinking_parts.append(text)
+                segments.append(("reasoning", text))
                 thinking_coalescer.push(text)
 
             async def _finish(**kwargs: Any) -> dict[str, Any]:
@@ -1587,12 +1590,23 @@ class ChatLoop:
                     await coalescer_box[0].close_and_flush()
                 if thinking_box[0] is not None:
                     await thinking_box[0].close_and_flush()
-                thinking_text = "".join(thinking_parts)
+                thinking_text = "".join(
+                    t for kind, t in segments if kind == "reasoning"
+                )
+                # Segments persist only when reasoning is present:
+                # a text-only turn keeps the legacy single-block shape
+                # (no redundant single-text segment in payloads).
+                segments_payload = (
+                    [{"kind": kind, "text": t} for kind, t in segments]
+                    if thinking_text
+                    else None
+                )
                 return await self._finalise_turn(
                     session=session,
                     session_id=session_id,
                     user_msg=user_msg,
                     thinking_text=thinking_text or None,
+                    segments=segments_payload or None,
                     **kwargs,
                 )
 
@@ -1720,15 +1734,21 @@ class ChatLoop:
                 # is live at the next timer tick.
                 await coalescer.flush()
                 await thinking_coalescer.flush()
+                round_thinking = "".join(
+                    t for kind, t in segments if kind == "reasoning"
+                )
                 await self._persist_round_message(
                     session=session,
                     session_id=session_id,
                     delegation_id=delegation.delegation_id,
                     round=0,
                     text=first_turn_text,
-                    thinking_text="".join(thinking_parts) or None,
+                    thinking_text=round_thinking or None,
+                    segments=[
+                        {"kind": kind, "text": t} for kind, t in segments
+                    ] if round_thinking else None,
                 )
-                del thinking_parts[:]
+                del segments[:]
                 round_box["round"] = 1
             if not children and escalation_note is None:
                 # Fast path: no deferrals and no blocking question --
@@ -2013,6 +2033,7 @@ class ChatLoop:
         round: int,
         text: str,
         thinking_text: str | None = None,
+        segments: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Persist one intermediate round's assistant message.
 
@@ -2020,7 +2041,9 @@ class ChatLoop:
         delegation status change, no delegation output rewrite, no
         turn close. The round carries ``turn_round`` + ``turn_final:
         False`` metadata so the UI renders it collapsible and the
-        streaming runtime scopes bubbles per round.
+        streaming runtime scopes bubbles per round. ``segments`` is
+        the arrival-ordered text/reasoning log for interleave
+        fidelity; ``thinking`` stays as the joined back-compat copy.
         """
         metadata: dict[str, Any] = {
             "delegation_id": delegation_id,
@@ -2029,6 +2052,8 @@ class ChatLoop:
         }
         if thinking_text:
             metadata["thinking"] = thinking_text
+        if segments:
+            metadata["segments"] = segments
         msg = session.add_message(
             role="assistant",
             content=text,
@@ -2052,6 +2077,7 @@ class ChatLoop:
         assistant_text: str | None = None,
         error_text: str | None = None,
         thinking_text: str | None = None,
+        segments: list[dict[str, str]] | None = None,
         round: int = 0,
         turn_final: bool = True,
     ) -> dict[str, Any]:
@@ -2093,6 +2119,10 @@ class ChatLoop:
         # so reloads + the detail view keep it. The live
         # chat.thinking deltas already painted the Thinking block;
         # this is the durable copy with the same content.
+        # ``segments`` is the arrival-ordered text/reasoning log
+        # (interleave fidelity: think, act, think, answer renders in
+        # that order); ``thinking`` stays as the joined back-compat
+        # copy for older readers.
         metadata: dict[str, Any] = {
             "delegation_id": delegation_id,
             "turn_round": round,
@@ -2100,6 +2130,8 @@ class ChatLoop:
         }
         if thinking_text:
             metadata["thinking"] = thinking_text
+        if segments:
+            metadata["segments"] = segments
         assistant_msg = session.add_message(
             role="assistant",
             content=assistant_content,
