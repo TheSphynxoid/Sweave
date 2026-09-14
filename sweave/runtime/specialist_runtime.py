@@ -217,11 +217,10 @@ async def _attempt_engine_stop(
 class _ToolActivityProbe:
     """Trace wrapper counting engine ``tool.started`` events.
 
-    Step-4 fallback guard: the opencode fallback re-runs the whole
-    turn from scratch, so it must engage ONLY when the engine did no
-    work yet (no tool executed, no text produced). Re-running after
-    side effects (file edits, defers, escalations) would execute
-    them twice. Duck-types :class:`TraceLog` (``append`` +
+    After-work guard: when the engine dies AFTER tools ran, the
+    failure must surface loudly as-is — re-running the turn
+    elsewhere would execute side effects (file edits, defers,
+    escalations) twice. Duck-types :class:`TraceLog` (``append`` +
     attribute passthrough) so doubles work in tests.
     """
 
@@ -236,6 +235,19 @@ class _ToolActivityProbe:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
+
+
+def _engine_session_resume(stored: str, fresh: bool) -> bool:
+    """True when an engine turn should attach to the stored session id.
+
+    Engine sessions are always ``eng_*`` (minted client-side in
+    ``SweaveEngineProcess``). A stored id from the other harness
+    (opencode ``ses_*``) names a conversation the sidecar can never
+    resume — attaching would ensure() a fresh engine session under
+    that foreign string WITHOUT the role charter. Foreign ids (and
+    ``fresh``) mean spawn, never attach.
+    """
+    return bool(stored) and not fresh and stored.startswith("eng_")
 
 
 class SpecialistRuntime:
@@ -331,6 +343,21 @@ class SpecialistRuntime:
             specialist.session_id = new_id
 
         stored = _get()
+        if stored and not stored.startswith("ses_"):
+            # Cross-harness foreign id (engine `eng_*`, legacy
+            # placeholder, ...): NEVER verify it against the opencode
+            # serve. The verify below reuses on any non-404, and a
+            # foreign id can answer non-404 (live 2026-09-14: an
+            # `eng_*` binding reached the opencode wire via the
+            # engine→opencode fallback and died in _send_message's
+            # ses_ guard). Treat as absent: create fresh. Mirror of
+            # _engine_session_resume (which refuses `ses_*` the same
+            # way); old sessions don't break — each harness rebinds
+            # on its own turns.
+            trace.append(
+                "session_foreign_id_ignored", {"stored_session_id": stored}
+            )
+            stored = ""
         if fresh or not stored:
             # Create
             response = await process._client.post("/session", json={})
@@ -374,19 +401,39 @@ class SpecialistRuntime:
             )
             return process
 
-        # Verify
+        # Verify: ONLY 200 reuses. 404 is the known-stale shape
+        # (serve restarted, probe 4); any other status (live
+        # 2026-09-14: non-404 on a foreign-shaped id) never reuses —
+        # an unverified binding recreates instead of dying later in
+        # _send_message's ses_ guard.
         response = await process._client.get(f"/session/{stored}")
-        if response.status_code == 404:
-            # Stale id; create a new session
-            logger.warning(
-                "SpecialistRuntime: stored session_id %s returned 404; "
-                "recreating (probe 4: opencode stores sessions in memory).",
-                stored,
-            )
-            trace.append(
-                "session_recreated_after_404",
-                {"old_session_id": stored},
-            )
+        if response.status_code != 200:
+            if response.status_code == 404:
+                # Stale id; create a new session
+                logger.warning(
+                    "SpecialistRuntime: stored session_id %s returned 404; "
+                    "recreating (probe 4: opencode stores sessions in memory).",
+                    stored,
+                )
+                trace.append(
+                    "session_recreated_after_404",
+                    {"old_session_id": stored},
+                )
+            else:
+                logger.warning(
+                    "SpecialistRuntime: verify GET /session/%s returned %s "
+                    "(expected 200); recreating instead of reusing an "
+                    "unverified binding.",
+                    stored,
+                    response.status_code,
+                )
+                trace.append(
+                    "session_recreated_after_verify",
+                    {
+                        "old_session_id": stored,
+                        "status": response.status_code,
+                    },
+                )
             response = await process._client.post("/session", json={})
             response.raise_for_status()
             data = response.json()
@@ -463,10 +510,13 @@ class SpecialistRuntime:
 
         Resolution (``harness_selected`` trace event): per-task
         override > test mock > specialist record > operator default
-        > opencode. The native engine is the default for records
-        that never chose (step-4 flip); opencode is the automatic
-        per-delegation fallback when the engine fails before doing
-        any work (``fallback_used`` trace event).
+        > opencode. No automatic cross-harness fallback (user ruling
+        2026-09-14, removal executed same day): when the engine is
+        selected and fails before doing any work, the turn fails
+        LOUD with the engine error — it never silently re-runs on
+        opencode (which would start a history-less fresh session,
+        bill twice, and misattribute the error). Fail loud across
+        harnesses; fail over only within one.
         """
         selected, source = resolve_harness_name(
             harness, specialist.harness, self.harness_default
@@ -481,7 +531,7 @@ class SpecialistRuntime:
             },
         )
         if selected == ENGINE_HARNESS_NAME:
-            output, fallback_reason = await self._run_engine_attempt(
+            output, failure_reason = await self._run_engine_attempt(
                 specialist=specialist,
                 delegation=delegation,
                 worktree_path=worktree_path,
@@ -492,26 +542,23 @@ class SpecialistRuntime:
                 session_id_getter=session_id_getter,
                 session_id_setter=session_id_setter,
                 on_chunk=on_chunk,
+                on_reasoning=on_reasoning,
                 project_dir=project_dir,
                 permission_roots=permission_roots,
             )
-            if fallback_reason is None:
+            if failure_reason is None:
                 return output  # type: ignore[return-value]
+            # No cross-harness fallback (2026-09-14 removal): an
+            # engine that never did work fails loud with its own
+            # error, wrapped exactly once for the chat loop.
             logger.warning(
                 "SpecialistRuntime: engine turn failed before any "
-                "work (%s); falling back to opencode for %s",
-                fallback_reason,
+                "work (%s); failing loud without opencode fallback "
+                "for %s",
+                failure_reason,
                 delegation.delegation_id,
             )
-            trace.append(
-                "fallback_used",
-                {
-                    "from": ENGINE_HARNESS_NAME,
-                    "to": OPENCODE_HARNESS_NAME,
-                    "reason": fallback_reason,
-                    "delegation_id": delegation.delegation_id,
-                },
-            )
+            return f"[chat error: {failure_reason}]"
         return await self._run_opencode(
             specialist=specialist,
             delegation=delegation,
@@ -539,18 +586,22 @@ class SpecialistRuntime:
         session_id_getter: Callable[[], str | None] | None = None,
         session_id_setter: Callable[[str], None] | None = None,
         on_chunk: Callable[[str], Any] | None = None,
+        # Thinking capture: mirrors the opencode path's on_reasoning
+        # (engine `reasoning` SSE events, protocol v2). The chat loop
+        # forwards these as chat.thinking; the text never joins output.
+        on_reasoning: Callable[[str], Any] | None = None,
         project_dir: Path | None = None,
         permission_roots: Any = None,
     ) -> tuple[str | None, str | None]:
         """Attempt one turn on the native engine.
 
         Returns ``(output, None)`` when the turn settled (success or
-        honest failure); ``(None, reason)`` when the caller must run
-        the opencode fallback — i.e. the engine raised, was never
-        reached (not registered, version drift), or failed with no
-        tool executed and no text produced. Anything the engine
-        actually did (tools, partial text) is returned as-is, never
-        re-run. Cancellation propagates (never swallowed into a
+        honest failure); ``(None, reason)`` when the engine never did
+        any work — i.e. the engine raised, was never reached (not
+        registered, version drift), or failed with no tool executed
+        and no text produced. Anything the engine actually did
+        (tools, partial text) is returned as-is, never re-run.
+        Cancellation propagates (never swallowed into a
         fallback — the outer bound owns that decision).
         """
         probe = _ToolActivityProbe(trace)
@@ -578,11 +629,19 @@ class SpecialistRuntime:
             # external getter wins, else the specialist record. The
             # engine owns durable sessions; attach resumes, spawn
             # starts. A turn that mints the binding is a new session.
+            # Foreign ids (opencode `ses_*`) are NEVER attached: the
+            # sidecar would ensure() a FRESH engine session under that
+            # string without the role charter (silent amnesia). Treat
+            # them as new — spawn mints an eng_ id, the charter is
+            # (re-)injected, and the setter rebinds going forward.
+            # Old sessions don't break: the opencode conversation stays
+            # intact in opencode.db, reachable by switching back.
             if session_id_getter is not None:
                 stored = session_id_getter() or ""
             else:
                 stored = specialist.session_id or ""
-            new_session = fresh or not stored
+            resume = _engine_session_resume(stored, fresh)
+            new_session = not resume
 
             prompt_text = message
             if new_session:
@@ -641,7 +700,7 @@ class SpecialistRuntime:
                 env={},
                 harness=ENGINE_HARNESS_NAME,
             )
-            if stored and not fresh:
+            if resume:
                 process = await harness_obj.attach(stored, spec)
             else:
                 process = await harness_obj.spawn(spec)
@@ -659,7 +718,9 @@ class SpecialistRuntime:
                 },
                 model=used_ref,
             )
-            result = await process.send(msg, on_chunk=on_chunk, trace=probe)
+            result = await process.send(
+                msg, on_chunk=on_chunk, trace=probe, on_reasoning=on_reasoning
+            )
 
             # Persist the engine session binding (best-effort, like
             # the opencode path) + record it on the delegation.
@@ -698,11 +759,14 @@ class SpecialistRuntime:
             if result.success:
                 return result.output, None
             if probe.tool_started == 0 and not (result.output or "").strip():
-                return (
-                    None,
-                    f"engine error before any work: "
-                    f"{(result.error or 'unknown')[:200]}",
-                )
+                err = (result.error or "unknown").strip()
+                if err.startswith("[chat error:") and err.endswith("]"):
+                    # The harness already wraps verbatim upstream
+                    # errors; unwrap one layer so run()'s single
+                    # wrap doesn't nest ("[chat error: ... [chat
+                    # error: ...]]" reads as two failures).
+                    err = err[len("[chat error:"):-1].strip()
+                return None, f"engine_failed_before_work: {err[:200]}"
             return (
                 result.error
                 or result.output
@@ -749,9 +813,11 @@ class SpecialistRuntime:
         """Run one delegation on the opencode harness. Returns the
         agent's text output.
 
-        Step 4: this is the fallback path. :meth:`run` dispatches
-        here when opencode is selected — or when the native engine
-        failed before doing any work (``fallback_used`` trace).
+        :meth:`run` dispatches here when opencode is selected
+        (per-task override, specialist record, config default, or
+        the selection default). There is no automatic path here
+        from the engine (2026-09-14 fallback removal) — an
+        engine-selected turn that fails never lands here.
         
         The single-active-task queue per (specialist, worktree) is
         enforced by a per-key asyncio.Lock: concurrent calls for the

@@ -47,6 +47,7 @@ from sweave.harness.base import (
     Message,
     harness_registry,
 )
+from sweave.platform import creationflags_no_window
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ async def _ensure_sidecar() -> _Sidecar:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env={**os.environ},
+            # Windows: a flagless node.exe owns a visible console
+            # window (the "CMD opens on every test try" report,
+            # 2026-09-14). Every other spawn site already goes
+            # through creationflags_no_window (platform.py).
+            creationflags=creationflags_no_window(),
         )
         assert proc.stdout is not None
         base_url = None
@@ -157,6 +163,7 @@ class SweaveEngineProcess:
         on_chunk: "Callable[[str], Any] | None" = None,
         trace: Any = None,
         trace_reasoning: bool = False,
+        on_reasoning: "Callable[[str], Any] | None" = None,
     ) -> AgentResult:
         """POST /run and stream native tokens (same shape as opencode send).
 
@@ -164,8 +171,11 @@ class SweaveEngineProcess:
         this one turn; ``spec.model`` accepts the same
         ``provider/model`` string form the rest of Sweave uses and is
         split into the structured pair here. ``on_chunk`` fires per
-        token (sync or async). ``trace`` receives the ``tokens_used``
-        terminal anchor verbatim (tool events arrive with step 2).
+        token (sync or async). ``on_reasoning`` mirrors it for
+        ``reasoning`` events (engine thinking text, protocol v2):
+        traced like the opencode path, never mixed into the output.
+        ``trace`` receives the ``tokens_used`` terminal anchor
+        verbatim (tool events arrive with step 2).
         """
         try:
             session_id = await self._ensure_session()
@@ -246,6 +256,31 @@ class SweaveEngineProcess:
                                 except Exception as cb_err:  # noqa: BLE001
                                     logger.warning(
                                         "SweaveEngineProcess.send: on_chunk "
+                                        "callback raised: %s",
+                                        cb_err,
+                                    )
+                        elif kind == "reasoning":
+                            # Thinking capture (protocol v2, same
+                            # contract as opencode reasoning parts):
+                            # traced + forwarded, never output.
+                            rtext = event.get("text", "")
+                            if trace is not None:
+                                try:
+                                    trace.append("reasoning", {"text": rtext})
+                                except Exception as trace_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SweaveEngineProcess.send: reasoning "
+                                        "trace failed: %s",
+                                        trace_err,
+                                    )
+                            if on_reasoning is not None:
+                                try:
+                                    result = on_reasoning(rtext)
+                                    if hasattr(result, "__await__"):
+                                        await result
+                                except Exception as cb_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SweaveEngineProcess.send: on_reasoning "
                                         "callback raised: %s",
                                         cb_err,
                                     )

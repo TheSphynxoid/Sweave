@@ -200,21 +200,21 @@ async def test_ensure_session_reuses_when_stored_id_valid(tmp_path: Path):
         return httpx.Response(500, text="POST /session should not be called on reuse")
     def t_get(r: httpx.Request) -> httpx.Response:
         called.append((r.method, r.url.path))
-        return httpx.Response(200, json={"id": "sid-stored"})
+        return httpx.Response(200, json={"id": "ses_stored"})
     transport = _mock_transport({
-        ("GET", "/session/sid-stored"): t_get,
+        ("GET", "/session/ses_stored"): t_get,
         ("POST", "/session"): t_post,
     })
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         runner, proc = _build_runner_with_mock_process(
-            tmp_path, http_client=client, session_id="sid-stored"
+            tmp_path, http_client=client, session_id="ses_stored"
         )
-        spec = Specialist(name="alpha", system_prompt="", session_id="sid-stored")
+        spec = Specialist(name="alpha", system_prompt="", session_id="ses_stored")
         trace = TraceLog("d2", base_dir=tmp_path)
         runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
 
         await runtime._ensure_session(runner, proc, spec, trace, fresh=False)
-        assert spec.session_id == "sid-stored"
+        assert spec.session_id == "ses_stored"
         # The GET path is the only one called; POST must NOT be invoked.
         assert all(c[0] == "GET" for c in called), f"unexpected calls: {called}"
 
@@ -223,14 +223,14 @@ async def test_ensure_session_reuses_when_stored_id_valid(tmp_path: Path):
 async def test_ensure_session_recreates_on_404(tmp_path: Path):
     """GET /session/{id} 404 -> POST /session + persist new id; warn-trace."""
     transport = _mock_transport({
-        ("GET", "/session/sid-stale"): _session_404,
+        ("GET", "/session/ses_stale"): _session_404,
         ("POST", "/session"): lambda r: _session_id_response("sid-recreated"),
     })
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         runner, proc = _build_runner_with_mock_process(
-            tmp_path, http_client=client, session_id="sid-stale"
+            tmp_path, http_client=client, session_id="ses_stale"
         )
-        spec = Specialist(name="alpha", system_prompt="", session_id="sid-stale")
+        spec = Specialist(name="alpha", system_prompt="", session_id="ses_stale")
         trace = TraceLog("d3", base_dir=tmp_path)
         runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
 
@@ -238,6 +238,67 @@ async def test_ensure_session_recreates_on_404(tmp_path: Path):
         assert spec.session_id == "sid-recreated"
         events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
         assert "session_recreated_after_404" in events
+        assert "session_recreated" in events
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_ignores_foreign_engine_id(tmp_path: Path):
+    """Stored `eng_*` id (prior engine turn) -> NO verify GET; create fresh.
+
+    Live 2026-09-14: the engine→opencode fallback carried an eng_
+    binding into the opencode path, the verify GET answered non-404,
+    and the turn died in _send_message's ses_ guard. Mirror of
+    _engine_session_resume (which refuses ses_* the same way).
+    """
+    called: list[tuple[str, str]] = []
+    get_paths: list[str] = []
+    def t_post(r: httpx.Request) -> httpx.Response:
+        called.append((r.method, r.url.path))
+        return _session_id_response("ses-fresh-after-eng")
+    def t_get(r: httpx.Request) -> httpx.Response:
+        get_paths.append(r.url.path)
+        return httpx.Response(500, text="must not be verified")
+    transport = _mock_transport({
+        ("POST", "/session"): t_post,
+        ("GET", "/session/eng_9dd37cb9ff1e"): t_get,
+    })
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        runner, proc = _build_runner_with_mock_process(
+            tmp_path, http_client=client, session_id="sid-init"
+        )
+        spec = Specialist(name="alpha", system_prompt="", session_id="eng_9dd37cb9ff1e")
+        trace = TraceLog("d-foreign", base_dir=tmp_path)
+        runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+
+        await runtime._ensure_session(runner, proc, spec, trace, fresh=False)
+        assert spec.session_id == "ses-fresh-after-eng"
+        assert proc._session_id == "ses-fresh-after-eng"
+        # No verify GET for the foreign id — straight to create.
+        assert get_paths == []
+        events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
+        assert "session_foreign_id_ignored" in events
+        assert "session_created" in events
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_recreates_on_verify_500(tmp_path: Path):
+    """Verify GET 500 (not 404) -> recreate; only 200 reuses."""
+    transport = _mock_transport({
+        ("GET", "/session/ses_old"): lambda r: httpx.Response(500, text="boom"),
+        ("POST", "/session"): lambda r: _session_id_response("ses-new2"),
+    })
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        runner, proc = _build_runner_with_mock_process(
+            tmp_path, http_client=client, session_id="sid-init"
+        )
+        spec = Specialist(name="alpha", system_prompt="", session_id="ses_old")
+        trace = TraceLog("d-verify500", base_dir=tmp_path)
+        runtime = SpecialistRuntime(runners=ServeRunnerRegistry())
+
+        await runtime._ensure_session(runner, proc, spec, trace, fresh=False)
+        assert spec.session_id == "ses-new2"
+        events = [e["event"] for e in read_trace(trace.delegation_id, base_dir=tmp_path)]
+        assert "session_recreated_after_verify" in events
         assert "session_recreated" in events
 
 
