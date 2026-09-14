@@ -328,6 +328,10 @@ async def lifespan(app: FastAPI):
         event_bus=state.event_bus,
         turn_timeout=state.job_runner.turn_timeout,
         model_resolver=lambda agent: config_manager.resolve_model(agent),
+        # Retry budget (routing.turn_retries, default 3): retries AFTER
+        # the first provider attempt on engine turns. Hot-reloaded
+        # below alongside turn_timeout.
+        turn_retries=config_manager.get_routing().turn_retries,
         # Stop button (2026-09-14): subtree cancel routes through the
         # runner that owns the child tasks (built above, before us).
         job_runner=state.job_runner,
@@ -356,6 +360,12 @@ async def lifespan(app: FastAPI):
             state.job_runner.turn_timeout = float(value)
             if state.chat_loop is not None:
                 state.chat_loop.turn_timeout = float(value)
+        try:
+            retries = config_manager.get_routing().turn_retries
+        except Exception:  # noqa: BLE001 — best-effort reload, never fatal
+            return
+        if retries is not None and state.chat_loop is not None:
+            state.chat_loop.turn_retries = int(retries)
 
     config_manager.register_reload_callback(_apply_turn_timeout)
     config_manager.enable_hot_reload()

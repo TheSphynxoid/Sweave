@@ -213,9 +213,35 @@ async def test_task_override_beats_specialist_current_model(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def _make_config_manager() -> "ConfigManager":
+def _make_config_manager(tmp_path: Path) -> "ConfigManager":
     from sweave.config.manager import ConfigManager
-    cm = ConfigManager()
+    import shutil
+    import yaml as _yaml
+
+    # Tmp copies of the repo files (hygiene: config.yaml is a working
+    # artifact — no test loads the live repo CWD).
+    root = Path(__file__).parent.parent
+    for name in (
+        "config.yaml",
+        "models.yaml",
+        "rules.yaml",
+        "models.custom.yaml",
+        "models.meta.json",
+    ):
+        src = root / name
+        if src.exists():
+            shutil.copy(src, tmp_path / name)
+    cfg_doc = _yaml.safe_load(
+        (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    )
+    models = cfg_doc.get("models")
+    if isinstance(models, dict):
+        models["registry_path"] = str(tmp_path / "models.yaml")
+        models["rules_path"] = str(tmp_path / "rules.yaml")
+        (tmp_path / "config.yaml").write_text(
+            _yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
+        )
+    cm = ConfigManager(config_path=tmp_path / "config.yaml")
     cm.load()
     return cm
 
@@ -234,7 +260,7 @@ def test_four_level_chain_unknown_role_ref_falls_through_to_orchestrator_default
         SpecialistResolver,
     )
 
-    cm = _make_config_manager()
+    cm = _make_config_manager(tmp_path)
     tool = DelegateTaskTool(cm, None)  # type: ignore[arg-type]
     resolver = SpecialistResolver()
     resolver.global_store = GlobalSpecialistStore(tmp_path / "g.yaml")

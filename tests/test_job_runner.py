@@ -257,6 +257,7 @@ class _StubSpecialistRuntime:
         harness=None,
         project_dir=None,
         permission_roots=None,
+        max_retries=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"

@@ -513,6 +513,10 @@ class SpecialistRuntime:
         # turns ignore both (the map lives in opencode.json there).
         project_dir: Path | None = None,
         permission_roots: Any = None,
+        # Retry budget (turn_retries setting): retries AFTER the first
+        # provider attempt, engine turns only (opencode retries inside
+        # its own stack). None = sidecar default (3).
+        max_retries: int | None = None,
     ) -> str:
         """Run one delegation on the selected harness.
 
@@ -553,6 +557,7 @@ class SpecialistRuntime:
                 on_reasoning=on_reasoning,
                 project_dir=project_dir,
                 permission_roots=permission_roots,
+                max_retries=max_retries,
             )
             if failure_reason is None:
                 return output  # type: ignore[return-value]
@@ -754,6 +759,10 @@ class SpecialistRuntime:
         on_reasoning: Callable[[str], Any] | None = None,
         project_dir: Path | None = None,
         permission_roots: Any = None,
+        # Retry budget (turn_retries setting): retries AFTER the first
+        # provider attempt. None = sidecar default (3); rides the
+        # message metadata so the harness owns the wire shape.
+        max_retries: int | None = None,
     ) -> tuple[str | None, str | None]:
         """Attempt one turn on the native engine.
 
@@ -876,6 +885,13 @@ class SpecialistRuntime:
                         ROLE_ORCHESTRATOR
                         if specialist.is_orchestrator
                         else ROLE_SPECIALIST
+                    ),
+                    **(
+                        {"max_retries": max_retries}
+                        if isinstance(max_retries, int)
+                        and not isinstance(max_retries, bool)
+                        and max_retries >= 0
+                        else {}
                     ),
                 },
                 model=used_ref,

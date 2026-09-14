@@ -1,6 +1,8 @@
-# Sweave Configuration
-# Copy to config.yaml and customize
-# (2026-09-10: config.yaml touched to hot-reload models.yaml default -> opencode/glm-5.3-flash)
+# Sweave Configuration — template (tracked).
+# Copy to config.yaml and customize. config.yaml itself is a live
+# working artifact (user defaults land there at runtime) and is NOT
+# tracked — never commit it, never pipe file content into it via
+# PowerShell redirection (UTF-16 LE + BOM breaks PyYAML).
 
 server:
   host: "127.0.0.1"
@@ -23,7 +25,7 @@ memory:
     embeddings_api_key:  # Set via OPENAI_API_KEY env var
     embeddings_model: "text-embedding-3-small"
     reranker_provider: "openai"
-    reranker_api_key: 
+    reranker_api_key:
     bank_id: "project-memory"
 
 git:
@@ -34,6 +36,8 @@ git:
   pr_base_branch: "main"
 
 models:
+  # User default (models.default) is written here at runtime via
+  # Settings / set_default_model — not in this template.
   registry_path: "models.yaml"
   rules_path: "rules.yaml"
   hot_reload: true
@@ -47,3 +51,8 @@ routing:
   # defer payloads + result summaries; specialist internal work is opaque).
   chain_budget: 200000
   max_depth: 2
+  # Provider-call retries per engine turn: retries AFTER the first
+  # attempt (3 = up to 4 tries). Transient failures only (429 / 5xx /
+  # rate-limit / network-down / timeouts); auth, bad-request,
+  # quota-exhausted and context-overflow never retry. 0 disables.
+  turn_retries: 3

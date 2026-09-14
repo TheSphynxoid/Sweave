@@ -82,7 +82,13 @@ export async function providerResponsesStream({
   });
   if (!resp.ok || !resp.body) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`provider ${resp.status}: ${text.slice(0, 300)}`);
+    const err = new Error(`provider ${resp.status}: ${text.slice(0, 300)}`);
+    err.status = resp.status;
+    try {
+      err.headers = resp.headers;
+    } catch {}
+    err.body = text.slice(0, 500);
+    throw err;
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();

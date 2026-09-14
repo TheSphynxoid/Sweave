@@ -75,6 +75,11 @@ playwright-report/
 # Sweave-managed per-project opencode config (repo root is a live project dir)
 /opencode.json
 
+# Live working config (user defaults land here at runtime; see
+# config.example.yaml for the tracked template). Never commit.
+# (User ruling: working artifact, not repo work.)
+/config.yaml
+
 # UI build artifacts (vite.config compiled by tsc)
 sweave-web/vite.config.js
 sweave-web/vite.config.d.ts

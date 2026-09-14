@@ -13,6 +13,7 @@ import {
   cloneElement,
   Children,
 } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/utils/cn";
 
 // Simple tooltip implementation (shadcn-style)
@@ -157,7 +158,9 @@ export function TooltipContent({
   ...props
 }: TooltipContentProps) {
   const { open, triggerRef, contentRef } = useTooltipContext();
-  const [position, setPosition] = useState({ top: 0, left: 0 });
+  // Null until measured: the first paint stays hidden so the tip
+  // never flashes at the viewport corner before positioning.
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
     if (!open || !triggerRef.current) return;
@@ -221,12 +224,28 @@ export function TooltipContent({
     };
   }, [open, side, align, sideOffset]);
 
+  useEffect(() => {
+    if (!open) setPosition(null);
+  }, [open ]);
+
   if (!open) return null;
 
-  return (
+  // Portaled to document.body: the trigger often lives under a
+  // backdrop-blur ancestor (message card, composer), which becomes
+  // the containing block for non-portaled fixed content — the tip
+  // then overflows the card, grows the page, shifts the button out
+  // from under the cursor, and hover-flickers in a loop. A portal
+  // keeps the tip in viewport coordinates: zero layout impact.
+  return createPortal(
     <div
       ref={contentRef}
-      style={{ position: "fixed", top: position.top, left: position.left, zIndex: 50 }}
+      style={{
+        position: "fixed",
+        top: position?.top ?? 0,
+        left: position?.left ?? 0,
+        zIndex: 50,
+        visibility: position ? "visible" : "hidden",
+      }}
       className={cn(
         "px-2 py-1 text-xs text-muted-foreground bg-popover border border-border rounded shadow-lg",
         "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
@@ -244,7 +263,8 @@ export function TooltipContent({
           borderTopColor: side === "bottom" ? "hsl(var(--border))" : "transparent",
         }}
       />
-    </div>
+    </div>,
+    document.body
   );
 }
 

@@ -22,14 +22,44 @@ import yaml
 from sweave.config.manager import ConfigManager
 
 
-def _manager() -> ConfigManager:
-    cm = ConfigManager()
+def _manager(tmp_path: Path) -> ConfigManager:
+    """ConfigManager over tmp COPIES of the repo files.
+
+    Hygiene (user ruling: config.yaml is a working artifact, never
+    repo work): no test may load — let alone write — the live repo
+    files. ``load()`` persists legacy adoption and ``set_default``
+    writes, so even read-looking tests copy first. The copies keep
+    the live-data assertions (real registry shape); writes land in
+    tmp and die with it.
+    """
+    import shutil
+
+    root = Path(__file__).parent.parent
+    for name in (
+        "config.yaml",
+        "models.yaml",
+        "rules.yaml",
+        "models.custom.yaml",
+        "models.meta.json",
+    ):
+        src = root / name
+        if src.exists():
+            shutil.copy(src, tmp_path / name)
+    cfg_doc = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    models = cfg_doc.get("models")
+    if isinstance(models, dict):
+        models["registry_path"] = str(tmp_path / "models.yaml")
+        models["rules_path"] = str(tmp_path / "rules.yaml")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
+        )
+    cm = ConfigManager(config_path=tmp_path / "config.yaml")
     cm.load()
     return cm
 
 
-def test_all_models_are_qualified():
-    cm = _manager()
+def test_all_models_are_qualified(tmp_path: Path):
+    cm = _manager(tmp_path)
     all_models = cm.get_all_models()
     assert all_models, "registry is empty"
     assert all("/" in m for m in all_models)
@@ -63,8 +93,8 @@ def test_qualify_always_prefixes():
     }
 
 
-def test_default_is_qualified_and_in_registry():
-    cm = _manager()
+def test_default_is_qualified_and_in_registry(tmp_path: Path):
+    cm = _manager(tmp_path)
     default = cm.get_default_model()
     assert "/" in default
     assert default in set(cm.get_all_models())
@@ -111,16 +141,30 @@ def test_default_prefers_opencode_configured_model(tmp_path: Path, tmp_home: Pat
     assert cm.get_default_model() == fake_configured
 
 
-def test_set_default_model_rejects_unqualified():
-    cm = _manager()
+def test_set_default_model_rejects_unqualified(tmp_path: Path):
+    cm = _manager(tmp_path)
     with pytest.raises(ValueError, match="qualified"):
         cm.set_default_model("gmi")
 
 
-def test_set_default_model_rejects_unknown():
-    cm = _manager()
+def test_set_default_model_rejects_unknown(tmp_path: Path):
+    cm = _manager(tmp_path)
     with pytest.raises(ValueError, match="unknown model"):
         cm.set_default_model("nope/nothing-here-xyz")
+
+
+def test_load_with_default_present_writes_nothing(tmp_path: Path):
+    """Pin: ``load()`` is read-only when the config already has a
+    default — the adoption write fires only for the missing-default
+    case. (A suite run once rewrote the repo's live config.yaml via
+    a bare ``ConfigManager()`` at repo CWD; hermetic managers plus
+    this pin close that class.)"""
+    cm_path = _manager(tmp_path).config_path
+    before_cfg = (tmp_path / "config.yaml").read_bytes()
+    before_reg = (tmp_path / "models.yaml").read_bytes()
+    ConfigManager(config_path=cm_path).load()
+    assert (tmp_path / "config.yaml").read_bytes() == before_cfg
+    assert (tmp_path / "models.yaml").read_bytes() == before_reg
 
 
 def test_set_default_model_persists_and_reloads(tmp_path: Path):

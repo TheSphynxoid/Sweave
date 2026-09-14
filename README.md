@@ -33,8 +33,8 @@ opencode auth login  # For each provider you use
 ### Configuration
 
 ```bash
-# Copy and customize config
-cp config.yaml config.local.yaml
+# Copy and customize config (config.yaml is a live working file, not tracked)
+cp config.example.yaml config.yaml
 
 # Generate models.yaml from models.dev
 python scripts/generate_models.py
@@ -96,7 +96,8 @@ sweave doctor
 ## Configuration
 
 ### config.yaml
-Main configuration file. See `config.yaml` for all options.
+Main configuration file (live working artifact — untracked; user
+defaults land here at runtime). See `config.example.yaml` for all options.
 
 Key sections:
 - `server` — HTTP server settings

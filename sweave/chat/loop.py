@@ -204,6 +204,11 @@ class ChatLoop:
         # None = legacy path (parent turn cancels, live children
         # keep running into the Children lane).
         job_runner: Any = None,
+        # Retry budget (turn_retries setting, default 3): retries AFTER
+        # the first provider attempt on engine turns (opencode retries
+        # inside its own stack). Hot-reloaded like turn_timeout; None
+        # keeps the sidecar default.
+        turn_retries: int | None = 3,
     ) -> None:
         self.project_manager = project_manager
         self.runtime = specialist_runtime
@@ -239,6 +244,8 @@ class ChatLoop:
         self.escalation_store = escalation_store
         # Stop button (2026-09-14)
         self.job_runner = job_runner
+        # Retry budget (turn_retries setting)
+        self.turn_retries = turn_retries
         # Per-session serial locks. Created on first use; never
         # persisted. The dict is mutated under _locks_meta so
         # concurrent first-callers don't race.
@@ -1845,6 +1852,7 @@ class ChatLoop:
             on_reasoning=on_reasoning,
             project_dir=worktree_path,
             permission_roots=permission_roots,
+            max_retries=self.turn_retries,
         )
         task = asyncio.ensure_future(inner)
         remaining = self.turn_timeout

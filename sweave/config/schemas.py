@@ -125,6 +125,29 @@ class RoutingConfig(BaseModel):
             )
         return v
 
+    # Provider-call retries per engine turn (user ruling: wait and
+    # retry like opencode, at least 3). Counts retries AFTER the first
+    # provider attempt (opencode RETRY_MAX_RETRIES semantics: 3 → up
+    # to 4 tries). Applies to transient failures only (429 / 5xx /
+    # rate-limit / network-down / timeouts); auth, bad-request,
+    # quota-exhausted and context-overflow never retry. Lives beside
+    # turn_timeout_s: same per-turn scope, same hot-reload path. The
+    # sidecar defaults to 3 when a turn carries no value (specialist
+    # turns), so this knob binds the chat path explicitly.
+    turn_retries: int = 3
+
+    @field_validator("turn_retries")
+    @classmethod
+    def _validate_turn_retries(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("turn_retries must be >= 0 (0 disables retry)")
+        if v > 10:
+            raise ValueError(
+                "turn_retries must be <= 10: beyond that a turn is "
+                "hammering a dead provider, not recovering"
+            )
+        return v
+
 
 class ServerConfig(BaseModel):
     """Server configuration."""

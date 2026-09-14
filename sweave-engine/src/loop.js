@@ -18,6 +18,11 @@
 import { newMessageId } from "./sessions.js";
 import { resolve as resolvePath } from "node:path";
 import {
+  providerHttpError,
+  withProviderRetry,
+  DEFAULT_MAX_RETRIES,
+} from "./retry.js";
+import {
   EXEC_TOOL_DEFS,
   PER_TOOL_BUDGET_MS,
   executeTool,
@@ -114,22 +119,57 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta }) {
+async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta, maxRetries, logPrefix }) {
   // `messages` is flavor-appropriate input (chat messages or Responses
   // input items — the caller maps history for the resolved flavor).
   // Both transports return { text, calls: [{id, name, args}], usage }.
-  if (flavor === "responses") {
-    return providerResponsesStream({
+  //
+  // Transient provider/network failures retry inside the turn
+  // (opencode retry.ts lesson): the SAME history replays, no session
+  // rotation, no duplicate user message. Caveat: tokens streamed
+  // before a mid-stream cut were already forwarded — a retry replays
+  // the prefix live, but the returned (persisted) text is exactly the
+  // final attempt's. Auth/bad-request/context errors never retry.
+  const runOnce = async () => {
+    if (flavor === "responses") {
+      return providerResponsesStream({
+        baseURL,
+        key,
+        modelId,
+        sessionId,
+        input: messages,
+        defs,
+        signal,
+        onToken,
+      });
+    }
+    return providerChatStream({
       baseURL,
       key,
+      provider,
       modelId,
       sessionId,
-      input: messages,
+      messages,
       defs,
       signal,
       onToken,
+      onReasoning,
     });
-  }
+  };
+  return withProviderRetry(runOnce, {
+    maxRetries: maxRetries ?? DEFAULT_MAX_RETRIES,
+    signal,
+    onRetry: ({ attempt, waitMs, error }) => {
+      try {
+        process.stderr.write(
+          `${logPrefix || "sweave-engine"}: provider retry ${attempt} in ${waitMs}ms (${String((error && error.message) || error).slice(0, 160)})\n`
+        );
+      } catch {}
+    },
+  });
+}
+
+async function providerChatStream({ baseURL, key, provider, modelId, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta }) {
   const resp = await fetch(`${baseURL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -152,7 +192,7 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
   });
   if (!resp.ok || !resp.body) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`provider ${resp.status}: ${text.slice(0, 300)}`);
+    throw providerHttpError(resp.status, resp.headers, text.slice(0, 300));
   }
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
@@ -345,6 +385,8 @@ export async function runLoop(loopCtx) {
       signal,
       onToken: (t) => emit({ event: "token", text: t }),
       onReasoning: (t) => emit({ event: "reasoning", text: t }),
+      maxRetries: body.max_retries,
+      logPrefix: `sweave-engine:${session.id}`,
     });
     stepText = stepResult.text;
     stepCalls = stepResult.calls;

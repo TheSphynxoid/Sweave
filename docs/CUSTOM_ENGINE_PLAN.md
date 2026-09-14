@@ -32,9 +32,10 @@ transcript parity on the opencode wire). Parallel-execution discipline:
   single-shot. The stall watchdog watches message-stream bytes only
   (`specialist_runtime.py:963-964`): 300s body silence, 950s pre-model
   header bound (2026-09-13 — headers vs body are different signals),
-  1800s soft outer total, `KILL_ON_SILENCE=False` (2026-09-13 regression:
-  byte-silence cannot classify patient-vs-wedged, so the watchdog records
-  loudly and lets work continue instead of killing). ACP is strictly worse
+  1800s soft outer total, `KILL_ON_SILENCE=True` (no-rotation ruling —
+  was `False` at plan time per the 2026-09-13 regression; detection
+  quality stays the transparency track's problem, but a declared stall
+  now kills, and sessions are never rotated). ACP is strictly worse
   today (no message/thought chunks — DESIGN §R4.2 "ACP verdict").
 - Transparency track (2026-09-13, `docs/SPECIALIST_VIEW_PLAN.md`) owns the
   trace vocabulary + detail payload + read-only subchat projection on the

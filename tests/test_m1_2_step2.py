@@ -28,12 +28,37 @@ from sweave.tools import DelegateTaskTool
 # ---- helpers -------------------------------------------------------------
 
 
-def _make_config_manager() -> ConfigManager:
-    """Load the on-disk config so the tests track models.yaml edits.
-    (Building a synthetic SweaveConfig by hand requires recreating
-    every nested pydantic model; the repo's own config is fine.)
+def _make_config_manager(tmp_path: Path) -> ConfigManager:
+    """Load tmp COPIES of the on-disk config so the tests track
+    models.yaml edits without touching the live repo files (hygiene:
+    config.yaml is a working artifact — ``load()`` persists legacy
+    adoption and must never see the repo CWD).
     """
-    cm = ConfigManager()
+    import shutil
+    import yaml as _yaml
+
+    root = Path(__file__).parent.parent
+    for name in (
+        "config.yaml",
+        "models.yaml",
+        "rules.yaml",
+        "models.custom.yaml",
+        "models.meta.json",
+    ):
+        src = root / name
+        if src.exists():
+            shutil.copy(src, tmp_path / name)
+    cfg_doc = _yaml.safe_load(
+        (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    )
+    models = cfg_doc.get("models")
+    if isinstance(models, dict):
+        models["registry_path"] = str(tmp_path / "models.yaml")
+        models["rules_path"] = str(tmp_path / "rules.yaml")
+        (tmp_path / "config.yaml").write_text(
+            _yaml.safe_dump(cfg_doc, sort_keys=False), encoding="utf-8"
+        )
+    cm = ConfigManager(config_path=tmp_path / "config.yaml")
     cm.load()
     return cm
 
@@ -41,7 +66,7 @@ def _make_config_manager() -> ConfigManager:
 def _make_tool(
     tmp_path: Path, *, with_resolver: bool = True
 ) -> DelegateTaskTool:
-    cm = _make_config_manager()
+    cm = _make_config_manager(tmp_path)
     tool = DelegateTaskTool(
         cm,
         None,  # type: ignore[arg-type] -- we never reach the worktree step
@@ -156,7 +181,7 @@ def test_anchored_path_is_home_relative(tmp_path: Path):
     try:
         os.chdir(tmp_path)  # foreign CWD
         assert _anchored_agents_path() == Path.home() / ".sweave" / "agents.yaml"
-        state = AppState.build(_make_config_manager())
+        state = AppState.build(_make_config_manager(tmp_path))
         assert state.dynamic_agents_path == Path.home() / ".sweave" / "agents.yaml"
     finally:
         os.chdir(orig_cwd)
@@ -168,7 +193,7 @@ def test_anchored_path_with_explicit_override(tmp_path: Path):
     points at a tmp file)."""
     from sweave.web.state import AppState
 
-    state = AppState.build(_make_config_manager())
+    state = AppState.build(_make_config_manager(tmp_path))
     state.dynamic_agents_path = tmp_path / "custom.yaml"
     assert state.dynamic_agents_path == tmp_path / "custom.yaml"
 
@@ -199,7 +224,7 @@ def test_load_dynamic_agents_anchored(monkeypatch, tmp_path: Path):
         foreign = tmp_path / "unrelated"
         foreign.mkdir(exist_ok=True)
         os.chdir(foreign)
-        state = AppState.build(_make_config_manager())
+        state = AppState.build(_make_config_manager(tmp_path))
         state.dynamic_agents_path = Path.home() / ".sweave" / "agents.yaml"
         import asyncio
         asyncio.run(state.load_dynamic_agents())
@@ -219,7 +244,7 @@ def test_bootstrap_specialists_imports_when_file_absent(monkeypatch, tmp_path: P
     from sweave.web.state import AppState
 
     monkeypatch.setattr(state_mod.Path, "home", classmethod(lambda cls: tmp_path))
-    state = AppState.build(_make_config_manager())
+    state = AppState.build(_make_config_manager(tmp_path))
     state.dynamic_agents_path = Path.home() / ".sweave" / "agents.yaml"
     from pathlib import Path as P
     from sweave.config.schemas import AgentSpec
@@ -249,7 +274,7 @@ def test_bootstrap_skips_when_anchored_file_present(monkeypatch, tmp_path: Path)
     anchored.parent.mkdir(parents=True, exist_ok=True)
     anchored.write_text("agents: []\n", encoding="utf-8")
 
-    state = AppState.build(_make_config_manager())
+    state = AppState.build(_make_config_manager(tmp_path))
     state.dynamic_agents_path = anchored
     from pathlib import Path as P
     from sweave.config.schemas import AgentSpec
@@ -269,7 +294,7 @@ def test_bootstrap_skips_when_no_legacy_entries(monkeypatch, tmp_path: Path):
     from sweave.web.state import AppState
 
     monkeypatch.setattr(state_mod.Path, "home", classmethod(lambda cls: tmp_path))
-    state = AppState.build(_make_config_manager())
+    state = AppState.build(_make_config_manager(tmp_path))
     state.dynamic_agents_path = Path.home() / ".sweave" / "agents.yaml"
     import asyncio
     asyncio.run(state.bootstrap_specialists())

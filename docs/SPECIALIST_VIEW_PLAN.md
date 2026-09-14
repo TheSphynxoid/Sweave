@@ -2,9 +2,10 @@
 
 Status: planned (2026-09-13). Plan of record for the transparency track.
 Companion to `docs/M2_1_FOLLOWUP_PLAN.md` §C (supersede-via-revert) and the
-watchdog hardening (`KILL_ON_SILENCE=False`, pre-model bound); does not
-replace either. No custom-engine dependency — all steps land on the current
-opencode wire.
+watchdog hardening (`KILL_ON_SILENCE=True` since the no-rotation ruling —
+was `False` at plan time; a declared stall now kills, and sessions are
+never rotated); does not replace either. No custom-engine dependency —
+all steps land on the current opencode wire.
 
 ## Rulings (user-locked 2026-09-13)
 

@@ -110,7 +110,10 @@ RUN_REQUEST_REQUIRED: tuple[str, ...] = (
 #: the owning delegation; ``role`` gates which sweave tools the loop
 #: offers ("orchestrator" = all four, anything else = escalate only;
 #: default is the least-privilege specialist set).
-RUN_REQUEST_OPTIONAL: tuple[str, ...] = ("delegation_id", "role")
+#: ``max_retries`` (v3, retry ruling) is the provider-call retry budget
+#: for the turn — retries AFTER the first attempt (default 3 when
+#: absent; the sidecar default covers turns that carry nothing).
+RUN_REQUEST_OPTIONAL: tuple[str, ...] = ("delegation_id", "role", "max_retries")
 ROLE_ORCHESTRATOR = "orchestrator"
 ROLE_SPECIALIST = "specialist"
 
@@ -172,6 +175,11 @@ def validate_run_request(body: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("bad:delegation_id (must be a string when present)")
     if "role" in body and body["role"] not in (ROLE_ORCHESTRATOR, ROLE_SPECIALIST):
         raise ValueError("bad:role (must be orchestrator|specialist when present)")
+    if "max_retries" in body and (
+        not isinstance(body["max_retries"], (int, float))
+        or not body["max_retries"] >= 0
+    ):
+        raise ValueError("bad:max_retries (must be >= 0 when present)")
     return body
 
 

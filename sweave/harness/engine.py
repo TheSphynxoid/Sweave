@@ -192,6 +192,15 @@ class SweaveEngineProcess:
                 "turn_timeout": turn_timeout,
                 "cwd": str(self.spec.worktree_path or ""),
             }
+            # Retry budget (turn_retries setting): retries AFTER the
+            # first provider attempt; absent keeps the sidecar default
+            # (3). Only plain ints ride the wire (validated again
+            # sidecar-side by validateRun).
+            _retries = message.metadata.get("max_retries")
+            if isinstance(_retries, bool):
+                pass
+            elif isinstance(_retries, int) and _retries >= 0:
+                body["max_retries"] = _retries
             # Step-2 additive passthrough (runtime-owned; absent keeps
             # step-1 behavior): delegation_id links sweave-tool calls,
             # role gates which sweave tools the loop offers.

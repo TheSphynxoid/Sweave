@@ -10,6 +10,7 @@
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
 import { SessionStore, newMessageId } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import {
@@ -78,6 +79,12 @@ function validateRun(body) {
   if (!body.model.model_id) return "bad:model (engine needs a model_id)";
   if (typeof body.turn_timeout !== "number" || !(body.turn_timeout > 0)) {
     return "bad:turn_timeout (must be > 0 seconds)";
+  }
+  // Retry budget (additive): retries AFTER the first provider attempt
+  // (default 3). Absent keeps the default; the orchestrator sends its
+  // configured value per turn.
+  if (body.max_retries !== undefined && (typeof body.max_retries !== "number" || !(body.max_retries >= 0))) {
+    return "bad:max_retries (must be >= 0 when present)";
   }
   // Step-2 additions (optional, additive — absence keeps step-1 behavior):
   // delegation_id links sweave-tool calls (defer/escalate/ask) to the
@@ -252,7 +259,8 @@ async function runTurn(sessionId, body, res) {
       .filter((m) => m.id !== userMsg.id);
     entries.push({ role: "user", content: body.composed_prompt });
     try {
-      const step = await providerResponsesStream({
+      const maxRetries = body.max_retries ?? DEFAULT_MAX_RETRIES;
+      const step = await withProviderRetry(() => providerResponsesStream({
         baseURL: resolved.baseURL,
         key: resolved.key,
         modelId: body.model.model_id,
@@ -261,11 +269,23 @@ async function runTurn(sessionId, body, res) {
         defs: [],
         signal: controller.signal,
         onToken: (t) => {
-          output += t;
+          // Forward-only: the attempt's full text comes back as
+          // step.text. Accumulating here would duplicate the prefix
+          // across retries (each attempt replays from zero).
           sseEvent(res, { event: "token", text: t });
         },
         onReasoning: (t) => {
           sseEvent(res, { event: "reasoning", text: t });
+        },
+      }), {
+        maxRetries,
+        signal: controller.signal,
+        onRetry: ({ attempt, waitMs, error }) => {
+          try {
+            process.stderr.write(
+              `sweave-engine:${sessionId}: provider retry ${attempt} in ${waitMs}ms (${String((error && error.message) || error).slice(0, 160)})\n`
+            );
+          } catch {}
         },
       });
       output = step.text;
@@ -340,29 +360,47 @@ async function runTurn(sessionId, body, res) {
     res.end();
   } else {
   try {
-    const upstream = await fetch(`${resolved.baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${resolved.key || "no-key"}`,
-        "User-Agent": ENGINE_USER_AGENT,
-        [SESSION_HEADER]: sessionId,
-        ...(model.provider === "openrouter"
-          ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
-          : {}),
-      },
-      body: JSON.stringify({
-        model: body.model.model_id,
-        messages: history,
-        stream: true,
-        stream_options: { include_usage: true },
-      }),
+    // Pre-stream retry: 429/5xx/network failures at request time wait
+    // and retry inside the turn (same history, no rotation). A cut
+    // MID-stream stays terminal — loud, session kept, and a user retry
+    // continues the same session (the no-rotation backstop).
+    const maxRetries = body.max_retries ?? DEFAULT_MAX_RETRIES;
+    const upstream = await withProviderRetry(async () => {
+      const resp = await fetch(`${resolved.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${resolved.key || "no-key"}`,
+          "User-Agent": ENGINE_USER_AGENT,
+          [SESSION_HEADER]: sessionId,
+          ...(model.provider === "openrouter"
+            ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
+            : {}),
+        },
+        body: JSON.stringify({
+          model: body.model.model_id,
+          messages: history,
+          stream: true,
+          stream_options: { include_usage: true },
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok || !resp.body) {
+        const text = await resp.text().catch(() => "");
+        throw providerHttpError(resp.status, resp.headers, text.slice(0, 300));
+      }
+      return resp;
+    }, {
+      maxRetries,
       signal: controller.signal,
+      onRetry: ({ attempt, waitMs, error }) => {
+        try {
+          process.stderr.write(
+            `sweave-engine:${sessionId}: provider retry ${attempt} in ${waitMs}ms (${String((error && error.message) || error).slice(0, 160)})\n`
+          );
+        } catch {}
+      },
     });
-    if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text().catch(() => "");
-      throw new Error(`provider ${upstream.status}: ${text.slice(0, 300)}`);
-    }
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
