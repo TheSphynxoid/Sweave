@@ -1,46 +1,50 @@
-"""Chat rerun tests: edit + resend / retry (supersede, don't delete).
+"""Chat loop tests: turn pipeline, synthesis, rerun, rounds, thinking.
 
-Covers ``ChatLoop.rerun_turn`` + the ``POST /sessions/{id}/rerun`` route
-under the revision-preserving rule (chat timeline step 1, 2026-09-14 —
-``docs/CHAT_TIMELINE_PLAN.md`` Phase 1):
+Behavioral consolidation of the M1.7-step-2, M1.7-step-3 (backend
+half), rerun, and rounds suites: one shared builder, one mock-env
+fixture, no milestone framing. (Pure synthesis-prompt builder tests
+live in test_chat_synthesis.py; streaming/coalescer tests in
+test_chat_streaming.py; Delegation.kind schema tests in
+test_delegation_store.py.)
 
-* Retry (no content, or identical text): the target row stays live,
-  later messages are flagged ``metadata["superseded"]`` — record, not
-  deletion — and NO duplicate user row is appended. The orchestrator
-  session binding is kept (trace shows ``session_resumed``).
-* Edit (content differs): APPENDS a new user message at the end of the
-  thread carrying ``metadata.fork_from`` (the original message id) +
-  ``metadata.revision``, flags the original target PLUS its tail
-  superseded, and runs the turn against the new row. The original
-  prompt text survives on record — never mutated in place — so the
-  pager has something to flip between.
-* History rewrite is in place (engine revert, binding always kept; the
-  ``rerun`` audit event carries ``edited`` + ``revision`` + ``fork_from``
-  + ``new_message_id`` + ``history_rewrite`` + ``superseded_count``; no
-  ``session_rotated``).
-* ``message.added`` is emitted exactly once for the appended revision —
-  the turn body reuses ``existing_user_msg`` and must NOT re-emit it.
-* The transcript reference keeps excluding superseded rows (the live
-  thread defines LLM context; view-only change).
-* Only user messages are rerunnable (assistant -> TypeError/400);
-  unknown ids -> ValueError/404.
-* Child delegations of superseded turns are never touched.
-* The route maps loop errors to HTTP statuses and returns the new
-  assistant message.
+Covers:
+
+* Turn pipeline: user in -> orchestrator runs -> assistant out (both
+  persisted); per-Session orchestrator binding (independent across
+  sessions); double-send guard (TurnActiveError, HTTP 409); explicit
+  error messages on unreachable/timeout (never silent); chat
+  Delegation record; parallel sessions run in parallel.
+* Synthesis backend: childless fast path (single final message,
+  auto-done); defer turns persist round-0 narration before the child
+  wait and synthesis as round 1 (failed synthesis keeps round 0;
+  failing children still synthesize).
+* Rerun (edit + resend / retry): same-text retry keeps the binding;
+  edits rewrite history in place (revert; explicit preamble fallback
+  without an id mapping); only user messages rerunnable; superseded
+  turns keep their children; route shape/errors.
+* Thinking: reasoning lands on metadata.thinking; interleaved
+  think/text persists arrival-ordered metadata.segments (+ the joined
+  back-compat copy); text-only turns carry neither key.
+* Stall/content errors: silence-class failures kill and keep the
+  session; content-class failures keep it untouched.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
+from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
 from sweave.projects import ProjectManager
-from sweave.runtime.delegation_store import PerProjectDelegationStores
+from sweave.runtime.delegation_store import (
+    Delegation,
+    PerProjectDelegationStores,
+)
 from sweave.runtime.serve_runner import ServeRunnerRegistry
 from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
@@ -59,15 +63,9 @@ def _mock_opencode_env():
             os.environ["SWEAVE_MOCK_OPENCODE"] = old
 
 
-class _Bus:
-    """Recording event bus (same shape others in this file + the chat
-    loop suites use: ``await publish(event, data)``)."""
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, Any]]] = []
-
-    async def publish(self, event: str, data: dict[str, Any]) -> None:
-        self.events.append((event, data))
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 
 def _orchestrator_specialist() -> Specialist:
@@ -81,14 +79,38 @@ def _orchestrator_specialist() -> Specialist:
     )
 
 
+def _new_session(pm: ProjectManager, tmp_path: Path):
+    pm.create_project("demo", path=tmp_path)
+    return pm.create_session("demo", session_name="s1")
+
+
+class _Bus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def publish(self, event: str, data: dict[str, Any]) -> None:
+        self.events.append((event, dict(data)))
+
+
 def _build_chat_loop(
     *,
     pm: ProjectManager,
     send_responses: list[str] | None = None,
     reason_responses: list[str] | None = None,
-    event_bus: Any | None = None,
+    send_delay: float = 0.0,
+    send_error: Exception | None = None,
+    event_bus: Any = None,
+    turn_timeout: float = 10.0,
 ):
-    """ChatLoop with a canned wire (copy of the M1.7 step-2 helper)."""
+    """ChatLoop with a canned wire (unified M1.7/M1.8/rounds helper).
+
+    The runtime's real run() executes (registry runner + session
+    lifecycle), but ``_send_message`` returns canned text. One
+    response is consumed per send call (FIFO; ``"ok"`` when
+    exhausted); each consumed response is also emitted via on_chunk
+    (and every reason via on_reasoning) so streaming + thinking
+    paths exercise. ``send_error`` raises instead.
+    """
     from sweave.chat.loop import ChatLoop
 
     runners = ServeRunnerRegistry()
@@ -96,17 +118,27 @@ def _build_chat_loop(
     responses = list(send_responses or ["ok"])
     reasons = list(reason_responses or [])
 
-    async def fake_send(self, body=None, trace=None, on_chunk=None, on_reasoning=None, **kwargs):
-        if on_reasoning is not None:
+    if send_error is not None:
+        async def fake_send_error(self, body=None, trace=None, on_chunk=None,
+                                  on_reasoning=None, **kwargs):
+            raise send_error
+        runtime._send_message = fake_send_error  # type: ignore[assignment]
+    else:
+        async def fake_send(self, body=None, trace=None, on_chunk=None,
+                            on_reasoning=None, **kwargs):
+            if send_delay:
+                await asyncio.sleep(send_delay)
             for r in reasons:
-                on_reasoning(r)
-        if on_chunk is not None:
-            on_chunk(responses[0] if responses else "ok")
-        if not responses:
-            return "ok"
-        return responses.pop(0)
+                if on_reasoning is not None:
+                    on_reasoning(r)
+            reasons.clear()
+            text = responses.pop(0) if responses else "ok"
+            if on_chunk is not None:
+                on_chunk(text)
+            return text
 
-    runtime._send_message = fake_send  # type: ignore[assignment]
+        runtime._send_message = fake_send  # type: ignore[assignment]
+
     factories = {"orchestrator": _orchestrator_specialist()}
 
     def resolver(name: str | None) -> Path | None:
@@ -122,15 +154,16 @@ def _build_chat_loop(
         project_dir_resolver=resolver,
         delegation_stores=PerProjectDelegationStores(),
         event_bus=event_bus,
-        turn_timeout=10.0,
+        turn_timeout=turn_timeout,
         model_resolver=lambda agent, project=None: "deepseek-flash",
     )
     return chat
 
 
-def _new_session(pm: ProjectManager, tmp_path: Path):
-    pm.create_project("demo", path=tmp_path)
-    return pm.create_session("demo", session_name="s1")
+def _assistant_messages(pm: ProjectManager, session_id: str):
+    loaded = pm.get_session(session_id)
+    assert loaded is not None
+    return [m for m in loaded.messages if m.role == "assistant"]
 
 
 def _trace_events(delegation_id: str) -> list[str]:
@@ -145,8 +178,474 @@ def _rerun_events(delegation_id: str) -> list[dict[str, Any]]:
     return [e for e in read_trace(delegation_id) if e.get("event") == "rerun"]
 
 
+def _inject_done_child(stores: PerProjectDelegationStores, project_dir: Path,
+                       *, status: str = "done", error: str = "",
+                       output: str = "did it") -> None:
+    """Synchronous helper for tests that pre-seed children: finds the
+    chat delegation in the store and attaches one terminal child."""
+    import asyncio as _aio
+
+    async def _go() -> None:
+        store = await stores.for_project(project_dir)
+        for rec in store.list():
+            if rec.kind == "chat":
+                await store.add(Delegation(
+                    delegation_id=f"child-{rec.delegation_id[:6]}",
+                    task_id=f"child-{rec.delegation_id[:6]}",
+                    agent="backend",
+                    model="hy3",
+                    task="do it",
+                    parent_task_id=rec.delegation_id,
+                    project_name="demo",
+                    status=status,
+                    output=output,
+                    error=error or None,
+                    completed_at=datetime.now(),
+                ))
+                return
+        raise AssertionError("no chat delegation to attach the child to")
+
+    _aio.get_event_loop().run_until_complete(_go())
+
+
 # ---------------------------------------------------------------------------
-# Retry (same / omitted text): reuse the live target row
+# Turn pipeline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_persists_user_and_assistant_messages(tmp_path: Path):
+    """End-to-end: user message in -> orchestrator runs -> assistant out.
+
+    Both messages land in Session.messages; the Session is persisted
+    after each (so the audit trail and the binding survive restart).
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["hello back"])
+
+    result = await chat.run_turn(
+        session_id=session.id, user_content="hello"
+    )
+    assert result["role"] == "assistant"
+    assert result["content"] == "hello back"
+    assert result["agent"] == "orchestrator"
+
+    # Reload and inspect the persisted Session
+    loaded = pm.get_session(session.id)
+    assert loaded is not None
+    assert len(loaded.messages) == 2
+    assert loaded.messages[0].role == "user"
+    assert loaded.messages[0].content == "hello"
+    assert loaded.messages[1].role == "assistant"
+    assert loaded.messages[1].content == "hello back"
+    assert loaded.messages[1].agent == "orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_persists_orchestrator_session_binding(tmp_path: Path):
+    """The binding is written: the chat loop runs the runtime with
+    session_id callbacks, so the runtime persists the opencode
+    session id on the Session record (not on the Specialist record).
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["hi"])
+
+    await chat.run_turn(session_id=session.id, user_content="hi")
+    loaded = pm.get_session(session.id)
+    # The stub opencode serve returns a canned id; the binding
+    # landed on the Session record via the callback.
+    assert loaded.orchestrator_session_id is not None
+    assert loaded.orchestrator_session_id != ""
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_get_independent_orchestrator_bindings(tmp_path: Path):
+    """Two chat turns in two sessions -- two independent orchestrator
+    bindings stored on the Session records (per-Session binding).
+
+    The mock opencode serve returns a stable per-specialist id
+    (``ses_mock_orchestrator``), so the invariant pinned is placement
+    (Session record, not Specialist record), not string inequality:
+    the factory returns a fresh Specialist per call (no persistence),
+    so the only place the binding can land is the Session record.
+    Each session's binding is persisted to its own file on disk.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    pm.create_project("demo", path=tmp_path)
+    s1 = pm.create_session("demo", session_name="s1")
+    s2 = pm.create_session("demo", session_name="s2")
+    chat = _build_chat_loop(pm=pm, send_responses=["a", "b"])
+
+    await chat.run_turn(session_id=s1.id, user_content="hi")
+    await chat.run_turn(session_id=s2.id, user_content="hello")
+
+    loaded_s1 = pm.get_session(s1.id)
+    loaded_s2 = pm.get_session(s2.id)
+    assert loaded_s1.orchestrator_session_id is not None
+    assert loaded_s2.orchestrator_session_id is not None
+    assert loaded_s1.orchestrator_session_id == "ses_mock_orchestrator"
+    assert loaded_s2.orchestrator_session_id == "ses_mock_orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_double_send_rejected_with_turn_active(tmp_path: Path):
+    """Double-send guard: a second user message arriving while a turn
+    is active is REJECTED with ``TurnActiveError`` (HTTP 409), never
+    silently queued -- a queued POST would hang the client's HTTP
+    request for up to ``turn_timeout``, and a refreshed client could
+    never see it waiting. The error carries the active turn's
+    snapshot.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(
+        pm=pm,
+        send_responses=["first-reply"],
+        send_delay=0.15,
+    )
+
+    from sweave.chat.loop import TurnActiveError
+
+    # Fire both concurrently: the second must be rejected, not queued.
+    results = await asyncio.gather(
+        chat.run_turn(session_id=session.id, user_content="first-msg"),
+        chat.run_turn(session_id=session.id, user_content="second-msg"),
+        return_exceptions=True,
+    )
+    # Exactly one of the two raised TurnActiveError (the racing
+    # double-send); the other completed as a normal turn.
+    errs = [r for r in results if isinstance(r, TurnActiveError)]
+    oks = [r for r in results if not isinstance(r, Exception)]
+    assert len(oks) == 1
+    assert len(errs) == 1
+    err = errs[0]
+    assert err.snapshot["session_id"] == session.id
+    assert err.snapshot["status"] == "running"
+
+    loaded = pm.get_session(session.id)
+    assert loaded is not None
+    # Only ONE turn ran: one user + one assistant message; the
+    # rejected double-send never persisted a message.
+    assert len(loaded.messages) == 2
+    assistant_msgs = [m for m in loaded.messages if m.role == "assistant"]
+    assert assistant_msgs[0].content == "first-reply"
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_orchestrator_unreachable_persists_explicit_error(tmp_path: Path):
+    """When the runtime raises, the loop persists an explicit error
+    message -- never silent, never swallowed. The user sees the
+    failure in the chat.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(
+        pm=pm, send_error=ConnectionError("serve unreachable")
+    )
+
+    result = await chat.run_turn(
+        session_id=session.id, user_content="hello"
+    )
+    assert result["role"] == "assistant"
+    assert "ConnectionError" in result["content"]
+    assert "serve unreachable" in result["content"]
+
+    loaded = pm.get_session(session.id)
+    assert loaded is not None
+    assert len(loaded.messages) == 2
+    assert loaded.messages[1].role == "assistant"
+    assert "ConnectionError" in loaded.messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_turn_timeout_persists_explicit_error(tmp_path: Path):
+    """The turn timeout (asyncio.wait_for) surfaces as an explicit
+    error message, not a hung HTTP request.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    # send_delay > turn_timeout forces a TimeoutError.
+    chat = _build_chat_loop(pm=pm, send_delay=0.5)
+    # Override the timeout to a tiny value so the test is fast.
+    chat.turn_timeout = 0.05
+
+    result = await chat.run_turn(
+        session_id=session.id, user_content="hello"
+    )
+    assert result["role"] == "assistant"
+    assert "timeout" in result["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_writes_chat_delegation_record(tmp_path: Path):
+    """The chat turn creates a Delegation with kind='chat' and the
+    correct session binding. The audit trail exists.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["hi"])
+
+    await chat.run_turn(session_id=session.id, user_content="hello")
+
+    store = await chat.delegation_stores.for_project(tmp_path)
+    all_records = store.list()
+    chat_records = [r for r in all_records if r.kind == "chat"]
+    assert len(chat_records) == 1
+    rec = chat_records[0]
+    assert rec.agent == "orchestrator"
+    assert rec.parent_session_id == session.id
+    assert rec.project_name == "demo"
+    # Final status: success -> auto-done (implementation children
+    # still stop at review per the promotion ruling).
+    assert rec.status in {"review", "done"}
+    assert rec.output == "hi"
+
+
+@pytest.mark.asyncio
+async def test_chat_loop_different_sessions_run_in_parallel(tmp_path: Path):
+    """The per-session lock is per-session, not global. Two sessions
+    can run chat turns in parallel.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    pm.create_project("demo", path=tmp_path)
+    s1 = pm.create_session("demo", session_name="s1")
+    s2 = pm.create_session("demo", session_name="s2")
+    # send_delay 0.1s per call; if the lock were global, two parallel
+    # calls would take ~0.2s. We assert they finish in ~0.1s.
+    chat = _build_chat_loop(pm=pm, send_delay=0.1)
+
+    t0 = time.monotonic()
+    await asyncio.gather(
+        chat.run_turn(session_id=s1.id, user_content="a"),
+        chat.run_turn(session_id=s2.id, user_content="b"),
+    )
+    elapsed = time.monotonic() - t0
+    # Generous upper bound (10x delay) -- parallel execution should
+    # easily fit. A serial global lock would be ~0.2s.
+    assert elapsed < 0.5, f"parallel turns took {elapsed:.2f}s; expected <0.5s"
+
+
+# ---------------------------------------------------------------------------
+# Synthesis backend (fast path, defer rounds, failures)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fast_path_auto_done_single_final_message(tmp_path: Path):
+    """Childless turn: the first reply is the final assistant message
+    (single message, round 0, final); the chat delegation auto-dones
+    with the reply as its output.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(pm=pm, send_responses=["hi back"])
+
+    result = await chat.run_turn(session_id=session.id, user_content="hello")
+    assert result["content"] == "hi back"
+    assistants = _assistant_messages(pm, session.id)
+    assert len(assistants) == 1
+    assert assistants[0].metadata["turn_round"] == 0
+    assert assistants[0].metadata["turn_final"] is True
+
+    store = await chat.delegation_stores.for_project(tmp_path)
+    chat_records = [r for r in store.list() if r.kind == "chat"]
+    assert len(chat_records) == 1
+    assert chat_records[0].status == "done"
+    assert chat_records[0].output == "hi back"
+
+
+@pytest.mark.asyncio
+async def test_defer_turn_persists_narration_then_synthesis(tmp_path: Path):
+    """Defer turn: the first-turn narration persists as round 0
+    (turn_final False) before the child wait; the synthesis reply
+    persists as round 1 (final) under the same delegation id; the
+    delegation auto-dones with the final text. Streaming bubbles
+    scope per round (chat.delta rounds {0, 1}).
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    bus = _Bus()
+    chat = _build_chat_loop(
+        pm=pm,
+        send_responses=[
+            "I'll ask backend to do that.",
+            "Backend did the thing.",
+        ],
+        event_bus=bus,
+    )
+    # The first-turn stub injects a terminal child (simulating the
+    # MCP defer) before returning the first reply.
+    orig = chat.runtime._send_message
+    injected: list[bool] = []
+
+    async def injecting_send(self, body=None, trace=None, on_chunk=None,
+                             on_reasoning=None, **kwargs):
+        out = await orig(self, body, trace, on_chunk, on_reasoning, **kwargs)
+        if not injected:
+            injected.append(True)
+            store = await chat.delegation_stores.for_project(tmp_path)
+            for rec in store.list():
+                if rec.kind == "chat":
+                    await store.add(Delegation(
+                        delegation_id="child-backend-1",
+                        task_id="child-backend-1",
+                        agent="backend",
+                        model="hy3",
+                        task="create hello.py",
+                        parent_task_id=rec.delegation_id,
+                        project_name="demo",
+                        status="done",
+                        output="created hello.py printing OK",
+                        completed_at=datetime.now(),
+                    ))
+                    break
+        return out
+
+    chat.runtime._send_message = injecting_send  # type: ignore[assignment]
+
+    result = await chat.run_turn(
+        session_id=session.id, user_content="ask backend to do X"
+    )
+    assert result["content"] == "Backend did the thing."
+
+    assistants = _assistant_messages(pm, session.id)
+    assert len(assistants) == 2
+    first, final = assistants
+    assert first.content == "I'll ask backend to do that."
+    assert first.metadata["turn_round"] == 0
+    assert first.metadata["turn_final"] is False
+    assert first.metadata["delegation_id"]
+    assert final.content == "Backend did the thing."
+    assert final.metadata["turn_round"] == 1
+    assert final.metadata["turn_final"] is True
+    assert final.metadata["delegation_id"] == first.metadata["delegation_id"]
+
+    store = await chat.delegation_stores.for_project(tmp_path)
+    chat_records = [r for r in store.list() if r.kind == "chat"]
+    assert len(chat_records) == 1
+    assert chat_records[0].status == "done"
+    assert chat_records[0].output == "Backend did the thing."
+
+    rounds = {e["round"] for name, e in bus.events if name == "chat.delta"}
+    assert rounds == {0, 1}
+    added = [e["message"] for name, e in bus.events if name == "message.added"]
+    assert sum(1 for m in added if m["role"] == "assistant") == 2
+
+
+@pytest.mark.asyncio
+async def test_failing_child_still_synthesizes(tmp_path: Path):
+    """A child failing during the wait does not hang the chat; the
+    synthesis runs with the failure included and round 0 survives.
+    """
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(
+        pm=pm,
+        send_responses=["trying...", "backend failed; sorry."],
+    )
+    orig = chat.runtime._send_message
+    first_turn = [True]
+
+    async def fake_send(self, body=None, trace=None, on_chunk=None,
+                        on_reasoning=None, **kwargs):
+        if first_turn[0]:
+            first_turn[0] = False
+            store = await chat.delegation_stores.for_project(tmp_path)
+            for rec in store.list():
+                if rec.kind == "chat":
+                    await store.add(Delegation(
+                        delegation_id="child-1",
+                        task_id="child-1",
+                        agent="backend",
+                        model="hy3",
+                        task="x",
+                        parent_task_id=rec.delegation_id,
+                        project_name="demo",
+                        status="failed",
+                        error="permission denied",
+                        output="",
+                        completed_at=datetime.now(),
+                    ))
+                    break
+        out = await orig(self, body, trace, on_chunk, on_reasoning, **kwargs)
+        # NOTE: orig pops its own canned queue; mirror the two replies
+        # by consuming in order (see send_responses above).
+        return out
+
+    chat.runtime._send_message = fake_send  # type: ignore[assignment]
+
+    result = await chat.run_turn(session_id=session.id, user_content="do X")
+    assert "backend failed" in result["content"]
+
+    assistants = _assistant_messages(pm, session.id)
+    assert len(assistants) == 2
+    assert assistants[0].content == "trying..."
+    assert assistants[0].metadata["turn_round"] == 0
+    assert "backend failed" in assistants[1].content
+
+
+@pytest.mark.asyncio
+async def test_failed_synthesis_keeps_round_zero(tmp_path: Path):
+    """The incident shape: synthesis dies, but round 0 survives — the
+    thread shows narration + error instead of error-only, and the
+    delegation fails with the synthesis error."""
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    session = _new_session(pm, tmp_path)
+    chat = _build_chat_loop(
+        pm=pm,
+        send_responses=[
+            "Dispatching to backend.",
+            "[chat error: ReadTimeout: ]",
+        ],
+    )
+    orig = chat.runtime._send_message
+    injected: list[bool] = []
+
+    async def injecting_send(self, body=None, trace=None, on_chunk=None,
+                             on_reasoning=None, **kwargs):
+        out = await orig(self, body, trace, on_chunk, on_reasoning, **kwargs)
+        if not injected:
+            injected.append(True)
+            store = await chat.delegation_stores.for_project(tmp_path)
+            for rec in store.list():
+                if rec.kind == "chat":
+                    await store.add(Delegation(
+                        delegation_id="child-round-1",
+                        task_id="child-round-1",
+                        agent="backend",
+                        model="hy3",
+                        task="do it",
+                        parent_task_id=rec.delegation_id,
+                        project_name="demo",
+                        status="done",
+                        output="did it",
+                        completed_at=datetime.now(),
+                    ))
+                    break
+        return out
+
+    chat.runtime._send_message = injecting_send  # type: ignore[assignment]
+
+    result = await chat.run_turn(session_id=session.id, user_content="do X")
+    assert result["content"] == "[chat error: ReadTimeout: ]"
+
+    assistants = _assistant_messages(pm, session.id)
+    assert len(assistants) == 2
+    assert assistants[0].content.startswith("Dispatching to backend.")
+    assert assistants[0].metadata["turn_final"] is False
+    assert assistants[1].content == "[chat error: ReadTimeout: ]"
+    assert assistants[1].metadata["turn_round"] == 1
+
+    store = await chat.delegation_stores.for_project(tmp_path)
+    chat_records = [r for r in store.list() if r.kind == "chat"]
+    assert chat_records[0].status == "failed"
+    assert chat_records[0].error == "[chat error: ReadTimeout: ]"
+
+
+# ---------------------------------------------------------------------------
+# Rerun (edit + resend / retry)
 # ---------------------------------------------------------------------------
 
 
@@ -335,11 +834,6 @@ async def test_edit_emits_message_added_once_for_the_appended_row(tmp_path: Path
     assert len(ids) == len(set(ids)) == 2  # revision user + assistant reply
 
 
-# ---------------------------------------------------------------------------
-# History rewrite (edit): in place, binding kept, preamble names it
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_edit_preamble_fallback_reaches_the_prompt(tmp_path: Path):
     """Without an id mapping the rewrite preamble is composed into the
@@ -492,8 +986,6 @@ async def test_superseded_turn_children_untouched(tmp_path: Path):
     """Child delegations of a superseded turn stay exactly as they were
     — on the retry path and on the edit path (they keep pointing at
     their own attempt's ``chat-*`` id, never the tip's)."""
-    from sweave.runtime.delegation_store import Delegation
-
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
     chat = _build_chat_loop(pm=pm, send_responses=["first", "second", "third"])
@@ -534,17 +1026,15 @@ async def test_superseded_turn_children_untouched(tmp_path: Path):
     assert store.get(chat_id) is not None
 
 
-# ---------------------------------------------------------------------------
-# Route
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_rerun_route_shape_and_errors():
     """The route returns the assistant message; errors map to statuses."""
+    from unittest.mock import AsyncMock
+
     from fastapi import HTTPException
 
     from sweave.web.routers.projects import RerunRequest, api_rerun_turn
+    from types import SimpleNamespace
 
     loop = AsyncMock()
     loop.rerun_turn.return_value = {"role": "assistant", "content": "again"}
@@ -574,7 +1064,7 @@ async def test_rerun_route_shape_and_errors():
 
 
 # ---------------------------------------------------------------------------
-# Thinking capture: reasoning flows to the assistant message metadata.
+# Thinking + segments
 # ---------------------------------------------------------------------------
 
 
@@ -606,9 +1096,6 @@ async def test_segments_keep_think_act_think_order(tmp_path: Path):
     text, think) instead of one Thinking blob + one answer — plus the
     joined back-compat thinking copy."""
     from sweave.chat.loop import ChatLoop
-    from sweave.runtime.delegation_store import PerProjectDelegationStores
-    from sweave.runtime.serve_runner import ServeRunnerRegistry
-    from sweave.runtime.specialist_runtime import SpecialistRuntime
 
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
@@ -675,6 +1162,7 @@ async def test_no_segments_key_without_reasoning(tmp_path: Path):
     assert result["content"] == "answer"
     assert "segments" not in result["metadata"]
     assert "thinking" not in result["metadata"]
+
 
 STALL_TEXT = "[chat error: stalled after 300s without data (the stalled work was killed; the session is kept — retry continues it)]"
 AUTH_TEXT = "[chat error: APIError: Insufficient balance.]"

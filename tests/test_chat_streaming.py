@@ -1,28 +1,20 @@
-"""M1.8 step 2 tests: ChatLoop streaming wire-up + coalescing.
+"""Chat streaming tests: coalescer unit + loop wire-up.
 
-Covers:
+Consolidated from the M1.8-step-2 suite (behavior, not milestone):
 
-* ChatDeltaCoalescer: the buffer accumulates parts and flushes on
-  the configured interval. Many small parts -> few events. A part
-  that crosses the char_threshold flushes immediately.
-* Close-and-flush: the final buffer is emitted on close; idempotent
-  on multiple close calls.
-* ChatLoop.run_turn: the harness's on_chunk callback is wired to a
-  ChatDeltaCoalescer that publishes ``chat.delta`` events on the
-  WSEventBus. The event payload carries ``session_id`` and
-  ``delegation_id``. The final ``message.added`` event still carries
-  the authoritative full text.
-* Status transitions for the chat delegation still flow during
-  the turn.
-* No streaming: a chat turn without an event_bus (or with the
-  event_bus=None default) still works (the coalescer no-ops).
+* ChatDeltaCoalescer: interval flush, char-threshold flush, idempotent
+  close, push-after-close no-op, sync/async emit, emit exceptions.
+* ChatLoop.run_turn: on_chunk wired to a coalescer publishing
+  ``chat.delta`` (session_id + delegation_id scoped); the persisted
+  ``message.added`` stays authoritative; delegation status
+  transitions flow during the turn; many parts coalesce into few
+  events.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -188,8 +180,7 @@ def _build_chat_loop(
     char_threshold: int = 64,
 ):
     """Build a ChatLoop that emits the given text parts through the
-    on_chunk callback. Mirrors the M1.7 step 2 helper but with
-    multi-part streaming.
+    on_chunk callback (multi-part streaming).
     """
     from sweave.chat.loop import ChatLoop
     from sweave.runtime.serve_runner import ServeRunnerRegistry
