@@ -628,6 +628,43 @@ async def test_read_output_truncated_before_history(sidecar, worktree):
 
 
 @needs_node
+async def test_tokens_used_carries_cache_read(sidecar, worktree):
+    """The terminal ``tokens_used`` anchor reports real cache numbers
+    (the loop-turn emit hardcoded zeros while per-step boundaries
+    already carried them)."""
+    _reset_stub()
+    STUB["script"] = [
+        {
+            "calls": [_call("read", {"filePath": "notes.txt"})],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 60},
+            },
+        },
+        {
+            "text": "CACHE DONE",
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 70},
+            },
+        },
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("read the notes"), trace=trace)
+    assert result.success, result.error
+    anchors = trace.of("tokens_used")
+    assert len(anchors) == 1
+    assert anchors[0]["input"] == 220
+    assert anchors[0]["cache_read"] == 130
+    assert "cache_write" in anchors[0]
+
+
+@needs_node
 async def test_specialist_ceiling_beyond_fifty(sidecar, worktree):
     """Role-aware ceiling: a healthy 55-iteration specialist turn
     completes (the flat 50 killed succeeding read loops). No handoff
