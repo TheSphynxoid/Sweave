@@ -2,8 +2,8 @@
  * Sidebar (M1.9 Step 1, R4.1 Step 2, R4.4 polish, consolidated 2026-09-13).
  *
  * Agent-shell nav, top to bottom: brand header + collapse toggle, the
- * primary nav (one list — Chat / Children / Plan / Memory / Agents /
- * Settings), then the project/session tree owning ALL leftover height
+ * primary nav (one list — Chat / Children / Plan / Stats / Memory /
+ * Agents / Settings), then the project/session tree owning ALL leftover height
  * (the sole session-switching surface), then a pinned status row with
  * the command-palette launcher + connection dot. The slim topbar keeps
  * only the project breadcrumb + theme switcher, so nothing here
@@ -20,6 +20,7 @@ import {
   MessageSquare,
   Network,
   ListTodo,
+  BarChart3,
   Brain,
   Users,
   Settings,
@@ -41,6 +42,8 @@ const NAV = [
   // TRACKING_PLAN Phase A: the plan board sits with the main nav
   // (same weight as Chat/Children, per the 2026-09-11 ruling).
   { to: "/plan", label: "Plan", icon: ListTodo },
+  // Usage ledger: local telemetry over records + traces.
+  { to: "/stats", label: "Stats", icon: BarChart3 },
   { to: "/memory", label: "Memory", icon: Brain },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/settings", label: "Settings", icon: Settings },

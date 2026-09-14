@@ -1,6 +1,16 @@
 # Usage ledger — local-first product analytics + training fuel
 
-Status: planned (2026-09-12). User-asked: the trace-measured
+Status: shipping (2026-09-14). Surface 2 DONE (`GET
+/api/stats/summary` + `/stats` page: totals + per-day / model /
+project / agent / kind / status / error-class cells, computed on
+read). Source hygiene landed with it: exec-tool outputs capped at
+32K before history (only bash was capped — a 607K-char read caused
+~2M of a 5.4M-token turn) and the loop-turn `tokens_used` anchor
+reports real `cached_tokens` (was hardcoded 0). CLI (`sweave
+stats`) deferred — the page covers the read path. Compaction stays
+limit-triggered future work (user ruling 2026-09-14: never blind).
+
+User-asked: the trace-measured
 timeout-rate finding (mode flip, free-tier correlate, volume
 collapse) proved ad-hoc stats answer real questions. Productize
 that: a standing usage-data surface, local-first (not against

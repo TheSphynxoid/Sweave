@@ -278,6 +278,28 @@ export interface Tokens {
   cost: number;
 }
 
+/**
+ * Usage-ledger cell (counts and shapes only — never text).
+ * From `GET /api/stats/summary` (`sweave/stats/ledger.py`).
+ */
+export interface StatsCell extends Tokens {
+  turns: number;
+  failed: number;
+}
+
+export interface StatsSummary {
+  window_days: number;
+  generated_at: string;
+  totals: StatsCell & { wall_seconds: number; completed_turns: number };
+  by_day: Array<{ day: string } & StatsCell>;
+  by_model: Array<{ model: string } & StatsCell>;
+  by_project: Array<{ project: string } & StatsCell>;
+  by_agent: Array<{ agent: string } & StatsCell>;
+  by_kind: Array<{ kind: string } & StatsCell>;
+  by_status: Record<string, number>;
+  by_error: Array<{ error: string; count: number }>;
+}
+
 export interface StatusChange {
   status: DelegationStatus;
   source: string | null;

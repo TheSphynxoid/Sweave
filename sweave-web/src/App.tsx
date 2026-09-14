@@ -13,6 +13,7 @@
  *   - /plan (TRACKING_PLAN Phase A: read-only board over delegations)
  *   - /delegations/:id (R4.1 step 3 scaffold; R4.3 fills in)
  *   - /memory, /agents, /settings (R4.1 step 3 scaffolds; R4.4 fills in)
+ *   - /stats (usage ledger: totals + splits over records + traces)
  */
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { QueryProvider } from "@/context/QueryProvider";
@@ -22,6 +23,7 @@ import { Layout } from "@/components/Layout";
 import { ChatPage } from "@/pages/Chat";
 import { ChildrenPage } from "@/pages/Children";
 import { PlanPage } from "@/pages/Plan";
+import { StatsPage } from "@/pages/Stats";
 import { MemoryPage } from "@/pages/Memory";
 import { AgentsPage } from "@/pages/Agents";
 import { SettingsPage } from "@/pages/Settings";
@@ -48,6 +50,9 @@ export default function App() {
                   {/* TRACKING_PLAN Phase A: read-only plan board
                        (Kanban + table + bugs lane over delegations). */}
                   <Route path="plan" element={<PlanPage />} />
+                  {/* Usage ledger surface (local telemetry over
+                        records + traces; counts only, never text). */}
+                  <Route path="stats" element={<StatsPage />} />
                   {/* R4.1 step 3: designed scaffolds for the
                        surfaces whose feature work ships in
                        R4.3 (delegation detail) and R4.4 (memory

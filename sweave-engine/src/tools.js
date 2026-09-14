@@ -440,35 +440,69 @@ export const EXEC_TOOL_DEFS = [
  * Execute one execution tool (permission already decided by the
  * caller — pass the gate verdict for ask flows).
  * @returns { { ok, output?|error?, partial? } }
+ *
+ * Output hygiene (token-bloat guard, 2026-09-14): every exec-tool
+ * result is capped at MAX_OUTPUT_CHARS before it enters session
+ * history — a limit-less `read` of a 600KB file once dumped 607K
+ * chars into history and re-billed it on all ~20 remaining
+ * iterations (~2M of a 5.4M-token turn from ONE read). `bash`
+ * already truncates at the source, so it is excluded here (a second
+ * pass would stack truncation markers).
  */
 export async function executeTool(name, args, execCtx) {
   const { cwd, session, signal } = execCtx;
   const a = args || {};
+  let result;
   switch (name) {
     case "read": {
       const abs = resolve(cwd, a.filePath || "");
-      return readPath(cwd, a.filePath || "", a.offset, a.limit).then((r) => ({ ...r, _abs: abs }));
+      result = await readPath(cwd, a.filePath || "", a.offset, a.limit).then((r) => ({ ...r, _abs: abs }));
+      break;
     }
     case "edit": {
       const abs = resolve(cwd, a.filePath || "");
       // write-equivalent: gated by the edit permission key (opencode parity).
-      return editPath(cwd, a.filePath || "", a.oldString, a.newString, a.replaceAll).then((r) => ({ ...r, _abs: abs }));
+      result = await editPath(cwd, a.filePath || "", a.oldString, a.newString, a.replaceAll).then((r) => ({ ...r, _abs: abs }));
+      break;
     }
     case "write": {
       const abs = resolve(cwd, a.filePath || "");
-      return writePath(cwd, a.filePath || "", a.content).then((r) => ({ ...r, _abs: abs }));
+      result = await writePath(cwd, a.filePath || "", a.content).then((r) => ({ ...r, _abs: abs }));
+      break;
     }
     case "bash":
       return runBash(cwd, a.command || "", a.timeout, signal);
     case "glob":
-      return globSearch(cwd, a.pattern || "", a.path);
+      result = await globSearch(cwd, a.pattern || "", a.path);
+      break;
     case "grep":
-      return grepSearch(cwd, a.pattern || "", a.path, a.include);
+      result = await grepSearch(cwd, a.pattern || "", a.path, a.include);
+      break;
     case "todo":
-      return todoWrite(session, a.todos);
+      result = await todoWrite(session, a.todos);
+      break;
     default:
       return fail(`unknown execution tool: ${name}`);
   }
+  return capResult(result);
+}
+
+/**
+ * Cap one tool result at MAX_OUTPUT_CHARS (output and error text).
+ * Small results pass through byte-identical; oversized ones keep a
+ * head + an honest `... [truncated N chars]` marker naming the cut.
+ */
+export function capResult(result) {
+  if (!result || typeof result !== "object") return result;
+  const out = result.output;
+  if (typeof out === "string" && out.length > MAX_OUTPUT_CHARS) {
+    return { ...result, output: truncateOutput(out).text };
+  }
+  const err = result.error;
+  if (typeof err === "string" && err.length > MAX_OUTPUT_CHARS) {
+    return { ...result, error: truncateOutput(err).text };
+  }
+  return result;
 }
 
 /** Match target for a tool call (opencode parity per tool). */

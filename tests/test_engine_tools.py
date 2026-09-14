@@ -595,3 +595,36 @@ async def test_toolless_specialist_stays_single_shot(sidecar, worktree):
     assert result.success and result.output == "SIMPLE"
     # No tools offered at all (legacy path: no tools key on the wire).
     assert "tools" not in STUB["requests"][-1]
+
+
+@needs_node
+async def test_read_output_truncated_before_history(sidecar, worktree):
+    """Oversized tool outputs are capped before entering history.
+
+    Regression (2026-09-14): only ``bash`` truncated (32K); a
+    limit-less ``read`` of a ~600KB file dumped 607K chars into
+    session history and re-billed it on every remaining iteration
+    (~2M of a 5.4M-token turn from ONE read). ``read``/``grep``/
+    ``glob`` now share the same cap.
+    """
+    (worktree / "big.txt").write_text("x" * 100_000 + "\n", encoding="utf-8")
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": "big.txt"})]},
+        {"text": "READ DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("read the big file"), trace=trace)
+    assert result.success, result.error
+    assert result.output == "READ DONE"
+    completed = trace.of("tool.completed")
+    assert len(completed) == 1
+    out = completed[0]["state"]["output"]
+    assert len(out) <= 32768 + 200
+    assert "[truncated" in out and "100001" not in out
+
+
+@needs_node

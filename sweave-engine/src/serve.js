@@ -154,8 +154,8 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
       input: usage.input,
       output: usage.output,
       reasoning: usage.reasoning,
-      cache_read: 0,
-      cache_write: 0,
+      cache_read: usage.cache_read || 0,
+      cache_write: usage.cache_write || 0,
       cost: 0,
       ...(hasUsage ? {} : { estimated: true }),
     });

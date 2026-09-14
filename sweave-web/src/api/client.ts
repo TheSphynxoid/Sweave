@@ -33,6 +33,7 @@ import type {
   SessionSummary,
   SpecialistCreate,
   SpecialistSummary,
+  StatsSummary,
   TurnSnapshot,
   Worktree,
 } from "@/types";
@@ -335,6 +336,18 @@ class ApiClient {
     const r = await this.client.get<DelegationDetail>(
       `/delegations/${encodeURIComponent(delegationId)}/detail`,
     );
+    return r.data;
+  }
+
+  /**
+   * Usage-ledger summary (the Stats page). Computed on read from
+   * delegation records + trace token anchors — counts and shapes
+   * only, never prompt/response text.
+   */
+  async getStatsSummary(days = 30): Promise<StatsSummary> {
+    const r = await this.client.get<StatsSummary>("/stats/summary", {
+      params: { days },
+    });
     return r.data;
   }
 

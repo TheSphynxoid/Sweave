@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Network,
   ListTodo,
+  BarChart3,
   Brain,
   Users,
   Settings,
@@ -88,6 +89,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => run(() => navigate("/plan"))}>
             <ListTodo />
             <span>Go to Plan</span>
+          </CommandItem>
+          <CommandItem onSelect={() => run(() => navigate("/stats"))}>
+            <BarChart3 />
+            <span>Go to Stats</span>
           </CommandItem>
           <CommandItem onSelect={() => run(() => navigate("/memory"))}>
             <Brain />
