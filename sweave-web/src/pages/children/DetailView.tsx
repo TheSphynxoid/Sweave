@@ -17,6 +17,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { X, ChevronDown, ChevronRight } from "lucide-react";
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/api/client";
 import { BashTool } from "@/components/agent-elements/tools/bash-tool";
 import { EditTool } from "@/components/agent-elements/tools/edit-tool";
@@ -42,7 +43,12 @@ export function DetailView({ delegationId, onClose }: DetailViewProps) {
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
+  // Portal to document.body: the modal mounts inside the thread
+  // tree / Children tab, where ancestors with backdrop-blur,
+  // animations, or sticky positioning trap `position: fixed` in
+  // their stacking context (the overlay then paints UNDER the
+  // composer + status bar). At body level z-50 wins unconditionally.
+  return createPortal(
     <div
       data-testid="detail-modal"
       className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
@@ -92,7 +98,8 @@ export function DetailView({ delegationId, onClose }: DetailViewProps) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -178,12 +178,20 @@ def _format_info_error(err_obj: Any) -> str:
         return str(err_obj)
 
 
+class _NullTrace:
+    """Trace sink that drops every event (lets ``_emit_tool_trace``
+    derive transitions for ``on_tool`` when no real trace was passed)."""
+
+    def append(self, event: str, payload: Any = None) -> None:
+        return None
+
+
 def _emit_tool_trace(
     trace: Any,
     snapshots: dict[str, dict[str, Any]],
     first_state: dict[str, str],
     part: dict[str, Any],
-) -> None:
+) -> list[tuple[str, dict[str, Any]]]:
     """Emit one trace event for a tool part, keyed by callID.
 
     Lifecycle mapping:
@@ -196,13 +204,18 @@ def _emit_tool_trace(
     records the first non-empty status so a single part can be the
     *only* transition we see (e.g. only ``error`` -> ``tool.failed``,
     with no prior pending/running state).
+
+    Returns the list of ``(event_name, payload)`` pairs appended, so
+    callers can forward the same transitions to the ``on_tool``
+    callback (chat transparency) without re-deriving them.
     """
     call_id = part.get("callID")
     tool = part.get("tool")
     if not call_id:
-        return
+        return []
     state = part.get("state") or {}
     status = state.get("status")
+    emitted: list[tuple[str, dict[str, Any]]] = []
     payload: dict[str, Any] = {
         "callID": call_id,
         "tool": tool,
@@ -215,8 +228,9 @@ def _emit_tool_trace(
         first_state[call_id] = status or "pending"
         if status == "pending":
             trace.append("tool.started", payload)
+            emitted.append(("tool.started", payload))
             snapshots[call_id] = dict(payload)
-            return
+            return emitted
         # No pending seen: emit started on the first part so the
         # trace still has the begin marker, then fall through to
         # the per-status event below.
@@ -226,17 +240,22 @@ def _emit_tool_trace(
             "state": {"status": "pending", "input": state.get("input", {})},
         }
         trace.append("tool.started", started_payload)
+        emitted.append(("tool.started", started_payload))
     # Per-status event
     if status == "running":
         trace.append("tool.updated", payload)
+        emitted.append(("tool.updated", payload))
     elif status == "completed":
         trace.append("tool.completed", payload)
+        emitted.append(("tool.completed", payload))
     elif status == "error":
         trace.append("tool.failed", payload)
+        emitted.append(("tool.failed", payload))
     # Other statuses (e.g. "pending" after first_state was set) are
     # intentionally not re-emitted; the started event already covers
     # the begin marker.
     snapshots[call_id] = dict(payload)
+    return emitted
 
 
 class OpenCodeProcess:
@@ -312,6 +331,7 @@ class OpenCodeProcess:
         on_chunk: "Callable[[str], Any] | None" = None,
         trace: Any = None,
         trace_reasoning: bool = False,
+        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
     ) -> AgentResult:
         """Send a message via v2 ``POST /session/{id}/message``.
 
@@ -335,6 +355,14 @@ class OpenCodeProcess:
         change in behaviour. R3 adapters (claude, codex) implement
         the same optional contract: per-chunk when the engine
         supports it, single-shot fallback otherwise.
+
+        **Tool transparency (optional).** ``on_tool`` is invoked with
+        one normalized event per tool transition (``{"callID",
+        "tool", "status", "input", "output", "error", "title"}``;
+        see ``sweave.chat.tools.tool_event``) as it leaves the
+        stream -- the chat loop forwards these as ``chat.tool`` WS
+        events + persists them on the assistant message. Sync or
+        async; a raising callback is logged, never fatal.
 
         **M1.9 parts-model capture.** ``trace`` (a
         :class:`~sweave.runtime.trace_log.TraceLog`) receives structured
@@ -491,11 +519,21 @@ class OpenCodeProcess:
                                     # M1.9: parts-model trace capture.
                                     # Emit one trace event per state
                                     # transition; the callID is the
-                                    # stable key.
-                                    if trace is not None:
+                                    # stable key. The same transitions
+                                    # feed on_tool (chat transparency)
+                                    # -- against a null trace when no
+                                    # trace was passed, so the callback
+                                    # never depends on tracing.
+                                    emitted: list = []
+                                    if trace is not None or on_tool is not None:
+                                        _trace = (
+                                            trace
+                                            if trace is not None
+                                            else _NullTrace()
+                                        )
                                         try:
-                                            _emit_tool_trace(
-                                                trace,
+                                            emitted = _emit_tool_trace(
+                                                _trace,
                                                 tool_snapshots,
                                                 tool_first_state,
                                                 part,
@@ -505,6 +543,24 @@ class OpenCodeProcess:
                                                 "OpenCodeProcess.send: tool "
                                                 "trace failed: %s", trace_err
                                             )
+                                    if on_tool is not None:
+                                        from sweave.chat.tools import tool_event
+
+                                        for _name, _payload in emitted or ():
+                                            try:
+                                                _ev = tool_event(
+                                                    _payload.get("callID"),
+                                                    _payload.get("tool"),
+                                                    _payload.get("state"),
+                                                )
+                                                _result = on_tool(_ev)
+                                                if hasattr(_result, "__await__"):
+                                                    await _result
+                                            except Exception as cb_err:  # noqa: BLE001
+                                                logger.warning(
+                                                    "OpenCodeProcess.send: on_tool "
+                                                    "callback raised: %s", cb_err
+                                                )
                                 elif ptype == "step-finish":
                                     if trace is not None:
                                         try:

@@ -22,6 +22,9 @@
  *   2. `delegation.status_changed` (running)
  *   3. `chat.thinking` × N         — reasoning increments, keyed by
  *                                   (delegation_id, round).
+ *   3b. `chat.tool` × N            — tool transitions, keyed by
+ *                                   (delegation_id, round, callID);
+ *                                   latest status wins per callID.
  *   4. `chat.delta` × N            — streaming deltas, keyed by
  *                                   (delegation_id, round).
  *   5. `message.added` (assistant, intermediate, multi-message turns
@@ -51,7 +54,7 @@
  * state machine is fully deterministic per event sequence -- the vitest
  * suite pins the ordering + finalize + queue semantics.
  */
-import type { SessionMessage, TurnSnapshot } from "@/types";
+import type { ChatSegment, ChatToolRow, SessionMessage, TurnSnapshot } from "@/types";
 import type { ThreadMessageLike } from "@assistant-ui/react";
 
 // ---------------------------------------------------------------------------
@@ -80,6 +83,14 @@ export interface ChatEntry {
   optimistic?: boolean;
   /** Live-accumulated reasoning text for the in-flight bubble (chat.thinking). */
   thinking?: string;
+  /** Live-accumulated compact tool rows for the in-flight bubble
+      (chat.tool, latest status wins per callID). */
+  tools?: ChatToolRow[];
+  /** Live arrival log for the in-flight bubble (one item per delta /
+      thinking slice / first-seen tool). The renderer joins contiguous
+      same-kind runs, so this projects to the same ordered timeline
+      as persisted metadata.segments — no layout jump on finalize. */
+  seq?: ChatSegment[];
 }
 
 /**
@@ -265,10 +276,22 @@ export function applyTurnSnapshot(
   );
   if (existing) {
     // Live text wins over the (older) snapshot accumulation; only
-    // empty live thinking is backfilled.
+    // empty live thinking is backfilled. Tools union by callID (the
+    // snapshot may carry transitions that landed before the socket
+    // opened; live rows win on conflict).
+    const snapshotTools = Array.isArray(snapshot.tools)
+      ? snapshot.tools
+          .map((t) => normalizeToolRow(t, round))
+          .filter((t): t is ChatToolRow => t !== null)
+      : [];
     const entries = state.entries.map((e) =>
       e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round
-        ? { ...e, thinking: e.thinking ?? (snapshot.thinking_text || undefined) }
+        ? {
+            ...e,
+            thinking: e.thinking ?? (snapshot.thinking_text || undefined),
+            tools: unionTools(e.tools, snapshotTools),
+            seq: unionSeq(e.seq, snapshotTools, e.tools),
+          }
         : e,
     );
     return { ...state, entries, turn: "running", activeDelegationId: delegationId };
@@ -287,6 +310,23 @@ export function applyTurnSnapshot(
     tool_result: null,
     metadata: { delegation_id: delegationId },
   };
+  const seedTools = Array.isArray(snapshot.tools)
+    ? snapshot.tools
+        .map((t) => normalizeToolRow(t, round))
+        .filter((t): t is ChatToolRow => t !== null)
+    : [];
+  // Best-effort positions: snapshot tools first (appearance order),
+  // then the accumulated thinking/text (no positions survive the
+  // snapshot). Transient — live deltas and finalize correct it.
+  const seedSeq: ChatSegment[] = [
+    ...seedTools.map((t) => ({ kind: "tool" as const, callID: t.callID })),
+    ...(snapshot.thinking_text
+      ? [{ kind: "thinking" as const, text: snapshot.thinking_text }]
+      : []),
+    ...(snapshot.stream_text
+      ? [{ kind: "text" as const, text: snapshot.stream_text }]
+      : []),
+  ];
   return {
     ...state,
     entries: [
@@ -297,6 +337,8 @@ export function applyTurnSnapshot(
         delegationId,
         round,
         thinking: snapshot.thinking_text || undefined,
+        tools: seedTools.length > 0 ? seedTools : undefined,
+        seq: seedSeq.length > 0 ? seedSeq : undefined,
       },
     ],
     turn: "running",
@@ -305,6 +347,41 @@ export function applyTurnSnapshot(
 }
 
 const OPTIMISTIC_PREFIX = "local-";
+
+/**
+ * Union two tool-row lists by callID (snapshot recovery): live rows
+ * win on conflict; snapshot-only rows append in snapshot order.
+ */
+function unionTools(
+  live: ChatToolRow[] | undefined,
+  snapshot: ChatToolRow[],
+): ChatToolRow[] | undefined {
+  if (snapshot.length === 0) return live;
+  const prev = live ?? [];
+  const seen = new Set(prev.map((t) => t.callID));
+  const extra = snapshot.filter((t) => !seen.has(t.callID));
+  if (extra.length === 0) return live;
+  return [...prev, ...extra];
+}
+
+/**
+ * Timeline positions for snapshot-only rows (snapshot recovery):
+ * markers append after the live log (positions don't survive the
+ * snapshot). Returns the live seq untouched when nothing is missing.
+ */
+function unionSeq(
+  live: ChatSegment[] | undefined,
+  snapshot: ChatToolRow[],
+  liveTools: ChatToolRow[] | undefined,
+): ChatSegment[] | undefined {
+  const seen = new Set((liveTools ?? []).map((t) => t.callID));
+  const extra = snapshot.filter((t) => !seen.has(t.callID));
+  if (extra.length === 0) return live;
+  return [
+    ...(live ?? []),
+    ...extra.map((t) => ({ kind: "tool" as const, callID: t.callID })),
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Projection -> ThreadMessageLike[]
@@ -331,8 +408,45 @@ export function isSuperseded(message: SessionMessage): boolean {
   return (message.metadata ?? {}).superseded === true;
 }
 
+/**
+ * Compact tool rows persisted on a message (assistant
+ * ``metadata.tools[]``, chat transparency). Validated: entries with
+ * a missing/empty callID are dropped; unknown shapes degrade to a
+ * best-effort row. Empty/absent means "no tools ran this round".
+ */
+export function toolsOf(message: SessionMessage): ChatToolRow[] {
+  const raw = (message.metadata ?? {}).tools;
+  if (!Array.isArray(raw)) return [];
+  const out: ChatToolRow[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== "object") continue;
+    const row = t as Record<string, unknown>;
+    const callID = typeof row.callID === "string" ? row.callID : "";
+    if (!callID) continue;
+    out.push({
+      callID,
+      tool: typeof row.tool === "string" && row.tool ? row.tool : "tool",
+      status: typeof row.status === "string" && row.status ? row.status : "unknown",
+      summary: typeof row.summary === "string" ? row.summary : "",
+      title: typeof row.title === "string" ? row.title : null,
+      input:
+        row.input && typeof row.input === "object"
+          ? (row.input as Record<string, unknown>)
+          : null,
+      round:
+        typeof row.round === "number" && Number.isInteger(row.round) && row.round >= 0
+          ? row.round
+          : null,
+    });
+  }
+  return out;
+}
+
 /** Project one entry; only user/assistant become thread bubbles. */
-export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
+export function projectEntry(
+  entry: ChatEntry,
+  opts?: { isActiveTurn?: boolean },
+): ThreadMessageLike | null {
   const { message, streaming } = entry;
   if (message.role !== "user" && message.role !== "assistant") return null;
   // Thinking: live accumulation wins while streaming; otherwise the
@@ -342,24 +456,37 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
   const thinking =
     entry.thinking ??
     (typeof persistedThinking === "string" && persistedThinking ? persistedThinking : null);
-  // Ordered segments (arrival-ordered text/reasoning log, persisted
-  // as metadata.segments): interleave fidelity for think/act/think
-  // turns. Absent on legacy messages and non-final bubbles — readers
-  // fall back to the single thinking block + full-text body.
+  // Ordered timeline (arrival-ordered text/reasoning/tool log):
+  // the live op log wins while streaming, else the persisted
+  // metadata.segments. Tool markers ({kind: "tool"}) carry the
+  // callID; the row lookup is `tools` below. Absent on legacy
+  // messages and tool-less text-only turns — readers fall back to
+  // the single thinking block + full-text body.
   const rawSegments = message.metadata?.segments;
-  const segments = Array.isArray(rawSegments)
-    ? rawSegments.filter(
-        (s): s is { kind: string; text: string } =>
-          !!s &&
-          typeof s === "object" &&
-          (s.kind === "thinking" || s.kind === "text") &&
-          typeof s.text === "string" &&
-          s.text.length > 0,
-      )
+  const persistedSegments = Array.isArray(rawSegments)
+    ? rawSegments.filter((s): s is ChatSegment => {
+        if (!s || typeof s !== "object") return false;
+        const row = s as { kind?: unknown; text?: unknown; callID?: unknown };
+        if (row.kind === "tool") {
+          return typeof row.callID === "string" && row.callID.length > 0;
+        }
+        return (
+          (row.kind === "thinking" || row.kind === "text") &&
+          typeof row.text === "string" &&
+          row.text.length > 0
+        );
+      })
     : null;
+  const liveSeq =
+    streaming && entry.seq && entry.seq.length > 0 ? entry.seq : null;
+  const segments = liveSeq ?? persistedSegments;
   // assistant-ui expects content as Part[] for all messages; the
   // sanctioned metadata bag is `metadata.custom` (surfaced to the UI
   // components via the message state; R4.2 step 2-pre).
+  // Tools: live accumulation wins while streaming; otherwise the
+  // persisted rows from message metadata (the backend stores the
+  // round's compact rows as metadata.tools on finalize).
+  const tools = entry.tools ?? toolsOf(message);
   const like: ThreadMessageLike = {
     id: message.id,
     role: message.role,
@@ -373,6 +500,8 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
         segments,
         round: entry.round ?? roundOf(message),
         turnFinal: isFinal(message),
+        tools,
+        isActiveTurn: opts?.isActiveTurn ?? false,
       },
     },
   };
@@ -390,10 +519,23 @@ export function projectEntry(entry: ChatEntry): ThreadMessageLike | null {
 export function projectThread(state: SweaveThreadState): ThreadMessageLike[] {
   const out: ThreadMessageLike[] = [];
   for (const entry of state.entries) {
-    const p = projectEntry(entry);
+    const p = projectEntry(entry, { isActiveTurn: isEntryActive(state, entry) });
     if (p) out.push(p);
   }
   return out;
+}
+
+/**
+ * True while the entry belongs to the turn still running on this
+ * session (the lanes + round auto-expand read this, not message
+ * finality — an intermediate round message of a live turn keeps its
+ * children lane mounted across the child-wait/synthesis gap).
+ */
+function isEntryActive(state: SweaveThreadState, entry: ChatEntry): boolean {
+  if (state.turn === "idle" || entry.optimistic) return false;
+  if (entry.message.role !== "assistant") return false;
+  const id = entry.delegationId ?? delegationIdOf(entry.message);
+  return id !== null && id === state.activeDelegationId;
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +640,9 @@ export function applyDelta(
         ? {
             ...e,
             message: { ...e.message, content: e.message.content + text },
+            seq: text
+              ? [...(e.seq ?? []), { kind: "text" as const, text }]
+              : e.seq,
           }
         : e,
     );
@@ -519,7 +664,13 @@ export function applyDelta(
     ...state,
     entries: [
       ...state.entries,
-      { message: bubble, streaming: true, delegationId, round },
+      {
+        message: bubble,
+        streaming: true,
+        delegationId,
+        round,
+        seq: text ? [{ kind: "text" as const, text }] : [],
+      },
     ],
     turn: "running",
     activeDelegationId: delegationId,
@@ -547,7 +698,13 @@ export function applyThinking(
   if (existing) {
     const entries = state.entries.map((e) =>
       e.delegationId === delegationId && e.streaming && (e.round ?? 0) === round
-        ? { ...e, thinking: (e.thinking ?? "") + text }
+        ? {
+            ...e,
+            thinking: (e.thinking ?? "") + text,
+            seq: text
+              ? [...(e.seq ?? []), { kind: "thinking" as const, text }]
+              : e.seq,
+          }
         : e,
     );
     return { ...state, entries, turn: "running", activeDelegationId: delegationId };
@@ -569,7 +726,119 @@ export function applyThinking(
     ...state,
     entries: [
       ...state.entries,
-      { message: bubble, streaming: true, delegationId, round, thinking: text },
+      {
+        message: bubble,
+        streaming: true,
+        delegationId,
+        round,
+        thinking: text,
+        seq: text ? [{ kind: "thinking" as const, text }] : [],
+      },
+    ],
+    turn: "running",
+    activeDelegationId: delegationId,
+  };
+}
+
+/**
+ * Normalize one ``chat.tool`` WS payload into a ChatToolRow.
+ * Provider-shaped garbage degrades to a best-effort row (never
+ * throws — the stream path must not break the thread).
+ */
+export function normalizeToolRow(tool: unknown, round: number = 0): ChatToolRow | null {
+  if (!tool || typeof tool !== "object") return null;
+  const row = tool as Record<string, unknown>;
+  const callID = typeof row.callID === "string" ? row.callID : "";
+  if (!callID) return null;
+  return {
+    callID,
+    tool: typeof row.tool === "string" && row.tool ? row.tool : "tool",
+    status: typeof row.status === "string" && row.status ? row.status : "unknown",
+    summary: typeof row.summary === "string" ? row.summary : "",
+    title: typeof row.title === "string" ? row.title : null,
+    input:
+      row.input && typeof row.input === "object"
+        ? (row.input as Record<string, unknown>)
+        : null,
+    round,
+  };
+}
+
+/**
+ * Apply a ``chat.tool`` event. Upserts the row into the streaming
+ * bubble's tool list keyed by ``callID`` (latest status wins),
+ * creating the bubble (with empty content) when tools precede the
+ * first text delta — same early-bubble contract as
+ * ``applyThinking``. Also flips the turn to ``running`` + records
+ * the active delegation, with the same trailing-garbage guard (no
+ * rows after this delegation settled).
+ */
+export function applyTool(
+  state: SweaveThreadState,
+  delegationId: string,
+  tool: unknown,
+  round: number = 0,
+): SweaveThreadState {
+  if (hasSettledAssistant(state, delegationId, round)) return state;
+  const row = normalizeToolRow(tool, round);
+  if (!row) return state;
+  const upsert = (tools: ChatToolRow[] | undefined): ChatToolRow[] => {
+    const prev = tools ?? [];
+    const idx = prev.findIndex((t) => t.callID === row.callID);
+    if (idx >= 0) {
+      const next = prev.slice();
+      next[idx] = row;
+      return next;
+    }
+    return [...prev, row];
+  };
+  const existing = state.entries.find(
+    (e) => e.streaming && e.delegationId === delegationId && (e.round ?? 0) === round,
+  );
+  if (existing) {
+    const entries = state.entries.map((e) => {
+      if (!(e.delegationId === delegationId && e.streaming && (e.round ?? 0) === round)) {
+        return e;
+      }
+      const tools = upsert(e.tools);
+      // First sighting takes a timeline position; status updates
+      // only refresh the row (mirrors the backend segments rule).
+      const isNew = !(e.tools ?? []).some((t) => t.callID === row.callID);
+      return {
+        ...e,
+        tools,
+        seq: isNew
+          ? [...(e.seq ?? []), { kind: "tool" as const, callID: row.callID }]
+          : e.seq,
+      };
+    });
+    return { ...state, entries, turn: "running", activeDelegationId: delegationId };
+  }
+
+  // Tools before any text: create the streaming bubble early so the
+  // activity rows paint during the tool phase.
+  const bubble: SessionMessage = {
+    id: bubbleIdFor(delegationId, round),
+    role: "assistant",
+    content: "",
+    timestamp: new Date().toISOString(),
+    agent: "orchestrator",
+    tool_name: null,
+    tool_result: null,
+    metadata: { delegation_id: delegationId },
+  };
+  return {
+    ...state,
+    entries: [
+      ...state.entries,
+      {
+        message: bubble,
+        streaming: true,
+        delegationId,
+        round,
+        tools: [row],
+        seq: [{ kind: "tool" as const, callID: row.callID }],
+      },
     ],
     turn: "running",
     activeDelegationId: delegationId,

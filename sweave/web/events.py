@@ -21,6 +21,10 @@ change the meaning of the ones below):
   coalesced text increments for the in-flight assistant bubble)
 * ``chat.thinking``               -- ``{session_id, delegation_id, text}`` (thinking
   capture emits; coalesced reasoning increments for the live Thinking block)
+* ``chat.tool``                   -- ``{session_id, delegation_id, round, tool}``
+  (tool transparency emits; one event per tool transition — the tool row
+  is ``{callID, tool, status, summary, title, input, round}``, latest
+  status wins per callID)
 * ``message.added``               -- ``{session_id, message}`` (persisted message;
   the assistant copy carries ``metadata.delegation_id`` + ``metadata.thinking``)
 * ``specialist.idle``             -- ``{name, model, ts}`` (M1.3 emits)

@@ -106,6 +106,9 @@ class _ActiveTurn:
       the live round's bubble (multi-message turns, 2026-09-11).
     * ``pending_question`` is True while a blocking human question
       (ask_human / permission) holds the turn open (M1.11).
+    * ``tools`` accumulates the current round's compact tool rows
+      (chat transparency: one row per callID, latest status wins).
+      Reset on round change like the text accumulators.
     * ``durable_until`` tracks the last periodic persist of the partial
       text onto the delegation record (see ChatLoop.stream_persist_interval).
     """
@@ -118,11 +121,12 @@ class _ActiveTurn:
     round: int = 0
     pending_question: bool = False
     task: asyncio.Task | None = None
+    tools: list = field(default_factory=list)
 
     def snapshot(self) -> dict[str, Any]:
         if self.pending_question:
             phase = "question"
-        elif self.stream_text or self.thinking_text:
+        elif self.stream_text or self.thinking_text or self.tools:
             phase = "streaming"
         else:
             phase = "waiting"
@@ -136,6 +140,7 @@ class _ActiveTurn:
             "thinking_text": self.thinking_text,
             "round": self.round,
             "pending_question": self.pending_question,
+            "tools": list(self.tools),
         }
 
 
@@ -704,6 +709,7 @@ class ChatLoop:
             "stream_text": "",
             "thinking_text": "",
             "pending_question": False,
+            "tools": [],
         }
         snapshot = self.active_turn_snapshot(session_id)
         if snapshot is None and session_id in self._turn_inflight:
@@ -784,6 +790,7 @@ class ChatLoop:
                 "stream_text": "",
                 "thinking_text": "",
                 "pending_question": False,
+                "tools": [],
             }
         if snapshot is None:
             lock = await self._lock_for(session_id)
@@ -797,6 +804,7 @@ class ChatLoop:
                     "stream_text": "",
                     "thinking_text": "",
                     "pending_question": False,
+                    "tools": [],
                 }
         if snapshot is not None:
             raise TurnActiveError(
@@ -1285,6 +1293,9 @@ class ChatLoop:
             entry.thinking_text if entry is not None and entry.thinking_text else None
         )
         round_no = entry.round if entry is not None else 0
+        cancelled_tools = (
+            list(entry.tools) if entry is not None and entry.tools else None
+        )
         session = self.project_manager.get_session(session_id)
         if session is None:
             raise ValueError(f"Session '{session_id}' not found")
@@ -1334,6 +1345,8 @@ class ChatLoop:
         }
         if thinking:
             metadata["thinking"] = thinking
+        if cancelled_tools:
+            metadata["tools"] = cancelled_tools
         assistant_msg = session.add_message(
             role="assistant",
             content=content,
@@ -1612,6 +1625,64 @@ class ChatLoop:
                 segments.append(("reasoning", text))
                 thinking_coalescer.push(text)
 
+            # Tool transparency: per-callID compact rows for the live
+            # round. The harness reports every transition via on_tool;
+            # latest-status-wins per callID (pending -> running ->
+            # completed | error). Each transition emits a chat.tool WS
+            # event (no coalescing: tool counts are tiny vs text) and
+            # refreshes the registry snapshot so reconnects see them.
+            # Delegation-generic: keyed by (delegation, round) so
+            # future specialist chats reuse the pipeline unchanged.
+            from sweave.chat.tools import (
+                MAX_TOOLS_PER_MESSAGE,
+                compact_tool_record,
+            )
+
+            tools_by_call: dict[str, dict[str, Any]] = {}
+            tools_order: list[str] = []
+
+            async def _on_tool(event: dict[str, Any]) -> None:
+                try:
+                    row = compact_tool_record(
+                        event, round=round_box["round"]
+                    )
+                except Exception:  # noqa: BLE001 — never fail a turn
+                    return
+                call_id = str(row.get("callID") or "")
+                if not call_id:
+                    return
+                if call_id not in tools_by_call:
+                    if len(tools_order) >= MAX_TOOLS_PER_MESSAGE:
+                        return
+                    tools_order.append(call_id)
+                    # First sighting takes a position in the arrival
+                    # log so the persisted segments render tools
+                    # interleaved with thinking/text (opencode-style
+                    # timeline). Status updates only refresh the row.
+                    segments.append(("tool", call_id))
+                tools_by_call[call_id] = row
+                current = [tools_by_call[c] for c in tools_order]
+                entry = self._active_turns.get(session_id)
+                if entry is not None:
+                    if entry.round != round_box["round"]:
+                        entry.round = round_box["round"]
+                        entry.stream_text = ""
+                        entry.thinking_text = ""
+                        entry.tools = []
+                    entry.tools = list(current)
+                await self._emit(
+                    "chat.tool",
+                    {
+                        "session_id": session_id,
+                        "delegation_id": delegation_id,
+                        "round": round_box["round"],
+                        "tool": dict(row),
+                    },
+                )
+
+            def _round_tools() -> list[dict[str, Any]]:
+                return [dict(tools_by_call[c]) for c in tools_order]
+
             async def _finish(**kwargs: Any) -> dict[str, Any]:
                 """Persist the final message, closing the stream first.
 
@@ -1630,12 +1701,20 @@ class ChatLoop:
                 thinking_text = "".join(
                     t for kind, t in segments if kind == "reasoning"
                 )
-                # Segments persist only when reasoning is present:
-                # a text-only turn keeps the legacy single-block shape
-                # (no redundant single-text segment in payloads).
+                # Segments persist when the turn has reasoning OR tool
+                # markers: a text-only tool-less turn keeps the legacy
+                # single-block shape (no redundant single-text segment
+                # in payloads). Tool markers ride as {"kind": "tool",
+                # "callID"} — the row lookup stays metadata.tools.
+                has_tool_markers = any(kind == "tool" for kind, _ in segments)
                 segments_payload = (
-                    [{"kind": kind, "text": t} for kind, t in segments]
-                    if thinking_text
+                    [
+                        {"kind": "tool", "callID": t}
+                        if kind == "tool"
+                        else {"kind": kind, "text": t}
+                        for kind, t in segments
+                    ]
+                    if thinking_text or has_tool_markers
                     else None
                 )
                 return await self._finalise_turn(
@@ -1644,6 +1723,7 @@ class ChatLoop:
                     user_msg=user_msg,
                     thinking_text=thinking_text or None,
                     segments=segments_payload or None,
+                    tools=_round_tools() or None,
                     **kwargs,
                 )
 
@@ -1658,6 +1738,7 @@ class ChatLoop:
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
                 on_reasoning=_on_reasoning,
+                on_tool=_on_tool,
                 timeout=turn_scope["timeout"],
                 max_retries=turn_scope["retries"],
                 project_harness=turn_scope["project_harness"],
@@ -1774,6 +1855,7 @@ class ChatLoop:
                 round_thinking = "".join(
                     t for kind, t in segments if kind == "reasoning"
                 )
+                round_has_tools = any(kind == "tool" for kind, _ in segments)
                 await self._persist_round_message(
                     session=session,
                     session_id=session_id,
@@ -1782,11 +1864,23 @@ class ChatLoop:
                     text=first_turn_text,
                     thinking_text=round_thinking or None,
                     segments=[
-                        {"kind": kind, "text": t} for kind, t in segments
-                    ] if round_thinking else None,
+                        {"kind": "tool", "callID": t}
+                        if kind == "tool"
+                        else {"kind": kind, "text": t}
+                        for kind, t in segments
+                    ] if round_thinking or round_has_tools else None,
+                    tools=_round_tools() or None,
                 )
                 del segments[:]
+                tools_by_call.clear()
+                tools_order.clear()
                 round_box["round"] = 1
+                entry = self._active_turns.get(session_id)
+                if entry is not None:
+                    entry.round = 1
+                    entry.stream_text = ""
+                    entry.thinking_text = ""
+                    entry.tools = []
             if not children and escalation_note is None:
                 # Fast path: no deferrals and no blocking question --
                 # the first turn's reply is the final answer.
@@ -1898,6 +1992,7 @@ class ChatLoop:
                 session_id_setter=_set_orch_id,
                 on_chunk=_on_chunk,
                 on_reasoning=_on_reasoning,
+                on_tool=_on_tool,
                 timeout=turn_scope["timeout"],
                 max_retries=turn_scope["retries"],
                 project_harness=turn_scope["project_harness"],
@@ -1942,6 +2037,10 @@ class ChatLoop:
         # chat.thinking events; the full text is persisted on the
         # assistant message metadata (see _finalise_turn).
         on_reasoning: "Callable[[str], Any] | None" = None,
+        # Tool transparency: one normalized event per tool transition;
+        # the loop forwards these as chat.tool WS events + persists
+        # them on the assistant message metadata (see _finalise_turn).
+        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
         # Per-turn scope (two-file config ruling): timeout bound,
         # retry budget, and project harness tier for THIS turn's
         # project. None = the loop singletons (legacy/tests).
@@ -1988,6 +2087,7 @@ class ChatLoop:
             session_id_setter=session_id_setter,
             on_chunk=on_chunk,
             on_reasoning=on_reasoning,
+            on_tool=on_tool,
             project_dir=worktree_path,
             permission_roots=permission_roots,
             max_retries=turn_retries,
@@ -2070,7 +2170,8 @@ class ChatLoop:
         round: int,
         text: str,
         thinking_text: str | None = None,
-        segments: list[dict[str, str]] | None = None,
+        segments: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Persist one intermediate round's assistant message.
 
@@ -2081,6 +2182,8 @@ class ChatLoop:
         streaming runtime scopes bubbles per round. ``segments`` is
         the arrival-ordered text/reasoning log for interleave
         fidelity; ``thinking`` stays as the joined back-compat copy.
+        ``tools`` is the round's compact tool rows (chat
+        transparency); omitted when empty.
         """
         metadata: dict[str, Any] = {
             "delegation_id": delegation_id,
@@ -2091,6 +2194,8 @@ class ChatLoop:
             metadata["thinking"] = thinking_text
         if segments:
             metadata["segments"] = segments
+        if tools:
+            metadata["tools"] = tools
         msg = session.add_message(
             role="assistant",
             content=text,
@@ -2114,7 +2219,8 @@ class ChatLoop:
         assistant_text: str | None = None,
         error_text: str | None = None,
         thinking_text: str | None = None,
-        segments: list[dict[str, str]] | None = None,
+        segments: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         round: int = 0,
         turn_final: bool = True,
     ) -> dict[str, Any]:
@@ -2123,7 +2229,10 @@ class ChatLoop:
 
         ``round`` / ``turn_final`` (multi-message turns, 2026-09-11):
         the synthesis result lands as round 1 / final; every other
-        call site keeps the fast-path shape (round 0, final)."""
+        call site keeps the fast-path shape (round 0, final).
+        ``tools`` is the round's compact tool rows (chat
+        transparency); omitted when empty. UI-only: the composer
+        never reads it, so it cannot leak into the model context."""
         store = await self.delegation_stores.for_project(
             session.project_name
             and self.project_dir_resolver(session.project_name)
@@ -2169,6 +2278,8 @@ class ChatLoop:
             metadata["thinking"] = thinking_text
         if segments:
             metadata["segments"] = segments
+        if tools:
+            metadata["tools"] = tools
         assistant_msg = session.add_message(
             role="assistant",
             content=assistant_content,

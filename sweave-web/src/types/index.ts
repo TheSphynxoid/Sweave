@@ -114,7 +114,41 @@ export interface TurnSnapshot {
       turn, 1 = synthesis). Absent on old servers — readers default
       to 0. */
   round?: number | null;
+  /** Tool transparency: the live round's compact tool rows (latest
+      status wins per callID). Absent on old servers — readers
+      default to []. */
+  tools?: ChatToolRow[] | null;
 }
+
+/**
+ * Compact tool-call row (chat transparency, opencode-style).
+ * From the ``chat.tool`` WS event (live) or the assistant message's
+ * ``metadata.tools[]`` (persisted). UI-only: the composer never
+ * reads it, so it cannot leak into the model context.
+ */
+export interface ChatToolRow {
+  callID: string;
+  tool: string;
+  /** pending | running | completed | error | unknown */
+  status: string;
+  /** One-liner detail (path / command / pattern). */
+  summary: string;
+  title?: string | null;
+  /** Capped input JSON (edit/write rows only — the expandable diff). */
+  input?: Record<string, unknown> | null;
+  round?: number | null;
+}
+
+/**
+ * One ordered timeline item (chat transparency, opencode-style).
+ * Text/reasoning carry their slice; tool markers carry the callID
+ * (the row lookup is the message's `metadata.tools[]` / the live
+ * entry's tools). The renderer joins contiguous same-kind runs.
+ */
+export type ChatSegment =
+  | { kind: "text"; text: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; callID: string };
 
 export interface SessionCreate {
   name: string;

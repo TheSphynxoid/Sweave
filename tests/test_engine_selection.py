@@ -98,9 +98,13 @@ class _FakeEngineProcess:
         self._session_id = "eng_fake_1"
         self.pid = -1
 
-    async def send(self, message, on_chunk=None, trace=None, on_reasoning=None):
+    async def send(
+        self, message, on_chunk=None, trace=None, on_reasoning=None,
+        on_tool=None,
+    ):
         self._seen.append(message)
         self._seen_reasoning_cb = on_reasoning
+        self._seen_tool_cb = on_tool
         return await self._script(message, trace)
 
     async def terminate(self):

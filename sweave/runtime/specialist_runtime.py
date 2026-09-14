@@ -505,6 +505,11 @@ class SpecialistRuntime:
         session_id_setter: Callable[[str], None] | None = None,
         on_chunk: Callable[[str], Any] | None = None,
         on_reasoning: Callable[[str], Any] | None = None,
+        # Tool transparency (chat thread rows): mirrors on_chunk for
+        # tool transitions (one normalized event per transition; see
+        # sweave.chat.tools.tool_event). The chat loop forwards these
+        # as chat.tool WS events + persists them on the message.
+        on_tool: Callable[[dict[str, Any]], Any] | None = None,
         # Step 4: per-task harness override (beats the specialist
         # record — and the test mock. Explicit is explicit).
         harness: str | None = None,
@@ -561,6 +566,7 @@ class SpecialistRuntime:
                 session_id_setter=session_id_setter,
                 on_chunk=on_chunk,
                 on_reasoning=on_reasoning,
+                on_tool=on_tool,
                 project_dir=project_dir,
                 permission_roots=permission_roots,
                 max_retries=max_retries,
@@ -763,6 +769,8 @@ class SpecialistRuntime:
         # (engine `reasoning` SSE events, protocol v2). The chat loop
         # forwards these as chat.thinking; the text never joins output.
         on_reasoning: Callable[[str], Any] | None = None,
+        # Tool transparency: one normalized event per tool transition.
+        on_tool: Callable[[dict[str, Any]], Any] | None = None,
         project_dir: Path | None = None,
         permission_roots: Any = None,
         # Retry budget (turn_retries setting): retries AFTER the first
@@ -903,7 +911,11 @@ class SpecialistRuntime:
                 model=used_ref,
             )
             result = await process.send(
-                msg, on_chunk=on_chunk, trace=probe, on_reasoning=on_reasoning
+                msg,
+                on_chunk=on_chunk,
+                trace=probe,
+                on_reasoning=on_reasoning,
+                on_tool=on_tool,
             )
 
             # No-rotation invariant: trace this turn's prompt id so a
@@ -1004,6 +1016,8 @@ class SpecialistRuntime:
         # events so the UI can render a live Thinking block.
         # Reasoning never pollutes the returned text output.
         on_reasoning: "Callable[[str], Any] | None" = None,
+        # Tool transparency: one normalized event per tool transition.
+        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
     ) -> str:
         """Run one delegation on the opencode harness. Returns the
         agent's text output.
@@ -1189,6 +1203,7 @@ class SpecialistRuntime:
                 trace,
                 on_chunk=on_chunk,
                 on_reasoning=on_reasoning,
+                on_tool=on_tool,
                 delegation_id=delegation.delegation_id,
                 t0=t_start,
             )
@@ -1376,6 +1391,7 @@ class SpecialistRuntime:
         trace: TraceLog,
         on_chunk: "Callable[[str], Any] | None" = None,
         on_reasoning: "Callable[[str], Any] | None" = None,
+        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
         stall_seconds: float | None = None,
         delegation_id: str | None = None,
         t0: float | None = None,
@@ -1400,6 +1416,12 @@ class SpecialistRuntime:
         traced (``reasoning`` events, like the harness's
         ``trace_reasoning`` path but always on here) and forwarded;
         it is never mixed into the returned text output.
+
+        Tool transparency: ``on_tool`` mirrors ``on_chunk`` for
+        ``tool`` parts (one normalized event per state transition).
+        Tool parts are ALSO traced (``tool.started | updated |
+        completed | failed`` — this closes the runtime-path gap where
+        the trace never saw tool transitions).
 
         Stall watchdog: ``stall_seconds`` (default
         ``STALL_TIMEOUT_SECONDS``) bounds *silence*, not the turn: any
@@ -1429,6 +1451,10 @@ class SpecialistRuntime:
         # Thinking capture: reasoning parts accumulate here for
         # the trace; the live forwarding goes to on_reasoning.
         reasoning_parts: list[str] = []
+        # Tool transparency: per-callID snapshot state for the trace
+        # (mirrors OpenCodeProcess.send's M1.9 capture).
+        tool_snapshots: dict[str, dict[str, Any]] = {}
+        tool_first_state: dict[str, str] = {}
         # M1.9 terminal + error tracking (mirrors
         # OpenCodeProcess.send): the v2 wire reports failures via
         # info.error on an otherwise-200 stream. Without this, an
@@ -1666,6 +1692,49 @@ class SpecialistRuntime:
                                             "SpecialistRuntime: on_reasoning "
                                             "callback raised: %s", cb_err
                                         )
+                            elif isinstance(part, dict) and part.get("type") == "tool":
+                                # Tool transparency (closes the
+                                # runtime-path gap: this reader
+                                # previously dropped tool parts, so
+                                # chat-turn traces never saw tool.*
+                                # events). Same lifecycle mapping as
+                                # OpenCodeProcess.send.
+                                try:
+                                    from sweave.harness.opencode import (
+                                        _emit_tool_trace as _emit_opencode_tool,
+                                    )
+                                    from sweave.chat.tools import (
+                                        tool_event as _tool_event,
+                                    )
+
+                                    emitted = _emit_opencode_tool(
+                                        trace,
+                                        tool_snapshots,
+                                        tool_first_state,
+                                        part,
+                                    )
+                                except Exception as trace_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SpecialistRuntime: tool "
+                                        "trace failed: %s", trace_err
+                                    )
+                                    emitted = []
+                                if on_tool is not None:
+                                    for _name, _payload in emitted or ():
+                                        try:
+                                            _ev = _tool_event(
+                                                _payload.get("callID"),
+                                                _payload.get("tool"),
+                                                _payload.get("state"),
+                                            )
+                                            _result = on_tool(_ev)
+                                            if hasattr(_result, "__await__"):
+                                                await _result
+                                        except Exception as cb_err:  # noqa: BLE001
+                                            logger.warning(
+                                                "SpecialistRuntime: on_tool "
+                                                "callback raised: %s", cb_err
+                                            )
                             # M1.9: the dead ``type: "error"`` part
                             # branch was removed. The v2 wire surfaces
                             # errors via info.error (which the harness

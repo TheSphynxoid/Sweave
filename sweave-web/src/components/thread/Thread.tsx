@@ -45,6 +45,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowRight,
+  AlertTriangle,
   Bot,
   Brain,
   Check,
@@ -60,6 +61,8 @@ import {
 import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
 import { Avatar } from "@/components/assistant-ui/elements/avatar";
 import { Skeleton } from "@/components/assistant-ui/elements/skeleton";
+import { EditTool } from "@/components/agent-elements/tools/edit-tool";
+import type { ChatSegment, ChatToolRow } from "@/types";
 import { useWS } from "@/context/WSProvider";
 import { api } from "@/api/client";
 import { useChatActions } from "@/lib/chat/actions";
@@ -443,10 +446,15 @@ interface SweaveCustom {
   superseded?: boolean;
   /** Live or persisted reasoning text (chat.thinking / metadata.thinking). */
   thinking?: string | null;
-  /** Arrival-ordered text/reasoning segments (metadata.segments).
-      Renders think/act/think turns in stream order; absent on legacy
-      messages, which keep the single thinking block + body. */
-  segments?: { kind: string; text: string }[] | null;
+  /** Arrival-ordered text/reasoning/tool segments (metadata.segments
+      or the live op log). Renders think/act/think turns in stream
+      order; absent on legacy messages, which keep the single thinking
+      block + body (+ the TurnTools fallback for legacy tool rows). */
+  segments?: ChatSegment[] | null;
+  /** Compact tool rows (chat.tool live / metadata.tools persisted).
+      Renders the turn's activity above the answer; absent on legacy
+      messages. */
+  tools?: ChatToolRow[] | null;
   /** Multi-message turns (2026-09-11): orchestrator round (0 = first
       turn, 1 = synthesis). Absent on legacy messages — readers treat
       it as 0. */
@@ -454,6 +462,12 @@ interface SweaveCustom {
   /** False only for intermediate round messages, which render
       collapsed (RoundBlock) instead of inline. Absent means final. */
   turnFinal?: boolean | null;
+  /** True while this message belongs to the turn still running on
+      the session (projected from the adapter's turn state, not
+      message finality). Keeps the children/question lanes mounted
+      across the round-0 → synthesis gap and auto-expands the
+      intermediate round while its turn is live. */
+  isActiveTurn?: boolean | null;
 }
 
 function useMessageCustom(): SweaveCustom {
@@ -479,12 +493,27 @@ function AssistantMessage() {
   const isRunning = useAuiState((s) => s.message.status?.type === "running");
   const time = formatTimestamp(custom.timestamp);
 
+  // Lanes stay mounted while this message's turn is live — not just
+  // when the message is final. The old turnFinal-only gate unmounted
+  // the specialist box exactly when specialists started (round 0
+  // persists intermediate before the child wait), forcing a reload
+  // to see it again.
+  const showLanes =
+    custom.turnFinal !== false || isRunning || custom.isActiveTurn === true;
+
   const body = (
     <>
       {custom.segments && custom.segments.length > 0 ? (
-        <SegmentedBody segments={custom.segments} streaming={isRunning} />
+        <SegmentedBody
+          segments={custom.segments}
+          streaming={isRunning}
+          tools={custom.tools ?? []}
+        />
       ) : (
         <>
+          {custom.tools && custom.tools.length > 0 ? (
+            <TurnTools tools={custom.tools} streaming={isRunning} />
+          ) : null}
           {custom.thinking ? (
             <ThinkingBlock thinking={custom.thinking} streaming={isRunning} />
           ) : null}
@@ -495,11 +524,11 @@ function AssistantMessage() {
         </>
       )}
 
-      {custom.delegationId && custom.turnFinal !== false && (
+      {custom.delegationId && showLanes && (
         <TurnQuestions delegationId={custom.delegationId} />
       )}
 
-      {custom.delegationId && custom.turnFinal !== false && (
+      {custom.delegationId && showLanes && (
         <TurnDelegations parentDelegationId={custom.delegationId} />
       )}
 
@@ -517,11 +546,15 @@ function AssistantMessage() {
   // Intermediate round messages (a defer turn's narration before the
   // final synthesis) render collapsed but present — the transcript
   // never loses a round. Final + legacy messages render inline.
+  // The block auto-expands while its turn is live (so the children
+  // lane stays visible across the child-wait gap) and collapses on
+  // settle; a manual toggle always wins.
   const roundShell =
     custom.turnFinal === false ? (
       <RoundBlock
         round={typeof custom.round === "number" ? custom.round : 0}
         preview={threadTextOf(message)}
+        active={custom.isActiveTurn === true}
       >
         {body}
       </RoundBlock>
@@ -599,18 +632,23 @@ function AssistantMessage() {
 export function RoundBlock({
   round,
   preview,
+  active,
   children,
 }: {
   round: number;
   preview: string;
+  /** True while the round's turn is still live: auto-expands (a
+      manual toggle always wins and survives settle). */
+  active?: boolean;
   children: React.ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [manual, setManual] = useState<boolean | null>(null);
+  const expanded = manual ?? active ?? false;
   return (
-    <div data-testid="round-block" data-round={round}>
+    <div data-testid="round-block" data-round={round} data-active={active === true}>
       <button
         type="button"
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => setManual(!expanded)}
         aria-expanded={expanded}
         className="flex max-w-full items-center gap-1.5 rounded-full border border-primary/25 bg-primary/[0.07] px-2.5 py-1 text-left text-[11px] text-muted-foreground transition-all hover:border-primary/50 hover:text-foreground hover:shadow-sm"
       >
@@ -665,25 +703,44 @@ function SupersededBlock({
 /**
  * Ordered segment body (interleave fidelity).
  *
- * Groups contiguous same-kind segments and renders them in stream
- * order: each thinking run gets its own ThinkingBlock, each text run
- * its own Markdown — so think, act, think, answer reads in that
- * order instead of collapsing to one Thinking blob + one answer.
- * Used only when the message carries metadata.segments (new turns);
- * legacy messages keep the single-block path above. Exported for the
- * segment-order unit test (RoundBlock precedent).
+ * Groups contiguous same-kind text/reasoning runs and renders them in
+ * stream order with tool rows inline at their arrival positions — so
+ * think, read, think, answer reads in that order instead of
+ * collapsing to one Thinking blob + one answer + a detached activity
+ * block. Used whenever the message carries segments (new turns AND
+ * live bubbles via the adapter op log); legacy messages keep the
+ * single-block path above. Exported for the segment-order unit test
+ * (RoundBlock precedent).
  */
 export function SegmentedBody({
   segments,
   streaming,
+  tools,
 }: {
-  segments: { kind: string; text: string }[];
+  segments: ChatSegment[];
   streaming: boolean;
+  tools?: ChatToolRow[];
 }) {
-  const groups: { kind: string; text: string }[] = [];
+  const byId = new Map((tools ?? []).map((t) => [t.callID, t]));
+  const groups: Array<
+    | { kind: "thinking"; text: string }
+    | { kind: "text"; text: string }
+    | { kind: "tool"; row: ChatToolRow }
+  > = [];
   for (const seg of segments) {
+    if (seg.kind === "tool") {
+      const row = byId.get(seg.callID);
+      // A marker without its row is a backend bug; drop it rather
+      // than render a hole in the timeline.
+      if (row) groups.push({ kind: "tool", row });
+      continue;
+    }
     const last = groups[groups.length - 1];
-    if (last && last.kind === seg.kind) {
+    if (
+      last &&
+      (last.kind === "text" || last.kind === "thinking") &&
+      last.kind === seg.kind
+    ) {
       last.text += seg.text;
     } else {
       groups.push({ kind: seg.kind, text: seg.text });
@@ -694,9 +751,31 @@ export function SegmentedBody({
       {groups.map((g, i) =>
         g.kind === "thinking" ? (
           <ThinkingBlock key={i} thinking={g.text} streaming={streaming} />
+        ) : g.kind === "tool" ? (
+          <div key={i} className="mb-1.5">
+            {isEditRow(g.row) ? (
+              <EditTool part={toToolEditPart(g.row)} isCollapsible />
+            ) : (
+              <ToolRow row={g.row} streaming={streaming} />
+            )}
+          </div>
         ) : (
           <div key={i} className="text-sm leading-relaxed">
-            <Markdown source={g.text} />
+            {streaming ? (
+              // While streaming, raw text verbatim (AssistantTextPart
+              // rule): partial markdown — an unclosed fence, half a
+              // table — renders visibly-empty or structurally-odd
+              // under react-markdown, which reads as "streaming but
+              // no text". The Markdown pass applies on completion.
+              <div
+                data-testid="assistant-streaming-plain"
+                className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground"
+              >
+                {g.text}
+              </div>
+            ) : (
+              <Markdown source={g.text} />
+            )}
             {streaming && i === groups.length - 1 && (
               <span className="streaming-cursor" aria-hidden />
             )}
@@ -705,6 +784,119 @@ export function SegmentedBody({
       )}
     </>
   );
+}
+/**
+ * Turn tool activity, legacy fallback (chat transparency).
+ *
+ * Renders only for messages WITHOUT segments (pre-interleave rows):
+ * a summary block above the answer. Segmented turns render their
+ * rows inline at arrival positions via SegmentedBody instead.
+ *
+ * Exported for the unit test (RoundBlock precedent).
+ */
+export function TurnTools({
+  tools,
+  streaming,
+}: {
+  tools: ChatToolRow[];
+  streaming: boolean;
+}) {
+  if (tools.length === 0) return null;
+  return (
+    <div className="mb-2.5 space-y-1" data-testid="turn-tools">
+      {tools.map((t) =>
+        isEditRow(t) ? (
+          <div key={t.callID} data-testid={`tool-row-${t.callID}`}>
+            <EditTool part={toToolEditPart(t)} isCollapsible />
+          </div>
+        ) : (
+          <ToolRow key={t.callID} row={t} streaming={streaming} />
+        ),
+      )}
+    </div>
+  );
+}
+
+/** Capitalized verb for a tool row (`read` -> `Read`). */
+function toolVerb(tool: string): string {
+  const name = (tool || "tool").trim() || "tool";
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/** One-liner detail: summary (path/command/pattern), else title, else nothing. */
+function toolDetail(row: ChatToolRow): string {
+  if (row.summary) return row.summary;
+  if (row.title) return row.title;
+  return "";
+}
+
+function ToolRow({ row, streaming }: { row: ChatToolRow; streaming: boolean }) {
+  const detail = toolDetail(row);
+  const live = streaming && (row.status === "pending" || row.status === "running");
+  return (
+    <div
+      data-testid={`tool-row-${row.callID}`}
+      data-tool-status={row.status}
+      className="flex min-w-0 items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground"
+    >
+      <ToolStatusIcon status={row.status} live={live} />
+      <span className="font-medium text-foreground/80">{toolVerb(row.tool)}</span>
+      {detail ? (
+        <span className="truncate font-mono text-[11px]" title={detail}>
+          {detail}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolStatusIcon({ status, live }: { status: string; live: boolean }) {
+  if (status === "completed") {
+    return <Check size={12} className="shrink-0 text-emerald-600 dark:text-emerald-400" />;
+  }
+  if (status === "error" || status === "failed") {
+    return <AlertTriangle size={12} className="shrink-0 text-rose-600 dark:text-rose-400" />;
+  }
+  if (live || status === "running") {
+    return <Loader2 size={12} className="shrink-0 animate-spin text-amber-600 dark:text-amber-400" />;
+  }
+  return <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" />;
+}
+
+/** Edit-like rows (persisted input carries old/new strings) get the diff card. */
+function isEditRow(t: ChatToolRow): boolean {
+  if (!/edit|write|create|file|patch/i.test(t.tool ?? "")) return false;
+  const input = t.input ?? {};
+  return (
+    "filePath" in input ||
+    "file_path" in input ||
+    "oldString" in input ||
+    "old_string" in input ||
+    "newString" in input ||
+    "new_string" in input ||
+    "path" in input
+  );
+}
+
+/** Map a compact chat row to the AI-SDK-style `part` shape EditTool expects
+ *  (same mapping as the delegation DetailView's edit rows). */
+function toToolEditPart(t: ChatToolRow): Record<string, unknown> {
+  const state =
+    t.status === "completed"
+      ? "output-available"
+      : t.status === "running" || t.status === "pending"
+        ? "input-streaming"
+        : "call";
+  const isWrite = /write|create/i.test(t.tool ?? "");
+  return {
+    id: t.callID,
+    toolCallId: t.callID,
+    type: isWrite ? "tool-write" : "tool-edit",
+    state,
+    input: t.input ?? {},
+    output: null,
+    result: null,
+  };
 }
 /**
  * Thinking block (reasoning capture).

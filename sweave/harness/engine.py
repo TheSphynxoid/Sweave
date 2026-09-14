@@ -164,6 +164,7 @@ class SweaveEngineProcess:
         trace: Any = None,
         trace_reasoning: bool = False,
         on_reasoning: "Callable[[str], Any] | None" = None,
+        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
     ) -> AgentResult:
         """POST /run and stream native tokens (same shape as opencode send).
 
@@ -174,6 +175,10 @@ class SweaveEngineProcess:
         token (sync or async). ``on_reasoning`` mirrors it for
         ``reasoning`` events (engine thinking text, protocol v2):
         traced like the opencode path, never mixed into the output.
+        ``on_tool`` mirrors both for ``tool.started | updated |
+        completed | failed`` SSE (chat transparency): one normalized
+        event per transition (see ``sweave.chat.tools.tool_event``);
+        sync or async; a raising callback is logged, never fatal.
         ``trace`` receives the ``tokens_used`` terminal anchor
         verbatim (tool events arrive with step 2).
         """
@@ -303,6 +308,48 @@ class SweaveEngineProcess:
                             "tool.updated",
                             "tool.completed",
                             "tool.failed",
+                        ):
+                            # Frozen-vocabulary trace parity with the
+                            # opencode adapter: identical event names so
+                            # `sweave log` and DetailView work unchanged.
+                            # The same transitions feed on_tool (chat
+                            # transparency) -- never gated on tracing.
+                            if trace is not None:
+                                try:
+                                    trace.append(
+                                        kind,
+                                        {
+                                            k: v
+                                            for k, v in event.items()
+                                            if k != "event"
+                                        },
+                                    )
+                                except Exception as trace_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SweaveEngineProcess.send: %s "
+                                        "trace failed: %s",
+                                        kind,
+                                        trace_err,
+                                    )
+                            if on_tool is not None:
+                                from sweave.chat.tools import tool_event
+
+                                try:
+                                    _ev = tool_event(
+                                        event.get("callID"),
+                                        event.get("tool"),
+                                        event.get("state"),
+                                    )
+                                    _result = on_tool(_ev)
+                                    if hasattr(_result, "__await__"):
+                                        await _result
+                                except Exception as cb_err:  # noqa: BLE001
+                                    logger.warning(
+                                        "SweaveEngineProcess.send: on_tool "
+                                        "callback raised: %s",
+                                        cb_err,
+                                    )
+                        elif kind in (
                             "step.boundary",
                             "permission.asked",
                             "tokens_used",

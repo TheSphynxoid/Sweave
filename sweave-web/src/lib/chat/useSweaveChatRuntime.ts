@@ -14,6 +14,7 @@
  *   2. WS `message.added` (user)   -> reconcile the optimistic copy.
  *   3. WS `delegation.status_changed` (running) -> turn running.
  *   4. WS `chat.thinking` × N      -> append to the bubble's Thinking block.
+ *   4b. WS `chat.tool` × N         -> upsert the bubble's tool rows.
  *   5. WS `chat.delta` × N        -> append to the streaming bubble.
  *   6. WS `message.added` (assistant) -> finalize + turn idle.
  */
@@ -34,6 +35,7 @@ import {
   applyStatusChanged,
   applySubmit,
   applyThinking,
+  applyTool,
   applyTurnSnapshot,
   initialThreadState,
   mergeHistory,
@@ -152,6 +154,14 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       const round = typeof data.round === "number" && data.round >= 0 ? Math.floor(data.round) : 0;
       setState((s) => applyThinking(s, data.delegation_id as string, data.text as string, round));
     });
+    const offTool = subscribe("chat.tool", (env) => {
+      const data = env.data as Record<string, unknown>;
+      if (data.session_id !== sessionId) return;
+      if (typeof data.delegation_id !== "string") return;
+      if (!data.tool || typeof data.tool !== "object") return;
+      const round = typeof data.round === "number" && data.round >= 0 ? Math.floor(data.round) : 0;
+      setState((s) => applyTool(s, data.delegation_id as string, data.tool, round));
+    });
     const offAdded = subscribe("message.added", (env) => {
       const data = env.data as Record<string, unknown>;
       if (data.session_id !== sessionId) return;
@@ -170,6 +180,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
     return () => {
       offDelta();
       offThinking();
+      offTool();
       offAdded();
       offStatus();
     };

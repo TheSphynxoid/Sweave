@@ -345,7 +345,10 @@ async def test_runtime_forwards_max_retries(tmp_path: Path):
     class _FakeProcess:
         _session_id = "eng_fwd_1"
 
-        async def send(self, msg, on_chunk=None, trace=None, on_reasoning=None):
+        async def send(
+            self, msg, on_chunk=None, trace=None, on_reasoning=None,
+            on_tool=None,
+        ):
             captured.append(dict(msg.metadata))
             return AgentResult(success=True, output="done")
 
