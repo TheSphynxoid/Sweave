@@ -181,7 +181,7 @@ class ChatLoop:
         project_dir_resolver: Callable[[str | None], Path | None],
         delegation_stores: PerProjectDelegationStores,
         event_bus: Any = None,
-        turn_timeout: float = 1800.0,
+        turn_timeout: float = 14400.0,
         model_resolver: Callable[[str, str | None], str | None] | None = None,
         synthesis_token_cap: int = 8_000,
         # M1.7 step 4: transcript system hooks. The ChatLoop is the

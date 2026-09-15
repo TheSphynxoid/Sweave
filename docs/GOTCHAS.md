@@ -467,8 +467,9 @@ gotchas land here — grouped by branch, not appended as a numbered list.
 3. **Three timers bound a turn — know which one you are changing**
    (incident 2026-09-11: a 17-min silent turn died on httpx's 1000s
    client timeout with a bare ReadTimeout; neither Sweave timer
-   fired). Total budget (`_bounded_turn`, 1800s, hard→soft since
-   slice 3) bounds the turn; stall watchdog (`_send_message`,
+   fired). Fuse (`_bounded_turn` deadline, 4h default since
+   supervisor P3 — pulses govern, the fuse bounds uncertain
+   silence); stall watchdog (`_send_message`,
    300s) bounds wire silence incl. header wait; httpx (1000s) bounds
    the socket. Invariant to preserve: a *silent* turn must die on
    the stall bound with a truthful message, never ride out to
@@ -519,6 +520,7 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    factory + real `answer/skip/force_timeout`). When adding a new
    clear site, route it through the same rule — and wire the
    flagger in the test state, or the test proves nothing.
+8. **Native git inspection is argv-exec with a verb allowlist,
 
 ## Paths & config
 
@@ -538,10 +540,13 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    **config.yaml** edits (the `ConfigReloader` watches `config_path.name`);
    a rules.yaml-only edit does NOT trigger reload — restart (or touch
    config.yaml) after editing rules.yaml. The default lives in two places
-   intentionally: `RoutingConfig.turn_timeout_s` (1800.0, authoritative,
-   validated 0 < v <= 14400) and `JobRunner.DEFAULT_TURN_TIMEOUT` (30*60,
-   the un-configured fallback — test
-   `test_turn_timeout_config_field_default_and_bounds` pins both). The
+    intentionally: `RoutingConfig.turn_timeout_s` (14400.0, authoritative,
+    validated 0 < v <= 14400) and `JobRunner.DEFAULT_TURN_TIMEOUT` (4*3600,
+    the un-configured fallback — test
+    `test_turn_timeout_config_field_default_and_bounds` pins both). Since
+    supervisor P3 the value is a runaway fuse (pulses govern); tune
+    per-project via the routing overlay for patient work, not the
+    global default.
    failure string stays `turn_timeout_exceeded_{timeout}s` so the UI
    failure-taxonomy can parse the `turn_timeout_exceeded_<N>s` substring with
    whatever value is configured.

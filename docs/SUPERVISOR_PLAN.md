@@ -1,9 +1,8 @@
 # Progress supervisor — plan of record
 
-Status: **steps 1–3 built (2026-09-15); steps 4–5 open**.
+Status: **done** (2026-09-15 — steps 0–5 landed; P1–P5 locked).
 Parent behav-spec: `docs/REVIEW_HARDENING_PLAN.md` §5. This file
-is the execution-ready detail: incident, clock inventory,
-rulings, steps, gates.
+remains the incident record + clock inventory + step log.
 
 ## 0. Motivating incident (2026-09-15, verified from trace)
 
@@ -245,7 +244,10 @@ littered a scratch serve). 6 new tests.
 
 ### Step 5 — Fuse retune + close-out (P3, docs)
 
-Multi-hour fuse default, DESIGN/STATE/GOTCHAS, plan status → done.
+DONE 2026-09-15: `turn_timeout_s` default 1800→14400 (4h),
+`DEFAULT_TURN_TIMEOUT` + ChatLoop default aligned; pins moved;
+GOTCHAS timer entries rewritten to fuse semantics; plan → done.
+Takes effect on restart (hot-reload pushes it too).
 
 ## 6. Non-goals
 

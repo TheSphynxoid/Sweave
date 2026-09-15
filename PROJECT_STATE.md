@@ -214,6 +214,10 @@
   `POST /api/activity/tool-started` → `tool.started` trace
   pulses (supervisor counts them, zero code change); live gate
   green on free tier. 6 new tests. Step 5 open (fuse retune).
+- ✅ **Supervisor step 5 (2026-09-15, P3 close-out)** — fuse
+  retune: `turn_timeout_s` default 1800→14400 (4h runaway fuse),
+  runner + chat defaults aligned, pins moved, GOTCHAS rewritten.
+  Supervisor DONE (plan `docs/SUPERVISOR_PLAN.md` → done).
 - ✅ **Failure-cap bootstrap + loop-detector lock (2026-09-15,
   user ruling)** — totals no longer govern health: specialist
   ceiling 150→300 (cost backstop) + cumulative-failure trip

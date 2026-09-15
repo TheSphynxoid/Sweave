@@ -100,11 +100,12 @@ class RoutingConfig(BaseModel):
     max_depth: int = 2
     # Per-turn wall-clock cap (seconds) for a managed specialist /
     # orchestrator agent turn (JobRunner._bounded_turn + ChatLoop).
-    # M1.3 plan default was 900s; raised to 1800s (30 min, ruling
-    # 2026-09-10) because real agentic turns (large worktree edits,
-    # extended thinking) routinely outlive 15 min, and because the
-    # M1.12 shielded turn-cap extension can still stretch the total
-    # (bounded x3) — the base budget should not be the bottleneck.
+    # Supervisor P3 (2026-09-15 ruling): this is the RUNAWAY FUSE,
+    # not the execution bound — pulses govern healthy turns (they
+    # extend the fuse indefinitely) and the fuse bounds uncertain
+    # silence only. Default 4h (was 30 min pre-supervisor, when the
+    # cap itself killed healthy work — incident f774d84b). Per-turn
+    # overlays (`routing.turn_timeout_s` per project) still win.
     #
     # Bound: 0 < turn_timeout_s <= 14_400 (4 hours). Justification:
     # (a) the M1.12 beacon machinery already multiplies the effective
@@ -116,7 +117,7 @@ class RoutingConfig(BaseModel):
     # own practical turn sizes. Anything <= 0 makes wait_for fire
     # instantly (turn can never succeed); anything > 4h is
     # almost certainly a typo (hours entered as seconds).
-    turn_timeout_s: float = 1800.0
+    turn_timeout_s: float = 14400.0
 
     @field_validator("turn_timeout_s")
     @classmethod

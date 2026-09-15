@@ -85,22 +85,24 @@ async def test_turn_timeout_marks_delegation_failed(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_turn_timeout_default_is_30_minutes():
-    """Default turn_timeout = 30 min (1800s) per the 2026-09-10 ruling.
+    """Default turn_timeout = 4h runaway fuse (supervisor P3,
+    2026-09-15 ruling).
 
-    Was 15 min (M1.3 plan); raised because real agentic turns outlive
-    it. Configurable via ``routing.turn_timeout_s``.
+    Was 30 min (2026-09-10 ruling), 15 min before that (M1.3 plan).
+    Pulses govern healthy turns now; the fuse bounds uncertain
+    silence only. Configurable via ``routing.turn_timeout_s``.
     """
-    assert JobRunner.DEFAULT_TURN_TIMEOUT == 1800
+    assert JobRunner.DEFAULT_TURN_TIMEOUT == 4 * 3600
 
 
 @pytest.mark.asyncio
 async def test_turn_timeout_config_field_default_and_bounds():
-    """routing.turn_timeout_s: default 1800s, bounded (0, 14400]."""
+    """routing.turn_timeout_s: default 4h (supervisor P3), bounded (0, 14400]."""
     from pydantic import ValidationError
 
     from sweave.config.schemas import RoutingConfig
 
-    assert RoutingConfig().turn_timeout_s == 1800.0
+    assert RoutingConfig().turn_timeout_s == 14400.0
     with pytest.raises(ValidationError):
         RoutingConfig(turn_timeout_s=0)
     with pytest.raises(ValidationError):

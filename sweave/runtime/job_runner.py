@@ -156,11 +156,11 @@ class JobRunner:
     so the runner just calls them in background tasks.
     """
 
-    # 30 min per turn (ruling 2026-09-10: the M1.3 15-min default killed
-    # real agentic turns too early). Configurable via
+    # Runaway fuse per turn (supervisor P3, 2026-09-15 ruling: was
+    # 30 min execution bound pre-supervisor). Configurable via
     # ``routing.turn_timeout_s`` (sweave/config/schemas.py); hot-reloaded
     # through the ConfigManager reload callback wired in server.py.
-    DEFAULT_TURN_TIMEOUT = 30 * 60
+    DEFAULT_TURN_TIMEOUT = 4 * 3600
     DEFAULT_TURN_RETRIES = 3
 
     # Provider-call retries per engine turn (retries AFTER the first
