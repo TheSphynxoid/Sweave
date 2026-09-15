@@ -930,8 +930,9 @@ runtimes). Every adoption gets recorded here.
 - Model cost map: models.dev metadata (already planned via catalog API); litellm's
   registry as inspiration only
 
-License: **MIT** (verified via GitHub API 2026-09-04) - compatible with our
-Apache-2.0 AND with a future commercial/closed license (MIT is sublicensable).
+License: **MIT** (verified via GitHub API 2026-09-04) - sublicensable,
+so it stays compatible whatever license Sweave itself takes (including
+a possible future commercial/closed track, undecided).
 Reference clone: C:/Users/user/opencode-reference (shallow, read-only, outside
 the repo per the scratch-project convention). Mining priorities: server/sdk
 streaming event shapes (feeds M1.9 trace capture), session-ui interaction

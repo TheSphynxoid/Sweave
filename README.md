@@ -161,7 +161,3 @@ pytest
 ruff check .
 mypy sweave
 ```
-
-## License
-
-Apache-2.0

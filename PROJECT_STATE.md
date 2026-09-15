@@ -9,7 +9,6 @@
   - Spawns **child sessions** (specialist agent runs) for delegated work
 - **Memory** is hierarchical: `global` → `project-{name}` → `session-{id}`
 
-- **License**: Apache 2.0
 - **Python**: 3.11+
 - **Project root**: `C:\Users\user\sweave\`
 - **Git**: `master` on GitHub (`TheSphynxoid/Sweave`, pushed 2026-09-15;
