@@ -17,7 +17,7 @@
 // loop.js's memory-only per-session map (per-run + per-specialist;
 // the journal never persists them).
 
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { promises as fsp, existsSync, statSync } from "node:fs";
 import { join, resolve, relative, sep } from "node:path";
 
@@ -357,6 +357,87 @@ function todoWrite(session, todos) {
   return ok(JSON.stringify(session.todos, null, 2));
 }
 
+// Read-only git inspection (argv-exec, never a shell string).
+const GIT_VERBS = new Set(["log", "show", "status", "diff", "branch", "ls-files", "rev-parse"]);
+// Args starting with "-" are denied except this allowlist (structural,
+// not a parser). Dangerous git flags are denied explicitly below.
+const GIT_FLAG_ALLOW = new Set(["--stat", "--oneline", "-n", "--name-only", "--porcelain"]);
+const GIT_FLAG_DENY_PREFIX = ["--upload-pack", "--exec", "-c", "--config"];
+
+function runGit(cwd, verb, args, signal) {
+  return new Promise((resolvePromise) => {
+    if (!GIT_VERBS.has(verb)) {
+      resolvePromise({ ok: false, error: `rejected: unknown git verb ${JSON.stringify(verb)}` });
+      return;
+    }
+    const rawArgs = Array.isArray(args) ? args : [];
+    for (const a of rawArgs) {
+      if (typeof a !== "string") {
+        resolvePromise({ ok: false, error: "rejected: git args must be strings" });
+        return;
+      }
+      if (GIT_FLAG_DENY_PREFIX.some((d) => a === d || a.startsWith(d + "="))) {
+        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a}` });
+        return;
+      }
+      // Bare "-n"/"--flag value" splits ride as separate argv entries;
+      // "-n20"/"--flag=value" fused forms carry their payload inline.
+      const fused = a.startsWith("-") && !GIT_FLAG_ALLOW.has(a) && !/^(-n\d+|--[A-Za-z-]+=.+)$/.test(a);
+      if (fused) {
+        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a}` });
+        return;
+      }
+    }
+    // Default paging (read->2000 doctrine): `log` pages -n 20
+    // --oneline unless args say otherwise; explicit wins.
+    let finalArgs = [...rawArgs];
+    if (verb === "log") {
+      const hasN = finalArgs.some((a) => /^-n(\d+)?$/.test(a) || a === "--max-count");
+      if (!hasN) finalArgs = ["-n", "20", "--oneline", ...finalArgs];
+    }
+    if (signal && signal.aborted) {
+      resolvePromise({ ok: false, error: "git: aborted before start" });
+      return;
+    }
+    const settle = (value) => resolvePromise(value);
+    let child;
+    try {
+      const spawnOpts = { cwd, windowsHide: true };
+      if (signal && typeof AbortSignal !== "undefined" && signal instanceof AbortSignal) {
+        spawnOpts.signal = signal;
+      }
+      child = spawn("git", [verb, ...finalArgs], spawnOpts);
+    } catch (e) {
+      resolvePromise({ ok: false, error: `git: failed to start (${e && e.message ? e.message : e}) — is git installed and on PATH?` });
+      return;
+    }
+    let out = "";
+    let err = "";
+    const onData = (buf, acc) => {
+      const s = String(buf);
+      return acc + s;
+    };
+    if (child.stdout) child.stdout.on("data", (d) => { out = onData(d, out); });
+    if (child.stderr) child.stderr.on("data", (d) => { err = onData(d, err); });
+    child.on("error", (e) => {
+      const msg = e && e.code === "ENOENT"
+        ? "git: git executable not found — install git and ensure it is on PATH"
+        : `git: failed to start (${e && e.message ? e.message : e})`;
+      settle({ ok: false, error: msg });
+    });
+    child.on("close", (code) => {
+      const text = (out + (err ? `\n[stderr]\n${err}` : "")).trim();
+      if (code === 0) {
+        settle(ok(text));
+      } else if (/not a git repository/i.test(text)) {
+        settle({ ok: false, error: `git: not a git repository (${cwd})` });
+      } else {
+        settle({ ok: false, error: `git: exit ${code}: ${text.slice(-2000)}` });
+      }
+    });
+  });
+}
+
 // OpenAI function schemas. Descriptions stay reference-tight: the
 // orchestrator prompt already teaches the contract (tool-context
 // budget standing rule). The todo discipline rides here because no
@@ -463,6 +544,22 @@ export const EXEC_TOOL_DEFS = [
       required: ["todos"],
     },
   },
+  {
+    name: "git",
+    description:
+      "Read-only git inspection in the turn cwd (log/show/status/diff/branch/ls-files/rev-parse). Defaults: log pages -n 20 --oneline.",
+    parameters: {
+      type: "object",
+      properties: {
+        verb: {
+          type: "string",
+          enum: ["log", "show", "status", "diff", "branch", "ls-files", "rev-parse"],
+        },
+        args: { type: "array", items: { type: "string" } },
+      },
+      required: ["verb"],
+    },
+  },
 ];
 
 /**
@@ -513,6 +610,9 @@ export async function executeTool(name, args, execCtx) {
     case "todo":
       result = await todoWrite(session, a.todos);
       break;
+    case "git":
+      result = await runGit(cwd, a.verb, a.args, signal);
+      break;
     default:
       return fail(`unknown execution tool: ${name}`);
   }
@@ -551,6 +651,8 @@ export function matchTarget(name, args) {
       return { target: String(a.pattern || ""), isPath: false };
     case "bash":
       return { target: String(a.command || ""), isPath: false };
+    case "git":
+      return { target: String(a.verb || ""), isPath: false };
     case "todo":
       return { target: "*", isPath: false };
     default:
@@ -560,5 +662,6 @@ export function matchTarget(name, args) {
 
 /** Permission key actually evaluated (write shares edit's key). */
 export function permissionKey(name) {
-  return name === "write" ? "edit" : name;
+  if (name === "write") return "edit";
+  return name;
 }
