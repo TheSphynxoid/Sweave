@@ -28,7 +28,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
-import { fmt, fmtCost } from "./stats/primitives";
+import { fmt, fmtCost, relativeComputedAt } from "./stats/primitives";
 import {
   ContextHint,
   DayComposition,
@@ -144,7 +144,7 @@ export function StatsPage() {
           className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-1 text-[11px] tabular-nums text-muted-foreground"
           title={new Date(data.generated_at).toLocaleString()}
         >
-          Last {data.window_days} days · computed on read
+          Last {data.window_days} days · computed {relativeComputedAt(data.generated_at)} ago
         </span>
       </header>
 
