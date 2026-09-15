@@ -209,6 +209,11 @@
   death trips `turn_no_progress`, uncertain asks once or waits
   with progress), fuse last. 6 new tests; 1171 pytest green.
   Steps 4–5 open (opencode parity, fuse retune).
+- ✅ **Supervisor step 4 (2026-09-15, ferry-not-gap)** —
+  island plugin ferries `tool.execute.before` to
+  `POST /api/activity/tool-started` → `tool.started` trace
+  pulses (supervisor counts them, zero code change); live gate
+  green on free tier. 6 new tests. Step 5 open (fuse retune).
 - ✅ **Failure-cap bootstrap + loop-detector lock (2026-09-15,
   user ruling)** — totals no longer govern health: specialist
   ceiling 150→300 (cost backstop) + cumulative-failure trip
