@@ -187,8 +187,8 @@ SPECIALIST_AGENT_NAME = "sweave-specialist"
 # keeps its default until one proves it hangs headless (then it
 # gets its own entry + comment, never a wildcard).
 # M1.12 step 4 FLIP (2026-09-10): scoped now, asked-handled-by-Sweave.
-# Every outside-cwd read NOT under the rendered roots (cwd subfolders,
-# the project's worktrees, ~/.sweave, + the human-declared project
+# Every outside-cwd read NOT under the rendered roots (the project dir
+# itself, its worktrees, ~/.sweave, + the human-declared project
 # roots) resolves to "ask" and reaches the human via the runtime's
 # blocking question (M1.11 machinery, no-timeout). The scoped roots
 # pass silently; the rest of the ask-default land keeps its default
@@ -201,16 +201,24 @@ _BUILTIN_ROOT_MARKER = "~/.sweave"
 def _root_globs(project_dir: Path, permission_roots: Any) -> list[Path]:
     """Expand the scoped-root list (built-ins + user-declared).
 
-    Built-ins (ruling 2): the project's worktree base (``.
-    worktrees/**`` under the project dir -- covers specialist
-    worktrees too) and the global ``~/.sweave`` (required ruling:
-    the hung reads were global ``agents.yaml``). User roots
-    (human-declared only) expand ``~`` and empty entries are
-    dropped with a warning; duplicates collapse.
+    Built-ins (ruling 2, extended 2026-09-15 fix A): the project dir
+    itself (a project-scoped agent reading its own project's files
+    never asks — the missing root behind the reviewer per-file
+    interrogation), the project's worktree base (``.worktrees/**``
+    under the project dir -- covers specialist worktrees too) and
+    the global ``~/.sweave`` (required ruling: the hung reads were
+    global ``agents.yaml``). User roots (human-declared only) expand
+    ``~`` and empty entries are dropped with a warning; duplicates
+    collapse.
     """
     roots: list[Path] = []
+    if project_dir is not None:
+        try:
+            roots.append(Path(project_dir).resolve())
+        except OSError:
+            roots.append(Path(project_dir))
+        roots.append(Path(project_dir) / ".worktrees")
     roots.append(Path(os.path.expanduser(_BUILTIN_ROOT_MARKER)))
-    roots.append(Path(project_dir) / ".worktrees")
     seen: set[str] = set()
     if isinstance(permission_roots, (list, tuple)):
         for raw in permission_roots:
@@ -248,7 +256,11 @@ def render_external_directory(
         # with path.join (backslashes on Windows) and rules are matched
         # pattern-to-pattern with last-match-wins — the rule must share
         # the checked pattern's separator style to match deterministically.
+        # The bare base is a rule too (2026-09-15: reading the allowed
+        # dir ITSELF never matched `base/*` — the glob needs the trailing
+        # separator, so even `{project}/.worktrees` asked).
         base = str(root)
+        pattern_map[base] = "allow"
         pattern_map[base + f"{os.sep}*"] = "allow"
         pattern_map[base + f"{os.sep}**"] = "allow"
     return pattern_map

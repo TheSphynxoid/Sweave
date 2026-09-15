@@ -16,7 +16,7 @@
 // direction; opencode routes this through a permission ask).
 
 import { newMessageId } from "./sessions.js";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, sep, dirname, relative } from "node:path";
 import {
   providerHttpError,
   withProviderRetry,
@@ -275,9 +275,59 @@ function newCallId() {
 }
 
 function approvalMatches(approvals, permission, target) {
-  return (approvals || []).some(
-    (a) => a.permission === permission && (a.pattern === target || a.pattern === "*")
-  );
+  return (approvals || []).some((a) => {
+    if (!a || a.permission !== permission) return false;
+    // Legacy exact grants (pre-folder semantics) + the "*" escape.
+    if (a.pattern === "*") return true;
+    if (typeof a.pattern === "string" && a.pattern && a.pattern === target) {
+      return true;
+    }
+    // Folder grants (2026-09-15 ruling): an always-allow covers the
+    // asked path's containing folder and everything under it.
+    if (typeof a.folder === "string" && a.folder && folderCovers(a.folder, target)) {
+      return true;
+    }
+    return false;
+  });
+}
+
+// True when `target` is `folder` itself or descends from it.
+// Separator-normalized, case-insensitive on Windows (opencode parity:
+// the engine evaluates what the map means, never policy itself).
+function folderCovers(folder, target) {
+  const norm = (p) => {
+    const s = String(p || "").replace(/\//g, sep).replace(new RegExp(`\\${sep}+$`), "");
+    return process.platform === "win32" ? s.toLowerCase() : s;
+  };
+  const f = norm(folder);
+  const t = norm(target);
+  if (!f || !t) return false;
+  return t === f || t.startsWith(f + sep);
+}
+
+// True when `p` sits inside `root` (or is root). Used to bound an
+// always-grant to the project subtree — outside-project targets stay
+// exact-path (fail closed).
+function insideRoot(root, p) {
+  if (!root || !p) return false;
+  const rel = relative(String(root), String(p));
+  return rel !== "" ? !rel.startsWith("..") && resolvePath(rel) !== rel : true;
+}
+
+// Always-grants live HERE, never on the session object: per-run +
+// per-specialist by construction (memory only — a restart wipes the
+// map, and each engine session id has its own list). The session
+// journal (sessions.json) must never see them; SessionStore scrubs
+// legacy `approvals` arrays on load for the same guarantee.
+const sessionApprovals = new Map();
+
+function approvalsFor(sessionId) {
+  let list = sessionApprovals.get(sessionId);
+  if (!list) {
+    list = [];
+    sessionApprovals.set(sessionId, list);
+  }
+  return list;
 }
 
 /**
@@ -310,26 +360,55 @@ export function extractReasoningDelta(delta) {
 }
 
 async function resolveAsk(execCtx, gate, toolName, callId, input) {
-  const { session, saveSession, emit, sweaveCtx, isAborted } = execCtx;
-  if (approvalMatches(session.approvals, gate.permission, gate.patterns[0])) {
+  const { session, emit, sweaveCtx, isAborted } = execCtx;
+  if (approvalMatches(approvalsFor(session.id), gate.permission, gate.patterns[0])) {
     return "once";
   }
   const requestId = `eng_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6)}`;
   emit({ event: "permission.asked", request_id: requestId, permission: gate.permission, patterns: gate.patterns, tool: toolName, call_id: callId, input });
   const delegationId = sweaveCtx.delegationId;
   if (!delegationId) return "reject"; // no delegation, no human: fail closed
+  // Folder grant (2026-09-15 ruling): "always" on a path-keyed
+  // external_directory ask covers the asked path's containing folder
+  // and everything under it — per-file grants are too trashy.
+  // Bounded to the project subtree; outside-project targets stay
+  // exact-path (fail closed). Non-path permissions keep exact grants.
+  let folderGrant = null;
+  if (gate.permission === "external_directory" && gate.patterns[0]) {
+    const folder = dirname(String(gate.patterns[0]));
+    if (sweaveCtx.projectDir && insideRoot(sweaveCtx.projectDir, folder)) {
+      folderGrant = folder;
+    }
+  }
   const question =
     `Engine asks ${gate.permission} for ${gate.patterns.join(", ")}` +
     (toolName === "bash" ? ` (command: ${JSON.stringify(input.command || "").slice(0, 300)})` : "") +
+    (folderGrant
+      ? `. 'Always allow' covers ${folderGrant} and everything under it`
+      : "") +
     ". Answer 'allow once' / 'always allow' / 'deny' (or skip = deny).";
   const response = await callEnginePermission(
     { delegationId, question, options: ["allow once", "always allow", "deny"], metadata: { requestId, permission: gate.permission, patterns: gate.patterns, tool: toolName } },
     isAborted,
     sweaveCtx.signal
   );
-  if (response === "always") {
-    session.approvals = [...(session.approvals || []), { permission: gate.permission, pattern: gate.patterns[0] }];
-    saveSession();
+  // NOTE: compare the MAPPED answer, not the raw string — the human
+  // picks the multi-word "always allow" option, which never `===`
+  // "always" (the pre-folder bug that made always-allow store
+  // nothing at all, for any permission).
+  if (mapPermissionResponse(response) === "always") {
+    // Per-run + per-specialist (2026-09-15 ruling): grants live in
+    // the memory-only map keyed by engine session id — never on the
+    // session object (the journal must not persist them; a restart
+    // wipes them and one specialist's grant never leaks to another).
+    const list = approvalsFor(session.id);
+    if (folderGrant) {
+      if (!list.some((a) => a.permission === gate.permission && a.folder === folderGrant)) {
+        list.push({ permission: gate.permission, folder: folderGrant });
+      }
+    } else if (!list.some((a) => a.permission === gate.permission && a.pattern === gate.patterns[0])) {
+      list.push({ permission: gate.permission, pattern: gate.patterns[0] });
+    }
   }
   return response;
 }
@@ -356,6 +435,9 @@ export async function runLoop(loopCtx) {
   const offeredSweave = new Set(sweave.map((d) => d.name));
   const sweaveCtx = {
     delegationId: body.delegation_id || null,
+    // Project root for bounding always-grants (additive wire field;
+    // absent keeps the old exact-path behavior — fail closed).
+    projectDir: body.project_dir || null,
     isAborted,
     signal,
   };

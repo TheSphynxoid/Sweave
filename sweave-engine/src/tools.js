@@ -13,8 +13,9 @@
 //
 // ask -> ctx.askPermission({ permission, patterns, detail }) which
 // the loop implements via SSE permission.asked + the Sweave
-// POST /api/engine/permission round-trip. Session "always" approvals
-// live on the engine session (opencode approved-list parity).
+// POST /api/engine/permission round-trip. "Always" grants live in
+// loop.js's memory-only per-session map (per-run + per-specialist;
+// the journal never persists them).
 
 import { exec } from "node:child_process";
 import { promises as fsp, existsSync, statSync } from "node:fs";

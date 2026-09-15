@@ -212,6 +212,13 @@ class SweaveEngineProcess:
             delegation_id = message.metadata.get("delegation_id")
             if isinstance(delegation_id, str) and delegation_id:
                 body["delegation_id"] = delegation_id
+            # Project root for bounding always-grants to the project
+            # subtree (2026-09-15 ruling). Absent keeps the old
+            # exact-path behavior — fail closed. Tolerated-and-ignored
+            # by older sidecars (forward compatibility).
+            project_dir = message.metadata.get("project_dir")
+            if isinstance(project_dir, str) and project_dir:
+                body["project_dir"] = project_dir
             role = message.metadata.get("role")
             if role in ("orchestrator", "specialist"):
                 body["role"] = role

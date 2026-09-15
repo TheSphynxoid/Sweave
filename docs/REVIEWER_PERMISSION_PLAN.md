@@ -1,7 +1,14 @@
 # Reviewer permission asks — plan of record (2026-09-15)
 
-Status: ruled, awaiting implementation (deferred: live session working,
-fix needs a server restart — Python map render + sidecar gate).
+Status: IMPLEMENTED 2026-09-15 (commit: this change; needs server
+restart to activate — Python map render + sidecar gate are both
+resident). Live-verified pre-commit: folder grants + fail-closed
+exact grants + per-specialist isolation on the real sidecar
+(`test_always_allow_grants_folder_per_run_per_specialist`); journal
+scrub verified in-memory + on-disk via node. Extra find during
+implementation: the raw "always allow" response never `===` "always",
+so always-allow stored NOTHING for any permission — fixed by
+comparing the mapped answer.
 
 ## Problem (observed 2026-09-15, trace `00d05484c6b9`)
 Worktree-isolated reviewer asked `external_directory` for every

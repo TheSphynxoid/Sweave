@@ -90,8 +90,14 @@ function validateRun(body) {
   // delegation_id links sweave-tool calls (defer/escalate/ask) to the
   // owning delegation; role ("orchestrator"|"specialist", default
   // specialist = least privilege) gates which sweave tools are offered.
+  // project_dir bounds always-grants to the project subtree (2026-09-15
+  // ruling; absent keeps the old exact-path behavior — fail closed).
+  // Unknown keys stay tolerated-and-ignored (forward compatibility).
   if (body.delegation_id !== undefined && typeof body.delegation_id !== "string") {
     return "bad:delegation_id (must be a string when present)";
+  }
+  if (body.project_dir !== undefined && typeof body.project_dir !== "string") {
+    return "bad:project_dir (must be a string when present)";
   }
   if (body.role !== undefined && body.role !== "orchestrator" && body.role !== "specialist") {
     return "bad:role (must be orchestrator|specialist when present)";

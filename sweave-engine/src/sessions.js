@@ -26,7 +26,20 @@ export class SessionStore {
       mkdirSync(dataDir, { recursive: true });
       if (existsSync(this.file)) {
         const raw = JSON.parse(readFileSync(this.file, "utf8"));
-        for (const [id, s] of Object.entries(raw)) this.sessions.set(id, s);
+        let scrubbed = false;
+        for (const [id, s] of Object.entries(raw)) {
+          // Always-grants are memory-only (per-run ruling 2026-09-15):
+          // they live in loop.js's sessionApprovals map, never here.
+          // Scrub legacy `approvals` arrays so a restart wipes them
+          // even for journals written before the ruling.
+          if (s && typeof s === "object" && "approvals" in s) {
+            delete s.approvals;
+            scrubbed = true;
+          }
+          this.sessions.set(id, s);
+        }
+        // Persist the scrub so the stale bytes don't linger either.
+        if (scrubbed) this.save();
       }
     } catch {
       // Corrupt journal degrades to empty (sessions recreate on
@@ -52,6 +65,8 @@ export class SessionStore {
       s = { id, messages: [], revert: null, created: Date.now() };
       this.sessions.set(id, s);
       this.save();
+    } else if (s && typeof s === "object" && "approvals" in s) {
+      delete s.approvals;
     }
     return s;
   }

@@ -502,6 +502,93 @@ async def test_external_directory_default_asks_and_deny_blocks(sidecar, worktree
     assert trace.of("tool.failed") and STUB["permissions"] == []
 
 
+@needs_node
+async def test_always_allow_grants_folder_per_run_per_specialist(
+    sidecar, tmp_path
+):
+    """Folder grants (2026-09-15 ruling): "always" on a path-keyed
+    external_directory ask covers the containing folder + subfolders
+    (per-file grants are too trashy); outside-project targets stay
+    exact-path (fail closed); grants never cross engine sessions."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    project = tmp_path / "proj"
+    wt = project / "wt"
+    shared = project / "shared"
+    (shared / "sub").mkdir(parents=True)
+    (project / "elsewhere").mkdir(parents=True)
+    (tmp_path / "far").mkdir(exist_ok=True)
+    wt.mkdir(parents=True)
+    bodies = {
+        shared / "a.txt": "A\n",
+        shared / "b.txt": "B\n",
+        shared / "sub" / "c.txt": "C\n",
+        project / "elsewhere" / "d.txt": "D\n",
+        tmp_path / "far" / "f.txt": "F\n",
+        tmp_path / "far" / "g.txt": "G\n",
+    }
+    for path, text in bodies.items():
+        path.write_text(text, encoding="utf-8")
+    _reset_stub()
+    STUB["permission_status"] = {"status": "answered", "response": "always allow"}
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": str(shared / "a.txt")})]},
+        {"calls": [_call("read", {"filePath": str(shared / "b.txt")})]},
+        {"calls": [_call("read", {"filePath": str(shared / "sub" / "c.txt")})]},
+        {"calls": [_call("read", {"filePath": str(project / "elsewhere" / "d.txt")})]},
+        {"calls": [_call("read", {"filePath": str(tmp_path / "far" / "f.txt")})]},
+        {"calls": [_call("read", {"filePath": str(tmp_path / "far" / "g.txt")})]},
+        {"text": "FOLDER DONE"},
+    ]
+    proc = await SweaveEngineHarness().spawn(_spec(wt, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message(
+            "read the files",
+            metadata={
+                "permission_map": {"external_directory": "ask"},
+                "project_dir": str(project),
+                "delegation_id": "dlg-folder-1",
+            },
+        ),
+        trace=trace,
+    )
+    assert result.success and result.output == "FOLDER DONE"
+    asked = trace.of("permission.asked")
+    # a.txt asks (folder grant shared/); b.txt + sub/c.txt ride it.
+    # d.txt asks (folder grant elsewhere/). f.txt asks (exact grant:
+    # outside the project) and g.txt asks again.
+    assert [a["patterns"] for a in asked] == [
+        [str(shared / "a.txt")],
+        [str(project / "elsewhere" / "d.txt")],
+        [str(tmp_path / "far" / "f.txt")],
+        [str(tmp_path / "far" / "g.txt")],
+    ]
+    # The ask card states the folder scope honestly.
+    assert "and everything under it" in STUB["permissions"][0]["question"]
+    assert len(STUB["permissions"]) == 4
+    assert len(trace.of("tool.completed")) == 6
+    # Per-specialist isolation: a second engine session re-asks for a
+    # file the first session was granted.
+    proc2 = await SweaveEngineHarness().spawn(_spec(wt, tools=["read"]))
+    _reset_stub()
+    STUB["permission_status"] = {"status": "answered", "response": "always allow"}
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": str(shared / "b.txt")})]},
+        {"text": "ISOLATED"},
+    ]
+    trace2 = _FakeTrace()
+    result2 = await proc2.send(
+        _message(
+            "read again",
+            metadata={"project_dir": str(project), "delegation_id": "dlg-folder-2"},
+        ),
+        trace=trace2,
+    )
+    assert result2.success and result2.output == "ISOLATED"
+    assert len(trace2.of("permission.asked")) == 1
+
+
 # ---------------------------------------------------------------------------
 # Sweave-native tools (identical contract strings)
 # ---------------------------------------------------------------------------

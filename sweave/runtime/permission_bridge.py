@@ -189,8 +189,9 @@ def scope_decision(
 
     roots: list[Path] = []
     if project_dir is not None:
+        # _root_globs already carries the resolved project dir itself
+        # (fix A) plus built-ins — one source for the root list.
         roots.extend(_root_globs(Path(project_dir), permission_roots))
-        roots.append(Path(project_dir))
     seen: set[str] = set()
     unique: list[Path] = []
     for root in roots:

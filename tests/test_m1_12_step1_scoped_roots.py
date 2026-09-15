@@ -57,6 +57,26 @@ def test_render_scoped_order_and_builtins(tmp_path, isolated_home):
     assert rendered[f"{str(home)}{os.sep}**"] == "allow"
 
 
+def test_render_project_root_and_bare_dirs_are_silent(tmp_path, isolated_home):
+    """Fix A (2026-09-15): the project dir itself is an allow-root
+    (a project-scoped agent reading its own files never asks), and
+    every root also allows its bare self — reading an allowed dir
+    itself never matched `base/*` (the glob needs the trailing
+    separator), so even `{project}/.worktrees` asked."""
+    proj = tmp_path / "projA"
+    proj.mkdir()
+    rendered = render_external_directory(proj, [])
+    resolved = str(proj.resolve())
+    # Project root: bare + /* + /**, all allow.
+    assert rendered[resolved] == "allow"
+    assert rendered[f"{resolved}{os.sep}*"] == "allow"
+    assert rendered[f"{resolved}{os.sep}**"] == "allow"
+    # Bare built-in dirs are rules too (previously only their
+    # children matched).
+    assert rendered[str(proj / ".worktrees")] == "allow"
+    assert rendered[str(isolated_home / ".sweave")] == "allow"
+
+
 def test_render_user_roots_expand_and_dedupe(tmp_path, isolated_home):
     proj = tmp_path / "proj2"
     proj.mkdir()

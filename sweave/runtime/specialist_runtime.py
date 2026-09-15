@@ -895,6 +895,9 @@ class SpecialistRuntime:
                 metadata={
                     "permission_map": permission_map,
                     "delegation_id": delegation.delegation_id,
+                    # Project root for bounding always-grants
+                    # (2026-09-15 ruling; absent = exact-path grants).
+                    **({"project_dir": str(scope_dir)} if scope_dir else {}),
                     "role": (
                         ROLE_ORCHESTRATOR
                         if specialist.is_orchestrator
