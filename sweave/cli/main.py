@@ -239,6 +239,7 @@ def _clean_worktrees(manager: WorktreeManager):
     for wt in worktrees:
         # In production, check if PR is merged
         manager.remove_worktree(wt.task_id, wt.agent_name, force=True)
+    manager.prune()
     console.print(f"[green]Cleaned {len(worktrees)} worktrees[/green]")
 
 

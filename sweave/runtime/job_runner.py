@@ -401,7 +401,8 @@ class JobRunner:
         own trees. Only the creator retires a tree: an ``inherit``
         child or treeless run records ``worktree_owned=False`` and is
         skipped here — removing a shared tree would pull the worktree
-        out from under its owner. Never raises.
+        out from under its owner. Stray WIP is committed first (the
+        branch keeps it) so dirty trees still retire. Never raises.
         """
         try:
             if delegation.kind == "chat":
@@ -426,6 +427,28 @@ class JobRunner:
             manager = self._worktree_manager_for(
                 project_dir, delegation.project_name
             )
+            # Review-hardening step 4 (2026-09-15): commit stray WIP
+            # first — a plain remove refuses dirty trees (the
+            # ``a5884977`` leak). The branch is kept by design, so
+            # the commit preserves the work. Never force-removes
+            # uncommitted work; a commit failure degrades to the old
+            # remove-and-trace behavior.
+            committed = False
+            committer = getattr(manager, "async_commit_wip", None)
+            if callable(committer):
+                try:
+                    committed = bool(
+                        await committer(delegation.task_id, delegation.agent)
+                    )
+                except Exception:  # noqa: BLE001
+                    committed = False
+            try:
+                trace.append(
+                    "worktree_wip_committed",
+                    {"worktree": str(tree), "committed": committed},
+                )
+            except Exception:  # noqa: BLE001
+                pass
             removed = await manager.async_remove_worktree(
                 delegation.task_id, delegation.agent
             )

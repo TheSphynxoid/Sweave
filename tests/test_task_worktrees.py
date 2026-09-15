@@ -100,6 +100,33 @@ async def test_review_keeps_tree_done_retires_it(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_settle_commits_wip_before_remove(tmp_path: Path):
+    """Settle attempts a WIP commit before removing (dirty trees retire).
+
+    Review-hardening step 4 (2026-09-15): the ``a5884977`` leak was
+    a dirty tree surviving settle because plain ``remove`` refuses
+    dirty trees.
+    """
+    from sweave.runtime.trace_log import TraceLog
+
+    factory, calls = _wt_calls_factory(tmp_path / "wt-root")
+    run_calls: list = []
+    runner = _runner(tmp_path, run_calls, worktree_manager_factory=factory)
+    d = await runner.submit(agent="backend", task="t", project_name="p1")
+    await runner.wait(d.delegation_id, timeout=10)
+    store = await runner.stores.for_project(tmp_path)
+    rec = store.get(d.delegation_id)
+    assert rec is not None and rec.status == "review"
+    await runner._transition(
+        rec, store, TraceLog(d.delegation_id, base_dir=tmp_path), "done"
+    )
+    assert calls["committed"] == [(rec.task_id, "backend")]
+    assert calls["removed"] == [(rec.task_id, "backend")]
+    # Commit precedes removal.
+    assert calls["committed"][0] == calls["removed"][0]
+
+
+@pytest.mark.asyncio
 async def test_failed_settle_retires_tree(tmp_path: Path):
     from sweave.runtime.trace_log import TraceLog
 
@@ -195,3 +222,51 @@ async def test_real_git_branch_created_tree_removed_branch_kept(tmp_path: Path):
     assert not tree.exists()
     # Branch retained for forensics / future PR flow.
     _git(["rev-parse", "--verify", f"refs/heads/{terminal.branch}"], repo)
+
+
+@pytest.mark.asyncio
+async def test_real_git_dirty_tree_committed_then_removed(tmp_path: Path):
+    """Dirty tree at settle: WIP is committed to the kept branch, then
+    the tree retires (the ``a5884977`` leak class, 2026-09-15)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-b", "main"], repo)
+    _git(["config", "user.email", "t@t"], repo)
+    _git(["config", "user.name", "t"], repo)
+    (repo / "f.txt").write_text("base", encoding="utf-8")
+    _git(["add", "."], repo)
+    _git(["commit", "-m", "base"], repo)
+
+    run_calls: list = []
+    runner = _runner(tmp_path, run_calls, worktree_manager_factory=None)
+    runner.project_dir_resolver = lambda name: repo  # type: ignore[assignment]
+    d = await runner.submit(agent="backend", task="t", project_name="p1")
+    terminal = await runner.wait(d.delegation_id, timeout=10)
+    assert terminal is not None and terminal.status == "review"
+    tree = Path(terminal.worktree_path or "")
+    assert tree.exists()
+    # Simulate specialist output left uncommitted at settle.
+    (tree / "wip.txt").write_text("uncommitted work", encoding="utf-8")
+
+    from sweave.runtime.trace_log import TraceLog
+
+    store = await runner.stores.for_project(repo)
+    rec = store.get(d.delegation_id)
+    assert rec is not None
+    await runner._transition(
+        rec, store, TraceLog(d.delegation_id, base_dir=tmp_path), "done"
+    )
+    assert not tree.exists()
+    # The work survives on the kept branch (no silent loss).
+    from sweave.platform import run_no_window
+
+    log = run_no_window(
+        ["git", "log", terminal.branch or "", "--oneline"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout
+    assert "sweave" in log.lower()
+    show = run_no_window(
+        ["git", "show", f"{terminal.branch}:wip.txt"],
+        cwd=str(repo), capture_output=True, text=True, check=True,
+    ).stdout
+    assert "uncommitted work" in show

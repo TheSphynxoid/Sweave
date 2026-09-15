@@ -182,7 +182,8 @@ def fake_worktree_manager_factory(root: Path | None = None):
     Returns ``(factory, calls)`` where ``factory(base, git_dir)`` is
     a ``JobRunner(worktree_manager_factory=...)`` value creating real
     DIRS (never git worktrees) and ``calls`` records
-    ``{"created": [(task_id, agent, path)], "removed": [...]}``.
+    ``{"created": [(task_id, agent, path)], "committed": [...],
+    "removed": [...]}``.
     ``root`` defaults to a pid-scoped system-temp dir (task ids are
     uuid-unique, so sharing across tests is collision-free).
     Worktree isolation tests that need REAL git init their own repos;
@@ -195,7 +196,7 @@ def fake_worktree_manager_factory(root: Path | None = None):
         root = Path(tempfile.gettempdir()) / f"sweave-test-wts-{os.getpid()}"
     from types import SimpleNamespace
 
-    calls: dict[str, list] = {"created": [], "removed": []}
+    calls: dict[str, list] = {"created": [], "removed": [], "committed": []}
 
     def _factory(base: str, git_dir: Path):
         class _FakeWorktrees:
@@ -206,6 +207,12 @@ def fake_worktree_manager_factory(root: Path | None = None):
                 return SimpleNamespace(
                     path=path, branch=f"sweave/{task_id}/{agent}"
                 )
+
+            async def async_commit_wip(
+                self, task_id: str, agent: str, message: str = "sweave: settle WIP"
+            ) -> bool:
+                calls["committed"].append((task_id, agent))
+                return True
 
             async def async_remove_worktree(
                 self, task_id: str, agent: str, force: bool = False

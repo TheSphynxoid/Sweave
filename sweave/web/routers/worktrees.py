@@ -33,8 +33,9 @@ async def clean_worktrees(state: AppState = Depends(get_state)):
     worktrees = state.worktree_manager.list_worktrees()
     for wt in worktrees:
         state.worktree_manager.remove_worktree(wt.task_id, wt.agent_name, force=True)
-    await state.publish("worktrees_cleaned", {"count": len(worktrees)})
-    return {"success": True, "cleaned": len(worktrees)}
+    pruned = state.worktree_manager.prune()
+    await state.publish("worktrees_cleaned", {"count": len(worktrees), "pruned": pruned})
+    return {"success": True, "cleaned": len(worktrees), "pruned": pruned}
 
 
 @router.delete("/api/worktrees/{task_id}/{agent_name}")

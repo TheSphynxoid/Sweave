@@ -158,6 +158,53 @@ class WorktreeManager:
             return True
         except subprocess.CalledProcessError:
             return False
+
+    def commit_wip(
+        self, task_id: str, agent_name: str, message: str = "sweave: settle WIP"
+    ) -> bool:
+        """Best-effort commit of stray WIP so a dirty tree can retire.
+
+        Review-hardening step 4 (2026-09-15): a plain ``worktree
+        remove`` refuses dirty trees (the ``a5884977`` leak — a
+        ``failed`` delegation whose tree survived settle). The branch
+        is kept by design, so committing first preserves the work
+        instead of stranding it. Clean trees return True immediately;
+        anything failing returns False (the caller falls back to
+        today's remove-and-trace behavior). Never raises; never
+        force-removes uncommitted work.
+        """
+        worktree_path = self.base_path / f"{task_id}-{agent_name}"
+
+        if not worktree_path.exists():
+            return False
+
+        try:
+            status = self._run_git(["status", "--porcelain"], cwd=worktree_path)
+            if not status.stdout.strip():
+                return True
+            self._run_git(["add", "-A"], cwd=worktree_path)
+            self._run_git(
+                [
+                    "-c", "user.name=sweave",
+                    "-c", "user.email=sweave@localhost",
+                    "commit", "-m", message,
+                ],
+                cwd=worktree_path,
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def prune(self) -> bool:
+        """Best-effort ``git worktree prune`` (drop stale registrations).
+
+        Never raises; crash-orphaned dirs still need manual removal.
+        """
+        try:
+            self._run_git(["worktree", "prune"])
+            return True
+        except subprocess.CalledProcessError:
+            return False
     
     def list_worktrees(self) -> list[WorktreeInfo]:
         """List all sweave worktrees."""
@@ -344,6 +391,16 @@ class WorktreeManager:
     async def async_remove_worktree(self, task_id: str, agent_name: str, force: bool = False) -> bool:
         """Async wrapper for remove_worktree."""
         return await asyncio.to_thread(self.remove_worktree, task_id, agent_name, force)
+
+    async def async_commit_wip(
+        self, task_id: str, agent_name: str, message: str = "sweave: settle WIP"
+    ) -> bool:
+        """Async wrapper for commit_wip."""
+        return await asyncio.to_thread(self.commit_wip, task_id, agent_name, message)
+
+    async def async_prune(self) -> bool:
+        """Async wrapper for prune."""
+        return await asyncio.to_thread(self.prune)
     
     async def async_create_pr(
         self,

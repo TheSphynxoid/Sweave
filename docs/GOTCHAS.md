@@ -594,15 +594,19 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    (`WorktreeManager(base, git_dir=project)`), because
    `create_worktree` inherits the process CWD otherwise and a
    multi-project server would plant trees in the wrong repo.
-   Creation failure fails the delegation loud (non-git projects
-   must init — no silent in-tree fallback). Removal centralizes in
-   `JobRunner._transition` on done/failed (normal, timeout, cancel)
-   plus the promote endpoint; crash-recovery (`recover_interrupted`,
-   boot sweep) does NOT remove — trees orphaned by a crash need
-   manual `git worktree prune` + dir removal (a sweep is future
-   work). Tests driving `_run` inject the conftest fake lifecycle
-   (`fake_worktree_manager_factory`); the one real-git proof lives
-    in `test_task_worktrees.py`.
+    Creation failure fails the delegation loud (non-git projects
+    must init — no silent in-tree fallback). Removal centralizes in
+    `JobRunner._transition` on done/failed (normal, timeout, cancel)
+    plus the promote endpoint; settle commits stray WIP first
+    (`commit_wip`, step 4 2026-09-15 — plain `remove` refuses dirty
+    trees, the `a5884977` leak; the kept branch preserves the work;
+    never force-remove uncommitted work); crash-recovery
+    (`recover_interrupted`, boot sweep) does NOT remove — trees
+    orphaned by a crash need manual `git worktree prune` + dir
+    removal (a sweep is future work). Tests driving `_run` inject
+    the conftest fake lifecycle (`fake_worktree_manager_factory`,
+    now with `async_commit_wip`); the real-git proofs (clean +
+    dirty settle) live in `test_task_worktrees.py`.
 
 7. **Agent scratch goes to the OS temp dir, never repo root**
     (2026-09-15: `test_out*.txt`, `test_full.txt`, `theme_fail.txt`
