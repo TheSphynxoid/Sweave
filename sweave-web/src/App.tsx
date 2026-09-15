@@ -24,7 +24,6 @@ import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { ChatPage } from "@/pages/Chat";
 import { ChildrenPage } from "@/pages/Children";
 import { PlanPage } from "@/pages/Plan";
-import { StatsPage } from "@/pages/Stats";
 import { MemoryPage } from "@/pages/Memory";
 import { AgentsPage } from "@/pages/Agents";
 import { SettingsPage } from "@/pages/Settings";
@@ -32,7 +31,14 @@ import { DelegationDetailPage } from "@/pages/DelegationDetail";
 import { NotFoundPage } from "@/pages/NotFound";
 import { ThemeProvider } from "@/lib/theme/ThemeProvider";
 import { ChatLab } from "@/dev/chat-lab/ChatLab";
+import { lazy, Suspense } from "react";
 import "@/styles/globals.css";
+
+// Route-level split: the Stats surface pulls in recharts, so it is
+// lazy-loaded (the chart lib never enters the global bundle).
+const StatsPage = lazy(() =>
+  import("@/pages/Stats").then((m) => ({ default: m.StatsPage })),
+);
 
 export default function App() {
   return (
@@ -88,7 +94,9 @@ export default function App() {
                     path="stats"
                     element={
                       <RouteErrorBoundary label="Usage">
-                        <StatsPage />
+                        <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading usage…</div>}>
+                          <StatsPage />
+                        </Suspense>
                       </RouteErrorBoundary>
                     }
                   />
