@@ -259,6 +259,9 @@ class _StubSpecialistRuntime:
         permission_roots=None,
         max_retries=None,
         project_harness_default=None,
+        # Supervisor step 1: per-turn budget forwarded into engine
+        # metadata (opencode path ignores it; the double too).
+        turn_timeout=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"

@@ -100,6 +100,21 @@ def build_review_request(delegation: Delegation) -> dict[str, Any]:
 #: error instead of the ``turn_timeout_exceeded_*`` text.
 USER_STOPPED = "user_stopped"
 
+#: Poll cadence (seconds) while awaiting a filed soft-limit verdict
+#: on a dead turn (supervisor step 2). Holds are unbounded by
+#: ruling (no-timeout questions); cancellation propagates.
+SOFT_VERDICT_POLL_SECONDS = 2.0
+
+#: Pulse events: trace evidence a turn is alive (supervisor step 2).
+#: Starts/completions both count — a started tool is forward motion
+#: even before it lands; doom/identical-call noise still advances
+#: the model, so it counts too (stuckness is the iteration layer's
+#: job, not the pulse layer's).
+PULSE_EVENTS = frozenset({
+    "tool.started", "tool.completed", "tool.failed",
+    "reasoning", "tokens_used",
+})
+
 #: Options on the soft-limit question (existing inline Question card
 #: renders them as buttons; free text also maps: keep iff it starts
 #: with "keep").
@@ -1034,6 +1049,122 @@ class JobRunner:
             None,
         )
 
+    def _last_pulse(self, trace: "TraceLog") -> "tuple[float, str] | None":
+        """Age (seconds) + description of the latest pulse, or None.
+
+        Supervisor step 2: scans the trace tail for PULSE_EVENTS
+        with ISO `ts` stamps. Best-effort (missing/unreadable trace,
+        unparseable stamps → None = fail fast as before). Caps the
+        read at the tail so long turns don't pay full-file scans.
+        """
+        try:
+            path = getattr(trace, "path", None)
+            if path is None:
+                return None
+            lines = Path(path).read_text(encoding="utf-8").splitlines()
+        except Exception:  # noqa: BLE001
+            return None
+        best: tuple[float, str] | None = None
+        now = datetime.now()
+        for line in lines[-5000:]:
+            try:
+                import json as _json
+
+                ev = _json.loads(line)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(ev, dict) or ev.get("event") not in PULSE_EVENTS:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(ev.get("ts", "")))
+            except ValueError:
+                continue
+            age = (now - ts).total_seconds()
+            if age < 0:
+                continue
+            desc = str(ev.get("event", ""))
+            state = ev.get("state") or {}
+            tool = ev.get("tool") or state.get("tool")
+            if tool:
+                desc = f"{ev.get('event')} {tool}"
+            text = str(ev.get("text") or "")[:80]
+            if text and ev.get("event") == "reasoning":
+                desc = f"reasoning: {text}"
+            if best is None or age < best[0]:
+                best = (age, desc)
+        return best
+
+    async def _ask_pulsed_rerun(
+        self,
+        delegation: Delegation,
+        trace: "TraceLog",
+        failure_error: str,
+        last_pulse_age: float,
+        last_pulse_desc: str,
+    ) -> bool:
+        """File the keep/stop question for a pulsed-but-dead turn.
+
+        Supervisor step 2 (incident f774d84b): the turn pulsed
+        recently but still failed — the human decides between one
+        fresh attempt (session resumes; worktree reused) and stop.
+        Same options/audience/no-timeout shape as the soft limit;
+        distinct question text (the turn ENDED — "keep waiting" for
+        a corpse would be nonsense). False when there is no store
+        or filing fails (caller fails fast as before).
+        """
+        store = self._soft_store()
+        if store is None:
+            return False
+        short_err = (failure_error or "turn failed")[:200]
+        question = (
+            f"Specialist '{delegation.agent}'s turn ended "
+            f"({short_err}) but showed progress "
+            f"{last_pulse_age:.0f}s ago (last: {last_pulse_desc}). "
+            f"Re-run once, or stop it?"
+        )
+        try:
+            await store.create(
+                delegation_id=delegation.delegation_id,
+                question=question,
+                options=list(SOFT_LIMIT_OPTIONS),
+                kind="question",
+                audience="human",
+                timeout_seconds=None,
+                metadata={"soft_limit": True, "agent": delegation.agent,
+                          "pulsed_dead_rerun": True},
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "JobRunner: pulsed-rerun question create failed for %s",
+                delegation.delegation_id,
+                exc_info=True,
+            )
+            return False
+        trace.append(
+            "turn_soft_limit_asked",
+            {"reason": "pulsed_dead_rerun", "last_pulse_age_s": last_pulse_age},
+        )
+        return True
+
+    async def _await_soft_verdict(self, delegation: Delegation) -> str:
+        """Poll a filed soft question to keep/stop/gone.
+
+        Returns "keep" (answered keep), "stop" (answered stop/skip/
+        timeout), or "gone" (record vanished — caller degrades to
+        its normal failure path). Unbounded poll (holds are
+        unbounded by ruling); task cancellation propagates.
+        """
+        while True:
+            rec = await self._soft_record(delegation)
+            if rec is None or not _is_soft_limit_record(rec):
+                return "gone"
+            status = rec.get("status")
+            if status == "answered":
+                return "keep" if _soft_keep_answer(rec) else "stop"
+            if status in ("skipped", "timeout"):
+                return "stop"
+            await asyncio.sleep(SOFT_VERDICT_POLL_SECONDS)
+
     async def _soft_record(self, delegation: Delegation) -> dict[str, Any] | None:
         """This delegation's escalation record at any status (or None).
 
@@ -1054,9 +1185,21 @@ class JobRunner:
     ) -> bool:
         """File the one-per-turn keep/stop question. False when there
         is no store to ask through (caller falls back to fail-fast).
+
+        One question per turn GLOBALLY (supervisor step 2): when a
+        soft-limit record already exists for this delegation (e.g. a
+        pulsed-rerun question filed after a first attempt died),
+        do not file a second — return False so the caller fails
+        fast instead of stacking questions.
         """
         store = self._soft_store()
         if store is None:
+            return False
+        try:
+            existing = await self._soft_record(delegation)
+        except Exception:  # noqa: BLE001
+            existing = None
+        if existing is not None and _is_soft_limit_record(existing):
             return False
         question = (
             f"Specialist '{delegation.agent}' has been running "
@@ -1311,47 +1454,166 @@ class JobRunner:
                         str(delegation.worktree_path),
                         *(permission_roots or []),
                     ]
-                ok, output = await self._bounded_turn(
-                    self.specialist_runtime.run(
-                        specialist=specialist,
-                        delegation=delegation,
-                        worktree_path=worktree_path,
-                        message=delegation.task,
-                        trace=trace,
-                        model_ref=model_ref,
-                        harness=harness_override,
-                        project_dir=project_dir,
-                        permission_roots=permission_roots,
-                        max_retries=self._turn_retries_for(delegation),
-                        project_harness_default=self._project_harness_for(
-                            delegation
+                async def _attempt():
+                    # One attempt: same tree, resumed session on
+                    # re-runs (nothing is re-created — worktree +
+                    # session binding happen once, above).
+                    return await self._bounded_turn(
+                        self.specialist_runtime.run(
+                            specialist=specialist,
+                            delegation=delegation,
+                            worktree_path=worktree_path,
+                            message=delegation.task,
+                            trace=trace,
+                            model_ref=model_ref,
+                            harness=harness_override,
+                            project_dir=project_dir,
+                            permission_roots=permission_roots,
+                            max_retries=self._turn_retries_for(delegation),
+                            project_harness_default=self._project_harness_for(
+                                delegation
+                            ),
+                            # One clock owner (supervisor step 1):
+                            # the same budget the outer wait enforces
+                            # rides into the engine attempt — the
+                            # inner clocks must never hold an
+                            # independent value.
+                            turn_timeout=self._turn_budget_for(delegation),
                         ),
-                        # One clock owner (supervisor step 1): the
-                        # same budget the outer wait enforces rides
-                        # into the engine attempt — the inner clocks
-                        # must never hold an independent value.
-                        turn_timeout=self._turn_budget_for(delegation),
-                    ),
-                    delegation,
-                    trace,
-                    budget_override=self._turn_budget_for(delegation),
-                )
-                if not ok:
-                    stopped = output == USER_STOPPED
-                    turn_timeout_raw = self._turn_budget_raw_for(delegation)
-                    await store.update(
-                        delegation.delegation_id,
-                        output="",
-                        error=(
-                            "turn_stopped_by_user"
-                            if stopped
-                            else f"turn_timeout_exceeded_{self._turn_budget_label_for(delegation)}s"
-                        ),
+                        delegation,
+                        trace,
+                        budget_override=self._turn_budget_for(delegation),
                     )
-                    trace.append("turn_timeout", {"timeout": turn_timeout_raw})
-                    await self._transition(delegation, store, trace, "failed",
-                                           completed_at=datetime.now())
-                    return
+
+                async def _pulsed_rerun_gate(failure_error: str) -> str | None:
+                    """Keep/stop/gone for a pulsed-but-dead turn, or
+                    None to fail fast as before.
+
+                    Supervisor step 2 (incident f774d84b): a turn
+                    that pulsed within the beacon window but still
+                    failed gets ONE human decision (re-run once on
+                    keep — same tree, resumed session — or stop),
+                    never an automatic retry and never a second
+                    question (one-question-per-turn is global: an
+                    existing soft record means ask nothing).
+                    """
+                    if self._soft_store() is None:
+                        return None
+                    try:
+                        existing = await self._soft_record(delegation)
+                    except Exception:  # noqa: BLE001
+                        existing = None
+                    if existing is not None and _is_soft_limit_record(existing):
+                        return None
+                    pulsed = self._last_pulse(trace)
+                    if pulsed is None or pulsed[0] > self.BEACON_WINDOW_SECONDS:
+                        return None
+                    age, desc = pulsed
+                    filed = await self._ask_pulsed_rerun(
+                        delegation, trace, failure_error, age, desc
+                    )
+                    if not filed:
+                        return None
+                    return await self._await_soft_verdict(delegation)
+
+                from sweave.tools import DelegationResult
+
+                # Attempt loop (supervisor step 2): one normal attempt
+                # plus at most ONE human-approved re-run (keep verdict
+                # on a pulsed failure — incident f774d84b). The shared
+                # tail below (saver + persist + transition +
+                # review-request + bundle) runs exactly once with the
+                # final result. The legacy path below keeps its own
+                # single attempt (out of scope).
+                rerun_used = False
+                result: Any = None
+                while True:
+                    ok, output = await _attempt()
+                    if not ok:
+                        stopped = output == USER_STOPPED
+                        timeout_text = (
+                            f"turn_timeout_exceeded_"
+                            f"{self._turn_budget_label_for(delegation)}s"
+                        )
+                        if not stopped:
+                            rerun_verdict = await _pulsed_rerun_gate(timeout_text)
+                            if rerun_verdict == "keep" and not rerun_used:
+                                # Keep = ONE fresh attempt on the same
+                                # tree + resumed session (fail loud
+                                # stands: the human explicitly re-ran,
+                                # nothing auto-retried).
+                                rerun_used = True
+                                trace.append(
+                                    "turn_soft_keep_rerun",
+                                    {"attempt": 2},
+                                )
+                                continue
+                            if rerun_verdict == "stop":
+                                # Human stopped it: the existing
+                                # stopped taxonomy (not timeout text).
+                                output = USER_STOPPED
+                                stopped = True
+                        turn_timeout_raw = self._turn_budget_raw_for(delegation)
+                        result = DelegationResult(
+                            success=False,
+                            agent=delegation.agent,
+                            task_id=delegation.task_id,
+                            output="",
+                            error=(
+                                "turn_stopped_by_user"
+                                if stopped
+                                else timeout_text
+                            ),
+                        )
+                        trace.append("turn_timeout", {"timeout": turn_timeout_raw})
+                        break
+                    result = DelegationResult(
+                        success=True,
+                        agent=delegation.agent,
+                        task_id=delegation.task_id,
+                        output=output,
+                        error=None,
+                    )
+                    # Honest failure states (2026-09-10 ruling: failed children
+                    # must not masquerade as review). The SpecialistRuntime's
+                    # in-band error contract returns a wire death as a
+                    # "[chat error: ...]" string with no exception; the chat
+                    # loop knows that prefix, but a CHILD delegation arriving
+                    # through this runner was stored as output with success ->
+                    # review / error=None (the APIError only ever visible in
+                    # the trace file). Detect the sentinel HERE, at the single
+                    # convergence point of both agent paths, and convert it to
+                    # a truthful failed record: error text on the row, status
+                    # failed, empty output.
+                    _sentinel_output = (
+                        (result.output or "") if isinstance(result.output, str) else ""
+                    )
+                    if result.success and _sentinel_output.lstrip().startswith(
+                        "[chat error:"
+                    ):
+                        wire_error = _sentinel_output.strip()
+                        rerun_verdict = await _pulsed_rerun_gate(wire_error)
+                        if rerun_verdict == "keep" and not rerun_used:
+                            rerun_used = True
+                            trace.append(
+                                "turn_soft_keep_rerun",
+                                {"attempt": 2},
+                            )
+                            continue
+                        if rerun_verdict == "stop":
+                            wire_error = "turn_stopped_by_user"
+                        result = DelegationResult(
+                            success=False,
+                            agent=delegation.agent,
+                            task_id=delegation.task_id,
+                            output="",
+                            error=wire_error,
+                        )
+                        trace.append(
+                            "wire_death_recorded",
+                            {"error": wire_error},
+                        )
+                    break
                 # Persist the Specialist (the runtime set
                 # specialist.session_id during run()). Best-effort:
                 # a saver failure is logged, never raised -- the
@@ -1388,13 +1650,6 @@ class JobRunner:
                     )
                 from sweave.tools import DelegationResult
 
-                result = DelegationResult(
-                    success=True,
-                    agent=delegation.agent,
-                    task_id=delegation.task_id,
-                    output=output,
-                    error=None,
-                )
             else:
                 # Legacy path: wrap the call in wait_for directly.
                 # delegate_tool.execute is async (returns a
@@ -1428,16 +1683,19 @@ class JobRunner:
                     result = legacy_result
 
             # Honest failure states (2026-09-10 ruling: failed children
-            # must not masquerade as review). The SpecialistRuntime's
-            # in-band error contract returns a wire death as a
-            # "[chat error: ...]" string with no exception; the chat
-            # loop knows that prefix, but a CHILD delegation arriving
-            # through this runner was stored as output with success ->
-            # review / error=None (the APIError only ever visible in
-            # the trace file). Detect the sentinel HERE, at the single
-            # convergence point of both agent paths, and convert it to
-            # a truthful failed record: error text on the row, status
-            # failed, empty output.
+            # must not masquerade as review). Runtime-path sentinels
+            # were already converted inside the attempt loop above
+            # (with the pulsed-rerun gate); this block covers the
+            # legacy path, which keeps its single attempt and fails
+            # straight. The SpecialistRuntime's in-band error contract
+            # returns a wire death as a "[chat error: ...]" string with
+            # no exception; the chat loop knows that prefix, but a CHILD
+            # delegation arriving through this runner was stored as
+            # output with success -> review / error=None (the APIError
+            # only ever visible in the trace file). Detect the sentinel
+            # HERE, at the single convergence point of both agent paths,
+            # and convert it to a truthful failed record: error text on
+            # the row, status failed, empty output.
             _sentinel_output = (
                 (result.output or "") if isinstance(result.output, str) else ""
             )

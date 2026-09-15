@@ -196,6 +196,13 @@
   YAML (loader skipped it — charters fossilized; 4-role test
   green again). Locked next: handoff with symmetric freeze,
   title-path contract, opt-in slices.
+- ✅ **Supervisor steps 1–2 (2026-09-15, incident f774d84b)** —
+  one clock owner (budget forwarded into engine metadata,
+  runner + chat; corpse guard `turn_corpse_collected`) +
+  pulsed-dead keep/stop (one question, one keep re-run
+  same-tree/resumed-session, stop taxonomy, silent fail-fast,
+  legacy untouched). 17 new tests; 1164 pytest green; plan
+  `docs/SUPERVISOR_PLAN.md` (steps 3–5 open; P1–P5 rulings owed).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

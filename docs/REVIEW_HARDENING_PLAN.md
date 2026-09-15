@@ -168,17 +168,15 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 * **Gotchas as a system**: structured records, dispatch-time
   injection by area, reviewer audits compliance + proposes new ones
   (human-approved); hindsight = soft patterns, gotchas = hard rules.
-* **Progress supervisor** (ruling 5): specified in §5 below
-  (behavior, not code) — specialist-view (a) + engine-first
-  streaming (b) → heartbeats replace the clock; 30-min becomes a
-  multi-hour runaway fuse. Opencode activity ferry where cheap
-  (bridge-plugin pattern), documented gaps where not.
-  --> Execution-ready detail: `docs/SUPERVISOR_PLAN.md` (plan of
-  record since 2026-09-15, written after the f774d84b incident —
-  nested clocks, corpse re-arm, missed soft question. Proposes
-  engine-first buildable NOW: supervisor inputs already exist on
-  the engine path; the view-track remainder is human
-  observability, not supervisor input).
+* **Progress supervisor** (ruling 5): execution-ready detail
+  at `docs/SUPERVISOR_PLAN.md` (plan of record since 2026-09-15,
+  written after the f774d84b incident — nested clocks, corpse
+  re-arm, missed soft question). Steps 1–2 BUILT 2026-09-15 (one
+  clock owner + corpse guard; pulsed-dead keep/stop with one keep
+  re-run); steps 3–5 open. Proposes engine-first buildable NOW:
+  supervisor inputs already exist on the engine path; the
+  view-track remainder is human observability, not supervisor
+  input).
 * **Full-capture test affordance** (ruling 7): run-tests path with
   output into trace/transcript (queryable, paged) — kills the file
   habit's cause. Batch-tool limits explicitly rejected (punishes the

@@ -1,8 +1,9 @@
 # Progress supervisor — plan of record
 
-Status: **specified, not built** (2026-09-15). Parent behav-spec:
-`docs/REVIEW_HARDENING_PLAN.md` §5. This file is the execution-ready
-detail: incident, clock inventory, rulings, steps, gates.
+Status: **steps 1–2 built (2026-09-15); steps 3–5 open**.
+Parent behav-spec: `docs/REVIEW_HARDENING_PLAN.md` §5. This file
+is the execution-ready detail: incident, clock inventory,
+rulings, steps, gates.
 
 ## 0. Motivating incident (2026-09-15, verified from trace)
 
@@ -150,6 +151,13 @@ it becomes the supported interim posture while steps 2–3 build.
 
 ### Step 1 — One clock owner + corpse guard (small, unsupervised)
 
+DONE 2026-09-15 (`a7e453b`): runtime forwards the per-delegation
+budget into engine metadata on runner + chat paths; harness
+default stays the fallback; `_bounded_turn` + chat wait collect
+done tasks immediately (`turn_corpse_collected`); harness
+`_turn_timeout` rejects bools. Default behavior byte-identical
+(1800=1800).
+
 1. Runtime forwards `_turn_budget_for(delegation)` as message
    metadata `turn_timeout` on the engine path (both
    `_run_engine_attempt` call sites: task turns; chat-turn engine
@@ -170,6 +178,17 @@ it becomes the supported interim posture while steps 2–3 build.
    disappears).
 
 ### Step 2 — Dead-but-pulsed routes to human (small)
+
+DONE 2026-09-15: pulsed failures (timeout OR wire-death sentinel
+— the incident's actual shape) file ONE keep/stop question
+(`turn_soft_limit_asked{reason: pulsed_dead_rerun}`); keep =
+ONE fresh attempt on the same tree + resumed session
+(`turn_soft_keep_rerun`), stop maps to `turn_stopped_by_user`;
+silent deaths fail straight; second deaths fail straight (asked
+once, globally — `_ask_soft_limit` refuses second filings);
+legacy path untouched. Attempt loop unifies result interpret
+(single build + sentinel check; shared tail runs once; saver now
+also persists failed turns' session bindings). 10 new tests.
 
 1. If the task is done-failed AND showed pulses within the
    beacon window, the expiry path asks the soft keep/stop
