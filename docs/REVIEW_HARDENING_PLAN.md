@@ -152,10 +152,11 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 * **Gotchas as a system**: structured records, dispatch-time
   injection by area, reviewer audits compliance + proposes new ones
   (human-approved); hindsight = soft patterns, gotchas = hard rules.
-* **Progress supervisor** (ruling 5): specialist-view (a) +
-  engine-first streaming (b) → heartbeats replace the clock; 30-min
-  becomes a multi-hour runaway fuse. Opencode activity ferry where
-  cheap (bridge-plugin pattern), documented gaps where not.
+* **Progress supervisor** (ruling 5): specified in §5 below
+  (behavior, not code) — specialist-view (a) + engine-first
+  streaming (b) → heartbeats replace the clock; 30-min becomes a
+  multi-hour runaway fuse. Opencode activity ferry where cheap
+  (bridge-plugin pattern), documented gaps where not.
 * **Full-capture test affordance** (ruling 7): run-tests path with
   output into trace/transcript (queryable, paged) — kills the file
   habit's cause. Batch-tool limits explicitly rejected (punishes the
@@ -183,3 +184,101 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 * Parallel worker owns worktrees/branches under `sweave/*` — we never
   prune branches, only our own settle path + `prune` of dead
   registrations; no `git worktree prune --expire` games.
+
+## 5. Progress supervisor — behavioral spec (2026-09-15; NOT built)
+
+Purpose in one line: replace the 30-minute time guillotine with
+progress supervision, so fire-and-forget plan execution can run for
+hours while a wedged turn still dies fast and loudly.
+
+Prerequisites (hard order — the supervisor consumes them, builds
+none of them): (a) native specialist execution access (the
+specialist-view track: transcript parity, tool timeline, live block
++ consented abort); (b) correct streaming (engine-first; opencode
+ferry-or-gap). No new wire: the supervisor reads the view track's
+events and the loop's existing anchors.
+
+### Signals watched (per delegation turn)
+
+* **Progress pulses**: model chunk (text or reasoning), tool
+  transition (started/completed/failed), token-count delta on a
+  step boundary. ANY pulse = alive, regardless of turn age.
+* **Aliveness**: serve/session reachable (sidecar port answers;
+  opencode serve answers) — answers "is the worker dead or just
+  thinking".
+* **Holds**: permission/escalation/question pending, user-cancel in
+  flight, soft-limit question open. A held turn is WAITING, never
+  stalled — today's hold-suspends-timers rule is preserved as-is.
+* **Runaway**: wall-clock age vs the fuse (see below).
+
+### States (per turn)
+
+* HEALTHY — pulses within the quiet window. Nothing happens.
+* QUIET-WATCH — no pulse for the quiet window (today's 300s stall
+  bound is the starting value). Not a trip: start verifying.
+* VERIFYING — ask aliveness: serve alive? session making progress
+  server-side (tool running, bytes moving upstream)? Two exits:
+  alive → back to QUIET-WATCH with a `waiting_with_progress` trace
+  (the user sees "still working: <last tool>, <elapsed>");
+  dead/unreachable → TRIPPED.
+* HELD — a hold exists. Timers suspended (current rule), supervisor
+  idle except watching the hold itself age (a hold older than its
+  own kind-timeout is an escalation problem, not a turn problem —
+  reported, never killed).
+* TRIPPED — terminal for this turn: record the failure loudly
+  (`no_progress`-family reason with totals + tool count + files
+  touched — the existing handoff shape), fail the delegation,
+  free the join. Trips stay loud (fail-loud ruling): the handoff
+  makes resume possible, never automatic.
+
+### What changes about the clock
+
+* The per-turn total (today 1800s default, `routing.turn_timeout_s`,
+  max 14400) stops being the execution bound and becomes the
+  **runaway fuse**: set in hours (detailing proposes the default;
+  the config max already allows 4h), and it fires ONLY when the
+  turn is also pulseless — a healthy hours-long plan run never
+  sees it. The 300s quiet window and the httpx backstop keep their
+  current ordering beneath it (quiet < transport < fuse).
+* The soft-limit keep/stop question is REUSED as the supervisor's
+  human surface (no new question kind): VERIFYING-alive for long
+  enough escalates to keep/stop instead of deciding alone. The
+  user abort (Stop button) always wins immediately at any state —
+  supervision never delays a deliberate stop.
+* Iteration-level trips stay: role budgets (orchestrator 50 /
+  specialist 150), stuckness (5 straight failed iterations),
+  doom-loop guard. The supervisor is the TIME layer above them;
+  a turn can trip on iterations while perfectly pulsed, and vice
+  versa. Complementary, never merged.
+
+### Per-harness behavior
+
+* Engine (spec): full pulses (chunks + tool events + step
+  boundaries) and direct aliveness — the reference behavior.
+* Opencode (parity): pulses are ferried (`tool-started` sensor
+  today; the bridge-plugin pattern for more) plus serve
+  reachability; where the bus is structurally silent the
+  supervisor says so in the trace (`signal_gap:opencode:<what>`)
+  and holds the longer verification path instead of guessing.
+  Documented gaps, never silent degradation (engine-is-spec
+  ruling).
+
+### Non-goals
+
+* No auto-retry or auto-resume (fail loud stands).
+* No new UI surfaces: reuses TurnStatusBar quiet-Ns, lanes, and
+  the keep/stop card. No new WS vocabulary beyond the existing
+  trace + status + escalation events (a `waiting_with_progress`
+  trace reason is data, not a new verb).
+* No neural anything, no calibration (M2.5's job).
+* No change to commit authority, verdicts, or promotion.
+
+### Open decisions for the detailing round
+
+1. Fuse default (hours) — propose, don't assume.
+2. Quiet-window value (300s starting point — keep or retune per
+   role: chat snappy, execution patient).
+3. Per-tool budget lock (1200s proposed by the view track).
+4. Opencode verification method (poll shape + cost).
+5. Whether an `approve` verdict shortens anything (default: no —
+  verdicts judge, the supervisor watches; keep the seams clean).
