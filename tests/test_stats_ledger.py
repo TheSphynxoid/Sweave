@@ -62,6 +62,31 @@ def test_tokens_summed_per_delegation_missing_trace_is_zero():
     assert out["by_error"] == [{"error": "max_steps", "count": 1}]
 
 
+def test_context_input_is_peak_not_sum():
+    """Billed ``input`` sums across turns; ``context_input`` maxes.
+
+    Per-step prompts re-bill full history (steps×context), so the
+    ledger keeps the billed sum on ``input`` and the peak live
+    context on ``context_input`` (the fire-risk size). Pre-split
+    traces without the field contribute 0 — never invented.
+    """
+    from sweave.stats.ledger import build_summary
+
+    out = build_summary(
+        [_rec(delegation_id="a"), _rec(delegation_id="b")],
+        tokens_reader=lambda dep_id: (
+            [_tokens(input=100, context_input=100),
+             _tokens(input=120, context_input=120)]
+            if dep_id == "a"
+            else [_tokens(input=50)]  # pre-split anchor: no peak recorded
+        ),
+        days=0,
+    )
+    assert out["totals"]["input"] == 270
+    assert out["totals"]["context_input"] == 120
+    assert out["by_agent"][0]["context_input"] == 120
+
+
 def test_error_classes():
     from sweave.stats.ledger import error_class
 

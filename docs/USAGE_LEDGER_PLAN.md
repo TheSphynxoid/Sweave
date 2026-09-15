@@ -106,6 +106,13 @@ cheap to keep).
   attribution rule in code (created_at day; retries linked by
   parent, not merged) and pin with tests, or every number is
   suspect — the bugs-lane merge-rule precedent applies.
+- Billed-vs-size (2026-09-15 incident: one 7-step chat turn moved
+  the ledger 1.7M → 4.8M): per-step prompts re-bill full history,
+  so `tokens_used.input` is the billed sum (steps×context) while
+  `context_input` is the peak live context (max). Ledger cells sum
+  the former and max the latter; compaction triggers must read the
+  peak, never the sum. Pre-split traces contribute 0 peak (never
+  invented).
 - Cost math without prices: trace `cost` exists per turn when the
   provider reports it; otherwise counts only (never invent prices;
   models.meta.json sidecar may grow a price table later — separate

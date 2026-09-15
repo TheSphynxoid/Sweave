@@ -14,6 +14,12 @@ Attribution rules (plan risks: every number suspect until pinned):
   (the ``estimate_vs_actual`` precedent — differs from the detail
   view's last-wins display). No trace (or no events) degrades to
   zeros, never an error.
+* ``context_input`` is the exception: it is the peak live context
+  (MAX, not sum). Per-step prompts re-bill full history, so summing
+  them yields steps×context — honest billing but not a size. The
+  ``input`` cell keeps the billed sum; ``context_input`` carries the
+  largest single-step prompt seen (pre-split traces without the field
+  contribute 0 — never invented).
 * day bucket = ``created_at`` calendar date; dateless records count
   in totals only (never invented into a day).
 * wall seconds sum completed turns only (``created_at`` →
@@ -96,16 +102,25 @@ def error_class(error: Any) -> str | None:
 
 
 def _sum_tokens_used(events: Iterable[dict[str, Any]]) -> dict[str, float]:
-    """Sum every trace ``tokens_used`` event (missing keys read 0)."""
+    """Sum every trace ``tokens_used`` event (missing keys read 0).
+
+    ``context_input`` is the one MAX-folded key: the peak live context
+    across the delegation's turns (summing cumulative per-step prompts
+    would report steps×context as a size).
+    """
     total = {
         "input": 0.0, "output": 0.0, "reasoning": 0.0,
         "cache_read": 0.0, "cache_write": 0.0, "cost": 0.0,
+        "context_input": 0.0,
     }
     for ev in events:
         if not isinstance(ev, dict) or ev.get("event") != "tokens_used":
             continue
         for key in total:
-            total[key] += _num(ev.get(key))
+            if key == "context_input":
+                total[key] = max(total[key], _num(ev.get(key)))
+            else:
+                total[key] += _num(ev.get(key))
     return total
 
 
@@ -147,7 +162,7 @@ def _cell() -> dict[str, float]:
     return {
         "turns": 0, "input": 0.0, "output": 0.0, "reasoning": 0.0,
         "cache_read": 0.0, "cache_write": 0.0, "cost": 0.0,
-        "failed": 0,
+        "context_input": 0.0, "failed": 0,
     }
 
 
@@ -224,6 +239,9 @@ def build_summary(
             cell["failed"] += failed
             for key in ("input", "output", "reasoning", "cache_read", "cache_write", "cost"):
                 cell[key] += toks[key]
+            # Peak live context across the bucket's turns (max, never
+            # summed — the billed ``input`` sum is steps×context).
+            cell["context_input"] = max(cell["context_input"], toks["context_input"])
         by_status[status] = by_status.get(status, 0) + 1
         if failed:
             try:

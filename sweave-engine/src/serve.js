@@ -156,6 +156,10 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
       reasoning: usage.reasoning,
       cache_read: usage.cache_read || 0,
       cache_write: usage.cache_write || 0,
+      // Peak live context (loop-reported max single-step prompt).
+      // input stays the billed sum across steps; context_input is
+      // the fire-risk size. Compaction triggers read this.
+      context_input: usage.context_input || 0,
       cost: 0,
       ...(hasUsage ? {} : { estimated: true }),
     });
@@ -345,6 +349,8 @@ async function runTurn(sessionId, body, res) {
             reasoning: usage.completion_tokens_details?.reasoning_tokens || 0,
             cache_read: usage.prompt_tokens_details?.cached_tokens || 0,
             cache_write: 0,
+            // Single-shot turn: one request, so peak context == billed.
+            context_input: usage.prompt_tokens || 0,
             cost: 0,
           }
         : {
@@ -353,6 +359,7 @@ async function runTurn(sessionId, body, res) {
             reasoning: 0,
             cache_read: 0,
             cache_write: 0,
+            context_input: 0,
             cost: 0,
             estimated: true,
           }),
@@ -473,6 +480,8 @@ async function runTurn(sessionId, body, res) {
         reasoning: usage.completion_tokens_details?.reasoning_tokens || 0,
         cache_read: usage.prompt_tokens_details?.cached_tokens || 0,
         cache_write: 0,
+        // Single-shot turn: one request, so peak context == billed.
+        context_input: usage.prompt_tokens || 0,
         cost: 0,
       };
     } else {
@@ -482,6 +491,7 @@ async function runTurn(sessionId, body, res) {
         reasoning: 0,
         cache_read: 0,
         cache_write: 0,
+        context_input: 0,
         cost: 0,
         estimated: true,
       };

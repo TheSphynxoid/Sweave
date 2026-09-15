@@ -31,6 +31,7 @@ function summary(): StatsSummary {
     cache_read: 0,
     cache_write: 0,
     cost: 0,
+    context_input: 0,
     failed: 0,
   };
   return {
@@ -67,6 +68,7 @@ describe("StatsPage", () => {
     await waitFor(() => expect(screen.getByTestId("stats-totals")).toBeDefined());
     // Locale-independent: toLocaleString grouping varies by ICU ("1,500" vs "1 500").
     expect(screen.getByTestId("stats-totals").textContent).toContain("500");
+    expect(screen.getByTestId("stats-totals").textContent).toContain("Peak context");
     expect(screen.getByTestId("stats-by-day").textContent).toContain("2026-09-14");
     expect(screen.getByTestId("stats-by-model").textContent).toContain("opencode/m");
     expect(screen.getByTestId("stats-errors").textContent).toContain("max_steps");

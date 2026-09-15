@@ -239,6 +239,8 @@ async def test_tokens_used_matches_stub_usage(sidecar):
     assert len(anchored) == 1
     assert anchored[0]["input"] == 5
     assert anchored[0]["output"] == 3
+    # Single-shot turn: one request, so peak context == billed input.
+    assert anchored[0]["context_input"] == 5
 
 
 @needs_node

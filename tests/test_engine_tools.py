@@ -661,6 +661,9 @@ async def test_tokens_used_carries_cache_read(sidecar, worktree):
     assert len(anchors) == 1
     assert anchors[0]["input"] == 220
     assert anchors[0]["cache_read"] == 130
+    # Billed input sums cumulative per-step prompts (100+120);
+    # context_input is the peak live context (max, not sum).
+    assert anchors[0]["context_input"] == 120
     assert "cache_write" in anchors[0]
 
 

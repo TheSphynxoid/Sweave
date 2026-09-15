@@ -54,6 +54,7 @@ function SplitTable<T extends StatsCell>({
               <th className="px-3 py-1.5 font-medium">Name</th>
               <th className="px-3 py-1.5 text-right font-medium">Turns</th>
               <th className="px-3 py-1.5 text-right font-medium">In</th>
+              <th className="px-3 py-1.5 text-right font-medium">Peak</th>
               <th className="px-3 py-1.5 text-right font-medium">Out</th>
               <th className="px-3 py-1.5 text-right font-medium">Failed</th>
             </tr>
@@ -68,6 +69,7 @@ function SplitTable<T extends StatsCell>({
                   </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.turns)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.input)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.context_input ?? 0)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.output)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.failed)}</td>
                 </tr>
@@ -136,9 +138,10 @@ export function StatsPage() {
         </p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5" data-testid="stats-totals">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" data-testid="stats-totals">
             <StatCard label="Turns" value={fmt(t.turns)} sub={failedRate} />
-            <StatCard label="Input tokens" value={fmt(t.input)} />
+            <StatCard label="Input tokens" value={fmt(t.input)} sub="billed across steps" />
+            <StatCard label="Peak context" value={fmt(t.context_input ?? 0)} sub="largest live context" />
             <StatCard label="Output tokens" value={fmt(t.output)} />
             <StatCard label="Cache read" value={fmt(t.cache_read)} />
             <StatCard

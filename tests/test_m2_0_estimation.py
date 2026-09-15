@@ -321,9 +321,11 @@ def test_projection_with_estimate_and_trace(tmp_path: Path):
         trace_dir / "d1.jsonl",
         [
             ("tokens_used", {"input": 10, "output": 5, "reasoning": 0,
-                             "cache_read": 0, "cache_write": 0, "cost": 0.001}),
+                              "cache_read": 0, "cache_write": 0, "cost": 0.001,
+                              "context_input": 10}),
             ("tokens_used", {"input": 20, "output": 7, "reasoning": 3,
-                             "cache_read": 1, "cache_write": 2, "cost": 0.002}),
+                              "cache_read": 1, "cache_write": 2, "cost": 0.002,
+                              "context_input": 18}),
         ],
     )
     detail = render_detail_view(
@@ -341,6 +343,8 @@ def test_projection_with_estimate_and_trace(tmp_path: Path):
     assert eva["actual"]["tokens"]["output"] == 12
     assert eva["actual"]["tokens"]["reasoning"] == 3
     assert eva["actual"]["tokens"]["cost"] == pytest.approx(0.003)
+    # Peak live context maxes across turns (not summed like billed input).
+    assert eva["actual"]["tokens"]["context_input"] == 18
     assert eva["actual"]["seconds"] == 120.0
 
 

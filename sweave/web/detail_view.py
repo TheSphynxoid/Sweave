@@ -13,7 +13,7 @@ sections the UI detail view patches into place (and the same data the
   state list so the UI can show lifecycle (pending -> running ->
   completed | error).
 * ``tokens`` -- the per-turn ``tokens_used`` payload (input, output,
-  reasoning, cost, cache). Aggregates across all step-finish parts.
+  reasoning, cost, cache, context_input). Aggregates across all step-finish parts.
 * ``status_timeline`` -- the status transitions (queued -> running
   -> review | done | failed) with timestamps.
 * ``estimate_vs_actual`` -- M2.0: the stored caller-supplied
@@ -102,6 +102,9 @@ def render_estimate_vs_actual(
     * actual tokens — SUMMED across every trace ``tokens_used`` event
       (differs from the ``tokens`` section's last-wins display: that
       one shows the latest turn, this one totals the delegation).
+      ``context_input`` is the exception: peak live context (MAX
+      across events — summing cumulative per-step prompts would
+      report steps×context as a size).
     * actual seconds — created→completed wall time, when both stamps
       exist (a still-running delegation reports null).
 
@@ -115,10 +118,14 @@ def render_estimate_vs_actual(
             total = {
                 "input": 0, "output": 0, "reasoning": 0,
                 "cache_read": 0, "cache_write": 0, "cost": 0,
+                "context_input": 0,
             }
         for key in ("input", "output", "reasoning", "cache_read", "cache_write"):
             value = ev.get(key, 0)
             total[key] += value if isinstance(value, (int, float)) else 0
+        peak = ev.get("context_input", 0)
+        if isinstance(peak, (int, float)) and peak > total["context_input"]:
+            total["context_input"] = peak
         cost = ev.get("cost", 0)
         total["cost"] += cost if isinstance(cost, (int, float)) else 0
 
@@ -250,6 +257,7 @@ def render_detail_view(
                 "reasoning": ev.get("reasoning", 0),
                 "cache_read": ev.get("cache_read", 0),
                 "cache_write": ev.get("cache_write", 0),
+                "context_input": ev.get("context_input", 0),
                 "cost": ev.get("cost", 0),
             }
         elif name == "status_changed":

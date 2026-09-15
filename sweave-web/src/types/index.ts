@@ -280,6 +280,9 @@ export interface Tokens {
   cache_read: number;
   cache_write: number;
   cost: number;
+  /** Peak live context (max single-step prompt). Optional for
+   * pre-split payloads; readers must `?? 0`. */
+  context_input?: number;
 }
 
 /**

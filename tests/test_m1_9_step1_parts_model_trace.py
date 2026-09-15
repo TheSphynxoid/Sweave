@@ -385,6 +385,8 @@ async def test_per_turn_tokens_used_event_is_emitted(trace_dir):
     assert payload.get("output") == 6
     assert payload.get("reasoning") == 1
     assert abs(payload.get("cost", 0) - 0.0015) < 1e-9
+    # Peak live context (max single-step prompt), not the billed sum.
+    assert payload.get("context_input") == 5
 
 
 @pytest.mark.asyncio

@@ -155,6 +155,7 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
         defs,
         signal,
         onToken,
+        onReasoning,
       });
     }
     return providerChatStream({
@@ -364,6 +365,12 @@ export async function runLoop(loopCtx) {
   let totalOut = 0;
   let totalReason = 0;
   let totalCacheRead = 0;
+  // Peak single-step prompt_tokens in this turn (= the live context
+  // size at its largest). totalIn SUMS cumulative per-step prompts
+  // (each iteration re-bills full history — honest billing, but
+  // steps×context, not size); maxIn is the fire-risk number
+  // (compaction triggers read this, never the sum).
+  let maxIn = 0;
   let lastRepeat = { key: "", count: 0 };
   let finalText = "";
   let iterations = 0;
@@ -388,7 +395,7 @@ export async function runLoop(loopCtx) {
     event: "step.boundary",
     reason,
     cost: 0,
-    tokens: { input: totalIn, output: totalOut, reasoning: totalReason, cache: { read: totalCacheRead, write: 0 } },
+    tokens: { input: totalIn, output: totalOut, reasoning: totalReason, cache: { read: totalCacheRead, write: 0 }, context_input: maxIn },
     handoff: {
       iterations,
       toolCalls: toolCallCount,
@@ -443,6 +450,7 @@ export async function runLoop(loopCtx) {
     // normalized shape on both flavors (missing = 0, honest).
     const cacheReadTok = stepUsage?.prompt_tokens_details?.cached_tokens || 0;
     totalIn += inTok;
+    if (inTok > maxIn) maxIn = inTok;
     totalOut += outTok;
     totalReason += reasonTok;
     totalCacheRead += cacheReadTok;
@@ -589,6 +597,6 @@ export async function runLoop(loopCtx) {
 
   return {
     output: finalText,
-    usage: { input: totalIn, output: totalOut, reasoning: totalReason, cache_read: totalCacheRead, cache_write: 0 },
+    usage: { input: totalIn, output: totalOut, reasoning: totalReason, cache_read: totalCacheRead, cache_write: 0, context_input: maxIn },
   };
 }

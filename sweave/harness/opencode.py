@@ -379,6 +379,8 @@ class OpenCodeProcess:
         * ``tokens_used`` once at the terminal, aggregating all
           ``step-finish`` token deltas across this turn -- the audit
           anchor that backs the detail view's per-turn tokens/cost.
+          ``input`` is the billed sum (steps×context); ``context_input``
+          is the peak single-step prompt (live context size).
 
         **M1.9 terminal detection.** A turn is complete when
         ``info.time.completed`` is set AND ``info.finish`` is present
@@ -450,6 +452,9 @@ class OpenCodeProcess:
             total_reasoning = 0
             total_cache_read = 0
             total_cache_write = 0
+            # Peak single-step prompt (live context size; the billed
+            # sum above is steps×context, this is the fire-risk size).
+            max_input = 0
             total_cost = 0.0
             try:
                 async with self._client.stream(
@@ -588,7 +593,10 @@ class OpenCodeProcess:
                                     # Per-turn aggregation
                                     tokens = part.get("tokens") or {}
                                     cache = tokens.get("cache") or {}
-                                    total_input += int(tokens.get("input", 0) or 0)
+                                    step_input = int(tokens.get("input", 0) or 0)
+                                    total_input += step_input
+                                    if step_input > max_input:
+                                        max_input = step_input
                                     total_output += int(tokens.get("output", 0) or 0)
                                     total_reasoning += int(tokens.get("reasoning", 0) or 0)
                                     total_cache_read += int(cache.get("read", 0) or 0)
@@ -615,6 +623,10 @@ class OpenCodeProcess:
 
             # M1.9: per-turn tokens_used audit anchor. Always
             # emit one at the end of the turn (terminal-bound).
+            # ``input`` SUMS cumulative per-step prompts (each step
+            # re-bills full history — honest billing, steps×context).
+            # ``context_input`` is the peak single-step prompt (the
+            # live context size; compaction triggers read this).
             if trace is not None:
                 try:
                     trace.append(
@@ -625,6 +637,7 @@ class OpenCodeProcess:
                             "reasoning": total_reasoning,
                             "cache_read": total_cache_read,
                             "cache_write": total_cache_write,
+                            "context_input": max_input,
                             "cost": total_cost,
                         },
                     )
