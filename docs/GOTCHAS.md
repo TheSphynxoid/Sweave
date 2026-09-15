@@ -602,7 +602,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    manual `git worktree prune` + dir removal (a sweep is future
    work). Tests driving `_run` inject the conftest fake lifecycle
    (`fake_worktree_manager_factory`); the one real-git proof lives
-   in `test_task_worktrees.py`.
+    in `test_task_worktrees.py`.
+
+7. **Agent scratch goes to the OS temp dir, never repo root**
+    (2026-09-15: `test_out*.txt`, `test_full.txt`, `theme_fail.txt`
+    vitest logs in repo root — several written from INSIDE a
+    worktree, so the habit travels with the agent, not the cwd).
+    Cause: engine `bash` head-truncation taught models to redirect
+    output to files (fixed by tail-cut + paged `read`, step 2).
+    Rule: throwaway runner output + ad-hoc scripts belong in the OS
+    temp dir; the observed shapes are gitignored (see the Agent
+    scratch block in `.gitignore`); seeds carry the discipline line
+    and the reviewer audits strays as a non-blocking finding.
 
 ## sweave-web UI
 

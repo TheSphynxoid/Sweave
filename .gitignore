@@ -101,6 +101,9 @@ sweave-web/scripts/shots/
 runfull.py
 full_out*.txt
 scratch-*.py
+test_out*.txt
+test_full*.txt
+theme_fail*.txt
 
 # Committed screenshots (agent UI probes; removed pre-push 2026-09-15 —
 # probes write to sweave-web/scripts/shots/, already ignored above)
