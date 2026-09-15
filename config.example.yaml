@@ -9,7 +9,10 @@ server:
   port: 8080
 
 harness:
-  default: "opencode"
+  # Built-in engine first: nothing external to install. "opencode"
+  # per specialist / project / task when you want it (needs the
+  # opencode binary + `opencode auth login`).
+  default: "sweave-engine"
   opencode:
     command: "opencode"
     serve_args: ["--port", "0"]
@@ -74,4 +77,4 @@ routing:
 #     turn_timeout_s: 600
 #     turn_retries: 5
 #   harness:
-#     default: opencode
+#     default: sweave-engine

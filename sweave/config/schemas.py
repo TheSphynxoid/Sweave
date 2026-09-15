@@ -15,8 +15,13 @@ class HarnessConfig(BaseModel):
 
 
 class HarnessSettings(BaseModel):
-    """Harness configuration."""
-    default: str = "opencode"
+    """Harness configuration.
+
+    The default is the built-in engine: a fresh clone runs with
+    nothing to install (no external harness binary). Select
+    ``"opencode"`` per specialist / project / task when you want it.
+    """
+    default: str = "sweave-engine"
     opencode: HarnessConfig = Field(default_factory=HarnessConfig)
     # Future: claude_code, codex, acp_custom
 
@@ -195,4 +200,4 @@ class AgentSpec:
     memory_bank: str
     tools: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    harness: str = "opencode"
+    harness: str = "sweave-engine"

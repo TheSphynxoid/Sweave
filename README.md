@@ -4,30 +4,42 @@ Multi-agent orchestration platform with persistent specialist agents.
 
 ## Overview
 
-Sweave is a self-hosted orchestration platform that manages persistent specialist agents (backend, frontend, reviewer) with isolated git worktrees, dynamic model routing, and long-term memory. Built on [Omnigent](https://github.com/omnigent-ai/omnigent) and [OpenCode](https://opencode.ai).
+Sweave is a self-hosted meta-harness: it orchestrates persistent specialist agents (backend, frontend, reviewer) with isolated git worktrees, dynamic model routing, and long-term memory — across selectable agent runtimes. OpenCode is the currently supported external harness; `sweave-engine`, a zero-dependency Node sidecar, is built in and is the seed default (including the orchestrator), so OpenCode is optional. Agent specs follow the [Omnigent](https://github.com/omnigent-ai/omnigent) shape; the web UI is Sweave's own.
 
 ## Features
 
-- **Persistent Specialist Agents** — Each agent is a full OpenCode instance with own context, memory, and workspace
+- **Persistent Specialist Agents** — Each agent runs on a selectable harness (built-in `sweave-engine` by default, OpenCode supported) with own context, memory, and workspace
 - **Dynamic Model Routing** — Rules-based + LLM fallback routing with hot-reload
 - **Git Worktree Isolation** — Each task/agent gets isolated worktree, auto-PR creation
 - **Long-term Memory** — Configurable Hindsight backend (embedded, Docker, Cloud)
-- **Harness Agnostic** — OpenCode first, extensible to Claude Code, Codex, ACP
+- **Meta-harness, not single-runtime** — Per-specialist harness selection (override > specialist > project > config); no silent fallback — an unresolved harness fails the turn loud
 - **Web UI** — Model selector, worktree status, cost dashboard (via Omnigent)
 
 ## Quick Start
 
 ### Prerequisites
 
+- Python 3.11+, Node.js on PATH (the default `sweave-engine`
+  harness is a zero-dependency Node sidecar — no harness to install)
+
 ```bash
 # Install dependencies
 pip install -e ".[dev]"
+```
 
-# Install OpenCode (for provider auth)
-# See: https://opencode.ai/docs/installation
+### Provider auth (pick one)
 
-# Configure providers
+```bash
+# Default path — sweave-engine (no OpenCode needed).
+# Export a key per provider, or add keys in Settings → Credentials
+# (canonical store: ~/.sweave/credentials.json):
+export OPENAI_API_KEY=...        # conventional <NAME>_API_KEY, or
+export SWEAVE_ENGINE_KEY_FOO=... # engine-namespaced override
+
+# Only if a specialist resolves to the opencode harness
+# (see https://opencode.ai/docs/installation):
 opencode auth login  # For each provider you use
+# (also doubles as an auth source: Sweave can adopt its auth store once)
 ```
 
 ### Configuration
@@ -74,7 +86,7 @@ sweave doctor
 ┌─────────────────────────────────────────────────────────────┐
 │                      SWEAVE SERVER                          │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │  ORCHESTRATOR (OpenCode)                            │   │
+│  │  ORCHESTRATOR (sweave-engine default)                   │   │
 │  │  • RouteTaskTool, DelegateTaskTool, WorktreeTool    │   │
 │  │  • Dynamic routing via rules.yaml + LLM fallback    │   │
 │  └─────────────────────────────────────────────────────┘   │
@@ -84,7 +96,8 @@ sweave doctor
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐   │
 │  │  BACKEND    │    │  FRONTEND   │    │  REVIEWER   │   │
 │  │  SPECIALIST │    │  SPECIALIST │    │  SPECIALIST │   │
-│  │  (OpenCode) │    │  (OpenCode) │    │  (OpenCode) │   │
+│  │  (engine    │    │  (engine    │    │  (engine    │   │
+│  │   default)  │    │   default)  │    │   default)  │   │
 │  │             │    │             │    │             │   │
 │  │ • Own ctx   │    │ • Own ctx   │    │ • Own ctx   │   │
 │  │ • Worktree  │    │ • Worktree  │    │ • Worktree  │   │
@@ -101,7 +114,7 @@ defaults land here at runtime). See `config.example.yaml` for all options.
 
 Key sections:
 - `server` — HTTP server settings
-- `harness` — Agent runtime (OpenCode, future: Claude Code, Codex)
+- `harness` — Agent runtime default (`sweave-engine`; per-specialist / project / task-selectable to `opencode`)
 - `memory` — Hindsight backend (embedded_slim, docker_full, docker_slim, cloud)
 - `git` — Worktree and PR settings
 - `models` — Model registry and rules paths

@@ -583,8 +583,8 @@ class ConfigManager:
 
         ``value`` must name a registered harness adapter
         (``"sweave-engine"`` | ``"opencode"``) — anything else would
-        fall through resolution to the hardcoded ``"opencode"``
-        fallback, so it is rejected here instead of stored. This sets
+        leave resolution with no naming tier (there is deliberately
+        no silent fallback), so it is rejected here instead of stored. This sets
         only the *config tier*: the specialist record, the project
         overlay (``harness.default``), and the per-task override all
         still win per turn, and persisted ``"opencode"`` specialist
