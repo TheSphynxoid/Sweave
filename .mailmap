@@ -1,0 +1,6 @@
+# Sweave mailmap (committed 2026-09-15, pre-push history rewrite).
+#
+# The early baseline commits were authored as "Sweave Dev
+# <dev@sweave.local>"; the canonical identity is below. New commits
+# must use the canonical identity (see `git config user.name/email`).
+The Sphynx <jmail.hamza@gmail.com> Sweave Dev <dev@sweave.local>

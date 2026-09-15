@@ -94,3 +94,15 @@ sweave-web/vite.config.d.ts
 sweave-web/tsconfig.tsbuildinfo
 sweave-web/tsconfig.node.tsbuildinfo
 sweave-web/scripts/shots/
+
+# Agent scratch (throwaway runner scripts + captured outputs land here
+# by habit; they are work product of a turn, not repo work — prefer
+# the OS temp dir, never commit these)
+runfull.py
+full_out*.txt
+scratch-*.py
+
+# Committed screenshots (agent UI probes; removed pre-push 2026-09-15 —
+# probes write to sweave-web/scripts/shots/, already ignored above)
+sweave-web/shots/
+sweave-web/probe-combined.png

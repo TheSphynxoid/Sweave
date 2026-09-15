@@ -57,10 +57,16 @@
   as skipped, kills live turns (sidecar abort; serve abort +
   serve-restart fallback on opencode), keeps the orchestrator binding
   always (no-rotation ruling — a stop kills the work, never the
-  conversation), and persists the partial reply as a `cancelled`
-  bubble — stopping never loses the thread (the 2026-09-14 incident:
-  a wedged defer-loop turn with no stop path forced a server kill
-  that lost the turn). 404 when idle.
+   conversation), and persists the partial reply as a `cancelled`
+   bubble — stopping never loses the thread (the 2026-09-14 incident:
+   a wedged defer-loop turn with no stop path forced a server kill
+   that lost the turn). 404 when idle.
+- ✅ **UI render containment (2026-09-15)**: every route renders
+  inside its own `RouteErrorBoundary` (hand-rolled, no new dep) plus a
+  root guard — a render throw degrades one surface (named fallback +
+  retry + back-to-chat), never blank-screens the app (the stale-server
+  stats shape did exactly that). Stats cost cells also default missing
+  fields to unpriced instead of throwing.
 - ✅ **No-rotation invariant (user ruling)**: sessions are immortal —
   harness resources (serves, sidecar connections) rotate freely, the
   conversation never does. Pruned all three binding resets (cancel,

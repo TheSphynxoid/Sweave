@@ -1,6 +1,7 @@
 # M1.3 — Shared serve + durable context (execution plan)
 
-Status: step 0 done (2026-08-30; results in `docs/M1_3_PROBE_RESULTS.md`).
+Status: step 0 done (2026-08-30; step-0 findings folded into this
+plan — the raw 15 MB probe dump was stripped pre-push 2026-09-15).
 Est. ~2 sessions (build ~1.5, live gate ~0.5). Predecessors: M1.prep ✅,
 M1.0 ✅ (v2 API + per-message model done), M1.1 ✅, M1.2 ✅
 (Specialist.session_id exists, unused; K-revised is now locked in

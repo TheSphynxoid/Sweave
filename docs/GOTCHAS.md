@@ -63,9 +63,17 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    (pre-2026-09-11 shape) — the list shows "global", but a
    scope-hinted global lookup skips the project file, falls to the
    seed view, and PUT 400s "seed view ... cannot be edited here".
-   `SpecialistResolver.locate()` (project -> global -> seed by FILE
-   LOCATION) is the single lookup for PUT/DELETE write-back; never
-   trust the scope label for routing a write.
+    `SpecialistResolver.locate()` (project -> global -> seed by FILE
+    LOCATION) is the single lookup for PUT/DELETE write-back; never
+    trust the scope label for routing a write. (d) A "restart" is not
+    a restart until the NEW process owns the port (2026-09-15: the
+    stats page served the pre-1b payload shape after a restart —
+    `undefined.toFixed` blank-screened the UI — because the old
+    process was still serving while the new one died on the port;
+    `web.log` even showed the new banner AND the old process's
+    requests in one file). Verify by effect: process start time newer
+    than the code commit + the response shape actually changed
+    (`GET /api/stats/summary` keys, not just HTTP 200).
 8. **Seed views vs raw overrides + cross-harness session ids**
    (2026-09-14). (a) The global store holds hollow `scope="seed"`
    override records (old ones with stale baked `harness` defaults):
