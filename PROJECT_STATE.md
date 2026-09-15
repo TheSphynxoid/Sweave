@@ -209,6 +209,14 @@
   death trips `turn_no_progress`, uncertain asks once or waits
   with progress), fuse last. 6 new tests; 1171 pytest green.
   Steps 4–5 open (opencode parity, fuse retune).
+- ✅ **Failure-cap bootstrap + loop-detector lock (2026-09-15,
+  user ruling)** — totals no longer govern health: specialist
+  ceiling 150→300 (cost backstop) + cumulative-failure trip
+  (`failure_volume` 50/15, handoff gains `failedIterations`); the
+  static cap marked scaffolding, not guard. Reasoning-loop
+  detector extraction LOCKED (dataset M2.4, consumer R6,
+  turn-boundary nudge-only; f774d84b joins seed data as a
+  loop-negative). 3 new hermetic tests; 1174 pytest green.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

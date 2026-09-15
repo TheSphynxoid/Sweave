@@ -361,13 +361,24 @@ detail view), model routing tiers (= ModelRef). New extractions:
   report-exact-counts; synthesis flags unverified claims. Turns the
   audit-trust-per-claim rule into infrastructure. Pairs with
   postmortems (unverified → suspect).
-- **Reasoning-loop detector** (user's embedder idea #2): signature is
-  failure-streak + semantic sameness of intent across *varying*
-  attempts — not repeated identical calls. Intervention at turn
-  boundaries only (no mid-turn inject seam; `reject` aborts).
-  Dogfood acceptance gate: run the detector on the trace log of the
-  session that built it — must flag its own loops. M1.12 incident
-  traces are seed data. Nudge-only mode first.
+- **Reasoning-loop detector** (user's embedder idea #2 — LOCKED
+  2026-09-15, placement): signature is failure-streak + semantic
+  sameness of intent across *varying* attempts — not repeated
+  identical calls. Intervention at turn boundaries only (no
+  mid-turn inject seam; `reject` aborts). Dogfood acceptance gate:
+  run the detector on the trace log of the session that built it —
+  must flag its own loops. Seed data: M1.12 incident traces +
+  f774d84b (2026-09-15 — ≈40 healthy calls killed by clock: a
+  strong loop-negative). Placement: dataset home is the M2.4
+  golden set (traces + `no_progress`/`doom_loop` trip labels);
+  consumer is R6/training-env; verdicts feed the existing
+  keep/stop surface, nudge-only first — never a new kill path.
+  Until it lands, the static guards are the explicitly-marked
+  bootstrap (doom = identical calls, stuckness = all-fail runs,
+  failure-cap = failed iterations; total cap = pure cost
+  backstop) — the cap was scaffolding misread as the guard, now
+  marked as such. Cross-link: `docs/SUPERVISOR_PLAN.md` future
+  note.
 - **Tripwire badges** (UI): live delegation cards showing tokens
   spent, depth, elapsed from existing server-side fires.
 - **R4-thread UI backlog**: semantic icon indirection over lucide

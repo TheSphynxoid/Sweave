@@ -42,10 +42,23 @@ const DOOM_REPEATS = 3;
 // Role-aware ceiling (2026-09-14): the flat 50 killed healthy
 // implementation turns (two confirmed max_steps deaths on
 // succeeding read/edit/probe loops). Specialists doing
-// implementation get 3x headroom; the orchestrator's read-only
-// turns never needed more than ~20 observed. The ceiling stays a
-// cost backstop — stuckness trips earlier via NO_PROGRESS_LIMIT.
-const MAX_ITERATIONS_SPECIALIST = 150;
+// implementation get headroom; the orchestrator's read-only
+// turns never needed more than ~20 observed. The ceiling is a
+// pure COST backstop now (raised 150 -> 300: ≈3.75h at the
+// observed healthy pace of ~40 calls/30min) — health is governed
+// by the failure guards below + the supervisor's pulses, never
+// by totals. Explicitly NOT a loop guard (that conflation caused
+// the f774d84b-class deaths; see the locked reasoning-loop
+// detector in docs/PLUGGABLES_PLAN.md for the destination).
+const MAX_ITERATIONS_SPECIALIST = 300;
+// Failure-volume trip (2026-09-15): cumulative tool iterations
+// with zero successes beyond a generous bound. Catches the
+// slow-bleed the streak misses (succeed sometimes, fail often —
+// the varying-attempts shape a learned detector will own);
+// healthy work barely fails, so it runs unbounded. Bound ≈ 1/3
+// of the role's total ceiling (same headroom rule, both roles).
+const MAX_FAILED_ITERATIONS = 15;
+const MAX_FAILED_ITERATIONS_SPECIALIST = 50;
 // Stuckness trip (2026-09-14): consecutive tool iterations with
 // zero successes (every executed call errored/denied/rejected).
 // Catches the A-B-A-B alternation the identical-call doom guard
@@ -461,7 +474,9 @@ export async function runLoop(loopCtx) {
   // every processed call; filesTouched collects executed file
   // targets in first-seen order (capped) for the handoff record.
   const maxIterations = body.role === "orchestrator" ? MAX_ITERATIONS : MAX_ITERATIONS_SPECIALIST;
+  const maxFailed = body.role === "orchestrator" ? MAX_FAILED_ITERATIONS : MAX_FAILED_ITERATIONS_SPECIALIST;
   let noProgressStreak = 0;
+  let failedIters = 0;
   let toolCallCount = 0;
   const filesTouched = [];
   const noteFile = (p) => {
@@ -482,6 +497,7 @@ export async function runLoop(loopCtx) {
       iterations,
       toolCalls: toolCallCount,
       filesTouched: [...filesTouched],
+      failedIterations: failedIters,
     },
   });
 
@@ -667,12 +683,22 @@ export async function runLoop(loopCtx) {
     // (Thinking-only iterations exit via the done branch above, so
     // everything reaching here ran at least one call.) Trips loud
     // with a handoff, like the ceiling — never a silent stall.
+    // Doom rejections feed the streak (ignoring five straight tells
+    // trips); they feed the volume counter below the same way.
     noProgressStreak = iterSuccess > 0 ? 0 : noProgressStreak + 1;
+    if (iterSuccess === 0) failedIters += 1;
     if (noProgressStreak >= NO_PROGRESS_LIMIT) {
       emit(handoffPayload("no_progress"));
       throw Object.assign(
         new Error(`no progress after ${NO_PROGRESS_LIMIT} tool iterations (every executed call failed) — partial work is kept; re-dispatch with narrower scope`),
         { code: "no_progress" },
+      );
+    }
+    if (failedIters >= maxFailed) {
+      emit(handoffPayload("failure_volume"));
+      throw Object.assign(
+        new Error(`no progress after ${failedIters} failed tool iterations (cumulative; successes reset only the consecutive streak) — partial work is kept; re-dispatch with narrower scope`),
+        { code: "failure_volume" },
       );
     }
   }

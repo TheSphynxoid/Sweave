@@ -269,6 +269,18 @@ Per step: step tests + full pytest + `run.py --check` + 3× green
 touched-none (supervision is turn-internals; observers see only
 existing trace + status + escalation events).
 
+## 10. Future — learned loop guard (locked 2026-09-15)
+
+The static guards are the explicitly-marked bootstrap, not the
+destination: doom (identical calls), stuckness (all-fail runs),
+failure-cap (failed iterations); total cap = pure cost backstop.
+The destination is the locked reasoning-loop detector
+(`docs/PLUGGABLES_PLAN.md` extraction: failure-streak + semantic
+sameness across varying attempts; dataset in M2.4, consumer in
+R6, turn-boundary nudge-only intervention via keep/stop). Until
+it lands, no static trip may claim to detect loops — they detect
+exact shapes (repetition, uniform failure, failure volume).
+
 ## 9. Dependencies — the specialist chat (view track, other thread)
 
 The specialist chat (native specialist execution access: transcript
