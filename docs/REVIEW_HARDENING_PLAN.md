@@ -1,6 +1,8 @@
 # Reviewer + Engine Hardening — plan of record
 
-Status: **in execution** (2026-09-15). Owner: this session.
+Status: **done** (2026-09-15 — steps 1–4 landed as step commits
+`c0aa557`/`3abd2ab`/`644232c`/`dad6367`; step 5 stays sequenced).
+Owner: this session.
 Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 `docs/REVIEW_PLAN.md`, `docs/CUSTOM_ENGINE_PLAN.md`, PROJECT_STATE.md.
 

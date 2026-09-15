@@ -155,7 +155,22 @@
   per-specialist toggle, never an LLM parameter)**: `isolated` /
   `inherit` (parent tree, else project root) / `none` (project
   root); reviewer seed flippable via override; creator-only
-  retire (schema v11 `worktree_owned`); Agents dialogs + badges.
+   retire (schema v11 `worktree_owned`); Agents dialogs + badges.
+- ✅ **Review-hardening bundle (2026-09-15, user rulings: engine is
+  the spec / reviewer is the load-bearing gate / inherit-fallback is
+  intentional / fire-and-forget over plan-favoring)** — plan of
+  record `docs/REVIEW_HARDENING_PLAN.md`, 4 step commits: (1)
+  policy-aware seed workspace (`worktree_policy` + `workspace`
+  template vars; all 3 seeds — fixes the single-brace `pwd`-echo
+  bug); (2) engine truncation parity (paged `read` default +
+  `offset` teaching, `bash` tail-cut — removes the cause of the
+  `test_out*.txt` file habit); (3) scratch containment (shapes
+  ignored, root cleared, gotcha); (4) settle commits stray WIP
+  before removal (the `a5884977` leak class) + `prune` on clean
+  paths. Sequenced-not-built: M2.2 verdict first, review-target
+  resolution, reviewer kit, gated reads, gotcha system, progress
+  supervisor (needs view track + engine streaming), full-capture
+  test affordance.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
