@@ -56,12 +56,14 @@ Deliberately NOT changed:
 - No alias/shim period (ruled out: one vocabulary, not two).
 - No arg or semantics change in the same commit.
 
-## Queued follow-up (user-locked 2026-09-15): plan-archive cut
-After this rename lands: move unambiguously-done plans to
-`docs/archive/` (relocate, never delete — git history + links
-preserved): `M1_*.md`, `M2_1*.md`, `REVIEWER_PERMISSION_PLAN.md`.
-Update the ~8 code-comment references to moved paths in the same
-commit. Everything else stays (M2, engine, view/timeline, R4 set,
-ledger, pluggables). Rationale: plans have zero runtime effect
-(verified: only docstring pointers, never loaded into context);
-the cost is stale-plan risk for future sessions + navigability.
+## Queued follow-up (user-locked 2026-09-15, revised same day)
+No archive sweep: plans have zero runtime effect (verified) and the
+roadmap plans are the milestone record — moving them buys nothing
+against an actively-committing tree. The rule going forward:
+- Roadmap plans stay put.
+- One-off work orders get folded-then-removed after execution:
+  rulings into `DESIGN.md`, then the file goes.
+Outstanding: fold `REVIEWER_PERMISSION_PLAN.md`'s rulings into
+`DESIGN.md` (permission section) once that file settles — the
+parallel thread is committing into it now, so hands off until
+then. Same treatment for this file after the rename lands.
