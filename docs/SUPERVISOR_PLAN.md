@@ -53,48 +53,35 @@ Three findings (each is a spec item below, not just color):
 | 5 | Inner httpx | same `send` (`:557`) | inner + 30s | derived |
 | 6 | Opencode path | `process.send` httpx 1000s + `PRE_MODEL_TIMEOUT_SECONDS` 950 + stall timers | separate stack, out of scope for steps 1–3 | `specialist_runtime.py` |
 
-## 2. Rulings (locked earlier — restated; NEW proposals marked)
+## 2. Rulings (locked 2026-09-15 — P1–P5 approved en bloc)
 
-Locked (prior rounds): engine-first spec, opencode parity-not-ceiling;
-fail loud (trips never auto-retry/resume); soft keep/stop is the
-human surface (no new question kind); no new WS vocabulary (trace
-+ existing events only); verdicts judge, supervisor watches (clean
-seam); iteration trips (budgets/stuckness/doom) stay as the layer
-below, complementary.
+Locked earlier rounds, restated: engine-first spec, opencode
+parity-not-ceiling; fail loud (trips never auto-retry/resume);
+soft keep/stop is the human surface (no new question kind); no
+new WS vocabulary (trace + existing events only); verdicts judge,
+supervisor watches (clean seam); iteration trips
+(budgets/stuckness/doom) stay as the layer below, complementary.
 
-PROPOSED (need user ruling at the detailing round):
-
-- **P1 — One clock owner (recommended).** The supervisor owns ALL
-  time supervision for a turn. Inner layers keep backstops ONLY
-  (orders of magnitude above any fuse — e.g. httpx stays as a
+- **P1 — One clock owner.** The supervisor owns ALL time
+  supervision for a turn. Inner layers keep backstops ONLY
+  (orders of magnitude above any fuse — httpx stays as a
   transport backstop) and never an independent kill at the same
-  value. Concretely: runtime forwards the per-delegation budget
-  into engine message metadata (step 1); the sidecar enforces the
-  body value (unchanged code, now correct input). Rationale:
-  incident finding 1 — split ownership makes every fuse change
-  theater and every extension suspect.
-- **P2 — Engine-first buildable NOW (recommended re-sequence).**
-  The old sequence gated the supervisor on the view track + full
-  streaming. Re-examined: the supervisor's minimum inputs are
-  pulses (engine `tool.*` + `reasoning` + `tokens_used`, all in
-  trace TODAY), holds (escalation store, TODAY), aliveness
-  (serve/port probe, TODAY), abort (sidecar abort + serve abort,
-  TODAY). The view track's remainder (live-block UI, transcript
-  parity) is human observability, not supervisor input. So: build
-  engine-first now; opencode gets longer verification +
-  `signal_gap` traces (ferry where cheap). The blockers shrink to
-  opencode-parity scope.
-- **P3 — Fuse default (hours).** Propose 4h (`14400`, the config
-  max) once P1 lands — the fuse becomes a runaway backstop that
-  fires only when also pulseless. Detail the exact number at
-  execution.
+  value. Enacted by step 1 (budget forwarded; sidecar enforces
+  the body value).
+- **P2 — Engine-first buildable now.** The supervisor's minimum
+  inputs (pulses, holds, aliveness, abort) already exist on the
+  engine path: the decision loop builds without waiting for the
+  view track; opencode gets longer verification + `signal_gap`
+  traces.
+- **P3 — Fuse default 4h** (`14400`, the config max) once step 1
+  lands — the fuse becomes a runaway backstop firing only when
+  also pulseless. (Near-irrelevant for healthy turns once step 3
+  lands: pulses govern.)
 - **P4 — Quiet window 300s starting point**, retunable per role
-  (chat snappy, execution patient) at execution.
-- **P5 — Trip handoff carries partial text** (capped), not just
-  totals/tools/files: on trip the record keeps the last partial
-  text instead of `""` (the "never loses the thread" principle
-  from turn-cancel). Session continuity already survives via the
-  durable engine session; this is about the record.
+  (chat snappy, execution patient) at step 3 execution.
+- **P5 — Trip handoff carries partial text** (capped): the record
+  keeps the last partial text instead of `""` (the turn-cancel
+  "never loses the thread" principle).
 
 ## 3. Starting point (executor: verify before touching code)
 
