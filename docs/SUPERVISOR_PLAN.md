@@ -1,6 +1,6 @@
 # Progress supervisor — plan of record
 
-Status: **steps 1–2 built (2026-09-15); steps 3–5 open**.
+Status: **steps 1–3 built (2026-09-15); steps 4–5 open**.
 Parent behav-spec: `docs/REVIEW_HARDENING_PLAN.md` §5. This file
 is the execution-ready detail: incident, clock inventory,
 rulings, steps, gates.
@@ -190,6 +190,17 @@ also persists failed turns' session bindings). 10 new tests.
 4. Done-gate: step-1 gate + soft-limit suite green.
 
 ### Step 3 — Pulse supervision (the supervisor proper; engine-first per P2)
+
+DONE 2026-09-15: `_bounded_turn` waits in 60s slices against a
+fuse deadline (overlay value; holds suspend it, keep/beacon
+re-arms push it). Per slice: corpse → holds → soft-consume →
+rearm → beacon → pulse eval (healthy resets silently; quiet
+accumulates, window capped by fuse) → VERIFYING (serve probe:
+certain death trips `turn_no_progress`; uncertain asks once or
+waits with progress) → fuse trip/extend as the last resort.
+Keep-consumption releases the soft latch (keep buys a full
+supervised window). 6 new tests; ordering fix en route (fuse
+after holds/re-arms; M1.12 outranks the fuse at boundaries).
 
 1. Replace `_bounded_turn`'s fixed windows with pulse windows:
    wait in slices (propose 60s); each slice checks trace pulses

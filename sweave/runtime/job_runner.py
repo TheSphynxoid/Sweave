@@ -105,6 +105,19 @@ USER_STOPPED = "user_stopped"
 #: ruling (no-timeout questions); cancellation propagates.
 SOFT_VERDICT_POLL_SECONDS = 2.0
 
+#: Supervisor step 3: pulse-watch slice. The bound loop waits in
+#: slices this long, then evaluates (corpse → holds → fuse →
+#: soft → rearm → beacon → pulse/quiet). Short enough to notice
+#: death promptly, long enough to never hot-loop (negligible vs
+#: model latencies).
+SUPERVISOR_SLICE_SECONDS = 60.0
+
+#: Supervisor step 3: quiet window (P4 starting point, 2026-09-15
+#: ruling — retunable per role at execution). This many seconds
+#: with no trace pulse moves a turn from QUIET-WATCH to
+#: VERIFYING (serve probe, then wait-with-progress or trip).
+QUIET_WINDOW_SECONDS = 300.0
+
 #: Pulse events: trace evidence a turn is alive (supervisor step 2).
 #: Starts/completions both count — a started tool is forward motion
 #: even before it lands; doom/identical-call noise still advances
@@ -876,7 +889,19 @@ class JobRunner:
             if budget_override
             else (self.turn_timeout or self.DEFAULT_TURN_TIMEOUT)
         )
+        # Supervisor step 3: the budget is now the RUNAWAY FUSE (P3),
+        # not the execution bound. Pulses govern healthy turns (they
+        # extend the fuse indefinitely); the fuse bounds uncertain
+        # silence only. ``budget`` stays for question text + legacy
+        # trace shapes; ``deadline`` is the live trip line, suspended
+        # by holds and reset by keep/beacon re-arms.
         budget = base_budget
+        fuse_budget = base_budget
+        clock = _aio.get_running_loop().time()
+        start = clock
+        deadline = start + fuse_budget
+        last_check = start
+        quiet_accum = 0.0
         extensions = 0
         holds = 0
         rearm = False
@@ -887,12 +912,19 @@ class JobRunner:
         soft_extended = False
         try:
             while True:
+                now = _aio.get_running_loop().time()
+                # Wait at most to the fuse line (overshoot is harmless:
+                # the fuse is evaluated on the next expiry).
+                slice_s = max(
+                    min(SUPERVISOR_SLICE_SECONDS, deadline - now), 1.0
+                )
                 try:
                     output = await _aio.wait_for(
-                        _aio.shield(task), timeout=max(budget, 1.0)
+                        _aio.shield(task), timeout=slice_s
                     )
                     return True, output
                 except _aio.TimeoutError:
+                    now = _aio.get_running_loop().time()
                     # Corpse guard (supervisor step 1, incident
                     # f774d84b): the inner attempt can die on its own
                     # clock exactly as the outer expires. If the task
@@ -907,14 +939,18 @@ class JobRunner:
                         # Collect directly (exceptions propagate to
                         # the outer handler like a live failure).
                         return True, task.result()
+                    waited = now - last_check
+                    last_check = now
                     pending = await self._soft_record(delegation)
                     if pending is not None and pending.get("status") == "pending":
                         # A recorded question holds the turn (existing
-                        # semantics). Soft-limit questions report their
-                        # own reason so the trace shows who is being
-                        # waited on.
+                        # semantics). Held time suspends the fuse: the
+                        # deadline slides by exactly what we waited.
+                        # Soft-limit questions report their own reason
+                        # so the trace shows who is being waited on.
                         holds += 1
                         rearm = True
+                        deadline += waited
                         budget = base_budget
                         trace.append(
                             "turn_extended",
@@ -939,7 +975,15 @@ class JobRunner:
                             and not soft_extended
                         ):
                             soft_extended = True
+                            # Release the latch: the keep bought a full
+                            # supervised window (deadline pushed
+                            # below), not 60 more seconds. Later
+                            # expiries re-enter pulse evaluation;
+                            # the answered record blocks any re-ask
+                            # (one-question-per-turn is global).
+                            soft_open = False
                             budget = base_budget
+                            deadline = now + fuse_budget
                             trace.append(
                                 "turn_soft_limit_extended",
                                 {"budget": budget},
@@ -969,6 +1013,7 @@ class JobRunner:
                         # capped by leftover time (user ruling).
                         rearm = False
                         budget = base_budget
+                        deadline = now + fuse_budget
                         trace.append(
                             "turn_extended",
                             {
@@ -986,6 +1031,7 @@ class JobRunner:
                     ):
                         extensions += 1
                         budget = base_budget
+                        deadline = now + fuse_budget
                         trace.append(
                             "turn_extended",
                             {
@@ -995,20 +1041,102 @@ class JobRunner:
                             },
                         )
                         continue
+                    # Pulse / quiet evaluation (supervisor step 3):
+                    # HEALTHY turns (a pulse inside the quiet window)
+                    # reset silently — no per-slice trace spam. Past
+                    # the window, VERIFYING probes the serve: certain
+                    # death trips loud; uncertain silence asks the
+                    # human once (the soft question, existing shape)
+                    # or waits with progress when there is no one to
+                    # ask (the fuse bounds the wait). The quiet window
+                    # never outwaits the fuse (tiny test budgets keep
+                    # their ask-at-first-expiry timing; production
+                    # gets the full 300s).
+                    window = min(QUIET_WINDOW_SECONDS, fuse_budget)
+                    pulsed = self._last_pulse(trace)
+                    if pulsed is not None and pulsed[0] <= window:
+                        quiet_accum = 0.0
+                        continue
+                    quiet_accum += waited
+                    if quiet_accum < window:
+                        continue
+                    alive = self._serve_alive_for(delegation)
+                    if alive is False:
+                        task.cancel()
+                        await _aio.gather(task, return_exceptions=True)
+                        trace.append(
+                            "turn_no_progress",
+                            {
+                                "reason": "serve_dead",
+                                "quiet_s": round(quiet_accum, 1),
+                                "extensions": extensions,
+                                "holds": holds,
+                            },
+                        )
+                        trace.append(
+                            "turn_timeout",
+                            {
+                                "timeout": base_budget,
+                                "extensions": extensions,
+                                "reason": "verified_dead",
+                            },
+                        )
+                        return False, None
                     if await self._ask_soft_limit(delegation, trace, budget):
-                        # First unwitnessed expiry: ask the human
-                        # (keep/stop) instead of failing. The answer
-                        # window re-arms a full budget; the outcome is
+                        # First quiet window with no certain death:
+                        # ask the human (keep/stop) instead of
+                        # waiting blind. The answer window suspends
+                        # via the hold branch; the outcome is
                         # consumed once, above.
                         soft_open = True
                         budget = base_budget
+                        quiet_accum = 0.0
                         continue
-                    task.cancel()
-                    await _aio.gather(task, return_exceptions=True)
-                    trace.append(
-                        "turn_timeout", {"timeout": budget, "extensions": extensions}
+                    # No one to ask: the fuse is the only remaining
+                    # bound. Past it with no pulses, trip (the old
+                    # fail-fast, preserved for store-less paths);
+                    # pulsed or early, wait with progress and roll
+                    # the window so the next VERIFYING re-probes.
+                    if now >= deadline:
+                        fused = self._last_pulse(trace)
+                        if fused is not None and fused[0] <= window:
+                            deadline = now + fuse_budget
+                            trace.append(
+                                "fuse_extended",
+                                {
+                                    "fuse_budget": fuse_budget,
+                                    "last_pulse_age_s": fused[0],
+                                },
+                            )
+                            quiet_accum = 0.0
+                            continue
+                        task.cancel()
+                        await _aio.gather(task, return_exceptions=True)
+                        trace.append(
+                            "turn_timeout",
+                            {
+                                "timeout": base_budget,
+                                "extensions": extensions,
+                                "reason": "fuse_pulseless",
+                            },
+                        )
+                        return False, None
+                    _age, _desc = (
+                        pulsed if pulsed is not None
+                        else (quiet_accum, "no pulses yet")
                     )
-                    return False, None
+                    trace.append(
+                        "waiting_with_progress",
+                        {
+                            "quiet_s": round(quiet_accum, 1),
+                            "last_pulse_age_s": round(_age, 1),
+                            "last_pulse": _desc,
+                            "extensions": extensions,
+                            "holds": holds,
+                        },
+                    )
+                    quiet_accum = 0.0
+                    continue
         except Exception:  # noqa: BLE001
             # Re-raise after cleanup so _run's outer handler sees it.
             if not task.done():
@@ -1048,6 +1176,46 @@ class JobRunner:
             "escalation_store",
             None,
         )
+
+    def _serve_alive_for(self, delegation: Delegation) -> bool | None:
+        """Serve liveness for VERIFYING (supervisor step 3).
+
+        False = certain death (the supervisor trips); True/None =
+        keep watching. Never raises. Opencode: per-worktree runner
+        peek (a dead serve means the in-flight turn is gone).
+        Engine: shared-sidecar process check. Anything
+        unresolvable (legacy path, no runtime, exotic doubles) is
+        None — unknown, never death. A live process is NOT proof
+        of a live turn (the wedged-serve class), so True only
+        extends watching; only False kills.
+        """
+        try:
+            rt = getattr(self, "specialist_runtime", None)
+            runners = getattr(rt, "runners", None)
+            peek = getattr(runners, "peek", None)
+            tree = getattr(delegation, "worktree_path", None)
+            if callable(peek) and tree:
+                try:
+                    runner = peek(
+                        getattr(delegation, "agent", ""), Path(tree)
+                    )
+                except Exception:  # noqa: BLE001
+                    runner = None
+                if runner is not None:
+                    try:
+                        return bool(runner.is_alive())
+                    except Exception:  # noqa: BLE001
+                        return None
+            try:
+                from sweave.harness.engine import sidecar_alive
+            except Exception:  # noqa: BLE001
+                return None
+            try:
+                return sidecar_alive()
+            except Exception:  # noqa: BLE001
+                return None
+        except Exception:  # noqa: BLE001
+            return None
 
     def _last_pulse(self, trace: "TraceLog") -> "tuple[float, str] | None":
         """Age (seconds) + description of the latest pulse, or None.

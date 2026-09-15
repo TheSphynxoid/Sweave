@@ -203,6 +203,12 @@
   same-tree/resumed-session, stop taxonomy, silent fail-fast,
   legacy untouched). 17 new tests; 1164 pytest green; plan
   `docs/SUPERVISOR_PLAN.md` (steps 3–5 open; P1–P5 rulings owed).
+- ✅ **Supervisor step 3 (2026-09-15)** — pulse windows (60s
+  slices vs fuse deadline): healthy resets silent, quiet
+  accumulates (capped by fuse), VERIFYING probes serve (certain
+  death trips `turn_no_progress`, uncertain asks once or waits
+  with progress), fuse last. 6 new tests; 1171 pytest green.
+  Steps 4–5 open (opencode parity, fuse retune).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

@@ -784,6 +784,27 @@ def _turn_timeout(message: Message) -> float:
     return value if value > 0 else 1800.0
 
 
+def sidecar_alive() -> bool | None:
+    """No-ensure sidecar liveness for supervision (supervisor step 3).
+
+    True = our sidecar process is running; False = it exited;
+    None = no sidecar tracked in this process. Never spawns (a
+    probe must not start work as a side effect) and never raises.
+    Absence of tracking is unknown, not death — the supervisor
+    trips only on certain death (False), never on None.
+    """
+    proc = _sidecar.process if _sidecar is not None else None
+    if proc is None:
+        return None
+    rc = getattr(proc, "returncode", "missing")
+    if rc == "missing":
+        return None
+    try:
+        return rc is None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class SweaveEngineHarness(Harness):
     """The native engine as a second Harness (best-offer, step-4 flip)."""
 
