@@ -121,7 +121,13 @@ async def _ensure_sidecar() -> _Sidecar:
                 "sweave-engine: sidecar did not report a port within 15s"
             )
         _sidecar = _Sidecar(base_url=base_url, process=proc)
-        _write_sidecar_tracking(proc.pid, base_url)
+        # Tracking is best-effort and pid-gated: exotic spawn
+        # wrappers (and test doubles) without a real pid skip it
+        # instead of crashing the spawn (2026-09-15: the hermetic
+        # no-window test's pid-less fake died here).
+        pid = getattr(proc, "pid", None)
+        if isinstance(pid, int):
+            _write_sidecar_tracking(pid, base_url)
         return _sidecar
 
 

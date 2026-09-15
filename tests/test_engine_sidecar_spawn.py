@@ -24,13 +24,14 @@ class _FakeStdout:
 
 class _FakeProc:
     stdout = _FakeStdout()
+    pid = 4242
 
     def kill(self) -> None:
         pass
 
 
 @pytest.mark.asyncio
-async def test_sidecar_spawn_passes_no_window_flag(monkeypatch):
+async def test_sidecar_spawn_passes_no_window_flag(monkeypatch, tmp_path):
     captured: dict = {}
 
     async def fake_create(*args, **kwargs):
@@ -40,6 +41,11 @@ async def test_sidecar_spawn_passes_no_window_flag(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create)
     monkeypatch.setattr(eng.shutil, "which", lambda _name: "C:\\fake\\node.exe")
+    # Hermetic tracking: the spawn records its pid, but never into
+    # the real home dir.
+    monkeypatch.setattr(
+        eng, "_sidecar_tracking_path", lambda: tmp_path / "engine-sidecar.json"
+    )
     prev, eng._sidecar = eng._sidecar, None
     try:
         sidecar = await eng._ensure_sidecar()
@@ -52,3 +58,9 @@ async def test_sidecar_spawn_passes_no_window_flag(monkeypatch):
 
     if os.name == "nt":
         assert captured["creationflags"] != 0
+    # The pid-gated tracking fired for the real-int pid.
+    import json
+
+    tracked = json.loads((tmp_path / "engine-sidecar.json").read_text(encoding="utf-8"))
+    assert tracked["pid"] == 4242
+    assert tracked["port"] == 4567
