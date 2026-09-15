@@ -173,6 +173,12 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
   streaming (b) → heartbeats replace the clock; 30-min becomes a
   multi-hour runaway fuse. Opencode activity ferry where cheap
   (bridge-plugin pattern), documented gaps where not.
+  --> Execution-ready detail: `docs/SUPERVISOR_PLAN.md` (plan of
+  record since 2026-09-15, written after the f774d84b incident —
+  nested clocks, corpse re-arm, missed soft question. Proposes
+  engine-first buildable NOW: supervisor inputs already exist on
+  the engine path; the view-track remainder is human
+  observability, not supervisor input).
 * **Full-capture test affordance** (ruling 7): run-tests path with
   output into trace/transcript (queryable, paged) — kills the file
   habit's cause. Batch-tool limits explicitly rejected (punishes the
