@@ -520,6 +520,16 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    factory + real `answer/skip/force_timeout`). When adding a new
    clear site, route it through the same rule — and wire the
    flagger in the test state, or the test proves nothing.
+9. **The engine `bash` tool names its shell per-boot — models
+   cannot guess it** (incident b8544168fa59: 12 min of Unix pipes
+   on Windows CMD, 24 failures, then a streak trip — the model was
+   never told). `detectUnixShell` prefers explicit Git locations
+   (PATH order grabs WSL/Store stubs — verified) with a
+   `SWEAVE_BASH_PATH` override; the dynamic `bashDescription()`
+   is the model's only shell contract (charters stay static).
+   When the shell changes, update the description builder, never
+   per-call prompts — and re-run the slow-burst pin
+   (`test_slow_streak_survives_burst_rule`, ~122s by construction).
 8. **Native git inspection is argv-exec with a verb allowlist,
 
 ## Paths & config

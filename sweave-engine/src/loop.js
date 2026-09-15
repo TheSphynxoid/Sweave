@@ -66,6 +66,14 @@ const MAX_FAILED_ITERATIONS_SPECIALIST = 50;
 // is not stuck); successful sweave-tool calls (defer/escalate)
 // count as progress (handing work off is forward motion).
 const NO_PROGRESS_LIMIT = 5;
+// Burst rule (2026-09-15, incident b8544168fa59: 39 successes
+// over 12 min died on 5 failures in 23s — too harsh). The streak
+// trips only when the failures arrive as a burst (span at or
+// under this window: a tight loop, genuinely stuck). Slower
+// accumulations feed the volume counter only — the
+// failure-volume trip + the supervisor bound them. Starting
+// point, tunable.
+const NO_PROGRESS_BURST_SECONDS = 120;
 
 function approxTokens(text) {
   if (!text) return 0;
@@ -476,6 +484,7 @@ export async function runLoop(loopCtx) {
   const maxIterations = body.role === "orchestrator" ? MAX_ITERATIONS : MAX_ITERATIONS_SPECIALIST;
   const maxFailed = body.role === "orchestrator" ? MAX_FAILED_ITERATIONS : MAX_FAILED_ITERATIONS_SPECIALIST;
   let noProgressStreak = 0;
+  let streakStart = 0;
   let failedIters = 0;
   let toolCallCount = 0;
   const filesTouched = [];
@@ -685,19 +694,31 @@ export async function runLoop(loopCtx) {
     // with a handoff, like the ceiling — never a silent stall.
     // Doom rejections feed the streak (ignoring five straight tells
     // trips); they feed the volume counter below the same way.
-    noProgressStreak = iterSuccess > 0 ? 0 : noProgressStreak + 1;
+    // Burst rule (2026-09-15): only a tight burst trips — slow
+    // accumulations are flailing, not stuckness, and belong to the
+    // volume trip + the supervisor's human surface.
+    if (iterSuccess > 0) {
+      noProgressStreak = 0;
+      streakStart = 0;
+    } else {
+      if (noProgressStreak === 0) streakStart = Date.now();
+      noProgressStreak += 1;
+    }
     if (iterSuccess === 0) failedIters += 1;
-    if (noProgressStreak >= NO_PROGRESS_LIMIT) {
+    if (
+      noProgressStreak >= NO_PROGRESS_LIMIT &&
+      Date.now() - streakStart <= NO_PROGRESS_BURST_SECONDS * 1000
+    ) {
       emit(handoffPayload("no_progress"));
       throw Object.assign(
-        new Error(`no progress after ${NO_PROGRESS_LIMIT} tool iterations (every executed call failed) — partial work is kept; re-dispatch with narrower scope`),
+        new Error(`no progress after ${NO_PROGRESS_LIMIT} quick tool iterations (every executed call failed) — partial work is kept; a keep/stop question may follow (keep re-runs once), else re-dispatch with narrower scope`),
         { code: "no_progress" },
       );
     }
     if (failedIters >= maxFailed) {
       emit(handoffPayload("failure_volume"));
       throw Object.assign(
-        new Error(`no progress after ${failedIters} failed tool iterations (cumulative; successes reset only the consecutive streak) — partial work is kept; re-dispatch with narrower scope`),
+        new Error(`no progress after ${failedIters} failed tool iterations (cumulative; successes reset only the consecutive streak) — partial work is kept; a keep/stop question may follow (keep re-runs once), else re-dispatch with narrower scope`),
         { code: "failure_volume" },
       );
     }

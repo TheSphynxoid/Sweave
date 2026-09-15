@@ -27,6 +27,52 @@ export const MAX_OUTPUT_CHARS = 32768;
 // Opencode parity: an omitted read limit pages (never whole-file).
 export const DEFAULT_READ_LIMIT = 2000;
 
+// Shell grounding (2026-09-15, incident b8544168fa59: a model
+// emitted Unix pipes on Windows CMD for 12 minutes — 24 failures
+// — because nothing named the shell). Best-offer Git Bash:
+// explicit Git locations first (PATH order would grab WSL/Store
+// stubs, verified live); SWEAVE_BASH_PATH overrides;
+// non-Windows keeps the platform shell. Null = platform default
+// (cmd.exe on Windows). Resolved once at boot, injected
+// read-only for tests.
+export function detectUnixShell({ platform, env, exists } = {}) {
+  const plat = platform ?? process.platform;
+  if (plat !== "win32") return null;
+  const E = env ?? process.env;
+  const candidates = [];
+  if (E.SWEAVE_BASH_PATH) candidates.push(E.SWEAVE_BASH_PATH);
+  const pf = E.ProgramFiles || "C:\\Program Files";
+  const pfx = E["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  candidates.push(`${pf}\\Git\\bin\\bash.exe`, `${pfx}\\Git\\bin\\bash.exe`);
+  const isThere = exists ?? existsSync;
+  for (const c of candidates) {
+    try {
+      if (isThere(c)) return c;
+    } catch {
+      // next candidate
+    }
+  }
+  return null;
+}
+export const UNIX_SHELL = detectUnixShell();
+
+// The bash description names the shell (the model's only shell
+// contract — charters stay static, this is per-boot truth).
+// Pure over the detected shell + platform so tests pin both
+// variants deterministically.
+export function bashDescriptionFor(shell, platform) {
+  const tail =
+    "Oversized output keeps the tail (most recent); redirect to a file only for logs you will grep, and prefer the OS temp dir.";
+  if (shell)
+    return `Run a shell command in the turn cwd via Git Bash on Windows (Unix syntax: pipes, grep, head all work; prefer relative paths). ${tail}`;
+  if ((platform ?? process.platform) === "win32")
+    return `Run a shell command in the turn cwd via cmd.exe on Windows (no head/tail/grep pipes; prefer the read/grep tools for inspection). ${tail}`;
+  return `Run a shell command in the turn cwd. ${tail}`;
+}
+export function bashDescription() {
+  return bashDescriptionFor(UNIX_SHELL);
+}
+
 function globBody(pattern) {
   // Pragmatic glob (*, ?, **) -> regex body. Mirrors the shapes
   // opencode renders ("git commit*", "<root>\*", "<root>/**").
@@ -219,7 +265,18 @@ function runBash(cwd, command, timeoutMs, signal) {
     };
     const child = exec(
       command,
-      { cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
+      {
+        cwd,
+        timeout,
+        maxBuffer: 4 * 1024 * 1024,
+        windowsHide: true,
+        // Best-offer shell (2026-09-15): Git Bash on Windows when
+        // detected (verified live: pipes + exit codes propagate;
+        // abort still kills the direct child — grandchildren may
+        // orphan exactly as under cmd, no worse). Undefined keeps
+        // the platform default.
+        ...(UNIX_SHELL ? { shell: UNIX_SHELL } : {}),
+      },
       (error, stdout, stderr) => {
         const out = truncateTail((stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : ""));
         if (error) {
@@ -485,8 +542,7 @@ export const EXEC_TOOL_DEFS = [
   },
   {
     name: "bash",
-    description:
-      "Run a shell command in the turn cwd. Oversized output keeps the tail (most recent); redirect to a file only for logs you will grep, and prefer the OS temp dir.",
+    description: bashDescription(),
     parameters: {
       type: "object",
       properties: {

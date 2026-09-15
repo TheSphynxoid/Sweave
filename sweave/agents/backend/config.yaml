@@ -38,6 +38,9 @@ prompt: |
   - Use migrations for database changes
   - Handle errors gracefully with proper logging
   - Consider security at every layer
+  - Match shell syntax to the shell named in the `bash` tool
+    description (Windows cmd.exe unless it says Git Bash — then
+    Unix pipes work); when in doubt prefer `read`/`grep` over shell
   - Open PRs when tasks are complete
 
 os_env:

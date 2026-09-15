@@ -14,7 +14,10 @@ fixtures here; import them).
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +39,25 @@ from tests.test_engine_tools import (
     _spec,
     needs_node,
     STUB,
+)
+
+ENGINE_SRC = Path(__file__).resolve().parent.parent / "sweave-engine" / "src"
+
+
+def _node_eval(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Run an inline ESM script against the sidecar sources."""
+    return subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=str(ENGINE_SRC),
+    )
+
+
+NODE_PREAMBLE = (
+    f"import {{ detectUnixShell, bashDescriptionFor }} from "
+    f"'{ENGINE_SRC.as_uri()}/tools.js';\n"
 )
 
 
@@ -161,3 +183,98 @@ async def test_orchestrator_failure_volume_at_fifteen(sidecar, worktree):
     handoffs = [p for p in trace.of("step.boundary") if "handoff" in p]
     assert len(handoffs) == 1
     assert handoffs[0]["handoff"]["failedIterations"] == 15
+
+
+@needs_node
+async def test_slow_streak_survives_burst_rule(sidecar, worktree):
+    """Burst rule (incident b8544168fa59): 4 rapid failures, then a
+    SLOW failure (tool-timeout at 120s, span >120s window) — the
+    5th failure must NOT trip. Slow accumulations belong to the
+    volume trip, not the streak.
+
+    Takes ~2.5 minutes by construction (the window is the point).
+    """
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("bash", {"command": "exit 1"})]},
+        {"calls": [_call("bash", {"command": "exit 2"})]},
+        {"calls": [_call("bash", {"command": "exit 3"})]},
+        {"calls": [_call("bash", {"command": "exit 4"})]},
+        {"calls": [_call("bash", {"command": "sleep 140"})]},
+        {"text": "SLOW FLAIL SURVIVED"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["bash"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("flail slowly"), trace=trace)
+    assert result.success, result.error
+    assert result.output == "SLOW FLAIL SURVIVED"
+    assert trace.of("tool.failed")
+
+
+@needs_node
+def test_detect_unix_shell_variants():
+    """Detector: explicit Git paths first (never PATH order —
+    WSL/Store stubs squat `bash`), override honored, off-Windows
+    always null."""
+    script = NODE_PREAMBLE + """
+const t = (name, cond) => { if (!cond) { console.error("FAIL " + name); process.exit(1); } };
+const hit = "C:\\\\Program Files\\\\Git\\\\bin\\\\bash.exe";
+t("git-present", detectUnixShell({ platform: "win32", env: {}, exists: (p) => p === hit }) === hit);
+t("absent", detectUnixShell({ platform: "win32", env: {}, exists: () => false }) === null);
+t("override", detectUnixShell({ platform: "win32", env: { SWEAVE_BASH_PATH: "D:\\\\b\\bash.exe" }, exists: (p) => p === "D:\\\\b\\bash.exe" }) === "D:\\\\b\\bash.exe");
+t("override-missing-falls-through", detectUnixShell({ platform: "win32", env: { SWEAVE_BASH_PATH: "D:\\\\nope.exe" }, exists: (p) => p === hit }) === hit);
+t("linux", detectUnixShell({ platform: "linux", env: {}, exists: () => true }) === null);
+t("x86-path", detectUnixShell({ platform: "win32", env: { ProgramFiles: "X:\\\\none", "ProgramFiles(x86)": "X:\\\\86" }, exists: (p) => p === "X:\\\\86\\\\Git\\\\bin\\\\bash.exe" }) === "X:\\\\86\\\\Git\\\\bin\\\\bash.exe");
+console.log("DETECTOR OK");
+"""
+    proc = _node_eval(script)
+    assert proc.returncode == 0, proc.stderr
+    assert "DETECTOR OK" in proc.stdout
+
+
+@needs_node
+def test_bash_description_names_shell():
+    """Both description variants pinnable deterministically."""
+    script = NODE_PREAMBLE + """
+const t = (name, cond) => { if (!cond) { console.error("FAIL " + name); process.exit(1); } };
+const git = bashDescriptionFor("C:\\\\Git\\\\bin\\\\bash.exe", "win32");
+const cmd = bashDescriptionFor(null, "win32");
+const nix = bashDescriptionFor(null, "linux");
+t("git-names-bash", git.includes("Git Bash") && git.includes("pipes"));
+t("cmd-names-cmd", cmd.includes("cmd.exe") && cmd.includes("no head/tail"));
+t("nix-plain", !nix.includes("Git Bash") && !nix.includes("cmd.exe"));
+t("all-keep-tail-note", git.includes("tail") && cmd.includes("tail") && nix.includes("tail"));
+console.log("DESCRIPTIONS OK");
+"""
+    proc = _node_eval(script)
+    assert proc.returncode == 0, proc.stderr
+    assert "DESCRIPTIONS OK" in proc.stdout
+
+
+@needs_node
+async def test_shell_runs_unix_suffix_when_detected(sidecar, worktree):
+    """Self-consistent on any machine: detect, then expect the
+    matching behavior (unix-ism iff a bash was found)."""
+    probe = NODE_PREAMBLE + "console.log(detectUnixShell() ? 'BASH' : 'CMD');\n"
+    detected = _node_eval(probe)
+    assert detected.returncode == 0, detected.stderr
+    has_bash = "BASH" in detected.stdout
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("bash", {"command": "echo hello | grep ell"})]},
+        {"text": "SHELL PROBED"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["bash"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("probe shell"), trace=trace)
+    if has_bash:
+        assert result.success, result.error
+        assert result.output == "SHELL PROBED"
+    else:
+        # cmd.exe: grep unknown → the tool fails (documents the
+        # incident class on bash-less machines).
+        assert not result.success or trace.of("tool.failed")

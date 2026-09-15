@@ -36,6 +36,18 @@ def test_unknown_role_returns_none():
     assert get_agent_definition("nonexistent") is None
 
 
+def test_specialist_seeds_carry_shell_contract():
+    """Incident b8544168fa59: 12 min of Unix-on-CMD flailing because
+    nothing named the shell. Implementation seeds carry the
+    one-line contract (dynamic truth lives in the bash tool
+    description; the charter line is static and always true)."""
+    defs = load_seed_agents()
+    for role in ("backend", "frontend", "reviewer"):
+        assert "Match shell syntax to the shell named" in defs[role].prompt, (
+            f"{role} seed missing shell contract"
+        )
+
+
 def test_missing_dir_returns_empty():
     # Path that definitely doesn't exist
     result = load_seed_agents(Path("Z:/definitely/missing"))

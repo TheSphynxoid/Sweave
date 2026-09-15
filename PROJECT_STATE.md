@@ -225,7 +225,14 @@
   static cap marked scaffolding, not guard. Reasoning-loop
   detector extraction LOCKED (dataset M2.4, consumer R6,
   turn-boundary nudge-only; f774d84b joins seed data as a
-  loop-negative). 3 new hermetic tests; 1174 pytest green.
+   loop-negative). 3 new hermetic tests; 1174 pytest green.
+- ✅ **Burst rule + shell grounding (2026-09-15, incident
+  b8544168fa59)** — streak trips only on tight bursts
+  (5-in-120s; slower feeds volume); best-offer Git Bash on
+  Windows (verified pipes+codes) named in the dynamic bash
+  description + charter contract in all 3 seeds; trip messages
+  point at keep/stop. 5 new tests (incl. a 122s slow-burst live
+  pin); 1185 effective green.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

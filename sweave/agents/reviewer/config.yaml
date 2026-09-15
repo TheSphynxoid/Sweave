@@ -45,6 +45,9 @@ prompt: |
   - Provide specific, actionable feedback with code examples
   - Approve when quality bar is met
   - Request changes with clear requirements
+  - Match shell syntax to the shell named in the `bash` tool
+    description (Windows cmd.exe unless it says Git Bash — then
+    Unix pipes work); when in doubt prefer `read`/`grep` over shell
   - Retain recurring patterns in memory for future reviews
 
 os_env:
