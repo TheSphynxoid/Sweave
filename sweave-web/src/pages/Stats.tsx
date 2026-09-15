@@ -6,6 +6,9 @@
  * outcomes + error classes. Counts and shapes only — the ledger
  * never collects prompt/response text (`docs/USAGE_LEDGER_PLAN.md`).
  * Computed on read; invalidated when delegations settle.
+ * Phase 1b: per-day SVG sparkline (tokens + est. cost, zero deps),
+ * cost column on every split table, totals est.-cost card with
+ * Free/unpriced states (unpriced never renders as $0).
  */
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,6 +19,60 @@ import type { StatsCell, StatsSummary } from "@/types";
 
 function fmt(n: number): string {
   return Math.round(n).toLocaleString();
+}
+
+/** Estimated-cost display: Free / $x / unpriced — never $0. */
+function fmtCost(cell: StatsCell): { value: string; sub?: string } {
+  if (cell.unpriced && cell.estimated_cost <= 0) {
+    return { value: "unpriced", sub: "no rates for these models" };
+  }
+  if (cell.estimated_cost <= 0) {
+    return { value: "Free", sub: cell.cost_source === "provider" ? "provider-reported" : "free tier rates" };
+  }
+  const sub = cell.cost_source === "provider" ? "actual" : "est.";
+  return { value: `$${cell.estimated_cost.toFixed(4)}`, sub };
+}
+
+/** Per-day SVG sparkline: billed input tokens + est. cost (pure SVG+CSS). */
+function DaySparkline({ rows }: { rows: Array<{ day: string } & StatsCell> }) {
+  if (rows.length === 0) return null;
+  const W = 280;
+  const H = 44;
+  const maxTok = Math.max(1, ...rows.map((r) => r.input));
+  const maxCost = Math.max(0, ...rows.map((r) => r.estimated_cost));
+  const step = rows.length > 1 ? W / (rows.length - 1) : 0;
+  const tokPts = rows.map((r, i) => `${(i * step).toFixed(1)},${(H - 6 - (r.input / maxTok) * (H - 12)).toFixed(1)}`).join(" ");
+  const costBars = rows.map((r, i) => {
+    const h = maxCost > 0 ? Math.max(1, (r.estimated_cost / maxCost) * (H - 10)) : 0;
+    const x = rows.length > 1 ? i * step - 2 : W / 2 - 2;
+    return { x, h, unpriced: r.unpriced && r.estimated_cost <= 0 };
+  });
+  return (
+    <section data-testid="stats-sparkline" aria-label="Per-day usage trend">
+      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Trend
+      </h2>
+      <div className="rounded-xl border border-border/60 bg-card/80 px-3 py-2">
+        <svg viewBox={`0 0 ${W} ${H}`} className="h-11 w-full" role="img">
+          {costBars.map((b, i) => (
+            <rect
+              key={i}
+              x={b.x}
+              y={H - 4 - b.h}
+              width={4}
+              height={b.h}
+              rx={1}
+              className={b.unpriced ? "fill-muted" : "fill-primary/40"}
+            />
+          ))}
+          <polyline points={tokPts} fill="none" className="stroke-primary" strokeWidth={1.5} />
+        </svg>
+        <p className="text-[11px] tabular-nums text-muted-foreground">
+          line = billed input tokens · bars = est. cost per day
+        </p>
+      </div>
+    </section>
+  );
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -56,6 +113,7 @@ function SplitTable<T extends StatsCell>({
               <th className="px-3 py-1.5 text-right font-medium">In</th>
               <th className="px-3 py-1.5 text-right font-medium">Peak</th>
               <th className="px-3 py-1.5 text-right font-medium">Out</th>
+              <th className="px-3 py-1.5 text-right font-medium">Est. cost</th>
               <th className="px-3 py-1.5 text-right font-medium">Failed</th>
             </tr>
           </thead>
@@ -71,6 +129,9 @@ function SplitTable<T extends StatsCell>({
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.input)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.context_input ?? 0)}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.output)}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums" title={row.unpriced ? "unpriced — no rates" : row.cost_source}>
+                    {fmtCost(row).value}
+                  </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmt(row.failed)}</td>
                 </tr>
               );
@@ -149,7 +210,10 @@ export function StatsPage() {
               value={t.cost > 0 ? t.cost.toFixed(4) : "—"}
               sub={t.cost > 0 ? undefined : "provider reports no prices"}
             />
+            <StatCard label="Est. cost" value={fmtCost(t).value} sub={fmtCost(t).sub} />
           </div>
+
+          <DaySparkline rows={data.by_day} />
 
           <SplitTable
             testId="stats-by-day"

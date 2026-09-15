@@ -33,6 +33,9 @@ function summary(): StatsSummary {
     cost: 0,
     context_input: 0,
     failed: 0,
+    estimated_cost: 0,
+    cost_source: "none" as const,
+    unpriced: true,
   };
   return {
     window_days: 30,
