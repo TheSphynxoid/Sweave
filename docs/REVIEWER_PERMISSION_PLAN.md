@@ -27,6 +27,13 @@ in-project read (8 asks in 7 min: project root, a doc, `.worktrees`,
 - **Narrowed B**: "always allow" on a path-keyed ask generalizes to
   the permission *within the project subtree* (not exact-path, not
   global `*`). Genuinely outside-project paths still ask every time.
+- **Folder granularity (refinement)**: an always-grant covers the
+  asked path's containing folder and everything under it
+  (subfolders inherit — per-file grants are too trashy). Bounded by
+  the project cap: in-project, the grant is the containing folder;
+  outside the project subtree, always stays exact-path (fail closed).
+  The ask card must state the folder scope honestly
+  ("always allow <folder> and everything under it").
 - **Scope of an always-grant (refinement)**: per-run AND
   per-specialist. It lives in sidecar memory only — a server restart
   wipes it (never written to `sessions.json`), and one specialist's
@@ -36,10 +43,11 @@ in-project read (8 asks in 7 min: project root, a doc, `.worktrees`,
 - `mcp_config.py::_root_globs`: append resolved `project_dir`
   (renders `base\*` + `base\**` allow like the other roots).
 - `loop.js::resolveAsk`: on "always", store the enclosing scope —
-  project-subtree wildcard when the target sits under the turn cwd's
-  project, exact path otherwise; `approvalMatches` gains prefix-rule
-  matching for such scoped patterns (exact-match behavior unchanged
-  for everything else). Grants live in a sidecar in-memory map keyed
+  the asked path's containing folder when under the project subtree
+  (exact path when outside it); `approvalMatches` gains
+  folder-prefix matching (target == folder or under it, separator-
+  and case-correct per platform). Exact-match behavior unchanged
+  for everything else. Grants live in a sidecar in-memory map keyed
   by engine session id (per-specialist isolation); the session
   save/load path must exclude them so a restart always wipes them
   (the sidecar is a server-child process, so restart clears memory
@@ -48,9 +56,14 @@ in-project read (8 asks in 7 min: project root, a doc, `.worktrees`,
   (permission bridge posts pinned replies; check before touching).
 - Tests: scoped-render unit (project root silent, outside still ask),
   always-generalizes unit (second distinct in-project path silent,
-  outside-project path still asks), always-scope units (grant absent
+  outside-project path still asks), folder-inheritance unit (sibling
+  file + nested subfolder under a granted folder silent; parent and
+  adjacent folder still ask), always-scope units (grant absent
   after session reload fixture; specialist B still asks after
   specialist A's grant), live sidecar scene optional.
+- Note: with A in place, in-project asks go silent at the map, so
+  folder grants will mostly smooth repeated outside-project approvals
+  the user explicitly blesses — one folder at a time, never the drive.
 - Gate: touched suites + `run.py --check`; needs server restart
   (render is Python per-turn, gate is sidecar-resident).
 
