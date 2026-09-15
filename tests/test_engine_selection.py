@@ -243,7 +243,7 @@ async def test_engine_attempt_success_shape(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_engine_attempt_orchestrator_readonly_tools_and_charter(monkeypatch, tmp_path: Path):
+async def test_engine_attempt_orchestrator_tools_charter_and_md_map(monkeypatch, tmp_path: Path):
     seen: list = []
     specs: list = []
 
@@ -270,12 +270,21 @@ async def test_engine_attempt_orchestrator_readonly_tools_and_charter(monkeypatc
     # New session: the charter rides along (no per-message agent pin
     # on this protocol); reused sessions remember it.
     assert "ORCHESTRATOR CHARTER" in seen[0].content
-    # 2026-09-14 ruling: the orchestrator gets read-only exec tools
-    # (factual Q&A without a delegation); never mutate/run tools.
-    from sweave.runtime.specialist_runtime import ORCHESTRATOR_READONLY_TOOLS
+    # 2026-09-14 ruling: the orchestrator gets read exec tools
+    # (factual Q&A without a delegation). 2026-09-15 widening:
+    # `.md`-only edit/write (map-gated) + todo (plan tracking);
+    # still never bash.
+    from sweave.runtime.specialist_runtime import ORCHESTRATOR_TOOLS
 
-    assert specs and list(specs[0].tools) == list(ORCHESTRATOR_READONLY_TOOLS)
-    assert "edit" not in specs[0].tools and "bash" not in specs[0].tools
+    assert specs and list(specs[0].tools) == list(ORCHESTRATOR_TOOLS)
+    assert "bash" not in specs[0].tools
+    assert "edit" in specs[0].tools and "write" in specs[0].tools
+    assert "todo" in specs[0].tools
+    # `.md`-only gate rides the turn (last-match-wins: deny, then
+    # `*.md` allow); specialists carry no edit/write keys at all.
+    md_map = seen[0].metadata["permission_map"]
+    assert md_map["edit"] == {"*": "deny", "*.md": "allow"}
+    assert md_map["write"] == {"*": "deny", "*.md": "allow"}
 
 
 @pytest.mark.asyncio

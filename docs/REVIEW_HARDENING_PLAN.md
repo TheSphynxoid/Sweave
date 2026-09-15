@@ -145,6 +145,14 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
   assignee = endpoint override → verdict `fix_assignee` → original
   agent. Schema v13 lineage (`fix_of` + `fix_round`); detail
   `fix_rounds` fold.
+* **Orchestrator `.md` + `todo`** — DONE 2026-09-15 (user ruling):
+  engine offers edit/write (`*.md`-gated, structural) + todo;
+  charter narrowed + todo doctrine; opencode charter-only
+  (documented asymmetry); todo durability verified via journal
+  reload test (gap-2 closed); orchestrator seed YAML repaired
+  (loader skipped it — charters fossilized). Locked amendments
+  for handoff: symmetric freeze, title-path model contract with
+  human/API-side IDs, opt-in slice transport, `notes` field.
 * **Review-target resolution**: `inherit` grows from direct-parent
   to review-target (`review_request` → implementation delegation);
   generic permission any agent can carry (ruling 3).

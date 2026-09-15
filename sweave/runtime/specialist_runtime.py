@@ -114,12 +114,30 @@ PRE_MODEL_TIMEOUT_SECONDS = 950.0
 
 # Orchestrator read-only exec tools (2026-09-14 ruling): the
 # orchestrator answers repo-factual questions itself with
-# read/grep/glob instead of spawning a delegation for them. No
-# edit/write/bash/todo — implementation work still always defers
-# (the charter's "never implement" narrows to "never mutate/run").
-# Subset of TOOL_BASELINE, so the engine protocol accepts it
-# unchanged and the permission map gates it like specialists.
+# read/grep/glob instead of spawning a delegation for them. The
+# read trio stays available under every later widening (subset of
+# TOOL_BASELINE, so the engine protocol accepts it unchanged and
+# the permission map gates it like specialists).
 ORCHESTRATOR_READONLY_TOOLS: tuple[str, ...] = ("read", "grep", "glob")
+
+# Orchestrator exec tools (2026-09-15 ruling): the read trio plus
+# `.md`-only edit/write (plans, state, design notes — the planning
+# method's working material) plus `todo` (its own plan tracking).
+# edit/write are OFFERED but gated to `*.md` by
+# ORCHESTRATOR_MD_WRITE_MAP (structural on the engine;
+# charter-only on opencode, whose agent profile allows file writes
+# by the 2026-09-09 ruling). Still no bash, ever — the
+# orchestrator runs nothing.
+ORCHESTRATOR_TOOLS: tuple[str, ...] = (
+    "read", "grep", "glob", "edit", "write", "todo",
+)
+
+# edit/write gate for orchestrator turns (last-match-wins object
+# form): blanket deny, `*.md` allow. Unknown tool keys default to
+# allow on the engine, so these entries must ride EVERY
+# orchestrator turn — an offered edit without a map entry would be
+# allow-everything.
+ORCHESTRATOR_MD_WRITE_MAP: dict[str, str] = {"*": "deny", "*.md": "allow"}
 
 
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
@@ -898,6 +916,12 @@ class SpecialistRuntime:
                     scope_dir, permission_roots
                 )
             }
+            if specialist.is_orchestrator:
+                # `.md`-only writes (2026-09-15 ruling): the same
+                # dict object must not be shared across turns (the
+                # loop never mutates it, but cheap insurance).
+                permission_map["edit"] = dict(ORCHESTRATOR_MD_WRITE_MAP)
+                permission_map["write"] = dict(ORCHESTRATOR_MD_WRITE_MAP)
             spec = EngineAgentSpec(
                 name=specialist.name,
                 role=(
@@ -910,7 +934,7 @@ class SpecialistRuntime:
                 worktree_path=Path(worktree_path),
                 memory_bank="",
                 tools=(
-                    list(ORCHESTRATOR_READONLY_TOOLS)
+                    list(ORCHESTRATOR_TOOLS)
                     if specialist.is_orchestrator
                     else list(harness_obj.get_default_tools())
                 ),

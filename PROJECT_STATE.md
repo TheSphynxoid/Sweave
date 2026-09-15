@@ -174,7 +174,7 @@
 - ✅ **M2.2 verdict payload (2026-09-15, advisory)** — schema
   v11→v12 (`verdict` record: decision/comments/confidence/
   reviewer/decided_at + reserved `gotcha_hits` /
-  `output_claims_checked`); `POST /api/delegations/{id}/verdict`
+  `output_claims_checked`);   `POST /api/delegations/{id}/verdict`
   on `review` only (409/404, comments-required 400);
   `verdict_recorded` trace + WS; flag/status/promotion untouched
   (human promotes); promote keeps history; detail fold carries it.
@@ -188,6 +188,14 @@
   /api/delegations/{id}/fix-round` manual path; bound + double-spawn
   guards (judgment never blocked, retry refuses); detail `fix_rounds`
   fold. 13 new tests; pins moved to v13.
+- ✅ **Orchestrator `.md` + `todo` (2026-09-15, user ruling)** —
+  engine offers edit/write (gated `*.md`-only, structural) + todo;
+  charter narrowed + todo doctrine; opencode charter-only
+  (documented asymmetry); todo durability verified (journal +
+  reload test). Same change repairs the broken orchestrator seed
+  YAML (loader skipped it — charters fossilized; 4-role test
+  green again). Locked next: handoff with symmetric freeze,
+  title-path contract, opt-in slices.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

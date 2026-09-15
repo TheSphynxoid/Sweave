@@ -792,6 +792,85 @@ async def test_bash_oversized_output_keeps_tail(sidecar, worktree):
 
 
 @needs_node
+async def test_orchestrator_md_write_allowed_code_denied(sidecar, worktree):
+    """Orchestrator `.md` widening (2026-09-15): `.md` writes land,
+    code writes die at the map gate (last-match-wins deny-then-allow).
+
+    The test passes the REAL orchestrator map shape the runtime
+    renders (not a hand copy) — a map-shape regression fails here,
+    not in production.
+    """
+    from sweave.runtime.specialist_runtime import ORCHESTRATOR_MD_WRITE_MAP
+
+    orch_map = {
+        "edit": dict(ORCHESTRATOR_MD_WRITE_MAP),
+        "write": dict(ORCHESTRATOR_MD_WRITE_MAP),
+    }
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("write", {"filePath": "docs/note.md", "content": "plan text"})]},
+        {"calls": [_call("write", {"filePath": "evil.py", "content": "print(1)"})]},
+        {"calls": [_call("edit", {"filePath": "docs/note.md", "oldString": "plan", "newString": "PLAN"})]},
+        {"calls": [_call("bash", {"command": "echo no"})]},
+        {"text": "ORCHESTRATED WRITES"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec(worktree, tools=["read", "edit", "write", "todo"])
+    )
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message(
+            "write the plan",
+            metadata={
+                "role": "orchestrator",
+                "permission_map": orch_map,
+                "delegation_id": "dlg-orch-md",
+            },
+        ),
+        trace=trace,
+    )
+    assert result.success, result.error
+    completed = {p["tool"]: p["state"].get("output") for p in trace.of("tool.completed")}
+    failed = {p["tool"]: p["state"].get("error") for p in trace.of("tool.failed")}
+    assert "docs/note.md" in completed["write"]
+    assert "permission denied" in failed.get("write", "")
+    assert "docs/note.md" in completed["edit"]
+    # bash is unoffered for the orchestrator (structural, not map).
+    assert "unknown tool" in failed.get("bash", "")
+    # Ground truth: the .md landed edited, the .py never existed.
+    assert (worktree / "docs" / "note.md").read_text(encoding="utf-8") == "PLAN text"
+    assert not (worktree / "evil.py").exists()
+
+
+@needs_node
+async def test_orchestrator_todo_tracks_plan(sidecar, worktree):
+    """Orchestrator `todo` (2026-09-15): plan tracking rides the
+    turn like any exec tool (offered-set + session state)."""
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("todo", {"todos": [
+            {"content": "defer backend", "status": "in_progress", "priority": "high"},
+            {"content": "synthesize", "status": "pending", "priority": "medium"},
+        ]})]},
+        {"text": "TRACKED"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec(worktree, tools=["read", "edit", "write", "todo"])
+    )
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message("track it", metadata={"role": "orchestrator"}), trace=trace
+    )
+    assert result.success, result.error
+    out = trace.of("tool.completed")[0]["state"]["output"]
+    assert "defer backend" in out and "in_progress" in out
+
+
+@needs_node
 async def test_tokens_used_carries_cache_read(sidecar, worktree):
     """The terminal ``tokens_used`` anchor reports real cache numbers
     (the loop-turn emit hardcoded zeros while per-step boundaries
@@ -858,8 +937,8 @@ async def test_specialist_ceiling_beyond_fifty(sidecar, worktree):
 
 @needs_node
 async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
-    """The orchestrator keeps the 50-iteration ceiling (its read-only
-    turns never needed more observed) and trips loud with a handoff
+    """The orchestrator keeps the 50-iteration ceiling (its turns
+    never needed more observed) and trips loud with a handoff
     record naming what ran."""
     _reset_stub()
     reads = [

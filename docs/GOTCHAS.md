@@ -619,6 +619,17 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     scratch block in `.gitignore`); seeds carry the discipline line
     and the reviewer audits strays as a non-blocking finding.
 
+8. **A seed YAML that doesn't parse is silently skipped — live
+    charters fossilize** (2026-09-15: `orchestrator/config.yaml`
+    had col-0 list items inside the prompt block scalar, breaking
+    the mapping; the loader logged a warning and skipped the file,
+    so no auto-seed was possible and live orchestrator charters
+    were fossilized/empty while the file *looked* fine). Rule: any
+    seed edit must re-run the loader (`test_seed_agents.py` — the
+    4-role test is the tripwire; it was red on HEAD the whole
+    time, proving the break). Suspect this first when a charter
+    change has no effect.
+
 ## sweave-web UI
 
 1. **React StrictMode + WS connections in dev** (R4 step 1). The WSProvider
