@@ -55,3 +55,13 @@ Deliberately NOT changed:
 ## Non-goals
 - No alias/shim period (ruled out: one vocabulary, not two).
 - No arg or semantics change in the same commit.
+
+## Queued follow-up (user-locked 2026-09-15): plan-archive cut
+After this rename lands: move unambiguously-done plans to
+`docs/archive/` (relocate, never delete — git history + links
+preserved): `M1_*.md`, `M2_1*.md`, `REVIEWER_PERMISSION_PLAN.md`.
+Update the ~8 code-comment references to moved paths in the same
+commit. Everything else stays (M2, engine, view/timeline, R4 set,
+ledger, pluggables). Rationale: plans have zero runtime effect
+(verified: only docstring pointers, never loaded into context);
+the cost is stale-plan risk for future sessions + navigability.
