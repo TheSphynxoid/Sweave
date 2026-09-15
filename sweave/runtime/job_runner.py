@@ -133,6 +133,12 @@ class JobRunner:
     # ``routing.turn_timeout_s`` (sweave/config/schemas.py); hot-reloaded
     # through the ConfigManager reload callback wired in server.py.
     DEFAULT_TURN_TIMEOUT = 30 * 60
+    DEFAULT_TURN_RETRIES = 3
+
+    # Provider-call retries per engine turn (retries AFTER the first
+    # attempt). Mirrors ``routing.turn_retries`` (default 3, 0 disables);
+    # hot-reloaded alongside turn_timeout. The per-delegation overlay
+    # wins when a project_config_resolver is wired.
 
     def __init__(
         self,
@@ -145,6 +151,7 @@ class JobRunner:
         specialist_runtime: "SpecialistRuntime | None" = None,
         specialist_factory: "Callable[[str, str | None], Specialist | None] | None" = None,
         turn_timeout: float | None = None,
+        turn_retries: int | None = None,
         specialist_saver: "Callable[[Specialist, str | None], None] | None" = None,
         delegation_manager: "DelegationManager | None" = None,
         # Step 4: resolves a project name to its human-declared
@@ -208,6 +215,11 @@ class JobRunner:
         # expiry the delegation is marked failed with an explicit
         # error and the serve is recycled on next use. M1.3 step 4.
         self.turn_timeout = turn_timeout if turn_timeout is not None else self.DEFAULT_TURN_TIMEOUT
+        # Retry budget (routing.turn_retries): retries AFTER the first
+        # provider attempt on engine turns (0 disables). Explicit None
+        # keeps the schema default so legacy/tests without a resolver
+        # behave like the chat path.
+        self.turn_retries = turn_retries if turn_retries is not None else self.DEFAULT_TURN_RETRIES
         # M1.3 step 5 (live-gate fix): persists the Specialist record
         # (including the session_id the runtime set during run()) back
         # to its store. Signature: (specialist, project_name) -> None.
@@ -308,6 +320,30 @@ class JobRunner:
         """Display form for turn_timeout_exceeded_* (900, never 900.0)."""
         raw = self._turn_budget_raw_for(delegation)
         return f"{raw:g}" if isinstance(raw, float) else str(raw)
+
+    def _turn_retries_for(self, delegation: Delegation) -> int:
+        """Per-delegation retry budget (retries AFTER the first attempt).
+
+        The delegation's own project overlay wins; without a resolver
+        (legacy/tests) the runner singleton applies. Explicit 0 is
+        preserved (0 disables retry) — hence the ``is not None`` check,
+        never a falsy ``or`` (which would turn a deliberate 0 back
+        into the default and make "set to zero" unchangeable).
+        """
+        effective = self._effective_config_for(delegation)
+        try:
+            if effective is not None:
+                value = effective.routing.turn_retries
+                if value is not None and int(value) >= 0:
+                    return int(value)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.turn_retries is not None and int(self.turn_retries) >= 0:
+                return int(self.turn_retries)
+        except Exception:  # noqa: BLE001
+            pass
+        return int(self.DEFAULT_TURN_RETRIES)
 
     def _project_harness_for(self, delegation: Delegation) -> str | None:
         """Project overlay ``harness.default`` for the harness tier."""
@@ -1236,6 +1272,7 @@ class JobRunner:
                         harness=harness_override,
                         project_dir=project_dir,
                         permission_roots=permission_roots,
+                        max_retries=self._turn_retries_for(delegation),
                         project_harness_default=self._project_harness_for(
                             delegation
                         ),

@@ -90,6 +90,24 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    full stop — a retry would start a history-less session, bill
    twice, and misattribute the error (all three observed live the
    same night).
+9. **Stopping/restarting the server used to orphan the engine sidecar
+    too** (2026-09-14: a pile of `node.exe` "Node.js" entries in Task
+    Manager surviving server stops). Same shape as item 5 but a second
+    leak with its own causes: the lifespan shutdown reaped opencode
+    serves and never touched the sidecar, and `CREATE_NO_WINDOW`
+    children aren't console-attached, so closing the terminal (or
+    Ctrl+C, which runs lifespan WITHOUT a sidecar teardown) left the
+    node process behind while every restart spawned a fresh one.
+    Killing the strays by hand is safe (sessions persist in
+    `~/.sweave/engine/sessions.json`; the next engine turn spawns a
+    fresh sidecar lazily). Fix mirrors the serve reclaim:
+    `~/.sweave/engine-sidecar.json` PID tracking (written on spawn)
+    + boot sweep (adopt a live version-matching sidecar, else kill a
+    stale pid ONLY when its command line is our `serve.js` — never
+    kill on pid alone: recycled pids and other Node apps are left
+    alone) + lifespan `shutdown_sidecar` (terminate, force on
+    timeout; adopted/URL sidecars untouched). `stop_server.py`'s
+    `taskkill /F /T` already covers the tree-kill path.
 
 ## Opencode harness & wire protocol
 
@@ -653,9 +671,19 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    contained the literal sequence that closes a script element — the
    parser ended the element early and dumped the remaining JS as
    visible page text starting mid-comment. The generator now fails
-   loudly if the body contains that sequence, and the pin test asserts
-   the same; write "closing script tag", never the literal, in or near
-   the template.
+    loudly if the body contains that sequence, and the pin test asserts
+    the same; write "closing script tag", never the literal, in or near
+    the template.
+
+6. **Radix Tabs activate on focus — `fireEvent.click` alone never
+    switches tabs in jsdom** (2026-09-14). The Radix trigger activates
+    on focus (automatic mode) and `fireEvent.click` dispatches mouse
+    events without focusing, so the panel never mounts and the test
+    fails on a missing testid — looking exactly like the component
+    didn't render. Recipe (see `SettingsAppearance.test.tsx`
+    `activateTab`): `el.focus(); fireEvent.click(el);` then assert.
+    The unfocused-click failure also emits `act(...)` warnings from
+    Tabs/RovingFocus, which are noise, not the bug.
 
 ## Opencode harness & wire protocol
 

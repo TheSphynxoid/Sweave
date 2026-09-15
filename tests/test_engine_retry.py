@@ -118,6 +118,11 @@ def sidecar(tmp_path_factory, stub_url):
             **os.environ,
             "SWEAVE_ENGINE_BASE_OPENROUTER": stub_url,
             "SWEAVE_ENGINE_KEY_OPENROUTER": "stub-key",
+            # The reasoning regression test below needs the responses
+            # flavor, which only multi-flavor providers select — point
+            # the `opencode` catalog entry at the same stub.
+            "SWEAVE_ENGINE_BASE_OPENCODE": stub_url,
+            "SWEAVE_ENGINE_KEY_OPENCODE": "stub-key",
         },
     )
     line = read_port_line(proc)
@@ -239,6 +244,50 @@ async def test_loop_path_retries_too(sidecar, tmp_path: Path):
     assert result.success, result.error
     assert result.output == "recovered"
     assert STUB["hits"] == 2
+
+
+@needs_node
+async def test_loop_path_streams_reasoning(sidecar, tmp_path: Path):
+    """Agentic (tool) turns forward provider reasoning, not just text.
+
+    Regression (2026-09-14): the loop's responses branch called
+    ``providerResponsesStream`` without ``onReasoning``, so thinking
+    models on tool turns streamed nothing until the first text token
+    (long thinking phases looked like a dead stream, then the full
+    text popped). The chat flavor was unaffected, so this test pins
+    the responses flavor (``opencode/gpt-5``; the fixture points that
+    catalog entry at the stub) on the loop path.
+    """
+    from sweave.harness.engine import SweaveEngineHarness
+
+    sse = (
+        'data: {"type": "response.reasoning_summary_text.delta", '
+        '"delta": "hmm"}\n\n'
+        'data: {"type": "response.output_text.delta", "delta": "hello"}\n\n'
+        'data: {"type": "response.completed", "response": {"usage": '
+        '{"input_tokens": 2, "output_tokens": 1}}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    STUB["script"] = [(200, {}, sse)]
+    STUB["hits"] = 0
+    proc = await SweaveEngineHarness().attach(
+        "eng_think_1", _spec(tmp_path, tools=["read"], model="opencode/gpt-5")
+    )
+    seen_reasoning: list[str] = []
+
+    class _RecTrace:
+        def append(self, kind: str, payload=None) -> None:
+            if kind == "reasoning":
+                seen_reasoning.append(str((payload or {}).get("text", "")))
+
+    result = await proc.send(
+        _message("hi", {"permission_map": {}, "role": "specialist"}),
+        on_chunk=lambda t: None,
+        trace=_RecTrace(),
+    )
+    assert result.success, result.error
+    assert result.output == "hello"
+    assert "".join(seen_reasoning) == "hmm"
 
 
 # ---------------------------------------------------------------------------

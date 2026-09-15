@@ -4,7 +4,8 @@ Hermetic: fake Harness objects stand in for both engines in the
 registry (no node, no sidecar, no LLM).
 
 Covers the step-4 done-gate shape: resolver tier order
-(override > mock > specialist > config > selection-default), the
+(override > mock > specialist > project > config, then unresolved —
+no silent fallback tier), the
 step-4 default flip, engine dispatch with identical Message
 metadata, the 2026-09-14 fallback REMOVAL (engine death fails loud,
 the opencode path is never entered — fail loud across harnesses),
@@ -74,11 +75,14 @@ def test_config_tier(monkeypatch):
     assert (name, source) == ("opencode", "config")
 
 
-def test_fallback_on_unknowns(monkeypatch):
+def test_unresolved_on_unknowns(monkeypatch):
+    """No silent fallback tier: when no tier names a registered
+    harness the resolver returns (None, "unresolved") and the
+    dispatcher fails the turn loud (user ruling)."""
     monkeypatch.delenv("SWEAVE_MOCK_OPENCODE", raising=False)
-    assert resolve_harness_name(None, "nope", "alsono") == ("opencode", "fallback")
-    assert resolve_harness_name(None, None, None) == ("opencode", "fallback")
-    assert resolve_harness_name("", "", "") == ("opencode", "fallback")
+    assert resolve_harness_name(None, "nope", "alsono") == (None, "unresolved")
+    assert resolve_harness_name(None, None, None) == (None, "unresolved")
+    assert resolve_harness_name("", "", "") == (None, "unresolved")
 
 
 def test_new_records_default_to_engine():
@@ -478,6 +482,31 @@ async def test_run_mock_stays_opencode_without_override(tmp_path: Path):
     # …but the mock seam pins opencode so the suite never spawns node.
     assert out == "mock-opencode-output"
     assert trace.kinds("harness_selected")[0]["source"] == "mock"
+
+
+@pytest.mark.asyncio
+async def test_run_fails_loud_when_no_tier_matches(monkeypatch, tmp_path: Path):
+    """Stripped fallback: no tier naming a registered harness (and no
+    mock seam) fails the turn loud — nothing silently runs opencode."""
+    monkeypatch.delenv("SWEAVE_MOCK_OPENCODE", raising=False)
+    runtime = _runtime()
+    trace = _Trace()
+    out = await runtime.run(
+        specialist=_specialist(harness="no-such-harness"),
+        delegation=_delegation(),
+        worktree_path=tmp_path,
+        message="hi",
+        trace=trace,  # type: ignore[arg-type]
+        project_dir=tmp_path,
+        harness=None,
+        project_harness_default="also-unknown",
+    )
+    assert out.startswith("[chat error: harness_unresolved:")
+    assert "no-such-harness" in out
+    selected = trace.kinds("harness_selected")
+    assert len(selected) == 1
+    assert selected[0]["selected"] is None
+    assert selected[0]["source"] == "unresolved"
 
 
 @pytest.mark.asyncio

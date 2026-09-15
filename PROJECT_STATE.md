@@ -101,8 +101,8 @@
   schema unchanged). Orchestrator owns read-only `read`/`grep`/
   `glob` for repo-factual Q&A (charter narrowed from "never
   implement" to "never edit/write/run"); defer contract gained the
-  no-poll clause (queued → end the turn, never re-defer while the
-  child runs).
+   no-poll clause (queued → end the turn, never re-defer while the
+   child runs).
 - ✅ **Chat tool transparency — opencode-style tool rows in the
   thread (2026-09-14)**: assistant bubbles show what the turn did
   (`Read src/foo.ts` one-liners; `Edit …` with an expandable diff)
@@ -1430,7 +1430,9 @@ Uses Python's `pathlib` for cross-platform support. Works on all browsers and OS
 | POST | /api/tasks | Execute task |
 | POST | /api/route | Preview routing |
 | GET/POST | /api/models | Model config |
-| GET/POST | /api/rules | Routing rules |
+| GET/POST | /api/rules | Routing rules (GET also returns routing scalars: turn_retries, turn_timeout_s, chain_budget, max_depth) |
+| PUT | /api/rules/retries | Set global provider-call retry budget (0 disables, max 10; persists to rules.yaml, hot-reloads JobRunner + ChatLoop; per-project overlay still wins per turn) |
+| PUT | /api/harness/default | Set global harness default (sweave-engine \| opencode; persists to config.yaml, hot-reloads SpecialistRuntime; specialist record / project overlay / per-task override still win per turn) |
 | GET | /api/config | Full config |
 | WS | /ws | WebSocket for real-time updates |
 

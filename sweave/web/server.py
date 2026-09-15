@@ -300,6 +300,11 @@ async def lifespan(app: FastAPI):
         # callback; the ChatLoop is constructed AFTER this from
         # state.job_runner.turn_timeout and shares the same value.
         turn_timeout=config_manager.get_routing().turn_timeout_s,
+        # Retry budget (routing.turn_retries, default 3): retries AFTER
+        # the first provider attempt on engine turns. Hot-reloaded
+        # below alongside turn_timeout; the per-delegation project
+        # overlay wins when present.
+        turn_retries=config_manager.get_routing().turn_retries,
         # Step 4: human-declared permission roots per project (for
         # the engine-turn permission map). Mirrors the
         # project_dir_resolver pattern above.
@@ -358,6 +363,15 @@ async def lifespan(app: FastAPI):
             "Reclaimed %d orphaned opencode serve(s) from a previous run: %s",
             len(reclaimed), [e.get("pid") for e in reclaimed],
         )
+    # Engine sidecar: adopt a surviving sidecar (crash/force-stop
+    # orphan) or reap it when wedged, before the first engine turn
+    # can spawn a second one. Entries owned by a still-live server
+    # are left alone.
+    from sweave.harness.engine import sweep_stale_sidecar
+
+    adopted = sweep_stale_sidecar()
+    if adopted:
+        logger.info("Adopted live engine sidecar from a previous run: %s", adopted)
     specialist_runtime = SpecialistRuntime(
         runners=serve_registry,
         event_bus=state.event_bus,
@@ -447,8 +461,24 @@ async def lifespan(app: FastAPI):
             retries = config_manager.get_routing().turn_retries
         except Exception:  # noqa: BLE001 — best-effort reload, never fatal
             return
-        if retries is not None and state.chat_loop is not None:
-            state.chat_loop.turn_retries = int(retries)
+        if retries is not None:
+            if state.chat_loop is not None:
+                state.chat_loop.turn_retries = int(retries)
+            # The runner holds the non-chat (specialist delegation)
+            # singleton; the per-delegation project overlay still wins
+            # per turn via _turn_retries_for.
+            state.job_runner.turn_retries = int(retries)
+        try:
+            harness_default = config_manager.get().harness.default
+        except Exception:  # noqa: BLE001 — best-effort reload, never fatal
+            return
+        # The runtime holds the config-tier harness default (the
+        # specialist record, project overlay, and per-task override
+        # still win per turn in resolve_harness_name). Without this
+        # push a global default change needs a server restart.
+        runtime = getattr(state.job_runner, "specialist_runtime", None)
+        if runtime is not None and harness_default:
+            runtime.harness_default = harness_default
 
     config_manager.register_reload_callback(_apply_turn_timeout)
     config_manager.enable_hot_reload()
@@ -566,6 +596,18 @@ async def lifespan(app: FastAPI):
             await serve_registry.shutdown_all()
         except Exception as shutdown_err:  # noqa: BLE001
             logger.warning("serve shutdown_all failed: %s", shutdown_err)
+        # Same for the engine sidecar we spawned (Ctrl+C shutdown
+        # reaps opencode serves above but historically leaked one
+        # node process per stop — the task-manager pile). Adopted or
+        # URL-configured sidecars are left alone.
+        try:
+            from sweave.harness.engine import shutdown_sidecar
+
+            outcome = await shutdown_sidecar()
+            if outcome == "stopped":
+                logger.info("Engine sidecar stopped with the server")
+        except Exception as sidecar_err:  # noqa: BLE001
+            logger.warning("engine sidecar shutdown failed: %s", sidecar_err)
         if _prev_mcp_token is None:
             os.environ.pop("SWEAVE_MCP_TOKEN", None)
         else:

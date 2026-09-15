@@ -530,13 +530,14 @@ class SpecialistRuntime:
         """Run one delegation on the selected harness.
 
         Resolution (``harness_selected`` trace event): per-task
-        override > test mock > specialist record > operator default
-        > opencode. No automatic cross-harness fallback (user ruling
-        2026-09-14, removal executed same day): when the engine is
-        selected and fails before doing any work, the turn fails
-        LOUD with the engine error — it never silently re-runs on
-        opencode (which would start a history-less fresh session,
-        bill twice, and misattribute the error). Fail loud across
+        override > test mock > specialist record > project overlay >
+        operator default — and nothing else. There is NO silent
+        fallback tier (user ruling: falling back from our own harness
+        to an external harness makes no sense — a history-less fresh
+        session, double billing, misattributed errors). No automatic
+        cross-harness failover either (user ruling 2026-09-14): when
+        the selected harness fails before doing any work, the turn
+        fails LOUD with that harness's error. Fail loud across
         harnesses; fail over only within one.
         """
         selected, source = resolve_harness_name(
@@ -553,6 +554,24 @@ class SpecialistRuntime:
                 "source": source,
             },
         )
+        # No silent fallback: the resolved name must be a registered
+        # adapter (this also catches an explicit per-task override
+        # naming garbage, and an "unresolved" resolution). Anything
+        # else fails the turn loud with the tier values attached.
+        if selected is None or harness_registry.get(selected) is None:
+            reason = (
+                "harness_unresolved: no tier named a registered harness "
+                f"(override={harness!r} "
+                f"specialist={specialist.harness!r} "
+                f"project={project_harness_default!r} "
+                f"config={self.harness_default!r})"
+            )
+            logger.warning(
+                "SpecialistRuntime: %s for %s",
+                reason,
+                delegation.delegation_id,
+            )
+            return f"[chat error: {reason}]"
         if selected == ENGINE_HARNESS_NAME:
             output, failure_reason = await self._run_engine_attempt(
                 specialist=specialist,
@@ -584,19 +603,32 @@ class SpecialistRuntime:
                 delegation.delegation_id,
             )
             return f"[chat error: {failure_reason}]"
-        return await self._run_opencode(
-            specialist=specialist,
-            delegation=delegation,
-            worktree_path=worktree_path,
-            message=message,
-            trace=trace,
-            model_ref=model_ref,
-            fresh=fresh,
-            session_id_getter=session_id_getter,
-            session_id_setter=session_id_setter,
-            on_chunk=on_chunk,
-            on_reasoning=on_reasoning,
+        if selected == OPENCODE_HARNESS_NAME:
+            return await self._run_opencode(
+                specialist=specialist,
+                delegation=delegation,
+                worktree_path=worktree_path,
+                message=message,
+                trace=trace,
+                model_ref=model_ref,
+                fresh=fresh,
+                session_id_getter=session_id_getter,
+                session_id_setter=session_id_setter,
+                on_chunk=on_chunk,
+                on_reasoning=on_reasoning,
+                on_tool=on_tool,
+            )
+        # Unreachable: the registry check above accepts only registered
+        # names, and the two adapters are the only ones registered.
+        # Defensive loud failure beats an open else that would silently
+        # route a future third harness down the opencode path.
+        reason = f"harness_unresolved: registered but undispatchable {selected!r}"
+        logger.warning(
+            "SpecialistRuntime: %s for %s",
+            reason,
+            delegation.delegation_id,
         )
+        return f"[chat error: {reason}]"
 
     async def abort_live_turn(
         self,

@@ -189,10 +189,7 @@ class HarnessRegistry:
     
     def get(self, name: str) -> Harness | None:
         return self._harnesses.get(name)
-    
-    def get_default(self) -> Harness:
-        return self._harnesses.get("opencode") or next(iter(self._harnesses.values()))
-    
+
     def list(self) -> list[str]:
         return list(self._harnesses.keys())
 
@@ -207,7 +204,7 @@ def resolve_harness_name(
     config_default: str | None = None,
     *,
     project_default: str | None = None,
-) -> tuple[str, str]:
+) -> tuple[str | None, str]:
     """Resolve which harness runs one turn. Returns ``(name, source)``.
 
     Step-4 selection semantics (custom-engine plan; no schema — the
@@ -215,20 +212,28 @@ def resolve_harness_name(
     per-project tier (two-file config ruling):
 
     1. ``override`` (per-task, e.g. ``POST /api/v2/tasks {harness}``)
-       wins — even under the test mock. Explicit is explicit.
+       wins — even under the test mock. Explicit is explicit. (The
+       caller verifies the name against the registry; an unknown
+       override fails the turn loud, never silently runs elsewhere.)
     2. ``SWEAVE_MOCK_OPENCODE=1`` pins ``"opencode"`` so the suite
        stays hermetic (the engine sidecar is a real subprocess +
        real LLM; no test may spawn it implicitly).
     3. The specialist's own ``harness`` when it names a registered
-       harness (unknown names fall through, never crash a turn).
+       harness (unknown names fall through, never crash resolution).
     4. ``project_default`` (the task's project overlay
        ``harness.default``) when registered.
     5. The operator's config default when registered.
-    6. ``"opencode"`` — the guaranteed fallback, always registered.
+
+    There is deliberately NO silent fallback tier (user ruling:
+    falling back from our own harness to an external harness makes
+    no sense — it would start a history-less fresh session, bill
+    twice, and misattribute the error). When no tier names a
+    registered harness this returns ``(None, "unresolved")`` and the
+    caller fails the turn loud with the tier values attached.
 
     ``source`` names the winning tier (``override`` | ``mock`` |
-    ``specialist`` | ``project`` | ``config`` | ``fallback``) for the
-    ``harness_selected`` trace event.
+    ``specialist`` | ``project`` | ``config`` | ``unresolved``) for
+    the ``harness_selected`` trace event.
     """
     import os
 
@@ -242,4 +247,4 @@ def resolve_harness_name(
         return project_default, "project"
     if config_default and harness_registry.get(config_default) is not None:
         return config_default, "config"
-    return "opencode", "fallback"
+    return None, "unresolved"

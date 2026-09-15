@@ -43,6 +43,35 @@ def _set_models_default_line(text: str, scalar: str) -> str | None:
     return "".join(lines)
 
 
+def _set_harness_default_line(text: str, scalar: str) -> str | None:
+    """Splice ``default: <scalar>`` into the top-level ``harness:`` block.
+
+    Same contract as :func:`_set_models_default_line`: comment- and
+    key-preserving, None when the file has no anchorable block (the
+    caller falls back to a YAML rewrite).
+    """
+    import re
+
+    lines = text.splitlines(keepends=True)
+    start = next(
+        (i for i, ln in enumerate(lines) if re.match(r"^harness:\s*(#.*)?$", ln)),
+        None,
+    )
+    if start is None:
+        return None
+    end = start + 1
+    while end < len(lines) and (
+        lines[end].strip() == "" or lines[end][:1] in (" ", "\t")
+    ):
+        existing = re.match(r"^(\s*)default\s*:.*$", lines[end])
+        if existing:
+            lines[end] = f"{existing.group(1)}default: {scalar}\n"
+            return "".join(lines)
+        end += 1
+    lines.insert(start + 1, f"  default: {scalar}\n")
+    return "".join(lines)
+
+
 class ConfigReloader(FileSystemEventHandler):
     """Watches config files and triggers reload callbacks."""
     
@@ -512,11 +541,110 @@ class ConfigManager:
         """Add a routing rule and persist."""
         routing = self.get_routing()
         routing.routes.append(RoutingRule(pattern=pattern, agent=agent, model=model))
-        
+
         # Persist to rules.yaml
         rules_path = Path(self._config.models.rules_path)
         with open(rules_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(routing.model_dump(exclude_none=True), f, sort_keys=False)
+
+    def set_turn_retries(self, value: int) -> int:
+        """Persist the global provider-call retry budget to rules.yaml.
+
+        ``value`` counts retries AFTER the first provider attempt
+        (0 disables, max 10). The routing scalars live in rules.yaml —
+        config.yaml's routing block is superseded at load — so this is
+        the single writable home for the global knob (per-project
+        overlays still win per turn). Validates via the
+        :class:`RoutingConfig` bounds, persists, then reloads
+        in-process and fans out to the registered callbacks (same
+        contract as :meth:`_sync_reload`), so the running JobRunner +
+        ChatLoop pick it up without a restart. Raises ``ValueError``
+        on violation (the router maps this to a 400).
+        """
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("turn_retries must be an integer >= 0 (0 disables retry)")
+        if value < 0:
+            raise ValueError("turn_retries must be >= 0 (0 disables retry)")
+        if value > 10:
+            raise ValueError(
+                "turn_retries must be <= 10: beyond that a turn is "
+                "hammering a dead provider, not recovering"
+            )
+        routing = self.get_routing()
+        routing.turn_retries = value
+        rules_path = Path(self._config.models.rules_path)
+        with open(rules_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(routing.model_dump(exclude_none=True), f, sort_keys=False)
+        self._sync_reload()
+        return value
+
+    def set_harness_default(self, value: str) -> str:
+        """Persist the global harness default to config.yaml.
+
+        ``value`` must name a registered harness adapter
+        (``"sweave-engine"`` | ``"opencode"``) — anything else would
+        fall through resolution to the hardcoded ``"opencode"``
+        fallback, so it is rejected here instead of stored. This sets
+        only the *config tier*: the specialist record, the project
+        overlay (``harness.default``), and the per-task override all
+        still win per turn, and persisted ``"opencode"`` specialist
+        records keep it (never a flag-day). Persists with a
+        comment-preserving line splice (same rule as
+        :meth:`set_default_model` — never a PyYAML round-trip), then
+        reloads in-process and fans out to the registered callbacks
+        (same contract as :meth:`_sync_reload`), so the running
+        ``SpecialistRuntime.harness_default`` picks it up without a
+        restart. Raises ``ValueError`` on violation (the router maps
+        this to a 400).
+        """
+        from sweave.engine.protocol import ENGINE_HARNESS_NAME, OPENCODE_HARNESS_NAME
+
+        name = value.strip() if isinstance(value, str) else ""
+        if name not in (ENGINE_HARNESS_NAME, OPENCODE_HARNESS_NAME):
+            raise ValueError(
+                "harness default must be 'sweave-engine' or 'opencode' "
+                f"(got {value!r})"
+            )
+        if self._config is not None:
+            self._config.harness.default = name
+        self._persist_harness_default(name)
+        self._sync_reload()
+        return name
+
+    def _persist_harness_default(self, value: str) -> None:
+        """Write the harness default into config.yaml (surgical).
+
+        Line-preserving edit inside the top-level ``harness:`` block;
+        falls back to a full YAML rewrite when the file has no
+        ``harness:`` block to anchor on, and to a minimal document
+        when the config file does not exist yet. Atomic write; never
+        touches rules.yaml. Never write via PowerShell redirection
+        (UTF-16 LE + BOM breaks PyYAML).
+        """
+        import yaml
+
+        from sweave.runtime.locking import atomic_write_text_sync
+
+        path = Path(self.config_path)
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            edited = _set_harness_default_line(text, value)
+            if edited is not None:
+                atomic_write_text_sync(path, edited)
+                return
+            data = yaml.safe_load(text) or {}
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+        harness = data.get("harness")
+        if not isinstance(harness, dict):
+            harness = {}
+            data["harness"] = harness
+        harness["default"] = value
+        atomic_write_text_sync(
+            path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        )
     
     def get_routing(self) -> RoutingConfig:
         """Get routing configuration."""

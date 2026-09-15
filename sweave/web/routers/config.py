@@ -23,6 +23,14 @@ class RuleAddRequest(BaseModel):
     model: Optional[str] = None
 
 
+class TurnRetriesUpdateRequest(BaseModel):
+    turn_retries: int
+
+
+class HarnessDefaultUpdateRequest(BaseModel):
+    harness: str
+
+
 @router.get("/api/config")
 async def get_config(state: AppState = Depends(get_state)):
     return state.config_manager.get().model_dump(exclude_none=True)
@@ -109,7 +117,35 @@ async def get_rules(state: AppState = Depends(get_state)):
             for r in routing.routes
         ],
         "fallback": routing.fallback,
+        # Routing scalars (the retry knob lives here — rules.yaml is
+        # the writable home; config.yaml's routing block is
+        # superseded at load). Surfaced so a "stuck at 0" value is
+        # visible without reading files.
+        "turn_retries": routing.turn_retries,
+        "turn_timeout_s": routing.turn_timeout_s,
+        "chain_budget": routing.chain_budget,
+        "max_depth": routing.max_depth,
     }
+
+
+@router.put("/api/rules/retries")
+async def set_turn_retries(
+    request: TurnRetriesUpdateRequest, state: AppState = Depends(get_state)
+):
+    """Set the global provider-call retry budget (retries AFTER the
+    first attempt; 0 disables, max 10).
+
+    Persists to rules.yaml and hot-reloads the running JobRunner +
+    ChatLoop singletons. Per-project ``.sweave/config.yaml`` overlays
+    still win per turn — when a turn still shows 0 after this call,
+    check ``GET /api/projects/{name}/config/effective`` for that
+    turn's project overlay.
+    """
+    try:
+        value = state.config_manager.set_turn_retries(request.turn_retries)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "turn_retries": value}
 
 
 @router.post("/api/rules")
@@ -118,6 +154,28 @@ async def add_rule(request: RuleAddRequest, state: AppState = Depends(get_state)
     payload = {"pattern": request.pattern, "agent": request.agent, "model": request.model}
     await state.publish("rule_added", payload)
     return {"success": True}
+
+
+@router.put("/api/harness/default")
+async def set_harness_default(
+    request: HarnessDefaultUpdateRequest, state: AppState = Depends(get_state)
+):
+    """Set the global harness default (``sweave-engine`` | ``opencode``).
+
+    Persists to config.yaml ``harness.default`` and hot-reloads the
+    running ``SpecialistRuntime.harness_default``. This is only the
+    *config tier*: the specialist record, the project overlay
+    (``harness.default``), and the per-task override all still win
+    per turn — seed specialists already run on ``sweave-engine``,
+    so flipping this to ``opencode`` will not move them. Persisted
+    ``"opencode"`` specialist records keep it (change those on the
+    Agents tab).
+    """
+    try:
+        value = state.config_manager.set_harness_default(request.harness)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "harness": value}
 
 
 @router.get("/api/harnesses")
