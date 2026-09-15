@@ -122,14 +122,16 @@ ORCHESTRATOR_READONLY_TOOLS: tuple[str, ...] = ("read", "grep", "glob")
 
 # Orchestrator exec tools (2026-09-15 ruling): the read trio plus
 # `.md`-only edit/write (plans, state, design notes — the planning
-# method's working material) plus `todo` (its own plan tracking).
-# edit/write are OFFERED but gated to `*.md` by
+# method's working material) plus `todo` (its own plan tracking) plus
+# `git` (read-only inspection: log/show/status/diff/branch/ls-files/
+# rev-parse — commit archaeology without a delegation, per the
+# GIT_READ_TOOL plan). edit/write are OFFERED but gated to `*.md` by
 # ORCHESTRATOR_MD_WRITE_MAP (structural on the engine;
 # charter-only on opencode, whose agent profile allows file writes
 # by the 2026-09-09 ruling). Still no bash, ever — the
 # orchestrator runs nothing.
 ORCHESTRATOR_TOOLS: tuple[str, ...] = (
-    "read", "grep", "glob", "edit", "write", "todo",
+    "read", "grep", "glob", "edit", "write", "todo", "git",
 )
 
 # edit/write gate for orchestrator turns (last-match-wins object

@@ -49,8 +49,9 @@ def test_orchestrator_tools_tuple():
         ORCHESTRATOR_TOOLS,
     )
 
-    assert tuple(ORCHESTRATOR_TOOLS) == ("read", "grep", "glob", "edit", "write", "todo")
+    assert tuple(ORCHESTRATOR_TOOLS) == ("read", "grep", "glob", "edit", "write", "todo", "git")
     assert "bash" not in ORCHESTRATOR_TOOLS
+    assert "git" in ORCHESTRATOR_TOOLS  # GIT_READ_TOOL: orchestrator-only
     # The read trio still rides every widening.
     for tool in ORCHESTRATOR_READONLY_TOOLS:
         assert tool in ORCHESTRATOR_TOOLS
