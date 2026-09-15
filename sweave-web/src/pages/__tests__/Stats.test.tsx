@@ -91,4 +91,24 @@ describe("StatsPage", () => {
     await waitFor(() => expect(summaryMock).toHaveBeenCalled());
     expect(summaryMock).toHaveBeenCalledWith();
   });
+
+  it("degrades (never crashes) on a pre-1b payload without cost fields", async () => {
+    // Stale-server shape: the exact payload that blank-screened the app —
+    // cells carry no estimated_cost/cost_source/unpriced. The page must
+    // render with cost shown as unpriced, not throw.
+    const legacy = summary();
+    for (const bucket of [legacy.by_day, legacy.by_model, legacy.by_project, legacy.by_agent]) {
+      for (const row of bucket) {
+        delete (row as Partial<typeof row>).estimated_cost;
+        delete (row as Partial<typeof row>).cost_source;
+        delete (row as Partial<typeof row>).unpriced;
+      }
+    }
+    delete (legacy.totals as Partial<typeof legacy.totals>).estimated_cost;
+    summaryMock.mockResolvedValue(legacy);
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId("stats-totals")).toBeDefined());
+    expect(screen.getByTestId("stats-totals").textContent).toContain("unpriced");
+    expect(screen.getByTestId("stats-by-day").textContent).toContain("2026-09-14");
+  });
 });

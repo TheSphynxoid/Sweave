@@ -20,6 +20,7 @@ import { QueryProvider } from "@/context/QueryProvider";
 import { AppProvider } from "@/context/AppProvider";
 import { WSProvider } from "@/context/WSProvider";
 import { Layout } from "@/components/Layout";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { ChatPage } from "@/pages/Chat";
 import { ChildrenPage } from "@/pages/Children";
 import { PlanPage } from "@/pages/Plan";
@@ -41,30 +42,96 @@ export default function App() {
           <ThemeProvider>
             <BrowserRouter>
               <Routes>
-                <Route path="/" element={<Layout />}>
+                {/* Each surface renders inside its own boundary: a render
+                    throw in one page is contained to that page (named
+                    fallback + retry) instead of blank-screening the app. */}
+                <Route
+                  path="/"
+                  element={
+                    <RouteErrorBoundary label="App shell">
+                      <Layout />
+                    </RouteErrorBoundary>
+                  }
+                >
                   {/* Wave-1 entries: chat is the input funnel;
                        children is the output funnel. */}
                   <Route index element={<Navigate to="/chat" replace />} />
-                  <Route path="chat" element={<ChatPage />} />
-                  <Route path="children" element={<ChildrenPage />} />
+                  <Route
+                    path="chat"
+                    element={
+                      <RouteErrorBoundary label="Chat">
+                        <ChatPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
+                  <Route
+                    path="children"
+                    element={
+                      <RouteErrorBoundary label="Children">
+                        <ChildrenPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
                   {/* TRACKING_PLAN Phase A: read-only plan board
                        (Kanban + table + bugs lane over delegations). */}
-                  <Route path="plan" element={<PlanPage />} />
+                  <Route
+                    path="plan"
+                    element={
+                      <RouteErrorBoundary label="Plan">
+                        <PlanPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
                   {/* Usage ledger surface (local telemetry over
                         records + traces; counts only, never text). */}
-                  <Route path="stats" element={<StatsPage />} />
+                  <Route
+                    path="stats"
+                    element={
+                      <RouteErrorBoundary label="Usage">
+                        <StatsPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
                   {/* R4.1 step 3: designed scaffolds for the
-                       surfaces whose feature work ships in
-                       R4.3 (delegation detail) and R4.4 (memory
-                       + agents + settings). The scaffolds are
-                       honest: real layout, real empty state, a
-                       "Pending R4.X" badge. Memory/Agents/Settings
-                       content lands in R4.4; delegation detail in
-                       R4.3. */}
-                  <Route path="delegations/:id" element={<DelegationDetailPage />} />
-                  <Route path="memory" element={<MemoryPage />} />
-                  <Route path="agents" element={<AgentsPage />} />
-                  <Route path="settings" element={<SettingsPage />} />
+                        surfaces whose feature work ships in
+                        R4.3 (delegation detail) and R4.4 (memory
+                        + agents + settings). The scaffolds are
+                        honest: real layout, real empty state, a
+                        "Pending R4.X" badge. Memory/Agents/Settings
+                        content lands in R4.4; delegation detail in
+                        R4.3. */}
+                  <Route
+                    path="delegations/:id"
+                    element={
+                      <RouteErrorBoundary label="Delegation">
+                        <DelegationDetailPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
+                  <Route
+                    path="memory"
+                    element={
+                      <RouteErrorBoundary label="Memory">
+                        <MemoryPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
+                  <Route
+                    path="agents"
+                    element={
+                      <RouteErrorBoundary label="Agents">
+                        <AgentsPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
+                  <Route
+                    path="settings"
+                    element={
+                      <RouteErrorBoundary label="Settings">
+                        <SettingsPage />
+                      </RouteErrorBoundary>
+                    }
+                  />
                   {/* R4.2 step 2a: dev-only chat-lab visual test.
                        Gated by import.meta.env.DEV so the lab is
                        tree-shaken from the production bundle. */}

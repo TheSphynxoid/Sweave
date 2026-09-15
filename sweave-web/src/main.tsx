@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
+import { RouteErrorBoundary } from './components/RouteErrorBoundary'
 import { applyFontScale, loadFontScaleId } from './lib/theme/fontScale'
 // Bundled variable fonts (Fontsource, OFL): Inter for UI, JetBrains Mono
 // for code. font-display: swap + unicode-range subsets, so the system
@@ -16,6 +17,10 @@ applyFontScale(loadFontScaleId());
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {/* Last-resort guard: provider-tree throws render here instead of
+        leaving a blank page with no recovery affordance. */}
+    <RouteErrorBoundary label="Sweave">
+      <App />
+    </RouteErrorBoundary>
   </StrictMode>,
 )

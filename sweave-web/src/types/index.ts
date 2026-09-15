@@ -291,14 +291,15 @@ export interface Tokens {
  * Phase 1b cost fields: `estimated_cost` (summed per turn via the
  * shared `sweave/stats/pricing.py` fold), `cost_source` (worst turn
  * source: none > rates > provider), `unpriced` (no turn priced —
- * display "unpriced", never $0).
+ * display "unpriced", never $0). Optional: pre-1b servers omit them;
+ * readers must default (missing cost reads as unpriced, never crash).
  */
 export interface StatsCell extends Tokens {
   turns: number;
   failed: number;
-  estimated_cost: number;
-  cost_source: "provider" | "rates" | "none";
-  unpriced: boolean;
+  estimated_cost?: number;
+  cost_source?: "provider" | "rates" | "none";
+  unpriced?: boolean;
 }
 
 export interface StatsSummary {

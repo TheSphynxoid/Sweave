@@ -21,16 +21,21 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-/** Estimated-cost display: Free / $x / unpriced — never $0. */
+/** Estimated-cost display: Free / $x / unpriced — never $0.
+ * Tolerant of pre-1b payloads (missing cost fields read as unpriced,
+ * never throw — a shape gap must degrade the card, not the page). */
 function fmtCost(cell: StatsCell): { value: string; sub?: string } {
-  if (cell.unpriced && cell.estimated_cost <= 0) {
+  const est =
+    typeof cell.estimated_cost === "number" ? cell.estimated_cost : 0;
+  const unpriced = cell.unpriced ?? est <= 0;
+  if (unpriced && est <= 0) {
     return { value: "unpriced", sub: "no rates for these models" };
   }
-  if (cell.estimated_cost <= 0) {
+  if (est <= 0) {
     return { value: "Free", sub: cell.cost_source === "provider" ? "provider-reported" : "free tier rates" };
   }
   const sub = cell.cost_source === "provider" ? "actual" : "est.";
-  return { value: `$${cell.estimated_cost.toFixed(4)}`, sub };
+  return { value: `$${est.toFixed(4)}`, sub };
 }
 
 /** Per-day SVG sparkline: billed input tokens + est. cost (pure SVG+CSS). */
@@ -39,13 +44,16 @@ function DaySparkline({ rows }: { rows: Array<{ day: string } & StatsCell> }) {
   const W = 280;
   const H = 44;
   const maxTok = Math.max(1, ...rows.map((r) => r.input));
-  const maxCost = Math.max(0, ...rows.map((r) => r.estimated_cost));
+  const costOf = (r: StatsCell): number =>
+    typeof r.estimated_cost === "number" ? r.estimated_cost : 0;
+  const maxCost = Math.max(0, ...rows.map(costOf));
   const step = rows.length > 1 ? W / (rows.length - 1) : 0;
   const tokPts = rows.map((r, i) => `${(i * step).toFixed(1)},${(H - 6 - (r.input / maxTok) * (H - 12)).toFixed(1)}`).join(" ");
   const costBars = rows.map((r, i) => {
-    const h = maxCost > 0 ? Math.max(1, (r.estimated_cost / maxCost) * (H - 10)) : 0;
+    const est = costOf(r);
+    const h = maxCost > 0 ? Math.max(1, (est / maxCost) * (H - 10)) : 0;
     const x = rows.length > 1 ? i * step - 2 : W / 2 - 2;
-    return { x, h, unpriced: r.unpriced && r.estimated_cost <= 0 };
+    return { x, h, unpriced: (r.unpriced ?? est <= 0) && est <= 0 };
   });
   return (
     <section data-testid="stats-sparkline" aria-label="Per-day usage trend">
@@ -207,8 +215,8 @@ export function StatsPage() {
             <StatCard label="Cache read" value={fmt(t.cache_read)} />
             <StatCard
               label="Cost"
-              value={t.cost > 0 ? t.cost.toFixed(4) : "—"}
-              sub={t.cost > 0 ? undefined : "provider reports no prices"}
+              value={typeof t.cost === "number" && t.cost > 0 ? t.cost.toFixed(4) : "—"}
+              sub={typeof t.cost === "number" && t.cost > 0 ? undefined : "provider reports no prices"}
             />
             <StatCard label="Est. cost" value={fmtCost(t).value} sub={fmtCost(t).sub} />
           </div>
