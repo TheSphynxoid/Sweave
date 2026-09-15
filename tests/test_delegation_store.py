@@ -249,6 +249,7 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         for the transition-time diff artifact pointer.
         Per-specialist worktree policy added the v11 field
         (worktree_owned) for tree-ownership at settle.
+        M2.2 added the v12 field (verdict) for reviewer judgments.
         """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -276,6 +277,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
             "review_bundle",
             # Worktree-policy addition: tree ownership at settle
             "worktree_owned",
+            # M2.2 addition: reviewer verdict (advisory)
+            "verdict",
         }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -285,11 +288,11 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
 
 
 def test_schema_version_is_v11():
-    """Per-specialist worktree policy: the current schema is v11
-    (worktree_owned flag on top of v10's review_bundle pointer)."""
+    """M2.2 verdict: the current schema is v12 (verdict record on
+    top of v11's worktree_owned flag)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 11
+    assert SCHEMA_VERSION == 12
 
 
 def test_v5_record_loads_as_v6_with_archive_defaults():

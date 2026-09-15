@@ -64,7 +64,7 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
@@ -76,6 +76,7 @@ SCHEMA_VERSION_V8 = 8  # M2.1 records (blocking + review_request)
 SCHEMA_VERSION_V9 = 9  # M2.1-follow-up records (engine_session_id)
 SCHEMA_VERSION_V10 = 10  # Review Phase 1 records (review_bundle)
 SCHEMA_VERSION_V11 = 11  # per-specialist worktree policy (worktree_owned)
+SCHEMA_VERSION_V12 = 12  # M2.2 records (verdict)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -235,6 +236,37 @@ class ReviewBundle(TypedDict, total=False):
     scope: str
 
 
+class Verdict(TypedDict, total=False):
+    """Reviewer verdict attached to a Delegation (M2.2).
+
+    Recorded via ``POST /api/delegations/{id}/verdict`` while the
+    delegation sits in ``review``; kept as history on promote
+    (M2.1 ruling 3 pattern). Advisory ONLY: a verdict never changes
+    status, never clears ``needs_attention``, never promotes — the
+    human-promotes ruling stands, and R2 automation calls the same
+    promote endpoint later. The API is the automation seam.
+
+    * ``decision`` — ``approve`` | ``request_changes``.
+    * ``comments`` — free text; required for ``request_changes``.
+    * ``confidence`` — 0.0–1.0 reviewer self-rating; None declines.
+    * ``reviewer`` — who judged (agent name or human handle).
+    * ``decided_at`` — ISO timestamp of the verdict submit.
+    * ``gotcha_hits`` — gotcha ids this verdict cites (reserved:
+      empty until the gotcha system lands).
+    * ``output_claims_checked`` — whether the reviewer pulled the
+      full turn output before judging (reserved: False until gated
+      transcript reads land).
+    """
+
+    decision: str
+    comments: str
+    confidence: float | None
+    reviewer: str
+    decided_at: str
+    gotcha_hits: list[str]
+    output_claims_checked: bool
+
+
 @dataclass
 class Delegation:
     """One unit of work delegated to a specialist agent.
@@ -328,6 +360,11 @@ class Delegation:
     # by definition (every task tree was per-delegation) — default
     # True via the v10→v11 migration.
     worktree_owned: bool = True
+    # M2.2: reviewer verdict. Attached while in ``review`` via the
+    # verdict endpoint; None = not yet judged (pre-M2.2 records,
+    # non-review statuses). Advisory only — never drives status.
+    # Kept as history on promote.
+    verdict: Verdict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -365,8 +402,10 @@ class Delegation:
             d = _migrate_v8_to_v9(d)
         if schema_version < SCHEMA_VERSION_V10:
             d = _migrate_v9_to_v10(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V11:
             d = _migrate_v10_to_v11(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v11_to_v12(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh record
@@ -514,6 +553,18 @@ def _migrate_v10_to_v11(d: dict[str, Any]) -> dict[str, Any]:
     exist from v11 on.
     """
     d.setdefault("worktree_owned", True)
+    return d
+
+
+def _migrate_v11_to_v12(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v11 record forward to the v12 field set (M2.2 verdict).
+
+    v11 records predate reviewer verdicts: no ``verdict`` field.
+    Every pre-change review was by definition unjudged (verdicts did
+    not exist) — default None. Promote keeps verdicts as history,
+    so no settled record ever needs one backfilled.
+    """
+    d.setdefault("verdict", None)
     return d
 
 

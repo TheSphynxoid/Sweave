@@ -36,6 +36,10 @@ sections the UI detail view patches into place (and the same data the
 * ``review_bundle`` -- Phase 1: the ``{path, bytes, truncated,
   scope}`` pointer echoed verbatim (None = pre-change record or
   unknown id; ``path`` None = degraded capture, scope says why).
+* ``verdict`` -- M2.2: the reviewer verdict record echoed verbatim
+  (None = unjudged: pre-M2.2 records, non-review statuses,
+  unknown ids). Advisory only — the detail surface shows it, never
+  acts on it.
 * ``price`` -- USAGE_LEDGER Phase 0: the shared
   ``sweave/stats/pricing.py`` projection (summed ``tokens_used`` x
   sidecar rates, provider cost wins on key-presence). Additive, nulls
@@ -228,6 +232,7 @@ def render_detail_view(
     engine_session_id: str | None = None,
     record: dict[str, Any] | None = None,
     review_bundle: dict[str, Any] | None = None,
+    verdict: dict[str, Any] | None = None,
     model: str | None = None,
     meta_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -317,5 +322,6 @@ def render_detail_view(
         "engine_session_id": engine_session_id,
         "record": render_record_header(record),
         "review_bundle": dict(review_bundle) if review_bundle else None,
+        "verdict": dict(verdict) if verdict else None,
         "price": _render_price(events=events, model=model, meta_entry=meta_entry),
     }

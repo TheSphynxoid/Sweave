@@ -217,9 +217,10 @@ def test_v9_record_loads_as_v10_with_bundle_none():
         "updated_at": "2026-09-12T00:00:00",
     }
     d = Delegation.from_dict(rec)
-    assert d.schema_version == SCHEMA_VERSION == 11
+    assert d.schema_version == SCHEMA_VERSION == 12
     assert d.review_bundle is None
     assert d.worktree_owned is True
+    assert d.verdict is None
 
 
 def test_v10_pointer_round_trips():
@@ -237,7 +238,7 @@ def test_v10_pointer_round_trips():
     back = Delegation.from_dict(d.to_dict())
     assert back.review_bundle is not None
     assert back.review_bundle["scope"] == "worktree"
-    assert back.schema_version == 11
+    assert back.schema_version == 12
 
 
 # ---------------------------------------------------------------------------

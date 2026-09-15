@@ -127,6 +127,24 @@ class SubAgentRunFinish(BaseModel):
     output_summary: str = ""
 
 
+class VerdictIn(BaseModel):
+    """Reviewer verdict for one ``review``-status delegation (M2.2).
+
+    Advisory only — recording a verdict never changes status, never
+    clears ``needs_attention``, never promotes. Unknown keys ignored
+    (LLM-supplied extras must not 422 the submit).
+    """
+
+    model_config = {"extra": "ignore"}
+
+    decision: Literal["approve", "request_changes"]
+    comments: str = ""
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reviewer: str = ""
+    gotcha_hits: list[str] = Field(default_factory=list)
+    output_claims_checked: bool = False
+
+
 class EscalateRequest(BaseModel):
     """M1.9 step 3 (+ M1.11 kinds): ask_human / escalate request.
 
@@ -619,6 +637,7 @@ async def get_delegation_detail(
         ),
         record=record.to_dict() if record is not None else None,
         review_bundle=record.review_bundle if record is not None else None,
+        verdict=record.verdict if record is not None else None,
         model=model_str,
         meta_entry=meta_entry,
     )
@@ -915,6 +934,79 @@ async def promote_delegation(
         # write-through is best-effort: a missing parent (orphan
         # delegation) leaves the child stale; R4 removes the bridge.
         _sync_bridged_child_status(state, delegation_id, "done")
+        return store.get(delegation_id).to_dict()  # type: ignore[union-attr]
+    raise HTTPException(404, f"Delegation '{delegation_id}' not found")
+
+
+@router.post("/api/delegations/{delegation_id}/verdict")
+async def record_verdict(
+    delegation_id: str, verdict: VerdictIn, state: AppState = Depends(get_state)
+):
+    """Record a reviewer verdict on a ``review``-status delegation (M2.2).
+
+    Only valid from ``review`` (409 from any other status; 404
+    unknown). A ``request_changes`` verdict requires non-empty
+    ``comments`` (400 — a rejection with no reason is unactionable).
+
+    Advisory ONLY: the status stays ``review``, ``needs_attention``
+    stays set (the review still owes a promote-or-answer), and
+    nothing auto-promotes — the human-promotes ruling stands, and
+    R2 automation calls the promote endpoint later. The verdict is
+    kept as history on promote. Trace ``verdict_recorded`` + WS
+    ``delegation.verdict_recorded`` mirror the promote vocabulary
+    so observers get the same shape (the API is the automation
+    seam; no UI changes this round).
+    """
+    if verdict.decision == "request_changes" and not verdict.comments.strip():
+        raise HTTPException(
+            400, "request_changes requires non-empty comments",
+        )
+    # Find the delegation across all known per-project stores.
+    for store in _all_stores(state):
+        rec = store.get(delegation_id)
+        if rec is None:
+            continue
+        if rec.status != "review":
+            raise HTTPException(
+                409,
+                f"delegation '{delegation_id}' is in status '{rec.status}'; "
+                "only 'review' can carry a verdict",
+            )
+        from datetime import datetime as _dt
+        await store.update(
+            delegation_id,
+            verdict={
+                "decision": verdict.decision,
+                "comments": verdict.comments,
+                "confidence": verdict.confidence,
+                "reviewer": verdict.reviewer,
+                "decided_at": _dt.now().isoformat(),
+                "gotcha_hits": list(verdict.gotcha_hits),
+                "output_claims_checked": verdict.output_claims_checked,
+            },
+        )
+        if state.event_bus is not None:
+            await state.event_bus.publish(
+                "delegation.verdict_recorded",
+                {
+                    "delegation_id": delegation_id,
+                    "decision": verdict.decision,
+                    "reviewer": verdict.reviewer,
+                    "agent": rec.agent,
+                    "task_id": rec.task_id,
+                },
+            )
+        from sweave.runtime.trace_log import TraceLog
+
+        trace = TraceLog(delegation_id, base_dir=state.traces_dir)
+        trace.append(
+            "verdict_recorded",
+            {
+                "decision": verdict.decision,
+                "reviewer": verdict.reviewer,
+            },
+        )
+        trace.close()
         return store.get(delegation_id).to_dict()  # type: ignore[union-attr]
     raise HTTPException(404, f"Delegation '{delegation_id}' not found")
 
