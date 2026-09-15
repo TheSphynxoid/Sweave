@@ -24,6 +24,8 @@ import { join, resolve, relative, sep } from "node:path";
 export const DEFAULT_BASH_TIMEOUT_MS = 120000;
 export const PER_TOOL_BUDGET_MS = 1200000; // proposed 1200s, view-plan parity
 export const MAX_OUTPUT_CHARS = 32768;
+// Opencode parity: an omitted read limit pages (never whole-file).
+export const DEFAULT_READ_LIMIT = 2000;
 
 function globBody(pattern) {
   // Pragmatic glob (*, ?, **) -> regex body. Mirrors the shapes
@@ -117,6 +119,20 @@ function truncateOutput(text) {
   };
 }
 
+/**
+ * Tail-cut for streaming-style outputs (bash): failures and verdicts
+ * live at the END, so an oversized result keeps the most recent
+ * bytes and names the head cut. Opencode-parity direction.
+ */
+function truncateTail(text) {
+  if (text.length <= MAX_OUTPUT_CHARS) return { text, truncated: false };
+  const cut = text.length - MAX_OUTPUT_CHARS;
+  return {
+    text: `... [truncated ${cut} chars from the start — showing the tail]\n` + text.slice(cut),
+    truncated: true,
+  };
+}
+
 async function readPath(cwd, filePath, offset, limit) {
   const abs = resolve(cwd, filePath);
   let st;
@@ -134,9 +150,19 @@ async function readPath(cwd, filePath, offset, limit) {
   const raw = await fsp.readFile(abs, "utf8");
   if (raw.includes("\0")) return fail("read: binary file");
   const lines = raw.split("\n");
+  const total = lines.length;
   const start = Math.max(0, (offset || 1) - 1);
-  const slice = limit ? lines.slice(start, start + limit) : lines.slice(start);
-  return ok(slice.join("\n"));
+  // Opencode parity: omitted limit pages (default window), it never
+  // means whole-file — the 2026-09-14 incident was a limit-less read
+  // dumping 607K chars into history. Explicit limits still win.
+  const effLimit = limit || DEFAULT_READ_LIMIT;
+  const slice = lines.slice(start, start + effLimit);
+  let text = slice.join("\n");
+  const last = start + slice.length;
+  if (last < total) {
+    text += `\n\n(Showing lines ${start + 1}-${last} of ${total}. Use offset=${last + 1} to continue.)`;
+  }
+  return ok(text);
 }
 
 async function editPath(cwd, filePath, oldString, newString, replaceAll) {
@@ -195,7 +221,7 @@ function runBash(cwd, command, timeoutMs, signal) {
       command,
       { cwd, timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
       (error, stdout, stderr) => {
-        const out = truncateOutput((stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : ""));
+        const out = truncateTail((stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : ""));
         if (error) {
           if (error.killed && (error.signal === "SIGTERM" || error.signal === "SIGKILL")) {
             settle({
@@ -204,7 +230,7 @@ function runBash(cwd, command, timeoutMs, signal) {
               partial: out.text,
             });
           } else {
-            settle({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(0, 2000)}` });
+            settle({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(-2000)}` });
           }
         } else {
           settle(ok(out.text));
@@ -338,13 +364,14 @@ function todoWrite(session, todos) {
 export const EXEC_TOOL_DEFS = [
   {
     name: "read",
-    description: "Read a file (offset/limit, 1-based) or list a directory.",
+    description:
+      "Read a file (offset/limit, 1-based; omitted limit pages 2000 lines — use offset to continue) or list a directory.",
     parameters: {
       type: "object",
       properties: {
         filePath: { type: "string", description: "Path relative to the turn cwd" },
         offset: { type: "number" },
-        limit: { type: "number" },
+        limit: { type: "number", description: "Max lines (default 2000)" },
       },
       required: ["filePath"],
     },
@@ -377,7 +404,8 @@ export const EXEC_TOOL_DEFS = [
   },
   {
     name: "bash",
-    description: "Run a shell command in the turn cwd.",
+    description:
+      "Run a shell command in the turn cwd. Oversized output keeps the tail (most recent); redirect to a file only for logs you will grep, and prefer the OS temp dir.",
     parameters: {
       type: "object",
       properties: {
@@ -447,8 +475,11 @@ export const EXEC_TOOL_DEFS = [
  * history — a limit-less `read` of a 600KB file once dumped 607K
  * chars into history and re-billed it on all ~20 remaining
  * iterations (~2M of a 5.4M-token turn from ONE read). `bash`
- * already truncates at the source, so it is excluded here (a second
- * pass would stack truncation markers).
+ * truncates at the source (tail-cut), so it is excluded here (a
+ * second pass would stack truncation markers). `read` pages by
+ * default (DEFAULT_READ_LIMIT, opencode parity) and teaches
+ * `offset` continuation, so models page instead of redirecting
+ * test output to files (review-hardening step 2, 2026-09-15).
  */
 export async function executeTool(name, args, execCtx) {
   const { cwd, session, signal } = execCtx;

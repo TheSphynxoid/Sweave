@@ -715,6 +715,83 @@ async def test_read_output_truncated_before_history(sidecar, worktree):
 
 
 @needs_node
+async def test_read_defaults_to_paged_window(sidecar, worktree):
+    """Omitted read limit pages (opencode parity) and teaches offset.
+
+    Review-hardening step 2 (2026-09-15): the flat head-cut taught
+    models to redirect test output to files; a paged default with a
+    continuation hint teaches `offset` instead.
+    """
+    (worktree / "many.txt").write_text(
+        "\n".join(f"line-{i}" for i in range(1, 3001)) + "\n", encoding="utf-8"
+    )
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": "many.txt"})]},
+        {"text": "PAGED DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("read the file"), trace=trace)
+    assert result.success, result.error
+    out = trace.of("tool.completed")[0]["state"]["output"].replace("\r\n", "\n")
+    assert "line-1\n" in out and "line-2000\n" in out
+    assert "line-2001" not in out
+    assert "Use offset=2001 to continue" in out
+
+
+@needs_node
+async def test_read_explicit_limit_and_offset_win(sidecar, worktree):
+    """Explicit offset/limit page anywhere; final page has no hint."""
+    (worktree / "many.txt").write_text(
+        "\n".join(f"line-{i}" for i in range(1, 3001)) + "\n", encoding="utf-8"
+    )
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("read", {"filePath": "many.txt", "offset": 2001, "limit": 500})]},
+        {"calls": [_call("read", {"filePath": "many.txt", "offset": 2501, "limit": 600})]},
+        {"text": "OFFSET DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("page the file"), trace=trace)
+    assert result.success, result.error
+    first, second = (
+        p["state"]["output"].replace("\r\n", "\n") for p in trace.of("tool.completed")
+    )
+    assert "line-2001\n" in first and "line-2500\n" in first
+    assert "line-2000\n" not in first and "line-2501" not in first
+    assert "Use offset=2501 to continue" in first
+    assert "line-2501\n" in second and "line-3000" in second
+    assert "to continue" not in second
+
+
+@needs_node
+async def test_bash_oversized_output_keeps_tail(sidecar, worktree):
+    """Oversized bash output keeps the tail (failures live at the end)."""
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("bash", {"command": "node -e \"for(let i=1;i<=5000;i++) console.log('line-'+i)\""})]},
+        {"text": "TAIL DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["bash"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("run it"), trace=trace)
+    assert result.success, result.error
+    out = trace.of("tool.completed")[0]["state"]["output"]
+    assert len(out) <= 32768 + 200
+    assert "showing the tail" in out
+    assert "line-5000" in out
+    assert "\nline-1\n" not in out
+
+
+@needs_node
 async def test_tokens_used_carries_cache_read(sidecar, worktree):
     """The terminal ``tokens_used`` anchor reports real cache numbers
     (the loop-turn emit hardcoded zeros while per-step boundaries
