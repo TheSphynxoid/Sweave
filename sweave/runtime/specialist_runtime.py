@@ -546,6 +546,15 @@ class SpecialistRuntime:
         # project overlay ``harness.default``, between the specialist
         # record and the operator default. None = no overlay.
         project_harness_default: str | None = None,
+        # Per-turn time budget, seconds (supervisor step 1, one-clock
+        # owner): forwarded into the engine message metadata so the
+        # harness + sidecar enforce the SAME budget the outer wait
+        # uses — never a second independent clock (incident
+        # f774d84b: the inner attempt died at its hardcoded 1800
+        # while the outer re-armed over the corpse). None = harness
+        # default (legacy/tests). The opencode path ignores it
+        # (separate timer stack, step 4 scope).
+        turn_timeout: float | None = None,
     ) -> str:
         """Run one delegation on the selected harness.
 
@@ -609,6 +618,7 @@ class SpecialistRuntime:
                 project_dir=project_dir,
                 permission_roots=permission_roots,
                 max_retries=max_retries,
+                turn_timeout=turn_timeout,
             )
             if failure_reason is None:
                 return output  # type: ignore[return-value]
@@ -829,6 +839,10 @@ class SpecialistRuntime:
         # provider attempt. None = sidecar default (3); rides the
         # message metadata so the harness owns the wire shape.
         max_retries: int | None = None,
+        # Per-turn time budget, seconds (supervisor step 1): rides
+        # the message metadata so the harness + sidecar enforce the
+        # outer budget (one clock owner). None = harness default.
+        turn_timeout: float | None = None,
     ) -> tuple[str | None, str | None]:
         """Attempt one turn on the native engine.
 
@@ -966,6 +980,17 @@ class SpecialistRuntime:
                         if isinstance(max_retries, int)
                         and not isinstance(max_retries, bool)
                         and max_retries >= 0
+                        else {}
+                    ),
+                    # One clock owner (supervisor step 1): the outer
+                    # budget rides down so harness + sidecar enforce
+                    # it, never a second independent clock. Absent
+                    # keeps the harness default (legacy/tests).
+                    **(
+                        {"turn_timeout": float(turn_timeout)}
+                        if isinstance(turn_timeout, (int, float))
+                        and not isinstance(turn_timeout, bool)
+                        and float(turn_timeout) > 0
                         else {}
                     ),
                 },

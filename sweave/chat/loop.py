@@ -2156,6 +2156,10 @@ class ChatLoop:
             permission_roots=permission_roots,
             max_retries=turn_retries,
             project_harness_default=project_harness,
+            # One clock owner (supervisor step 1, chat path): the
+            # loop's own wait budget rides down too — same nested
+            # clocks as the runner path (incident f774d84b).
+            turn_timeout=turn_timeout,
         )
         task = asyncio.ensure_future(inner)
         remaining = turn_timeout
@@ -2171,6 +2175,15 @@ class ChatLoop:
                         asyncio.shield(task), timeout=remaining
                     )
                 except asyncio.TimeoutError:
+                    # Corpse guard (supervisor step 1, incident
+                    # f774d84b — same nested clocks on the chat path):
+                    # collect a finished task instead of cancelling
+                    # it as timed out.
+                    if task.done():
+                        try:
+                            return task.result()
+                        except BaseException:
+                            raise
                     pending_q = await self._pending_human_question(
                         delegation.delegation_id
                     )

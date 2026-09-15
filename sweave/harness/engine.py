@@ -775,7 +775,10 @@ def _parse_spec_model(spec_model: str | None) -> dict[str, str] | None:
 
 def _turn_timeout(message: Message) -> float:
     try:
-        value = float(message.metadata.get("turn_timeout", 1800.0))
+        value = message.metadata.get("turn_timeout", 1800.0)
+        if isinstance(value, bool):
+            return 1800.0
+        value = float(value)
     except (TypeError, ValueError):
         return 1800.0
     return value if value > 0 else 1800.0

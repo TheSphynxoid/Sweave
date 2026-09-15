@@ -878,6 +878,20 @@ class JobRunner:
                     )
                     return True, output
                 except _aio.TimeoutError:
+                    # Corpse guard (supervisor step 1, incident
+                    # f774d84b): the inner attempt can die on its own
+                    # clock exactly as the outer expires. If the task
+                    # is already done, collect it immediately — never
+                    # consume an extension, ask, or re-arm over a
+                    # corpse.
+                    if task.done():
+                        trace.append(
+                            "turn_corpse_collected",
+                            {"extensions": extensions, "holds": holds},
+                        )
+                        # Collect directly (exceptions propagate to
+                        # the outer handler like a live failure).
+                        return True, task.result()
                     pending = await self._soft_record(delegation)
                     if pending is not None and pending.get("status") == "pending":
                         # A recorded question holds the turn (existing
@@ -1312,6 +1326,11 @@ class JobRunner:
                         project_harness_default=self._project_harness_for(
                             delegation
                         ),
+                        # One clock owner (supervisor step 1): the
+                        # same budget the outer wait enforces rides
+                        # into the engine attempt — the inner clocks
+                        # must never hold an independent value.
+                        turn_timeout=self._turn_budget_for(delegation),
                     ),
                     delegation,
                     trace,
