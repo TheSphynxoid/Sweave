@@ -180,6 +180,14 @@
   (human promotes); promote keeps history; detail fold carries it.
   10 new tests; version pins moved to v12. Fix-round spawn open
   (assignee defaults to the original agent, human-substitutable).
+- ✅ **M2.2 fix rounds (2026-09-15 follow-up, user ruling:
+  user-selectable `direct`/`supervised` posture)** — schema v12→v13
+  (`fix_of` + `fix_round` lineage); routing `review_fix_mode` +
+  `review_fix_max_rounds` (default direct/2, rules API + per-project
+  overlay); verdict `fix_assignee` override; `POST
+  /api/delegations/{id}/fix-round` manual path; bound + double-spawn
+  guards (judgment never blocked, retry refuses); detail `fix_rounds`
+  fold. 13 new tests; pins moved to v13.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

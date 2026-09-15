@@ -486,6 +486,12 @@ class JobRunner:
         kind: str = "task",
         estimate: Estimate | None = None,
         blocking: bool = False,
+        # M2.2 follow-up: fix-round lineage. A fix child spawned
+        # from a ``request_changes`` verdict carries the reviewed
+        # delegation's id + its round number (the
+        # ``review_fix_max_rounds`` bound counts these).
+        fix_of: str | None = None,
+        fix_round: int = 0,
         # Step 4: per-task harness override (transient — see
         # _harness_overrides; validated by the caller when it comes
         # from HTTP).
@@ -533,6 +539,11 @@ class JobRunner:
           fire-and-forget). True puts the child in the synthesis join
           set (ChatLoop + parent gate wait on it). Task delegations
           only; chat turns never carry one.
+
+        M2.2 follow-up:
+        * ``fix_of`` / ``fix_round`` mark a fix-round child (None /
+          0 = original work). The verdict/fix-round endpoints set
+          these; ordinary submits leave them alone.
         """
         delegation = Delegation(
             agent=agent,
@@ -548,6 +559,8 @@ class JobRunner:
             kind=kind,
             estimate=estimate,
             blocking=blocking,
+            fix_of=fix_of,
+            fix_round=fix_round,
             status="queued",
         )
         store = await self._store_for(delegation)

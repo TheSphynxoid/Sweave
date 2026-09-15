@@ -64,7 +64,7 @@ from sweave.runtime.locking import atomic_write_json
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SCHEMA_VERSION_PREP = 1  # M1.prep records
 SCHEMA_VERSION_V2 = 2  # M1.1 records
 SCHEMA_VERSION_V3 = 3  # M1.6 records
@@ -77,6 +77,7 @@ SCHEMA_VERSION_V9 = 9  # M2.1-follow-up records (engine_session_id)
 SCHEMA_VERSION_V10 = 10  # Review Phase 1 records (review_bundle)
 SCHEMA_VERSION_V11 = 11  # per-specialist worktree policy (worktree_owned)
 SCHEMA_VERSION_V12 = 12  # M2.2 records (verdict)
+SCHEMA_VERSION_V13 = 13  # M2.2 follow-up records (fix_of + fix_round)
 
 # Status transitions (closed set; JobRunner enforces them):
 #   queued   -> running
@@ -256,6 +257,9 @@ class Verdict(TypedDict, total=False):
     * ``output_claims_checked`` — whether the reviewer pulled the
       full turn output before judging (reserved: False until gated
       transcript reads land).
+    * ``fix_assignee`` — assignee override for the fix round (None
+      = the original agent; a human may substitute at verdict time
+      or at the fix-round endpoint).
     """
 
     decision: str
@@ -265,6 +269,7 @@ class Verdict(TypedDict, total=False):
     decided_at: str
     gotcha_hits: list[str]
     output_claims_checked: bool
+    fix_assignee: str | None
 
 
 @dataclass
@@ -365,6 +370,14 @@ class Delegation:
     # non-review statuses). Advisory only — never drives status.
     # Kept as history on promote.
     verdict: Verdict | None = None
+    # M2.2 follow-up: fix-round lineage. A fix child spawned from a
+    # ``request_changes`` verdict carries ``fix_of`` (the reviewed
+    # delegation's id) and ``fix_round`` (1 for the first fix, +1 per
+    # further round). Ordinary delegations carry None / 0. The
+    # ``review_fix_max_rounds`` bound counts these — unbounded
+    # review ping-pong is the failure mode.
+    fix_of: str | None = None
+    fix_round: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -404,8 +417,10 @@ class Delegation:
             d = _migrate_v9_to_v10(d)
         if schema_version < SCHEMA_VERSION_V11:
             d = _migrate_v10_to_v11(d)
-        if schema_version < SCHEMA_VERSION:
+        if schema_version < SCHEMA_VERSION_V12:
             d = _migrate_v11_to_v12(d)
+        if schema_version < SCHEMA_VERSION:
+            d = _migrate_v12_to_v13(d)
         # Always normalise to the current version on the record. The
         # migration step brings the field set up; this stamps the
         # version so the in-memory object matches what a fresh record
@@ -565,6 +580,19 @@ def _migrate_v11_to_v12(d: dict[str, Any]) -> dict[str, Any]:
     so no settled record ever needs one backfilled.
     """
     d.setdefault("verdict", None)
+    return d
+
+
+def _migrate_v12_to_v13(d: dict[str, Any]) -> dict[str, Any]:
+    """Bring a v12 record forward to the v13 field set (M2.2
+    follow-up fix-round lineage).
+
+    v12 records predate fix rounds: no ``fix_of`` / ``fix_round``.
+    Every pre-change delegation was by definition original work
+    (fix children did not exist) — defaults None / 0.
+    """
+    d.setdefault("fix_of", None)
+    d.setdefault("fix_round", 0)
     return d
 
 

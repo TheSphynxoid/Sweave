@@ -342,7 +342,7 @@ async def test_stall_abort_rejection_stays_loud(tmp_path: Path, monkeypatch):
 
 def test_engine_session_id_migrates_to_none():
     """A v8 record (pre follow-up) loads with engine_session_id=None
-    and stamps current (M2.2 update: v12 + verdict None)."""
+    and stamps current (M2.2 follow-up update: v13 + fix lineage)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION, Delegation
 
     v8_record = {
@@ -363,8 +363,10 @@ def test_engine_session_id_migrates_to_none():
     assert rec.review_bundle is None
     assert rec.worktree_owned is True
     assert rec.verdict is None
+    assert rec.fix_of is None
+    assert rec.fix_round == 0
     assert rec.schema_version == SCHEMA_VERSION
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
 
 
 @pytest.mark.asyncio

@@ -250,6 +250,8 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
         Per-specialist worktree policy added the v11 field
         (worktree_owned) for tree-ownership at settle.
         M2.2 added the v12 field (verdict) for reviewer judgments.
+        M2.2 follow-up added the v13 fields (fix_of + fix_round)
+        for fix-round lineage.
         """
     expected = {
         "schema_version", "delegation_id", "task_id", "agent", "model", "task",
@@ -279,6 +281,9 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
             "worktree_owned",
             # M2.2 addition: reviewer verdict (advisory)
             "verdict",
+            # M2.2 follow-up additions: fix-round lineage
+            "fix_of",
+            "fix_round",
         }
     actual = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert actual == expected, (
@@ -288,11 +293,11 @@ def test_v3_field_set_includes_all_m1_1_plus_m1_6_fields():
 
 
 def test_schema_version_is_v11():
-    """M2.2 verdict: the current schema is v12 (verdict record on
-    top of v11's worktree_owned flag)."""
+    """M2.2 follow-up (fix rounds): the current schema is v13
+    (fix_of + fix_round lineage on top of v12's verdict record)."""
     from sweave.runtime.delegation_store import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
 
 
 def test_v5_record_loads_as_v6_with_archive_defaults():

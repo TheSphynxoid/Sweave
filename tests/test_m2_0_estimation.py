@@ -93,9 +93,10 @@ def test_v1_record_loads_as_v7_with_estimate_none():
     M2.1-follow-up update: schema is now v9 (engine_session_id).
     Review Phase 1 update: schema is now v10 (review_bundle).
     Worktree-policy update: schema is now v11 (worktree_owned).
-    M2.2 update: schema is now v12 (verdict)."""
+    M2.2 update: schema is now v12 (verdict).
+    M2.2 follow-up update: schema is now v13 (fix lineage)."""
     d = Delegation.from_dict(_minimal_record(1))
-    assert d.schema_version == 12
+    assert d.schema_version == 13
     assert d.estimate is None
     assert d.kind == "task"
     assert d.needs_attention is False
@@ -106,6 +107,8 @@ def test_v1_record_loads_as_v7_with_estimate_none():
     assert d.review_bundle is None
     assert d.worktree_owned is True
     assert d.verdict is None
+    assert d.fix_of is None
+    assert d.fix_round == 0
 
 
 def test_v6_record_loads_as_v7_with_estimate_none():
@@ -113,9 +116,10 @@ def test_v6_record_loads_as_v7_with_estimate_none():
     M2.1-follow-up update: lands at v9 now.
     Review Phase 1 update: lands at v10 now.
     Worktree-policy update: lands at v11 now.
-    M2.2 update: lands at v12 now."""
+    M2.2 update: lands at v12 now.
+    M2.2 follow-up update: lands at v13 now."""
     d = Delegation.from_dict(_minimal_record(6))
-    assert d.schema_version == 12
+    assert d.schema_version == 13
     assert d.estimate is None
 
 
@@ -124,13 +128,14 @@ def test_v7_estimate_round_trips():
     M2.1-follow-up update: round-trips at v9 now.
     Review Phase 1 update: round-trips at v10 now.
     Worktree-policy update: round-trips at v11 now.
-    M2.2 update: round-trips at v12 now."""
+    M2.2 update: round-trips at v12 now.
+    M2.2 follow-up update: round-trips at v13 now."""
     d = Delegation(agent="a", task="t", estimate={"tokens": 1500, "seconds": 90.5})
     data = d.to_dict()
     assert data["estimate"] == {"tokens": 1500, "seconds": 90.5}
     back = Delegation.from_dict(data)
     assert back.estimate == {"tokens": 1500, "seconds": 90.5}
-    assert back.schema_version == 12
+    assert back.schema_version == 13
 
 
 def test_estimate_defaults_to_none():

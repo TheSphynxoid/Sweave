@@ -133,6 +133,12 @@ class VerdictIn(BaseModel):
     Advisory only — recording a verdict never changes status, never
     clears ``needs_attention``, never promotes. Unknown keys ignored
     (LLM-supplied extras must not 422 the submit).
+
+    M2.2 follow-up: ``fix_assignee`` optionally names the fix-round
+    worker (None = the original agent; a human may substitute). It
+    names the WHO, never the HOW — the ``review_fix_mode`` routing
+    toggle (direct vs supervised) decides whether this verdict
+    spawns immediately or waits for the fix-round endpoint.
     """
 
     model_config = {"extra": "ignore"}
@@ -143,6 +149,21 @@ class VerdictIn(BaseModel):
     reviewer: str = ""
     gotcha_hits: list[str] = Field(default_factory=list)
     output_claims_checked: bool = False
+    fix_assignee: Optional[str] = None
+
+
+class FixRoundIn(BaseModel):
+    """Manual fix-round spawn (the supervised-mode path; also usable
+    in direct mode to retry after a rejected auto-spawn).
+
+    ``assignee`` overrides the verdict's ``fix_assignee`` (which
+    itself overrides the original agent). Omitted everywhere = the
+    original agent reworks its own branch.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    assignee: Optional[str] = None
 
 
 class EscalateRequest(BaseModel):
@@ -625,6 +646,28 @@ async def get_delegation_detail(
         record = store.get(delegation_id)
         if record is not None:
             break
+    # M2.2 follow-up: fix-round children ride the fold (oldest
+    # first) so the detail surface shows the retry lineage.
+    fix_rounds: list[dict] = []
+    try:
+        for _store in _all_stores(state):
+            try:
+                _records = _store.list()
+            except Exception:  # noqa: BLE001
+                continue
+            for _r in _records:
+                if getattr(_r, "fix_of", None) == delegation_id:
+                    fix_rounds.append(
+                        {
+                            "delegation_id": _r.delegation_id,
+                            "agent": _r.agent,
+                            "status": _r.status,
+                            "fix_round": getattr(_r, "fix_round", 0) or 0,
+                        }
+                    )
+        fix_rounds.sort(key=lambda f: f["fix_round"])
+    except Exception:  # noqa: BLE001
+        fix_rounds = []
     return render_detail_view(
         delegation_id,
         trace_dir=state.traces_dir,
@@ -638,6 +681,7 @@ async def get_delegation_detail(
         record=record.to_dict() if record is not None else None,
         review_bundle=record.review_bundle if record is not None else None,
         verdict=record.verdict if record is not None else None,
+        fix_rounds=fix_rounds,
         model=model_str,
         meta_entry=meta_entry,
     )
@@ -956,6 +1000,18 @@ async def record_verdict(
     ``delegation.verdict_recorded`` mirror the promote vocabulary
     so observers get the same shape (the API is the automation
     seam; no UI changes this round).
+
+    M2.2 follow-up (fix rounds): a ``request_changes`` verdict also
+    resolves the fix. In ``direct`` mode (routing default) the fix
+    child spawns immediately (assignee = ``fix_assignee`` or the
+    original agent); in ``supervised`` mode the verdict records a
+    proposal and a human spawns it via the fix-round endpoint.
+    Beyond ``review_fix_max_rounds`` (or when a fix for this
+    verdict already exists) the verdict still records — judgment
+    is never blocked, only the auto-retry — and the response names
+    the refusal (``fix_rejected``). The response is the record dict
+    plus the ``fix_round_spawned`` / ``fix_proposed`` /
+    ``fix_rejected`` envelope (all None when N/A).
     """
     if verdict.decision == "request_changes" and not verdict.comments.strip():
         raise HTTPException(
@@ -983,6 +1039,7 @@ async def record_verdict(
                 "decided_at": _dt.now().isoformat(),
                 "gotcha_hits": list(verdict.gotcha_hits),
                 "output_claims_checked": verdict.output_claims_checked,
+                "fix_assignee": verdict.fix_assignee,
             },
         )
         if state.event_bus is not None:
@@ -1007,7 +1064,266 @@ async def record_verdict(
             },
         )
         trace.close()
-        return store.get(delegation_id).to_dict()  # type: ignore[union-attr]
+        out = store.get(delegation_id).to_dict()  # type: ignore[union-attr]
+        out["fix_round_spawned"] = None
+        out["fix_proposed"] = None
+        out["fix_rejected"] = None
+        if verdict.decision == "request_changes":
+            await _resolve_fix_outcome(state, store, rec, verdict, out)
+        return out
+    raise HTTPException(404, f"Delegation '{delegation_id}' not found")
+
+
+def _effective_review_fix(state: AppState, project_name: str | None) -> tuple[str, int]:
+    """(mode, max_rounds) for a project (overlay-aware, never raises).
+
+    The delegation's own project names its routing (task scope, not
+    focus scope); unknown/missing projects fall back to global.
+    An unknown mode value (hand-edited rules) degrades to direct —
+    fire-and-forget stays the default posture, loudly (warning).
+    """
+    try:
+        routing = state.config_manager.get_routing()
+        project_dir = None
+        if project_name is not None:
+            try:
+                from sweave.projects import project_manager
+
+                proj = (
+                    project_manager.get_project(project_name)
+                    if project_manager is not None
+                    else None
+                )
+                if proj is not None:
+                    project_dir = proj.path
+            except Exception:  # noqa: BLE001
+                project_dir = None
+        if project_dir is not None:
+            try:
+                routing = state.config_manager.get_routing_for_project(project_dir)
+            except Exception:  # noqa: BLE001
+                pass
+        mode = getattr(routing, "review_fix_mode", "direct") or "direct"
+        if mode not in ("direct", "supervised"):
+            logger.warning(
+                "review_fix_mode %r unknown; degrading to 'direct'", mode
+            )
+            mode = "direct"
+        try:
+            max_rounds = int(getattr(routing, "review_fix_max_rounds", 2))
+        except (TypeError, ValueError):
+            max_rounds = 2
+        return mode, max(0, max_rounds)
+    except Exception:  # noqa: BLE001
+        return "direct", 2
+
+
+def _find_fix_children(state: AppState, delegation_id: str) -> list:
+    """Records already spawned as fix rounds of *delegation_id*."""
+    found = []
+    for store in _all_stores(state):
+        try:
+            records = store.list()
+        except Exception:  # noqa: BLE001
+            continue
+        for r in records:
+            if getattr(r, "fix_of", None) == delegation_id:
+                found.append(r)
+    return found
+
+
+def _build_fix_task(rec, *, comments: str, reviewer: str, fix_round: int) -> str:
+    """Task text for a fix-round child (greppable round marker)."""
+    who = reviewer or "reviewer"
+    return (
+        f"[fix-round {fix_round} for {rec.task_id}] Address review findings.\n\n"
+        f"Reviewer ({who}): {comments.strip()}\n\n"
+        f"Original task: {rec.task or ''}".rstrip()
+    )
+
+
+async def _spawn_fix_child(
+    state: AppState,
+    store,
+    rec,
+    *,
+    assignee: str | None,
+    comments: str,
+    reviewer: str,
+    source: str,
+) -> dict:
+    """Spawn one fix-round child; envelope dict or raises HTTPException.
+
+    Guards (in order): bound (409), double-spawn (409), no runner
+    (503 — direct auto-spawn only; the fix endpoint requires the
+    runner too, but verdict-time degrade covers runner-less states).
+    ``source`` is ``verdict_auto`` | ``fix_endpoint`` (trace honesty).
+    """
+    mode, max_rounds = _effective_review_fix(state, rec.project_name)
+    del mode  # the caller (not the spawn) owns the mode decision
+    fix_round = (getattr(rec, "fix_round", 0) or 0) + 1
+    if fix_round > max_rounds:
+        from sweave.runtime.trace_log import TraceLog as _TraceLog
+
+        _TraceLog(rec.delegation_id, base_dir=state.traces_dir).append(
+            "fix_round_rejected",
+            {"reason": "max_rounds_exceeded", "round": fix_round, "max": max_rounds},
+        )
+        raise HTTPException(
+            409,
+            f"fix round {fix_round} exceeds review_fix_max_rounds={max_rounds}; "
+            "judgment recorded, auto-retry refused",
+        )
+    existing = [
+        r for r in _find_fix_children(state, rec.delegation_id)
+        if (getattr(r, "fix_round", 0) or 0) >= fix_round
+    ]
+    if existing:
+        raise HTTPException(
+            409,
+            f"fix round {fix_round} already spawned "
+            f"({existing[0].delegation_id}); not spawning a duplicate",
+        )
+    runner = getattr(state, "job_runner", None)
+    submit = getattr(runner, "submit", None) if runner is not None else None
+    if not callable(submit):
+        raise HTTPException(503, "job runner not initialised; fix round cannot spawn")
+    agent = (assignee or "").strip() or rec.agent
+    child = await submit(
+        agent,
+        _build_fix_task(rec, comments=comments, reviewer=reviewer, fix_round=fix_round),
+        parent_session_id=rec.parent_session_id,
+        project_name=rec.project_name,
+        parent_task_id=rec.delegation_id,
+        depth=getattr(rec, "depth", 0) or 0,
+        chain_root_id=getattr(rec, "chain_root_id", None) or rec.delegation_id,
+        blocking=False,
+        fix_of=rec.delegation_id,
+        fix_round=fix_round,
+    )
+    from sweave.runtime.trace_log import TraceLog as _TraceLog
+
+    _TraceLog(rec.delegation_id, base_dir=state.traces_dir).append(
+        "fix_round_spawned",
+        {
+            "child": child.delegation_id,
+            "agent": agent,
+            "round": fix_round,
+            "source": source,
+        },
+    )
+    return {
+        "delegation_id": child.delegation_id,
+        "task_id": child.task_id,
+        "agent": agent,
+        "fix_round": fix_round,
+    }
+
+
+async def _resolve_fix_outcome(state, store, rec, verdict: VerdictIn, out: dict) -> None:
+    """Fill the verdict-response fix envelope (direct spawns, else proposes).
+
+    Never raises: every failure mode degrades to a named envelope
+    value (the verdict itself is already recorded — judgment is
+    never blocked, only the auto-retry).
+    """
+    from sweave.runtime.trace_log import TraceLog as _TraceLog
+
+    try:
+        mode, max_rounds = _effective_review_fix(state, rec.project_name)
+        fix_round = (getattr(rec, "fix_round", 0) or 0) + 1
+        assignee = (verdict.fix_assignee or "").strip() or rec.agent
+        if fix_round > max_rounds:
+            _TraceLog(rec.delegation_id, base_dir=state.traces_dir).append(
+                "fix_round_rejected",
+                {"reason": "max_rounds_exceeded", "round": fix_round, "max": max_rounds},
+            )
+            out["fix_rejected"] = (
+                f"fix round {fix_round} exceeds review_fix_max_rounds={max_rounds}"
+            )
+            return
+        if mode == "supervised":
+            _TraceLog(rec.delegation_id, base_dir=state.traces_dir).append(
+                "fix_round_proposed",
+                {"agent": assignee, "round": fix_round},
+            )
+            out["fix_proposed"] = {"agent": assignee, "fix_round": fix_round}
+            return
+        try:
+            out["fix_round_spawned"] = await _spawn_fix_child(
+                state, store, rec,
+                assignee=assignee,
+                comments=verdict.comments,
+                reviewer=verdict.reviewer,
+                source="verdict_auto",
+            )
+        except HTTPException as exc:
+            # Bound/guard/runner failures degrade (direct mode with
+            # no runner in minimal states proposes instead of 500).
+            if exc.status_code == 503:
+                _TraceLog(rec.delegation_id, base_dir=state.traces_dir).append(
+                    "fix_round_proposed",
+                    {"agent": assignee, "round": fix_round, "reason": "no_runner"},
+                )
+                out["fix_proposed"] = {"agent": assignee, "fix_round": fix_round}
+            else:
+                out["fix_rejected"] = exc.detail
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("verdict fix resolution failed: %s", exc)
+        out["fix_rejected"] = f"fix resolution failed: {exc}"
+
+
+@router.post("/api/delegations/{delegation_id}/fix-round")
+async def spawn_fix_round(
+    delegation_id: str, request: FixRoundIn, state: AppState = Depends(get_state)
+):
+    """Manually spawn a fix-round child (the supervised-mode path).
+
+    The delegation must sit in ``review`` with a ``request_changes``
+    verdict (409 otherwise; 404 unknown) — judge first, then fix.
+    Assignee = body ``assignee`` or the verdict's ``fix_assignee``
+    or the original agent. The ``review_fix_max_rounds`` bound and
+    the double-spawn guard apply here too (409 with reason); a human
+    who needs more rounds raises the bound via the rules endpoint.
+    Returns the fix child's record.
+    """
+    for store in _all_stores(state):
+        rec = store.get(delegation_id)
+        if rec is None:
+            continue
+        if rec.status != "review":
+            raise HTTPException(
+                409,
+                f"delegation '{delegation_id}' is in status '{rec.status}'; "
+                "only 'review' can spawn a fix round",
+            )
+        verdict = getattr(rec, "verdict", None) or {}
+        if not isinstance(verdict, dict) or verdict.get("decision") != "request_changes":
+            raise HTTPException(
+                409,
+                f"delegation '{delegation_id}' has no request_changes verdict; "
+                "record one before spawning a fix round",
+            )
+        comments = (verdict.get("comments") or "").strip()
+        if not comments:
+            raise HTTPException(409, "the verdict carries no comments to fix from")
+        assignee = (
+            (request.assignee or "").strip()
+            or (verdict.get("fix_assignee") or "").strip()
+            or rec.agent
+        )
+        spawned = await _spawn_fix_child(
+            state, store, rec,
+            assignee=assignee,
+            comments=comments,
+            reviewer=verdict.get("reviewer") or "",
+            source="fix_endpoint",
+        )
+        for fix_store in _all_stores(state):
+            child = fix_store.get(spawned["delegation_id"])
+            if child is not None:
+                return child.to_dict()
+        return spawned
     raise HTTPException(404, f"Delegation '{delegation_id}' not found")
 
 

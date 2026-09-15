@@ -153,6 +153,37 @@ class RoutingConfig(BaseModel):
             )
         return v
 
+    # Review fix-round posture (M2.2 follow-up, user ruling
+    # 2026-09-15): what a ``request_changes`` verdict DOES.
+    # ``direct`` = spawn the fix child immediately (fire-and-forget,
+    # the default); ``supervised`` = record the verdict only and park
+    # the proposal — a human spawns it via the fix-round endpoint
+    # (confirming/overriding the assignee first). A user toggle in
+    # routing (never an LLM parameter — the verdict call names the
+    # WHO via ``fix_assignee``, never the HOW); per-project
+    # overlayable like every other routing scalar.
+    review_fix_mode: Literal["direct", "supervised"] = "direct"
+
+    # Bound on the request-changes ping-pong (M2.2 follow-up): the
+    # Nth fix child carries fix_round=N; a round beyond this max is
+    # refused (verdict still records — judgment is never blocked,
+    # only the auto-retry). 0 disables fix rounds entirely.
+    review_fix_max_rounds: int = 2
+
+    @field_validator("review_fix_max_rounds")
+    @classmethod
+    def _validate_review_fix_max_rounds(cls, v: int) -> int:
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError("review_fix_max_rounds must be an integer >= 0 (0 disables fix rounds)")
+        if v < 0:
+            raise ValueError("review_fix_max_rounds must be >= 0 (0 disables fix rounds)")
+        if v > 10:
+            raise ValueError(
+                "review_fix_max_rounds must be <= 10: beyond that a review "
+                "is ping-ponging, not converging"
+            )
+        return v
+
 
 class ServerConfig(BaseModel):
     """Server configuration."""

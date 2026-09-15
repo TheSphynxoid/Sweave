@@ -45,8 +45,9 @@ def test_schema_is_v7_with_no_waitset_fields():
     Review Phase 1 update: schema is now v10 WITH review_bundle.
     Worktree-policy update: schema is now v11 WITH worktree_owned.
     M2.2 update: schema is now v12 WITH verdict.
+    M2.2 follow-up update: schema is now v13 WITH fix lineage.
     """
-    assert SCHEMA_VERSION == 12
+    assert SCHEMA_VERSION == 13
     fields = set(Delegation.__dataclass_fields__)  # type: ignore[attr-defined]
     assert "blocking" in fields
     assert "review_request" in fields
@@ -54,11 +55,15 @@ def test_schema_is_v7_with_no_waitset_fields():
     assert "review_bundle" in fields
     assert "worktree_owned" in fields
     assert "verdict" in fields
+    assert "fix_of" in fields
+    assert "fix_round" in fields
     d = Delegation(agent="a", task="t")
     assert d.blocking is False
     assert d.review_request is None
     assert d.worktree_owned is True
     assert d.verdict is None
+    assert d.fix_of is None
+    assert d.fix_round == 0
 
 
 def _runner_with_store(turn_timeout: float):

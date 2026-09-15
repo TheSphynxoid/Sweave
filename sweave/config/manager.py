@@ -578,6 +578,47 @@ class ConfigManager:
         self._sync_reload()
         return value
 
+    def set_review_fix(
+        self,
+        mode: str | None = None,
+        max_rounds: int | None = None,
+    ) -> dict:
+        """Persist the review fix-round posture to rules.yaml.
+
+        ``mode`` is ``direct`` (request_changes spawns the fix child
+        immediately) or ``supervised`` (verdict records only; a human
+        spawns via the fix-round endpoint). ``max_rounds`` bounds the
+        ping-pong (0 disables fix rounds). Either may be omitted
+        (None = leave unchanged); at least one must be given.
+        Same contract as :meth:`set_turn_retries` (validate →
+        persist → ``_sync_reload``). Raises ``ValueError`` on
+        violation (the router maps this to a 400).
+        """
+        if mode is None and max_rounds is None:
+            raise ValueError("set at least one of mode / max_rounds")
+        routing = self.get_routing()
+        if mode is not None:
+            if mode not in ("direct", "supervised"):
+                raise ValueError(
+                    "review_fix_mode must be 'direct' or 'supervised' "
+                    f"(got {mode!r})"
+                )
+            routing.review_fix_mode = mode  # type: ignore[assignment]
+        if max_rounds is not None:
+            if isinstance(max_rounds, bool) or not isinstance(max_rounds, int):
+                raise ValueError("review_fix_max_rounds must be an integer >= 0")
+            if max_rounds < 0 or max_rounds > 10:
+                raise ValueError("review_fix_max_rounds must be 0..10 (0 disables fix rounds)")
+            routing.review_fix_max_rounds = max_rounds
+        rules_path = Path(self._config.models.rules_path)
+        with open(rules_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(routing.model_dump(exclude_none=True), f, sort_keys=False)
+        self._sync_reload()
+        return {
+            "review_fix_mode": routing.review_fix_mode,
+            "review_fix_max_rounds": routing.review_fix_max_rounds,
+        }
+
     def set_harness_default(self, value: str) -> str:
         """Persist the global harness default to config.yaml.
 

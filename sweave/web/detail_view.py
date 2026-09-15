@@ -40,6 +40,9 @@ sections the UI detail view patches into place (and the same data the
   (None = unjudged: pre-M2.2 records, non-review statuses,
   unknown ids). Advisory only — the detail surface shows it, never
   acts on it.
+* ``fix_rounds`` -- M2.2 follow-up: the fix-round children of this
+  delegation (``{delegation_id, agent, status, fix_round}`` each,
+  oldest first; [] when none). Read side of the fix lineage.
 * ``price`` -- USAGE_LEDGER Phase 0: the shared
   ``sweave/stats/pricing.py`` projection (summed ``tokens_used`` x
   sidecar rates, provider cost wins on key-presence). Additive, nulls
@@ -233,6 +236,7 @@ def render_detail_view(
     record: dict[str, Any] | None = None,
     review_bundle: dict[str, Any] | None = None,
     verdict: dict[str, Any] | None = None,
+    fix_rounds: list[dict[str, Any]] | None = None,
     model: str | None = None,
     meta_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -323,5 +327,6 @@ def render_detail_view(
         "record": render_record_header(record),
         "review_bundle": dict(review_bundle) if review_bundle else None,
         "verdict": dict(verdict) if verdict else None,
+        "fix_rounds": [dict(f) for f in fix_rounds] if fix_rounds else [],
         "price": _render_price(events=events, model=model, meta_entry=meta_entry),
     }

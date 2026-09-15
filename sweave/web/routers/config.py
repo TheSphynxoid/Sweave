@@ -27,6 +27,13 @@ class TurnRetriesUpdateRequest(BaseModel):
     turn_retries: int
 
 
+class ReviewFixUpdateRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    review_fix_mode: Optional[str] = None
+    review_fix_max_rounds: Optional[int] = None
+
+
 class HarnessDefaultUpdateRequest(BaseModel):
     harness: str
 
@@ -125,6 +132,8 @@ async def get_rules(state: AppState = Depends(get_state)):
         "turn_timeout_s": routing.turn_timeout_s,
         "chain_budget": routing.chain_budget,
         "max_depth": routing.max_depth,
+        "review_fix_mode": routing.review_fix_mode,
+        "review_fix_max_rounds": routing.review_fix_max_rounds,
     }
 
 
@@ -146,6 +155,30 @@ async def set_turn_retries(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"success": True, "turn_retries": value}
+
+
+@router.put("/api/rules/review-fix")
+async def set_review_fix(
+    request: ReviewFixUpdateRequest, state: AppState = Depends(get_state)
+):
+    """Set the review fix-round posture (user toggle, never LLM).
+
+    ``review_fix_mode``: ``direct`` (request_changes spawns the fix
+    child immediately — fire-and-forget default) or ``supervised``
+    (verdict records only; a human spawns via the fix-round
+    endpoint). ``review_fix_max_rounds``: ping-pong bound (0
+    disables fix rounds). Either may be omitted. Persists to
+    rules.yaml; per-project ``.sweave/config.yaml`` routing overlays
+    still win per turn.
+    """
+    try:
+        value = state.config_manager.set_review_fix(
+            mode=request.review_fix_mode,
+            max_rounds=request.review_fix_max_rounds,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, **value}
 
 
 @router.post("/api/rules")

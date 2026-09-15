@@ -137,6 +137,14 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
   `gotcha_hits` + `output_claims_checked` fields live on the record
   (schema v12), advisory-only endpoint + detail fold. The record
   already has somewhere to put the gotcha/gated systems.
+* **Fix rounds** — DONE 2026-09-15 follow-up: `review_fix_mode`
+  (`direct` default / `supervised`) + `review_fix_max_rounds`
+  (default 2) routing toggles (rules API, project-overlayable);
+  `request_changes` spawns (direct) or proposes (supervised);
+  `POST .../fix-round` manual path; bound + double-spawn guards;
+  assignee = endpoint override → verdict `fix_assignee` → original
+  agent. Schema v13 lineage (`fix_of` + `fix_round`); detail
+  `fix_rounds` fold.
 * **Review-target resolution**: `inherit` grows from direct-parent
   to review-target (`review_request` → implementation delegation);
   generic permission any agent can carry (ruling 3).

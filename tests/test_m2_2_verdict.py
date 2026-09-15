@@ -5,7 +5,7 @@
 it in for reviewer visibility. A verdict never changes status,
 never clears ``needs_attention``, never promotes — the
 human-promotes ruling stands (R2 automates via the promote
-endpoint later). Schema v11→v12 (``verdict`` None by default).
+endpoint later). Schema v11→v13 (``verdict`` None by default).
 """
 
 from __future__ import annotations
@@ -61,14 +61,16 @@ async def _review_delegation(tmp_path: Path, **kw):
     return stores, store, state, d
 
 
-def test_schema_v12_verdict_defaults_none():
-    assert SCHEMA_VERSION == 12
+def test_schema_v13_verdict_defaults_none():
+    assert SCHEMA_VERSION == 13
     d = Delegation(agent="a", task="t")
     assert d.verdict is None
     assert d.to_dict()["verdict"] is None
+    assert d.fix_of is None
+    assert d.fix_round == 0
 
 
-def test_v11_record_loads_as_v12_with_verdict_none():
+def test_v11_record_loads_as_v13_with_verdict_none():
     rec = {
         "schema_version": 11,
         "delegation_id": "del-v",
@@ -81,7 +83,7 @@ def test_v11_record_loads_as_v12_with_verdict_none():
         "updated_at": "2026-09-10T00:00:00",
     }
     d = Delegation.from_dict(rec)
-    assert d.schema_version == 12
+    assert d.schema_version == 13
     assert d.verdict is None
     assert d.worktree_owned is True
 
@@ -104,7 +106,7 @@ def test_verdict_round_trip():
     assert back.verdict is not None
     assert back.verdict["decision"] == "request_changes"
     assert back.verdict["comments"] == "fix the null check"
-    assert back.schema_version == 12
+    assert back.schema_version == 13
 
 
 @pytest.mark.asyncio
