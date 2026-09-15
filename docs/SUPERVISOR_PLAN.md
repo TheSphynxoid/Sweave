@@ -124,6 +124,21 @@ aliveness / holds / runaway; `waiting_with_progress` trace on
 alive-verified quiet; trip handoff = totals + tool count + files
 touched + partial text (P5).
 
+Precedence (user ruling 2026-09-15 — interrupt is control, not
+content): **user interrupt = Stop button > keep/stop verdict >
+supervisor trip > fuse.** Interrupt wins in ANY supervisor state
+(incl. HELD — a pending question resolves as skipped, mirroring
+Stop-button semantics — and VERIFYING — no probe delays a
+deliberate stop). An open keep/stop question resolves with the
+interrupt (never orphaned). The expiry evaluation checks the
+interrupt flag first, alongside `task.done()`: both short-circuit
+before any pulse math. Forensics distinguishes sources on the
+existing `turn_killed` shape (`source: user_interrupt |
+supervisor_trip | stop_button`) — data, not a new verb. Status
+stays `failed` with cancelled-class error text (the
+`CANCELLED_BY_USER_ERROR` precedent: closed `VALID_STATUSES`
+untouched).
+
 ## 5. Steps
 
 ### Step 0 — Fuse note (config, no code; optional, user call)
@@ -250,6 +265,7 @@ with fallback postures if they land late:
 | Pulse/witness events (tool-started sensor, transcript parity) | VERIFYING evidence + `waiting_with_progress` content | Engine trace events only (`tool.*`, `reasoning`, `tokens_used` — already in trace); progress line shows last tool + elapsed |
 | Live block + consented-abort trigger | Human surface for keep/stop context | Keep/stop card carries totals + last tool + handoff (strictly better than today); abort mechanism (sidecar/serve) already exists independent of the trigger |
 | Per-tool budget (1200s proposed) | Coordination: per-tool ceiling vs supervisor windows must agree (a tool killed at 1200s mid-healthy-turn is a supervisor-relevant death) | Supervisor treats per-tool kills as pulses-with-failure (visible, classified), never as silence; the lock value is settled jointly at step-3 execution |
+| Interrupt trigger (button in the live block) | Supervisor owns HANDLING: single-writer transition (extends the `_user_cancelled` pattern — interrupt and expiry can never double-write), pending-question resolution, `turn_killed{source: user_interrupt}` trace | Trigger without handling is a dead button: if the view track lands first, its endpoint funnels into the same cancel path as Stop (existing `cancel_subtree` semantics) until step 3 wires the supervisor flag check |
 
 P2 clarified: the supervisor *decision loop* builds engine-first
 now (its inputs exist); the *oversight surface* follows the view
