@@ -685,6 +685,22 @@ def log(delegation_id: str = typer.Argument(..., help="Delegation id to render")
                 border_style="green",
             )
         )
+    # USAGE_LEDGER Phase 0: per-turn price line. The CLI has the trace
+    # but no store/meta, so model+rates are unknown here — a
+    # provider-reported trace cost still prices via the present-key
+    # rule; anything else renders unpriced (same M2.0 precedent as
+    # estimate; the HTTP endpoint joins model + sidecar rates).
+    price = detail.get("price") or {}
+    if price and price.get("source") != "none":
+        if price.get("source") == "provider":
+            price_line = f"price: ${price['estimated_cost']:.4f} (actual)"
+        elif price.get("free"):
+            price_line = "price: Free"
+        else:
+            price_line = f"price: ~${price['estimated_cost']:.4f} est."
+        console.print(
+            Panel(price_line, title="Price", border_style="cyan")
+        )
     # Review Phase 1: bundle pointer line ONLY (the CLI has no
     # store, so record-side inputs are null here — same M2.0
     # precedent as estimate; the HTTP endpoint joins them). Never

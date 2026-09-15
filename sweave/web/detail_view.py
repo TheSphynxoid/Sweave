@@ -36,6 +36,10 @@ sections the UI detail view patches into place (and the same data the
 * ``review_bundle`` -- Phase 1: the ``{path, bytes, truncated,
   scope}`` pointer echoed verbatim (None = pre-change record or
   unknown id; ``path`` None = degraded capture, scope says why).
+* ``price`` -- USAGE_LEDGER Phase 0: the shared
+  ``sweave/stats/pricing.py`` projection (summed ``tokens_used`` x
+  sidecar rates, provider cost wins on key-presence). Additive, nulls
+  on missing trace/rates -- never raises.
 
 The trace is the source of truth (the JSONL is appended on every
 state change). This module is the read-side projector: it never
@@ -141,6 +145,32 @@ def render_estimate_vs_actual(
     }
 
 
+def _render_price(
+    *,
+    events: list[dict[str, Any]],
+    model: Any = None,
+    meta_entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project per-turn price via the shared helper (Phase 0).
+
+    Additive detail key: summed ``tokens_used`` x sidecar rates.
+    Never raises; missing trace/rates degrade to nulls (unpriced).
+    """
+    try:
+        from sweave.stats.pricing import price_for_events
+
+        return price_for_events(events, model, meta_entry)
+    except Exception:  # noqa: BLE001 -- pricing never fails a read path
+        return {
+            "model": None,
+            "rates_per_1m": None,
+            "estimated_cost": None,
+            "free": None,
+            "estimated": True,
+            "source": "none",
+        }
+
+
 #: Task snippet length (Phase 1 record header). Matches the
 #: TurnDelegations card rule (``TASK_SNIPPET_CHARS``) so the modal
 #: header and the inline card truncate identically.
@@ -198,6 +228,8 @@ def render_detail_view(
     engine_session_id: str | None = None,
     record: dict[str, Any] | None = None,
     review_bundle: dict[str, Any] | None = None,
+    model: str | None = None,
+    meta_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
@@ -285,4 +317,5 @@ def render_detail_view(
         "engine_session_id": engine_session_id,
         "record": render_record_header(record),
         "review_bundle": dict(review_bundle) if review_bundle else None,
+        "price": _render_price(events=events, model=model, meta_entry=meta_entry),
     }

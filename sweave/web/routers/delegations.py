@@ -582,8 +582,25 @@ async def get_delegation_detail(
     (status/agent/task/output/error/stamps/blocking/attention) +
     the ``review_bundle`` pointer ride the same fold. Unknown id
     keeps the degrade contract (200 + nulls).
+
+    USAGE_LEDGER Phase 0: the additive ``price`` key rides the same
+    fold (record ``model`` + sidecar meta via the state's config
+    manager; missing model/rates degrade to nulls, never a 500).
     """
     from sweave.web.detail_view import render_detail_view
+
+    meta_entry: dict | None = None
+    model_str: str | None = None
+    try:
+        model_str = record.model if record is not None else None
+        cm = getattr(state, "config_manager", None)
+        get_meta = getattr(cm, "get_model_meta", None) if cm else None
+        if callable(get_meta) and model_str:
+            from sweave.stats.pricing import strip_variant
+
+            meta_entry = get_meta(strip_variant(model_str)) or None
+    except Exception:  # noqa: BLE001 -- pricing inputs never fail detail
+        meta_entry = None
 
     record = None
     for store in _all_stores(state):
@@ -602,6 +619,8 @@ async def get_delegation_detail(
         ),
         record=record.to_dict() if record is not None else None,
         review_bundle=record.review_bundle if record is not None else None,
+        model=model_str,
+        meta_entry=meta_entry,
     )
 
 
