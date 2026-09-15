@@ -20,6 +20,15 @@ Attribution rules (plan risks: every number suspect until pinned):
   ``input`` cell keeps the billed sum; ``context_input`` carries the
   largest single-step prompt seen (pre-split traces without the field
   contribute 0 — never invented).
+* Phase 1b cost cells: every cell also carries the shared
+  ``sweave/stats/pricing.py`` fold — ``estimated_cost`` (summed per
+  turn, never invented), ``cost_source`` (``provider`` / ``rates`` /
+  ``none`` — worst of the turn sources: none > rates > provider),
+  ``unpriced`` (True when no turn priced). Compute-on-read; degrade
+  zeros/nulls — unpriced cells never render as $0. The pricing
+  needs a model + sidecar rates: the optional ``meta_reader(model)``
+  supplies the entry (absent reader = every turn unpriced, the
+  counts-only shape).
 * day bucket = ``created_at`` calendar date; dateless records count
   in totals only (never invented into a day).
 * wall seconds sum completed turns only (``created_at`` →
@@ -158,12 +167,63 @@ def default_tokens_reader(
     return out
 
 
-def _cell() -> dict[str, float]:
+_SOURCE_RANK = {"provider": 2, "rates": 1, "none": 0}
+
+
+def _worse_source(have: str, got: str) -> str:
+    """Worst of two cost sources (none > rates > provider)."""
+    if _SOURCE_RANK.get(have, 0) <= _SOURCE_RANK.get(got, 0):
+        return have
+    return got
+
+
+def _price_turn(
+    events: list[dict[str, Any]],
+    model: str,
+    meta_of: Callable[[str], dict[str, Any]],
+) -> dict[str, Any]:
+    """Price one delegation's turn via the shared helper (Phase 1b).
+
+    Passes the sidecar entry under the variant-stripped key (same
+    lookup the detail fold uses). Never raises: pricing degrades to
+    unpriced, and the meta lookup itself is guarded at the call site.
+    """
+    try:
+        from sweave.stats.pricing import price_for_events, strip_variant
+
+        meta = meta_of(model)
+        entry = meta.get(strip_variant(model)) if meta else None
+        return price_for_events(events, model, entry)
+    except Exception:  # noqa: BLE001
+        return {"estimated_cost": None, "source": "none"}
+
+
+def _cell() -> dict[str, Any]:
     return {
         "turns": 0, "input": 0.0, "output": 0.0, "reasoning": 0.0,
         "cache_read": 0.0, "cache_write": 0.0, "cost": 0.0,
         "context_input": 0.0, "failed": 0,
+        "estimated_cost": 0.0, "cost_source": "provider",
+        "unpriced_turns": 0,
     }
+
+
+def _final_cell(cell: dict[str, Any]) -> dict[str, Any]:
+    """Round a cell for the wire; derive the unpriced flag."""
+    out: dict[str, Any] = {}
+    for k, v in cell.items():
+        if k in ("turns", "failed"):
+            out[k] = int(v)
+        elif k == "cost_source":
+            out[k] = v
+        elif k == "unpriced_turns":
+            continue
+        elif isinstance(v, (int, float)):
+            out[k] = round(float(v), 3)
+        else:
+            out[k] = v
+    out["unpriced"] = bool(cell.get("unpriced_turns", 0) > 0)
+    return out
 
 
 def build_summary(
@@ -172,6 +232,7 @@ def build_summary(
     *,
     days: int = 30,
     now: datetime | None = None,
+    meta_reader: Callable[[str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Fold records + traces into the stats summary payload.
 
@@ -182,8 +243,20 @@ def build_summary(
       window are excluded everywhere (dateless records count in
       totals only). Clamped to >= 1 by the router; <= 0 here means
       "no window" (tests).
+    * ``meta_reader(model)`` — sidecar meta entry for the shared
+      pricing fold (Phase 1b); None = counts-only (every cost cell
+      unpriced). Never raises: a throwing reader degrades to {}.
     """
     read = tokens_reader or default_tokens_reader
+
+    def _meta(model: str) -> dict[str, Any]:
+        if meta_reader is None:
+            return {}
+        try:
+            got = meta_reader(model)
+        except Exception:  # noqa: BLE001 -- pricing inputs never fail rollup
+            return {}
+        return got if isinstance(got, dict) else {}
     moment = now or datetime.now()
     rows = list(records)
 
@@ -224,6 +297,7 @@ def build_summary(
         except Exception:  # noqa: BLE001
             events = []
         toks = _sum_tokens_used(events)
+        price = _price_turn(events, model, _meta)
         wall = _wall_seconds(rec)
         failed = 1 if status == "failed" else 0
 
@@ -242,6 +316,12 @@ def build_summary(
             # Peak live context across the bucket's turns (max, never
             # summed — the billed ``input`` sum is steps×context).
             cell["context_input"] = max(cell["context_input"], toks["context_input"])
+            # Phase 1b: shared-helper cost fold (compute-on-read).
+            if price["estimated_cost"] is not None:
+                cell["estimated_cost"] += price["estimated_cost"]
+            else:
+                cell["unpriced_turns"] += 1
+            cell["cost_source"] = _worse_source(cell["cost_source"], price["source"])
         by_status[status] = by_status.get(status, 0) + 1
         if failed:
             try:
@@ -253,16 +333,15 @@ def build_summary(
             totals["wall_seconds"] += wall
             totals["completed_turns"] += 1
 
-    def _rows(bucket: dict[str, dict[str, float]], key: str) -> list[dict[str, Any]]:
+    def _rows(bucket: dict[str, dict[str, Any]], key: str) -> list[dict[str, Any]]:
         return [
-            {key: name, **{k: (int(v) if k in ("turns", "failed") else round(v, 3)) for k, v in cell.items()}}
+            {key: name, **_final_cell(cell)}
             for name, cell in sorted(bucket.items())
         ]
 
-    totals_out = {
-        k: (int(v) if k in ("turns", "failed", "completed_turns") else round(v, 3))
-        for k, v in totals.items()
-    }
+    totals_out = _final_cell(totals)
+    totals_out["wall_seconds"] = round(float(totals["wall_seconds"]), 3)
+    totals_out["completed_turns"] = int(totals["completed_turns"])
     return {
         "window_days": days,
         "generated_at": moment.isoformat(),
