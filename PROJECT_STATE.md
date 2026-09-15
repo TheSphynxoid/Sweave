@@ -13,8 +13,7 @@
 - **Python**: 3.11+
 - **Project root**: `C:\Users\user\sweave\`
 - **Git**: `master` on GitHub (`TheSphynxoid/Sweave`, pushed 2026-09-15;
-  pre-push rewrite: probe dump + shots stripped, authors unified via
-  `.mailmap`; `sweave/*` worktree branches stay local-only)
+  `sweave/*` worktree branches stay local-only)
 - **Web server**: FastAPI + single-page application (SPA)
 
 ---
