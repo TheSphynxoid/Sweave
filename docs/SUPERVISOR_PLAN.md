@@ -236,3 +236,22 @@ Per step: step tests + full pytest + `run.py --check` + 3× green
 + live check where called. Every step leaves API/UI contracts
 touched-none (supervision is turn-internals; observers see only
 existing trace + status + escalation events).
+
+## 9. Dependencies — the specialist chat (view track, other thread)
+
+The specialist chat (native specialist execution access: transcript
+parity, tool timeline, live block + consented abort — the
+specialist-view track) is NOT this plan's work: single owner,
+no double-build. But this plan consumes its seams, named here
+with fallback postures if they land late:
+
+| View-track delivers | Supervisor consumes as | If late, fallback |
+|---|---|---|
+| Pulse/witness events (tool-started sensor, transcript parity) | VERIFYING evidence + `waiting_with_progress` content | Engine trace events only (`tool.*`, `reasoning`, `tokens_used` — already in trace); progress line shows last tool + elapsed |
+| Live block + consented-abort trigger | Human surface for keep/stop context | Keep/stop card carries totals + last tool + handoff (strictly better than today); abort mechanism (sidecar/serve) already exists independent of the trigger |
+| Per-tool budget (1200s proposed) | Coordination: per-tool ceiling vs supervisor windows must agree (a tool killed at 1200s mid-healthy-turn is a supervisor-relevant death) | Supervisor treats per-tool kills as pulses-with-failure (visible, classified), never as silence; the lock value is settled jointly at step-3 execution |
+
+P2 clarified: the supervisor *decision loop* builds engine-first
+now (its inputs exist); the *oversight surface* follows the view
+track. Neither thread blocks the other; the seam table above is
+the coupling discipline.
