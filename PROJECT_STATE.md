@@ -171,6 +171,15 @@
   resolution, reviewer kit, gated reads, gotcha system, progress
   supervisor (needs view track + engine streaming), full-capture
   test affordance.
+- ✅ **M2.2 verdict payload (2026-09-15, advisory)** — schema
+  v11→v12 (`verdict` record: decision/comments/confidence/
+  reviewer/decided_at + reserved `gotcha_hits` /
+  `output_claims_checked`); `POST /api/delegations/{id}/verdict`
+  on `review` only (409/404, comments-required 400);
+  `verdict_recorded` trace + WS; flag/status/promotion untouched
+  (human promotes); promote keeps history; detail fold carries it.
+  10 new tests; version pins moved to v12. Fix-round spawn open
+  (assignee defaults to the original agent, human-substitutable).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

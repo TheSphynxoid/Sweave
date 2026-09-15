@@ -132,10 +132,11 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 * Done-gate: settle tests green; live `a5884977`-class leak gone.
 
 ### Step 5 — Specified, NOT built (sequencing for later rounds)
-* **M2.2 verdict payload** (first, per ruling 2): structured
-  approve/request-changes + confidence + `gotcha_hits` +
-  `output_claims_checked` fields reserved now for the gotcha/gated
-  systems below.
+* **M2.2 verdict payload** — DONE 2026-09-15 (was "first" in
+  the order): structured approve/request-changes + confidence +
+  `gotcha_hits` + `output_claims_checked` fields live on the record
+  (schema v12), advisory-only endpoint + detail fold. The record
+  already has somewhere to put the gotcha/gated systems.
 * **Review-target resolution**: `inherit` grows from direct-parent
   to review-target (`review_request` → implementation delegation);
   generic permission any agent can carry (ruling 3).
