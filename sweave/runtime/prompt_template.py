@@ -17,6 +17,16 @@ for known-absent and is left intact for unknown names):
 * ``specialist`` — the specialist name (``agent`` is an alias).
 * ``project_name`` — the Sweave project ("" when unscoped).
 * ``worktree_path`` — the task worktree (absolute).
+* ``worktree_policy`` — the specialist's isolation intent
+  (``isolated`` / ``inherit`` / ``none``, "" when unknown).
+* ``workspace`` — one pre-built sentence stating where this turn
+  runs and what may be done there (owns vs shares vs live root).
+  Derived from ``(kind, worktree_policy, worktree_owned,
+  parent_task_id, branch)``; see :func:`build_workspace_line`.
+  Prompts should prefer ``{{workspace}}`` over describing the
+  worktree by hand — the sentence already reflects the resolved
+  policy (an ``inherit`` run shared from a treeless chat parent
+  names the orchestrator's view BY DESIGN, never as an accident).
 * ``model`` — qualified ``provider/model`` for this turn ("" when
   unresolved).
 * ``today`` — local date ``YYYY-MM-DD``.
@@ -61,6 +71,8 @@ KNOWN_VARIABLES: tuple[str, ...] = (
     "agent",
     "project_name",
     "worktree_path",
+    "worktree_policy",
+    "workspace",
     "model",
     "today",
     "branch",
@@ -113,6 +125,67 @@ def _git_output(args: list[str], worktree: Path) -> str:
         return ""
 
 
+def build_workspace_line(
+    *,
+    kind: str = "task",
+    policy: str | None = None,
+    owned: bool = True,
+    parent_task_id: str | None = None,
+    worktree_path: str = "",
+    branch: str = "",
+) -> str:
+    """One sentence stating where this turn runs and the ground rules.
+
+    The sentence is the concluded policy fact — prompts embed
+    ``{{workspace}}`` instead of branching on the policy themselves
+    (the renderer is dumb substitution, no conditionals).
+
+    * chat turns never take a tree: project root, live tree.
+    * owned trees (``isolated``): the run's own tree, commit freely.
+    * shared trees (``inherit`` resolving to a ``sweave/`` branch):
+      coordinate with the owner, never retire/remove.
+    * ``inherit`` landing on project root (treeless parent, e.g. a
+      chat delegation): the orchestrator's view BY DESIGN (user
+      ruling 2026-09-15 — minting the orchestrator its own tree
+      would be waste), stated as intentional, never as an accident.
+    * ``none``: project root by policy.
+    """
+    policy = (policy or "").strip() or "isolated"
+    if kind == "chat":
+        return (
+            f"You work directly in the project root {worktree_path} "
+            "(no worktree — chat turns never take one). "
+            "This is the live tree; be careful."
+        )
+    if owned:
+        return (
+            f"Your isolated git worktree is {worktree_path} "
+            f"(branch {branch or 'unknown'}). It is yours alone: do all "
+            "file work here and commit freely. Never `cd` elsewhere "
+            "unless asked."
+        )
+    if policy == "inherit" and (branch or "").startswith("sweave/"):
+        return (
+            f"You share the worktree {worktree_path} (branch {branch}) "
+            f"inherited from {parent_task_id or 'its owner'}. It is NOT "
+            "yours to retire: coordinate commits with its owner and "
+            "never remove it."
+        )
+    if policy == "inherit":
+        return (
+            f"You work directly in the project root {worktree_path} "
+            f"(branch {branch or 'unknown'}) — `inherit` was requested "
+            f"but the parent ({parent_task_id or 'none'}) has no tree, "
+            "so you see the orchestrator's view by design. "
+            "This is the live tree; be careful."
+        )
+    return (
+        f"You work directly in the project root {worktree_path} "
+        f"(branch {branch or 'unknown'}) — policy `none` takes no "
+        "worktree. This is the live tree; be careful."
+    )
+
+
 def build_template_context(
     *,
     specialist: Any,
@@ -127,6 +200,12 @@ def build_template_context(
     status = _git_output(["status", "--porcelain"], worktree)[:2000]
     log = _git_output(["log", "--oneline", "-10"], worktree)
     name = getattr(specialist, "name", "") or ""
+    policy = getattr(specialist, "worktree_policy", None) or ""
+    kind = getattr(delegation, "kind", None) or "task"
+    owned = getattr(delegation, "worktree_owned", True)
+    if owned is None:
+        owned = True
+    parent_task_id = getattr(delegation, "parent_task_id", None) or None
     return {
         "task": getattr(delegation, "task", "") or "",
         "delegation_id": getattr(delegation, "delegation_id", "") or "",
@@ -135,6 +214,15 @@ def build_template_context(
         "agent": name,
         "project_name": project_name,
         "worktree_path": str(worktree),
+        "worktree_policy": policy,
+        "workspace": build_workspace_line(
+            kind=kind,
+            policy=policy,
+            owned=bool(owned),
+            parent_task_id=parent_task_id,
+            worktree_path=str(worktree),
+            branch=branch,
+        ),
         "model": model or "",
         "today": date.today().isoformat(),
         "branch": branch,

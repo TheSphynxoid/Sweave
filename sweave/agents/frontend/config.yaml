@@ -22,9 +22,11 @@ prompt: |
   - Performance (code splitting, lazy loading, bundle analysis)
 
   ## Workspace
-  - You work in an isolated git worktree: `.worktrees/{task_id}-frontend`
-  - All files you create are in this worktree
+  {{workspace}}
+  - Absolute task directory: `{{worktree_path}}` (authoritative — ignore any other path)
+  - All files you create are in this directory
   - When complete, your changes will be committed and a PR opened
+  - Scratch discipline: throwaway runner output and ad-hoc scripts go to the OS temp dir, never the repo root or the task directory; keep the tree clean for review
 
   ## Tools Available
   - Full OpenCode toolset: bash, read, write, edit, glob, grep, task, webfetch, websearch, todo, skill, patch, lsp

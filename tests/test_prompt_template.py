@@ -23,6 +23,7 @@ import pytest
 from sweave.runtime.prompt_template import (
     KNOWN_VARIABLES,
     build_template_context,
+    build_workspace_line,
     has_template_vars,
     render_prompt_template,
     template_var_names,
@@ -185,3 +186,88 @@ async def test_static_prompt_sent_once(monkeypatch, tmp_path: Path):
         trace.close()
     assert len(system_sends) == 1
     assert system_sends[0] == "system:You are a plain specialist."
+
+
+# ---------------------------------------------------------------------------
+# Policy-aware workspace sentence (review-hardening step 1, 2026-09-15)
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_isolated_owned(tmp_path: Path):
+    line = build_workspace_line(
+        kind="task", policy="isolated", owned=True,
+        worktree_path=str(tmp_path), branch="sweave/abc/backend",
+    )
+    assert str(tmp_path) in line
+    assert "sweave/abc/backend" in line
+    assert "yours alone" in line
+
+
+def test_workspace_inherit_shared_names_owner(tmp_path: Path):
+    line = build_workspace_line(
+        kind="task", policy="inherit", owned=False,
+        parent_task_id="parent-1", worktree_path=str(tmp_path),
+        branch="sweave/abc/backend",
+    )
+    assert str(tmp_path) in line
+    assert "parent-1" in line
+    assert "NOT yours to retire" in line
+
+
+def test_workspace_inherit_fallback_is_intentional(tmp_path: Path):
+    # Treeless parent (e.g. a chat delegation): the orchestrator's view
+    # BY DESIGN (user ruling 2026-09-15) — never phrased as an accident.
+    line = build_workspace_line(
+        kind="task", policy="inherit", owned=False,
+        parent_task_id="chat-9", worktree_path=str(tmp_path), branch="master",
+    )
+    assert str(tmp_path) in line
+    assert "by design" in line
+    assert "accident" not in line
+
+
+def test_workspace_none_policy_is_live_root(tmp_path: Path):
+    line = build_workspace_line(
+        kind="task", policy="none", owned=False,
+        worktree_path=str(tmp_path), branch="master",
+    )
+    assert "policy `none`" in line
+    assert "live tree" in line
+
+
+def test_workspace_chat_kind_takes_no_tree(tmp_path: Path):
+    line = build_workspace_line(
+        kind="chat", policy="isolated", owned=True,
+        worktree_path=str(tmp_path), branch="master",
+    )
+    assert "never take one" in line
+
+
+def test_context_carries_policy_and_workspace(tmp_path: Path):
+    from sweave.runtime.delegation_store import Delegation
+    from sweave.runtime.specialist_store import Specialist
+
+    spec = Specialist(name="rev", scope="project", is_orchestrator=False,
+                      system_prompt="x", harness="opencode",
+                      worktree_policy="inherit")
+    d = Delegation(agent="rev", task="review it", project_name="shop")
+    d.worktree_owned = False
+    d.parent_task_id = "chat-9"
+    ctx = build_template_context(
+        specialist=spec, delegation=d, worktree_path=tmp_path, model="",
+    )
+    assert ctx["worktree_policy"] == "inherit"
+    assert "by design" in ctx["workspace"]
+    out = render_prompt_template("{{workspace}} @ {{worktree_path}}", ctx)
+    assert "{{" not in out
+    assert str(tmp_path) in out
+
+
+def test_seeds_use_workspace_template_not_hardcoded_paths():
+    from sweave.agents.loader import AGENTS_DIR
+
+    for role in ("backend", "frontend", "reviewer"):
+        text = (AGENTS_DIR / role / "config.yaml").read_text(encoding="utf-8")
+        assert ".worktrees/{task_id}" not in text, f"{role} still hardcodes a worktree path"
+        assert "{{workspace}}" in text, f"{role} missing {{{{workspace}}}}"
+        assert "{{worktree_path}}" in text, f"{role} missing {{{{worktree_path}}}}"
