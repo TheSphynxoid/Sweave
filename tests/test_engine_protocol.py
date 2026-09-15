@@ -114,7 +114,10 @@ def test_non_dict_body_rejected():
 
 def test_tool_baseline_is_the_6_group_parity_bar():
     # read / write+edit / bash / glob / grep / todo — opencode
-    # built-in names verbatim. Changing this tuple is a scope change.
+    # built-in names verbatim — plus `git` (2026-09-15 GIT_READ_TOOL
+    # ruling: engine-native read-only inspection, verb allowlist;
+    # trace-use audit is commit archaeology). Changing this tuple
+    # beyond a ruling is a scope change.
     assert set(TOOL_BASELINE) == {
         "read",
         "edit",
@@ -123,7 +126,19 @@ def test_tool_baseline_is_the_6_group_parity_bar():
         "glob",
         "grep",
         "todo",
+        "git",
     }
+
+
+def test_run_request_accepts_git_and_names_unknown_sidecar_mismatch():
+    # Step-2 done-gate: `git` rides the wire. An old sidecar (or any
+    # peer whose KNOWN_TOOLS lacks it) rejects with the loud
+    # `bad:tools (unknown: ...)` shape — never cryptic.
+    body = _valid_run_body(tools=["read", "git", "defer"])
+    assert validate_run_request(body) is body
+    old_allow = tuple(t for t in TOOL_BASELINE if t != "git")
+    unknown = [t for t in ["read", "git"] if t not in old_allow]
+    assert unknown == ["git"]  # the old-sidecar bad_request shape
 
 
 def test_sweave_native_tools_match_mcp_surface():

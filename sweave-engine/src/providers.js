@@ -203,6 +203,6 @@ export function resolveProvider(provider, modelId) {
   };
 }
 
-export const TOOL_BASELINE = ["read", "edit", "write", "bash", "glob", "grep", "todo"];
+export const TOOL_BASELINE = ["read", "edit", "write", "bash", "glob", "grep", "todo", "git"];
 export const SWEAVE_NATIVE_TOOLS = ["defer", "list_specialists", "ask_human", "escalate"];
 export const KNOWN_TOOLS = new Set([...TOOL_BASELINE, ...SWEAVE_NATIVE_TOOLS]);

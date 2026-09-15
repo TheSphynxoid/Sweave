@@ -41,10 +41,14 @@ OPENCODE_HARNESS_NAME = "opencode"
 #: ``edit`` does exact-string replacement; ``write`` creates/overwrites
 #: (both gated by the single ``edit`` permission key); ``bash`` runs
 #: shell commands; ``glob``/``grep`` search; ``todo`` is the task list
-#: (opencode ``todowrite``). Everything else (``lsp``, ``skill``
-#: tool-execution, ``plan``, ``webfetch``, ``websearch``, ``patch``)
-#: stays opencode-only until demand proves otherwise — each addition
-#: needs a user ruling with a trace-use audit first.
+#: (opencode ``todowrite``); ``git`` is the engine-native read-only
+#: inspection tool (verb allowlist: log/show/status/diff/branch/
+#: ls-files/rev-parse — added 2026-09-15 under the GIT_READ_TOOL plan
+#: ruling with the commit-archaeology trace-use audit). Everything
+#: else (``lsp``, ``skill`` tool-execution, ``plan``, ``webfetch``,
+#: ``websearch``, ``patch``) stays opencode-only until demand proves
+#: otherwise — each addition needs a user ruling with a trace-use
+#: audit first.
 TOOL_BASELINE: tuple[str, ...] = (
     "read",
     "edit",
@@ -53,6 +57,7 @@ TOOL_BASELINE: tuple[str, ...] = (
     "glob",
     "grep",
     "todo",
+    "git",
 )
 
 #: Sweave tools, native calls on this harness (same args + same
