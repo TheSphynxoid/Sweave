@@ -21,12 +21,16 @@ in-project read (8 asks in 7 min: project root, a doc, `.worktrees`,
    path-keyed `external_directory` always-allow can never cover the
    next file. Session persistence itself is fine (durable session).
 
-## Ruling (user-locked 2026-09-15): A + narrowed B
+## Ruling (user-locked 2026-09-15, refined same day): A + narrowed B
 - **A**: project subtree joins the silent allow-roots (an agent
   reading its own project's files never asks).
 - **Narrowed B**: "always allow" on a path-keyed ask generalizes to
   the permission *within the project subtree* (not exact-path, not
   global `*`). Genuinely outside-project paths still ask every time.
+- **Scope of an always-grant (refinement)**: per-run AND
+  per-specialist. It lives in sidecar memory only — a server restart
+  wipes it (never written to `sessions.json`), and one specialist's
+  grant never silences another's asks (keyed by engine session).
 
 ## Sketch (for the execution round)
 - `mcp_config.py::_root_globs`: append resolved `project_dir`
@@ -35,12 +39,18 @@ in-project read (8 asks in 7 min: project root, a doc, `.worktrees`,
   project-subtree wildcard when the target sits under the turn cwd's
   project, exact path otherwise; `approvalMatches` gains prefix-rule
   matching for such scoped patterns (exact-match behavior unchanged
-  for everything else).
+  for everything else). Grants live in a sidecar in-memory map keyed
+  by engine session id (per-specialist isolation); the session
+  save/load path must exclude them so a restart always wipes them
+  (the sidecar is a server-child process, so restart clears memory
+  anyway — the exclusion is the guarantee, not the process).
 - Mirror for the opencode path if it shares the exact-path storage
   (permission bridge posts pinned replies; check before touching).
 - Tests: scoped-render unit (project root silent, outside still ask),
   always-generalizes unit (second distinct in-project path silent,
-  outside-project path still asks), live sidecar scene optional.
+  outside-project path still asks), always-scope units (grant absent
+  after session reload fixture; specialist B still asks after
+  specialist A's grant), live sidecar scene optional.
 - Gate: touched suites + `run.py --check`; needs server restart
   (render is Python per-turn, gate is sidecar-resident).
 
