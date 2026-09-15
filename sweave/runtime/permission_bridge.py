@@ -75,6 +75,65 @@ def lookup_session(session_id: str) -> dict[str, Any] | None:
     return _SESSIONS.get(str(session_id))
 
 
+# ---- activity ferry (supervisor step 4, 2026-09-15) ------------------
+#
+# The opencode SSE bus is silent mid-tool, so the supervisor's pulse
+# layer would be blind on the opencode path. The island plugin's
+# ``tool.execute.before`` hook ferries tool starts here; we attribute
+# via the session registry above and append a ``tool.started`` trace
+# pulse — which ``JobRunner._last_pulse`` already counts. Zero
+# supervisor code change by design. Unknown sessions degrade to a
+# 200 no-op (never break the host); completions still arrive via
+# the bus/parts path (no double-pulse problem: starts and
+# completions are different event names).
+
+
+def record_ferried_tool_started(
+    payload: dict[str, Any], *, traces_dir: Any
+) -> dict[str, Any]:
+    """Attribute one ferried tool start as a trace pulse.
+
+    Returns ``{"status": "ok", "noted": bool, ...}`` — always 200
+    at the HTTP layer (mirror the hijack endpoint's never-raise
+    contract). Never raises.
+    """
+    try:
+        session_id = str(
+            payload.get("session_id")
+            or payload.get("sessionID")
+            or payload.get("sessionId")
+            or ""
+        )
+        if not session_id:
+            return {"status": "ok", "noted": False, "reason": "missing session"}
+        rec = lookup_session(session_id) or {}
+        delegation_id = rec.get("delegation_id")
+        if not delegation_id:
+            return {"status": "ok", "noted": False, "reason": "unknown session"}
+        from sweave.runtime.trace_log import TraceLog
+
+        tool = str(payload.get("tool") or "unknown")
+        target = str(payload.get("target") or "")[:200]
+        trace = TraceLog(str(delegation_id), base_dir=traces_dir)
+        trace.append(
+            "tool.started",
+            {
+                "tool": tool,
+                "state": {"status": "pending", "input": {"target": target}},
+                "source": "ferry",
+                "session_id": session_id,
+            },
+        )
+        try:
+            trace.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"status": "ok", "noted": True, "delegation_id": str(delegation_id)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("activity_ferry: record failed: %s", exc)
+        return {"status": "error", "noted": False, "reason": str(exc)}
+
+
 # ---- plugin provisioning -------------------------------------------
 
 PLUGIN_UNIQUE_MARKER = "_sweave_managed"

@@ -13,6 +13,18 @@
 // The plugin never sends the reply itself (it does not know the
 // serve's URL).
 //
+// Supervisor step 4 (2026-09-15): the same ferry carries
+// `tool.execute.before` as activity pulses (POST
+// /api/activity/tool-started). The opencode SSE bus is silent
+// mid-tool (probe_bus_inventory: heartbeats only across a 150s
+// tool window), so the supervisor's pulse layer would be blind on
+// the opencode path without an in-process sensor. The ferry posts
+// tool NAME + compact target only (command/filePath head,
+// truncated — never file contents); Sweave attributes via its
+// session registry and appends a `tool.started` trace pulse the
+// supervisor already counts (zero supervisor code change by
+// design).
+//
 // Failure posture (user ruling): this plugin NEVER breaks the host.
 // A dead Sweave server failing the fetch surfaces as a logged error
 // only; the out-of-band stall-branch ask-dance
@@ -52,6 +64,46 @@ export const SweavePermissionPlugin = async ({ client }: { client?: any }) => {
       `token_set=${Boolean(process.env.SWEAVE_MCP_TOKEN)}`,
   );
   return {
+    "tool.execute.before": async (input: any, output?: any) => {
+      // Activity pulse (supervisor step 4): tool NAME + compact
+      // target only. input shape varies by opencode version —
+      // extract defensively; a missing session id degrades to a
+      // server-side no-op (200 noted:false), never a throw (the
+      // hook must not break or slow the tool call).
+      try {
+        const tool = String(input?.tool ?? output?.tool ?? "unknown");
+        // Args shape varies by opencode version and call shape (the
+        // docs example mutates output.args, but reads have arrived
+        // empty there live) — merge every plausible location, first
+        // hit wins. Head-truncated; never file contents.
+        const args = {
+          ...((input?.args ?? {}) as Record<string, unknown>),
+          ...((output?.args ?? {}) as Record<string, unknown>),
+        };
+        const rawTarget =
+          args.command ?? args.filePath ?? args.filepath ?? args.path
+          ?? args.pattern ?? args.url ?? "";
+        const target = String(rawTarget).slice(0, 200);
+        const sessionID =
+          input?.sessionID ?? input?.sessionId ?? input?.session_id ?? null;
+        const token =
+          typeof process !== "undefined" ? process.env.SWEAVE_MCP_TOKEN : undefined;
+        fetch(`${sweaveUrl}/api/activity/tool-started`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "X-Sweave-MCP-Token": token || "",
+          },
+          body: JSON.stringify({
+            session_id: sessionID,
+            tool,
+            target,
+          }),
+        }).catch(() => {});
+      } catch {
+        // never break the host
+      }
+    },
     event: async ({ event }: { event: { type: string; properties?: Record<string, unknown> } }) => {
       if (!event || event.type !== "permission.asked") return;
       const props = (event.properties || {}) as Record<string, unknown>;

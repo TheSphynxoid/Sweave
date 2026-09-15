@@ -17,6 +17,12 @@ Endpoints:
   into a blocking human question; the pinned reply is POSTed back
   to the serve by sweave.
 
+* ``POST /api/activity/tool-started`` -- supervisor step 4: the
+  same island plugin ferries ``tool.execute.before`` here (the
+  SSE bus is silent mid-tool). Attributed via the session
+  registry into a ``tool.started`` trace pulse the supervisor
+  already counts — no supervision logic lives here.
+
 The ``defer`` MCP tool calls the existing ``POST /api/v2/tasks``
 endpoint (no MCP-specific URL); the DelegationManager (M1.6 step 2)
 runs inside that handler. We don't shadow v2 here.
@@ -144,3 +150,34 @@ async def permission_hijack(
     except Exception as e:  # noqa: BLE001
         logger.warning("permission_hijack: resolution failed: %s", e)
         return {"status": "error", "reason": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Supervisor step 4 (2026-09-15): activity ferry
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/activity/tool-started")
+async def activity_tool_started(
+    payload: dict[str, Any] = Body(default={}),
+    state: AppState = Depends(get_state),
+    _token: None = Depends(_check_mcp_token),
+) -> dict[str, Any]:
+    """Attribute one ferried opencode tool start as a trace pulse.
+
+    Called fire-and-forget by the island plugin's
+    ``tool.execute.before`` hook (same token guard as the hijack
+    endpoint). Resolves session → delegation via the runtime's
+    session registry and appends ``tool.started`` (source=ferry)
+    to the delegation trace — the supervisor's pulse layer counts
+    it with zero code change. Unknown sessions degrade to a 200
+    no-op (a serve outliving its registry entry must never break);
+    payload problems likewise never 500 (mirror the hijack
+    never-raise contract).
+    """
+    from sweave.runtime.permission_bridge import record_ferried_tool_started
+
+    return record_ferried_tool_started(
+        payload if isinstance(payload, dict) else {},
+        traces_dir=state.traces_dir,
+    )

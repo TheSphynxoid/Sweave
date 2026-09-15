@@ -227,9 +227,21 @@ after holds/re-arms; M1.12 outranks the fuse at boundaries).
 
 ### Step 4 — Opencode parity (ferry-or-gap; scoped at its round)
 
-Activity ferry where cheap (bridge-plugin pattern), longer
-verification where not, `signal_gap` everywhere silent.
-Scoped against what step 3 actually built.
+DONE 2026-09-15 (ferry, not gap): the bus probe re-run on
+1.18.31 confirmed mid-tool silence (heartbeats only across a
+150s tool window — drift gate holds), but the plugin API
+exposes `tool.execute.before`, so the island plugin ferries
+tool starts (`POST /api/activity/tool-started`, token-guarded,
+tool name + 200-char target only) and the server attributes via
+the session registry into `tool.started` trace pulses the
+supervisor already counts — zero supervisor code change.
+Unknown sessions 200 no-op. Live gate
+(`scripts/supervisor_ferry_gate.py`, free-tier only): both bash
+starts ferried mid-turn with valid token + session. En route:
+hook signature must declare `output` (undeclared read throws
+ReferenceError past `?.` — silent no-ferry, caught live);
+probe_bus_inventory finally hardened to poll-then-kill (it
+littered a scratch serve). 6 new tests.
 
 ### Step 5 — Fuse retune + close-out (P3, docs)
 

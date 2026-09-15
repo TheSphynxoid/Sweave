@@ -249,10 +249,20 @@ async def main() -> int:
             print(f"  {start:5d}s: {'#' * min(buckets[start], 60)} ({buckets[start]})")
         return 0
     finally:
+        # Reap discipline (2026-09-15: proc.kill() alone left the
+        # scratch serve behind — poll-then-kill with verification).
         try:
-            proc.kill()
-        except Exception:
-            pass
+            proc.wait(timeout=10.0)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                print(f"STRAY serve at pid {proc.pid} (kill by hand)")
+                raise SystemExit(f"stray probe serve at pid {proc.pid}")
 
 
 if __name__ == "__main__":
