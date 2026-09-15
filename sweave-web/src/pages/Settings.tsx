@@ -34,28 +34,18 @@ export function SettingsPage() {
     queryFn: () => api.listHarnesses(),
   });
 
-  // Appearance (theme + font size) is global — persisted in localStorage,
-  // not per-project — so it renders even with no active project. The
-  // Project/Models/System tabs need a project or a registry and keep
-  // their own empty states.
-  if (!activeProject) {
-    return (
-      <div className="p-6 space-y-6" data-testid="page-settings">
-        <PageHeader
-          title="Settings"
-          description="Appearance lives here. Activate a project for project, model, and system settings."
-          icon={<SettingsIcon size={20} />}
-        />
-        <AppearanceSettings />
-      </div>
-    );
-  }
-
+  // Appearance (theme + font size), runtime defaults, models, providers,
+  // and system are GLOBAL — they render with no active project. Only the
+  // Project tab is per-project and keeps its own empty state.
   return (
     <div className="p-6 space-y-6" data-testid="page-settings">
       <PageHeader
         title="Settings"
-        description={`Configuration for ${activeProject.name}.`}
+        description={
+          activeProject
+            ? `Configuration for ${activeProject.name}.`
+            : "Global configuration. Activate a project for project settings."
+        }
         icon={<SettingsIcon size={20} />}
       />
 
@@ -83,7 +73,15 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="project">
-          <ProjectSettings />
+          {activeProject ? (
+            <ProjectSettings />
+          ) : (
+            <Card>
+              <CardContent className="pt-6 text-sm text-muted-foreground">
+                No active project. Activate a project to see its configuration.
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="models">
@@ -95,7 +93,10 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="system">
-          <SystemSettings harnesses={harnesses} />
+          <div className="space-y-3">
+            <RuntimeSettings />
+            <SystemSettings harnesses={harnesses} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>
@@ -480,6 +481,149 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
 function shortStoreName(path: string): string {
   if (path.includes("opencode-data")) return "isolated copy";
   return "real store";
+}
+
+const RUNTIME_HARNESSES = ["sweave-engine", "opencode"] as const;
+
+/**
+ * Global runtime defaults (config tier): the default harness and the
+ * provider-call retry budget. Both apply hot (new turns pick them up
+ * without a restart) and both lose per turn to the specialist record,
+ * the project overlay, and the per-task override — seed specialists
+ * already run on sweave-engine, so flipping the harness here does not
+ * move them. There is no silent harness fallback: a turn no tier can
+ * place fails loud as harness_unresolved.
+ */
+export function RuntimeSettings() {
+  const qc = useQueryClient();
+  const { pushNotification } = useApp();
+  const [harness, setHarness] = useState<string | null>(null);
+  const [retries, setRetries] = useState<string | null>(null);
+  const [saving, setSaving] = useState<"harness" | "retries" | null>(null);
+
+  const harnessQuery = useQuery({
+    queryKey: ["harness-default"],
+    queryFn: () => api.getHarnessDefault(),
+  });
+  const rulesQuery = useQuery({
+    queryKey: ["rules"],
+    queryFn: () => api.getRules(),
+  });
+
+  const currentHarness = harness ?? harnessQuery.data ?? "opencode";
+  const currentRetries =
+    retries ?? (rulesQuery.data ? String(rulesQuery.data.turn_retries) : "3");
+
+  const saveHarness = async () => {
+    if (!(RUNTIME_HARNESSES as readonly string[]).includes(currentHarness)) {
+      pushNotification("error", `Unknown harness ${currentHarness || "(empty)"}.`);
+      return;
+    }
+    setSaving("harness");
+    try {
+      const res = await api.setHarnessDefault(currentHarness);
+      await qc.invalidateQueries({ queryKey: ["harness-default"] });
+      pushNotification("success", `Default harness set to ${res.harness} (new turns).`);
+    } catch (err) {
+      pushNotification("error", `Failed to set default harness: ${(err as Error).message}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const saveRetries = async () => {
+    const value = Number.parseInt(currentRetries, 10);
+    if (!Number.isInteger(value) || value < 0 || value > 10) {
+      pushNotification("error", "Retries must be a whole number from 0 (disabled) to 10.");
+      return;
+    }
+    setSaving("retries");
+    try {
+      const res = await api.setTurnRetries(value);
+      await qc.invalidateQueries({ queryKey: ["rules"] });
+      pushNotification(
+        "success",
+        value === 0
+          ? "Provider retries disabled globally (new turns)."
+          : `Provider retries set to ${res.turn_retries} per turn (new turns).`,
+      );
+    } catch (err) {
+      pushNotification("error", `Failed to set retries: ${(err as Error).message}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">Runtime defaults</CardTitle>
+        <CardDescription>
+          Global defaults for new turns (hot — no restart). A specialist&apos;s
+          own harness, the project overlay, and the per-task override still win
+          per turn; seed specialists already run on sweave-engine.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <label htmlFor="runtime-harness" className="w-36 shrink-0 text-xs text-muted-foreground">
+            Default harness
+          </label>
+          <select
+            id="runtime-harness"
+            data-testid="runtime-harness"
+            value={currentHarness}
+            onChange={(e) => setHarness(e.target.value)}
+            disabled={harnessQuery.isLoading}
+            className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            {RUNTIME_HARNESSES.map((h) => (
+              <option key={h} value={h}>{h}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void saveHarness()}
+            disabled={saving !== null}
+            data-testid="runtime-harness-save"
+            className="h-8 shrink-0 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {saving === "harness" ? "Saving…" : "Save"}
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="runtime-retries" className="w-36 shrink-0 text-xs text-muted-foreground">
+            Retries per turn
+          </label>
+          <input
+            id="runtime-retries"
+            data-testid="runtime-retries"
+            inputMode="numeric"
+            value={currentRetries}
+            onChange={(e) => setRetries(e.target.value)}
+            disabled={rulesQuery.isLoading}
+            title="Provider-call retries after the first attempt (0 disables, max 10)"
+            className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <button
+            type="button"
+            onClick={() => void saveRetries()}
+            disabled={saving !== null}
+            data-testid="runtime-retries-save"
+            className="h-8 shrink-0 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
+          >
+            {saving === "retries" ? "Saving…" : "Save"}
+          </button>
+        </div>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Retries cover transient provider failures only (429 / 5xx / network);
+          auth, bad-request, quota, and context-overflow never retry. Unset
+          turns resolve to no registered harness fail loud as
+          harness_unresolved — nothing silently runs elsewhere.
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function ProvidersSettings() {

@@ -461,6 +461,43 @@ class ApiClient {
     return r.data.harnesses;
   }
 
+  /** Routing rules + scalars (turn_retries lives in rules.yaml). */
+  async getRules(): Promise<{
+    routes: { pattern: string; agent: string; model?: string | null }[];
+    fallback: string;
+    turn_retries: number;
+    turn_timeout_s: number;
+    chain_budget: number;
+    max_depth: number;
+  }> {
+    const r = await this.client.get("/rules");
+    return r.data;
+  }
+
+  /** Set the global provider-call retry budget (0 disables, max 10). */
+  async setTurnRetries(
+    turn_retries: number,
+  ): Promise<{ success: boolean; turn_retries: number }> {
+    const r = await this.client.put("/rules/retries", { turn_retries });
+    return r.data;
+  }
+
+  /** Global harness default (config tier only). */
+  async getHarnessDefault(): Promise<string> {
+    const r = await this.client.get<{ harness?: { default?: string } }>(
+      "/config",
+    );
+    return r.data?.harness?.default ?? "opencode";
+  }
+
+  /** Set the global harness default (sweave-engine | opencode). */
+  async setHarnessDefault(
+    harness: string,
+  ): Promise<{ success: boolean; harness: string }> {
+    const r = await this.client.put("/harness/default", { harness });
+    return r.data;
+  }
+
   // ---- Provider credentials (Sweave-canonical keychain) ----
 
   /** Universe × availability: every catalog provider + its credential state. */
