@@ -5,7 +5,8 @@ f774d84b class: ≈40 healthy calls/30min → a 3h turn needs ≈240 >
 the old 150). Now health is governed by failure guards (doom =
 identical, stuckness = consecutive-all-fail, volume = cumulative
 failed ≈1/3 of role ceiling) and the total is a pure cost
-backstop (specialist 150 → 300; orchestrator unchanged at 50).
+backstop (specialist 150 → 300; orchestrator 50 → 150 on
+2026-09-16 after a healthy 76-call planning turn died at 50).
 
 Shares the sidecar harness of tests/test_engine_tools.py (that
 file is another thread's in-flight work — do NOT duplicate its
@@ -160,10 +161,11 @@ async def test_healthy_high_volume_survives_past_old_cap(sidecar, worktree):
 
 
 @needs_node
-async def test_orchestrator_failure_volume_at_fifteen(sidecar, worktree):
-    """Orchestrator scale (≈1/3 of its 50 ceiling), role-gated."""
+async def test_orchestrator_failure_volume_at_fifty(sidecar, worktree):
+    """Orchestrator scale (≈1/3 of its 150 ceiling — raised with
+    the ceiling on 2026-09-16, same headroom rule), role-gated."""
     script = []
-    for i in range(25):
+    for i in range(65):
         if i % 5 == 4:
             script.append({"calls": [_call("read", {"filePath": "notes.txt", "offset": (i % 3) + 1})]})
         else:
@@ -182,7 +184,7 @@ async def test_orchestrator_failure_volume_at_fifteen(sidecar, worktree):
     assert "failure_volume" in (result.error or "")
     handoffs = [p for p in trace.of("step.boundary") if "handoff" in p]
     assert len(handoffs) == 1
-    assert handoffs[0]["handoff"]["failedIterations"] == 15
+    assert handoffs[0]["handoff"]["failedIterations"] == 50
 
 
 @needs_node

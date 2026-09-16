@@ -240,6 +240,17 @@
   tonight's synthesis-leaked reviewer (`blocking:true` but
   unjoined — single-wait design, working as coded). Execution
   waits on the user lock + tonight's live verdict flow.
+- ✅ **Orchestrator ceiling 50→150 + volume 15→50 (2026-09-16,
+  incident `chat-295a73694c49`)** — healthy planning turn died
+  at 50 (76 calls, 41 reads = 38 unique windows, only 5 failed;
+  ~11 min). The pre-widening "never needs >20" assumption died
+  with the 2026-09-15 `.md`+`todo` grant. Same death class as
+  the specialist 150→300 raise; health still governed by
+  doom/streak/volume + supervisor. Waste half (≈15–20 iters on
+  5 whitespace-failed edits + blind re-reads) specced separately
+  (`docs/EDIT_HINT_PLAN.md`). 1190 pytest green (2 deselected:
+  pre-existing UI red + slow timing test); sidecar recycle
+  needed to pick up.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
@@ -348,7 +359,7 @@
     zombie); supersede-via-revert spec (undo/redo, native opencode
     revert probed live, file-state restore confirmed);
      scripts/probe_revert_*.py stay as drift gates.
-   - ▶ **Specialist live view (2026-09-13): plan of record
+   - ▶ **Specialist live view (2026-09-13; amended 2026-09-16, Q1–Q6 — see plan Amendment): plan of record
      `docs/SPECIALIST_VIEW_PLAN.md`.** Full read-only transparency pane
      per running delegation (identity + elapsed + last-activity + current
      tool + partials + tool timeline + tokens); the ONLY side-effects are
@@ -367,7 +378,18 @@
      the custom engine). History gap found via grep: runtime emits zero
      `tool.*` events, so the timeline is structurally empty for
      specialist turns. Steps 0–5: probe → activity liveness → transcript
-     → live block + abort → pane UI → gates.
+     → live block + abort → pane UI → gates. **Amendment 2026-09-16
+     (user-locked Q1–Q6): Steps 2–4 rescoped engine-first** — engine
+     journal already holds per-turn content (read path only, additive
+     detail-fold key), opencode gains actually-sent prompt capture
+     (trace, additive) + tool-lifecycle re-verification by grep; Step 4
+     becomes tabbed `DetailView` (Overview | Transcript chronological |
+     Tools newest-first UI-only | Prompt | Tokens/Status) + compact cards
+     with tail preview + full-details affordance + child
+     callback-forwarding with 3–5s poll fallback; tab content
+     container-agnostic for the deferred UX-5 general dock (own future
+     plan; one-specialist-at-a-time rule recorded). Steps 0–1 + 3 + 5
+     stand.
    - ▶ **Custom engine thread (2026-09-13): `docs/CUSTOM_ENGINE_PLAN.md`
       refreshed for side-by-side execution with the view track.**
       Solo-executed 2026-09-13 (no parallel worker): steps 0 (protocol

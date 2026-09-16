@@ -936,10 +936,12 @@ async def test_specialist_ceiling_beyond_fifty(sidecar, worktree):
 
 
 @needs_node
-async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
-    """The orchestrator keeps the 50-iteration ceiling (its turns
-    never needed more observed) and trips loud with a handoff
-    record naming what ran."""
+async def test_orchestrator_ceiling_beyond_fifty(sidecar, worktree):
+    """The orchestrator ceiling is 150 (raised 50 -> 150 on
+    2026-09-16: a healthy 76-call planning turn died at 50 — the
+    pre-`.md`-widening "never needs more than ~20" assumption).
+    A healthy 60-iteration turn completes with no handoff; a
+    160-iteration turn trips loud at 150 with a handoff."""
     _reset_stub()
     reads = [
         {"filePath": "notes.txt", "offset": 1},
@@ -947,7 +949,33 @@ async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
         {"filePath": "src/main.py"},
     ]
     STUB["script"] = (
-        [{"calls": [_call("read", reads[i % 3])]} for i in range(55)]
+        [{"calls": [_call("read", reads[i % 3])]} for i in range(60)]
+        + [{"text": "PLANNING DONE"}]
+    )
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read"]))
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message("keep reading", metadata={"role": "orchestrator"}), trace=trace
+    )
+    assert result.success, result.error
+    assert result.output == "PLANNING DONE"
+    assert all("handoff" not in p for p in trace.of("step.boundary"))
+
+
+@needs_node
+async def test_orchestrator_ceiling_trips_at_150(sidecar, worktree):
+    """Past 150 the orchestrator still trips loud with a handoff
+    record naming what ran (the ceiling is a cost backstop)."""
+    _reset_stub()
+    reads = [
+        {"filePath": "notes.txt", "offset": 1},
+        {"filePath": "notes.txt", "offset": 2},
+        {"filePath": "src/main.py"},
+    ]
+    STUB["script"] = (
+        [{"calls": [_call("read", reads[i % 3])]} for i in range(160)]
         + [{"text": "NEVER REACHED"}]
     )
     from sweave.harness.engine import SweaveEngineHarness
@@ -962,8 +990,8 @@ async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
     handoffs = [p for p in trace.of("step.boundary") if "handoff" in p]
     assert len(handoffs) == 1
     hand = handoffs[0]["handoff"]
-    assert hand["iterations"] == 50
-    assert hand["toolCalls"] == 50
+    assert hand["iterations"] == 150
+    assert hand["toolCalls"] == 150
     assert any("notes.txt" in f for f in hand["filesTouched"])
 
 

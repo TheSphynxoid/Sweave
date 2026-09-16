@@ -268,9 +268,11 @@ events and the loop's existing anchors.
   enough escalates to keep/stop instead of deciding alone. The
   user abort (Stop button) always wins immediately at any state —
   supervision never delays a deliberate stop.
-* Iteration-level trips stay: role budgets (orchestrator 50 /
-  specialist 150), stuckness (5 straight failed iterations),
-  doom-loop guard. The supervisor is the TIME layer above them;
+* Iteration-level trips stay: role budgets (orchestrator 150 /
+  specialist 300 — orchestrator raised 50 → 150 on 2026-09-16,
+  same death class as the specialist raise), stuckness (5 straight
+  failed iterations), doom-loop guard. The supervisor is the TIME
+  layer above them;
   a turn can trip on iterations while perfectly pulsed, and vice
   versa. Complementary, never merged.
 

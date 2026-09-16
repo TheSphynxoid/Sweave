@@ -37,18 +37,23 @@ import {
   providerResponsesStream,
 } from "./responses.js";
 
-const MAX_ITERATIONS = 50;
+const MAX_ITERATIONS = 150;
 const DOOM_REPEATS = 3;
 // Role-aware ceiling (2026-09-14): the flat 50 killed healthy
 // implementation turns (two confirmed max_steps deaths on
 // succeeding read/edit/probe loops). Specialists doing
-// implementation get headroom; the orchestrator's read-only
-// turns never needed more than ~20 observed. The ceiling is a
-// pure COST backstop now (raised 150 -> 300: ≈3.75h at the
-// observed healthy pace of ~40 calls/30min) — health is governed
-// by the failure guards below + the supervisor's pulses, never
-// by totals. Explicitly NOT a loop guard (that conflation caused
-// the f774d84b-class deaths; see the locked reasoning-loop
+// implementation get headroom (raised 150 -> 300 on 2026-09-15);
+// the orchestrator rose 50 -> 150 on 2026-09-16 after the same
+// death class hit it: a healthy planning turn (chat-295a73694c49,
+// SPECIALIST_VIEW amendment doc work — 76 tool calls, 41 reads,
+// only 5 failed) died at 50. The old "orchestrator turns never
+// need more than ~20" assumption predates the 2026-09-15
+// orchestrator `.md` + `todo` widening — planning sessions now
+// do dozens of read/edit/grep iterations per turn. The ceiling
+// is a pure COST backstop — health is governed by the failure
+// guards below + the supervisor's pulses, never by totals.
+// Explicitly NOT a loop guard (that conflation caused the
+// f774d84b-class deaths; see the locked reasoning-loop
 // detector in docs/PLUGGABLES_PLAN.md for the destination).
 const MAX_ITERATIONS_SPECIALIST = 300;
 // Failure-volume trip (2026-09-15): cumulative tool iterations
@@ -57,7 +62,7 @@ const MAX_ITERATIONS_SPECIALIST = 300;
 // the varying-attempts shape a learned detector will own);
 // healthy work barely fails, so it runs unbounded. Bound ≈ 1/3
 // of the role's total ceiling (same headroom rule, both roles).
-const MAX_FAILED_ITERATIONS = 15;
+const MAX_FAILED_ITERATIONS = 50;
 const MAX_FAILED_ITERATIONS_SPECIALIST = 50;
 // Stuckness trip (2026-09-14): consecutive tool iterations with
 // zero successes (every executed call errored/denied/rejected).
