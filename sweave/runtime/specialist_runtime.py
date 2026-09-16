@@ -52,12 +52,18 @@ from sweave.engine.protocol import (
     OPENCODE_HARNESS_NAME,
     ROLE_ORCHESTRATOR,
     ROLE_SPECIALIST,
+    SWEAVE_NATIVE_TOOLS,
+    TOOL_BASELINE,
 )
 from sweave.harness.base import (
     AgentSpec as EngineAgentSpec,
     Message as EngineMessage,
     harness_registry,
     resolve_harness_name,
+)
+from sweave.runtime.agent_permission import (
+    NATIVE_QUESTION_TOOL,
+    SPECIALIST_SWEAVE_DENIES,
 )
 from sweave.runtime.delegation_store import Delegation
 from sweave.runtime.prompt_template import (
@@ -140,6 +146,58 @@ ORCHESTRATOR_TOOLS: tuple[str, ...] = (
 # orchestrator turn — an offered edit without a map entry would be
 # allow-everything.
 ORCHESTRATOR_MD_WRITE_MAP: dict[str, str] = {"*": "deny", "*.md": "allow"}
+
+
+def offered_exec_tools(*, harness_name: str, is_orchestrator: bool) -> list[str]:
+    """Exec tools actually offered on a turn (before permission-map gating).
+
+    Single source of truth for the ``{{tools}}`` template variable —
+    the same lists the turn itself is built from (engine ``spec.tools``
+    below; opencode's serve defaults minus the per-role denies in
+    ``runtime/agent_permission.py``). Order is the harness's canonical
+    order, never sorted, so the rendered line eyeballs against the
+    source.
+    """
+    if harness_name == ENGINE_HARNESS_NAME:
+        if is_orchestrator:
+            return list(ORCHESTRATOR_TOOLS)
+        return list(TOOL_BASELINE)
+    harness_obj = harness_registry.get(OPENCODE_HARNESS_NAME)
+    if harness_obj is None:  # pragma: no cover - registry always populated
+        from sweave.harness.opencode import OpenCodeHarness
+
+        harness_obj = OpenCodeHarness()
+    denied = {"task", NATIVE_QUESTION_TOOL}
+    return [t for t in harness_obj.get_default_tools() if t not in denied]
+
+
+def offered_sweave_tools(*, is_orchestrator: bool) -> list[str]:
+    """Sweave-native tools offered on a turn, derived from the deny sets.
+
+    Orchestrators keep all four; specialists keep only what
+    ``SPECIALIST_SWEAVE_DENIES`` doesn't deny (today just
+    ``escalate``) — derived, never a second hardcoded list.
+    """
+    if is_orchestrator:
+        return list(SWEAVE_NATIVE_TOOLS)
+    prefix = "sweave_"
+    return [
+        t
+        for t in SWEAVE_NATIVE_TOOLS
+        if f"{prefix}{t}" not in SPECIALIST_SWEAVE_DENIES
+    ]
+
+
+def offered_tools_line(*, harness_name: str, is_orchestrator: bool) -> str:
+    """Comma-separated ``{{tools}}`` value for one turn."""
+    return ", ".join(
+        [
+            *offered_exec_tools(
+                harness_name=harness_name, is_orchestrator=is_orchestrator
+            ),
+            *offered_sweave_tools(is_orchestrator=is_orchestrator),
+        ]
+    )
 
 
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
@@ -912,6 +970,10 @@ class SpecialistRuntime:
                         delegation=delegation,
                         worktree_path=worktree_path,
                         model=model_str,
+                        tools=offered_tools_line(
+                            harness_name=ENGINE_HARNESS_NAME,
+                            is_orchestrator=specialist.is_orchestrator,
+                        ),
                     )
                     charter = render_prompt_template(charter, context)
                     trace.append(
@@ -952,7 +1014,10 @@ class SpecialistRuntime:
                 tools=(
                     list(ORCHESTRATOR_TOOLS)
                     if specialist.is_orchestrator
-                    else list(harness_obj.get_default_tools())
+                    else list(offered_exec_tools(
+                        harness_name=ENGINE_HARNESS_NAME,
+                        is_orchestrator=False,
+                    ))
                 ),
                 env={},
                 harness=ENGINE_HARNESS_NAME,
@@ -1230,6 +1295,10 @@ class SpecialistRuntime:
                     delegation=delegation,
                     worktree_path=worktree_path,
                     model=model_str,
+                    tools=offered_tools_line(
+                        harness_name=OPENCODE_HARNESS_NAME,
+                        is_orchestrator=specialist.is_orchestrator,
+                    ),
                 )
                 rendered = render_prompt_template(specialist.system_prompt, context)
                 # Follow-up hardening (incident

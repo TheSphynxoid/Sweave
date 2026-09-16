@@ -35,6 +35,12 @@ for known-absent and is left intact for unknown names):
   on any failure. ``git_status`` is ``--porcelain`` truncated to
   2000 chars; ``recent_commits`` is ``log --oneline -10``.
 * ``session_id`` — the durable opencode session id when known.
+* ``tools`` — comma-separated tools actually offered on this turn
+  (exec tools for the turn's harness + the role's Sweave-native
+  tools, e.g. ``escalate`` for specialists). Rendered per turn by
+  the runtime — prompts must prefer ``{{tools}}`` over hardcoding
+  a tool list, which drifts the moment the harness or permission
+  profile changes.
 
 Turn semantics: prompts WITHOUT variables keep the legacy behaviour
 (one-off send on session create). Prompts WITH variables are
@@ -79,6 +85,7 @@ KNOWN_VARIABLES: tuple[str, ...] = (
     "git_status",
     "recent_commits",
     "session_id",
+    "tools",
 )
 
 
@@ -192,6 +199,7 @@ def build_template_context(
     delegation: Any,
     worktree_path: Path,
     model: str | None = None,
+    tools: str | list[str] | None = None,
 ) -> dict[str, str]:
     """Build the render context for one delegation."""
     worktree = Path(worktree_path)
@@ -206,6 +214,10 @@ def build_template_context(
     if owned is None:
         owned = True
     parent_task_id = getattr(delegation, "parent_task_id", None) or None
+    if isinstance(tools, list):
+        tools_line = ", ".join(str(t) for t in tools)
+    else:
+        tools_line = tools or ""
     return {
         "task": getattr(delegation, "task", "") or "",
         "delegation_id": getattr(delegation, "delegation_id", "") or "",
@@ -229,4 +241,5 @@ def build_template_context(
         "git_status": status,
         "recent_commits": log,
         "session_id": getattr(specialist, "session_id", None) or "",
+        "tools": tools_line,
     }

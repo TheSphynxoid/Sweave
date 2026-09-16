@@ -271,3 +271,113 @@ def test_seeds_use_workspace_template_not_hardcoded_paths():
         assert ".worktrees/{task_id}" not in text, f"{role} still hardcodes a worktree path"
         assert "{{workspace}}" in text, f"{role} missing {{{{workspace}}}}"
         assert "{{worktree_path}}" in text, f"{role} missing {{{{worktree_path}}}}"
+
+
+# ---------------------------------------------------------------------------
+# Dynamic {{tools}} (replaces the hardcoded "Full OpenCode toolset" line)
+# ---------------------------------------------------------------------------
+
+
+def test_context_tools_defaults_to_empty(tmp_path: Path):
+    from sweave.runtime.delegation_store import Delegation
+    from sweave.runtime.specialist_store import Specialist
+
+    spec = Specialist(name="t", scope="project", is_orchestrator=False,
+                      system_prompt="x", harness="opencode")
+    d = Delegation(agent="t", task="do it", project_name="shop")
+    ctx = build_template_context(
+        specialist=spec, delegation=d, worktree_path=tmp_path,
+    )
+    assert ctx["tools"] == ""
+    assert render_prompt_template("Tools: {{tools}}.", ctx) == "Tools: ."
+
+
+def test_context_tools_joins_lists_and_passes_strings(tmp_path: Path):
+    from sweave.runtime.delegation_store import Delegation
+    from sweave.runtime.specialist_store import Specialist
+
+    spec = Specialist(name="t", scope="project", is_orchestrator=False,
+                      system_prompt="x", harness="opencode")
+    d = Delegation(agent="t", task="do it", project_name="shop")
+    ctx = build_template_context(
+        specialist=spec, delegation=d, worktree_path=tmp_path,
+        tools=["read", "bash", "escalate"],
+    )
+    assert ctx["tools"] == "read, bash, escalate"
+    ctx2 = build_template_context(
+        specialist=spec, delegation=d, worktree_path=tmp_path,
+        tools="read, bash",
+    )
+    assert ctx2["tools"] == "read, bash"
+
+
+def test_offered_tools_line_engine_specialist():
+    from sweave.engine.protocol import TOOL_BASELINE
+    from sweave.runtime.specialist_runtime import offered_tools_line
+
+    line = offered_tools_line(harness_name="sweave-engine", is_orchestrator=False)
+    tools = [t.strip() for t in line.split(",")]
+    # Engine baseline verbatim, in harness order — plus escalate only.
+    assert tools[: len(TOOL_BASELINE)] == list(TOOL_BASELINE)
+    assert tools[-1] == "escalate"
+    # Opencode-only tools are never promised on the engine.
+    for absent in ("webfetch", "websearch", "skill", "patch", "lsp", "task", "question"):
+        assert absent not in tools
+
+
+def test_offered_tools_line_opencode_specialist():
+    from sweave.runtime.specialist_runtime import offered_tools_line
+
+    line = offered_tools_line(harness_name="opencode", is_orchestrator=False)
+    tools = [t.strip() for t in line.split(",")]
+    # Denied on specialists (agent_permission.py): no task, no question,
+    # no orchestration tools — escalate stays.
+    for absent in ("task", "question", "defer", "list_specialists", "ask_human"):
+        assert absent not in tools
+    assert "escalate" in tools
+    # Everything else the serve offers is still listed.
+    for present in ("bash", "read", "webfetch", "plan"):
+        assert present in tools
+
+
+def test_offered_tools_line_orchestrator_keeps_all_sweave_tools():
+    from sweave.runtime.specialist_runtime import offered_tools_line
+
+    for harness in ("sweave-engine", "opencode"):
+        line = offered_tools_line(harness_name=harness, is_orchestrator=True)
+        for present in ("defer", "list_specialists", "ask_human", "escalate"):
+            assert present in line.split(", ")
+
+
+def test_seeds_use_tools_template_not_hardcoded_list():
+    from sweave.agents.loader import AGENTS_DIR
+
+    for role in ("backend", "frontend", "reviewer"):
+        text = (AGENTS_DIR / role / "config.yaml").read_text(encoding="utf-8")
+        assert "Full OpenCode toolset" not in text, f"{role} still hardcodes a tool list"
+        assert "{{tools}}" in text, f"{role} missing {{{{tools}}}}"
+        assert "Can delegate to other specialists" not in text, (
+            f"{role} still promises delegation specialists cannot do"
+        )
+
+
+@pytest.mark.asyncio
+async def test_tools_var_renders_offered_set_on_turn(monkeypatch, tmp_path: Path):
+    from sweave.runtime.trace_log import TraceLog
+
+    runtime, system_sends = _make_runtime(monkeypatch, tmp_path)
+    spec = _spec("templ", "You have: {{tools}}.")
+    d = _delegation("templ", "do it")
+    trace = TraceLog(d.delegation_id, base_dir=tmp_path / "traces")
+    await runtime.run(
+        specialist=spec, delegation=d, worktree_path=tmp_path,
+        message=d.task, trace=trace,
+    )
+    trace.close()
+    assert len(system_sends) == 1
+    sent = system_sends[0]
+    assert "{{" not in sent
+    # Mock harness is opencode: denied tools absent, escalate present.
+    assert "escalate" in sent
+    assert "task," not in sent and ", task" not in sent
+    assert "question" not in sent

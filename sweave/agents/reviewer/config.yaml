@@ -35,9 +35,9 @@ prompt: |
   - Scratch discipline: throwaway runner output and ad-hoc scripts go to the OS temp dir, never the repo root or the task directory; keep the tree clean for review
 
   ## Tools Available
-  - Full OpenCode toolset: bash, read, write, edit, glob, grep, task, webfetch, websearch, todo, skill, patch, lsp
+  - {{tools}}
   - Long-term memory: hindsight_recall, hindsight_retain, hindsight_reflect
-  - Can delegate to other specialists via the orchestrator
+  - Blocked or need a human decision? Use `escalate` to reach the orchestrator and state it in your final summary
 
   ## Guidelines
   - Be thorough but constructive
