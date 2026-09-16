@@ -241,12 +241,49 @@ export interface ArchivedProjectSummary {
   source: "store" | "index";
 }
 
+/**
+ * Transcript block — rescoped Step 2a (engine-first read path).
+ *
+ * One block per specialist turn (chronological conversation order),
+ * projected from the engine sidecar journal into an additive detail
+ * key. The backend thread locks the wire key name; this slice binds
+ * to `transcript` (the plan default) and degrades gracefully when
+ * the key is absent or empty (opencode turns that have not hardened
+ * their capture yet). Never a crash, never an empty promise: a
+ * present-but-empty transcript renders the frozen-state notice, not
+ * a blank tab.
+ */
+export interface TranscriptBlock {
+  /** Stable id for the block (turn id / user_message_id). */
+  id: string;
+  role: "prompt" | "assistant" | "system" | "tool";
+  /** The prompt actually sent (system render + preamble + task). */
+  prompt?: string | null;
+  /** Assistant text slice. */
+  text?: string | null;
+  /** Reasoning slice (when captured). */
+  reasoning?: string | null;
+  /** Tool calls with lifecycle (callID-keyed, snapshot state). */
+  tools?: ToolTimelineEntry[];
+  /** Per-block token usage (counts only). */
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache_read?: number;
+    cache_write?: number;
+  } | null;
+}
 export interface DelegationDetail {
   delegation_id: string;
   composed_prompt: ComposedPrompt | null;
   tool_timeline: ToolTimelineEntry[];
   tokens: Tokens | null;
   status_timeline: StatusChange[];
+  /** Additive read path (rescoped 2a). Absent until the backend
+   *  thread lands; readers treat undefined/empty as "no transcript
+   *  projected yet" and degrade to the frozen-state copy. */
+  transcript?: TranscriptBlock[] | null;
 }
 
 export interface ComposedPrompt {
