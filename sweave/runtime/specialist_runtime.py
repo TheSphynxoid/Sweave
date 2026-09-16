@@ -1239,6 +1239,25 @@ class SpecialistRuntime:
                 # just the main send. Bound + checked like every
                 # other send; a failed identity prompt fails loudly
                 # instead of running the turn anonymous.
+                # Actually-sent prompt capture (view step 2b): the
+                # templated system render IS a wire send — trace what
+                # the wire carried (sizes + bounded preview, mirroring
+                # the chat composed_prompt audit; full text stays in
+                # memory, sizes bound trace growth on long turns).
+                # Static prompts keep the legacy one-off send in
+                # _ensure_session (untouched — event presence is the
+                # templated-path marker). Never fails the turn.
+                try:
+                    trace.append(
+                        "wire_prompt",
+                        {
+                            "phase": "system_render",
+                            "chars": len(rendered),
+                            "preview": rendered[:200],
+                        },
+                    )
+                except Exception:
+                    pass
                 sys_err = await self._bounded_system_send(
                     process, rendered, trace, t0=t_start
                 )
@@ -1265,6 +1284,27 @@ class SpecialistRuntime:
             full_message = preamble + message
 
             body: dict[str, Any] = {"parts": [{"type": "text", "text": full_message}]}
+            # Actually-sent prompt capture (view step 2b): sizes only
+            # (mirrors the chat composed_prompt audit — sizes bound
+            # trace growth); the FULL task text already rides the
+            # runner's trailing prompt_sent event (job_runner), so no
+            # second copy is traced here. The preamble is split out so
+            # the projector can tell the wire's task from the cwd line.
+            # Never fails the turn.
+            try:
+                trace.append(
+                    "wire_prompt",
+                    {
+                        "phase": "turn",
+                        "preamble_chars": len(preamble),
+                        "task_chars": len(message),
+                        "total_chars": len(full_message),
+                        "preview": full_message[:200],
+                        "model_wire": model_body,
+                    },
+                )
+            except Exception:
+                pass
             if model_body is not None:
                 body["model"] = model_body
             # Opencode-native agent pin (per-message ``agent``): the
