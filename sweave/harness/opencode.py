@@ -446,6 +446,11 @@ class OpenCodeProcess:
             # snapshot alone.
             tool_snapshots: dict[str, dict[str, Any]] = {}
             tool_first_state: dict[str, str] = {}
+            # View step 2c: unknown part types are traced RAW
+            # (once per type per turn - version-bump drift
+            # degrades to "unknown part" rows, never silent,
+            # never a turn failure).
+            unknown_parts: set[str] = set()
             # Per-turn token aggregator (step-finish parts).
             total_input = 0
             total_output = 0
@@ -609,6 +614,31 @@ class OpenCodeProcess:
                                 # "error"`` in the v2 wire; errors are
                                 # surfaced via info.error (the
                                 # pre-M1.9 dead branch was removed).
+                                else:
+                                    # View step 2c: an unrecognized
+                                    # part type is traced RAW (once
+                                    # per type per turn — bounded) so
+                                    # a version bump that renames
+                                    # parts degrades to "unknown part"
+                                    # rows, never a turn failure.
+                                    if ptype not in unknown_parts:
+                                        unknown_parts.add(str(ptype))
+                                        try:
+                                            trace.append(
+                                                "unknown_part",
+                                                {
+                                                    "type": str(ptype),
+                                                    "raw": {
+                                                        k: (v if v is None or isinstance(v, (str, int, float, bool)) else str(v)[:300])
+                                                        for k, v in part.items()
+                                                    },
+                                                },
+                                            )
+                                        except Exception as trace_err:
+                                            logger.warning(
+                                                "OpenCodeProcess.send: unknown-part "
+                                                "trace failed: %s", trace_err
+                                            )
             except httpx.HTTPStatusError as e:
                 upstream = e.response.text.strip() if e.response is not None else ""
                 return AgentResult(

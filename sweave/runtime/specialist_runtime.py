@@ -1581,6 +1581,10 @@ class SpecialistRuntime:
         # (mirrors OpenCodeProcess.send's M1.9 capture).
         tool_snapshots: dict[str, dict[str, Any]] = {}
         tool_first_state: dict[str, str] = {}
+        # View step 2c: unknown part types are traced RAW (once per
+        # type per turn — version-bump drift degrades to "unknown
+        # part" rows, never a turn failure).
+        unknown_parts: set[str] = set()
         # M1.9 terminal + error tracking (mirrors
         # OpenCodeProcess.send): the v2 wire reports failures via
         # info.error on an otherwise-200 stream. Without this, an
@@ -1861,6 +1865,37 @@ class SpecialistRuntime:
                                                 "SpecialistRuntime: on_tool "
                                                 "callback raised: %s", cb_err
                                             )
+                            else:
+                                # View step 2c: an unrecognized part
+                                # type is traced RAW (once per type
+                                # per turn — bounded) so a version
+                                # bump that renames parts degrades to
+                                # "unknown part" rows, never a turn
+                                # failure. Non-dict parts skip the
+                                # raw dump body (nothing sensible to
+                                # project); a stringified one-liner
+                                # still lands (never silently dropped).
+                                if not isinstance(part, dict):
+                                    continue
+                                _ptype = part.get("type")
+                                if _ptype not in unknown_parts:
+                                    unknown_parts.add(str(_ptype))
+                                    try:
+                                        trace.append(
+                                            "unknown_part",
+                                            {
+                                                "type": str(_ptype),
+                                                "raw": {
+                                                    k: (v if v is None or isinstance(v, (str, int, float, bool)) else str(v)[:300])
+                                                    for k, v in part.items()
+                                                },
+                                            },
+                                        )
+                                    except Exception as trace_err:  # noqa: BLE001
+                                        logger.warning(
+                                            "SpecialistRuntime: unknown-part "
+                                            "trace failed: %s", trace_err
+                                        )
                             # M1.9: the dead ``type: "error"`` part
                             # branch was removed. The v2 wire surfaces
                             # errors via info.error (which the harness
