@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { useApp } from "@/context/AppProvider";
 import { useWS } from "@/context/WSProvider";
+import { anyLive, useLivePollTick } from "@/lib/delegation/livePoll";
 import { LiveTree } from "./children/LiveTree";
 import { DetailView } from "./children/DetailView";
 import { ArchivedGroup } from "./children/ArchivedGroup";
@@ -70,6 +71,14 @@ export function ChildrenPage() {
       offRes();
     };
   }, [subscribe, qc]);
+
+  // 4c-frontend: poll the delegations list on a ~4s cadence while any
+  // record is running/queued; stop the instant everything settles (a
+  // WS status change also invalidates + flips `live`, halting the
+  // timer). No polling when settled.
+  useLivePollTick(anyLive(delegations), () => {
+    void qc.invalidateQueries({ queryKey: ["delegations"] });
+  });
 
   if (!activeProject) {
     return (

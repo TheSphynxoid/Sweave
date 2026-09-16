@@ -29,6 +29,7 @@ import { DetailView } from "@/pages/children/DetailView";
 import { FrozenStateNotice } from "@/pages/children/detail/sections";
 import { StatusPill } from "@/components/delegation/StatusPill";
 import { isTimeoutDelegation, parseTurnTimeout, formatRuntime } from "@/lib/delegation/taxonomy";
+import { anyLive, useLivePollTick } from "@/lib/delegation/livePoll";
 import type { Delegation, EscalationRecord } from "@/types";
 import { cn } from "@/utils/cn";
 
@@ -144,6 +145,13 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
     ];
     return () => offs.forEach((off) => off());
   }, [subscribe, load]);
+
+  // 4c-frontend: poll the children list on a ~4s cadence while any
+  // child is running/queued; stop the moment everything settles (a
+  // WS status change also refetches + flips `active`, halting the
+  // timer). No polling when settled.
+  const live = anyLive(children);
+  useLivePollTick(live, () => void load());
 
   if (!children || children.length === 0) return null;
   const ordered = [...children].sort((a, b) =>
