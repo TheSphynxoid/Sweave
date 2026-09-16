@@ -61,6 +61,7 @@ from sweave.runtime.delegation_store import (
     PerProjectDelegationStores,
     in_join_set,
     is_join_settled,
+    read_handoff,
 )
 from sweave.runtime.specialist_runtime import SpecialistRuntime
 from sweave.runtime.specialist_store import Specialist
@@ -423,7 +424,9 @@ class ChatLoop:
         Bounded by the turn timeout (the same cap the runtime
         uses; ``timeout`` overrides the singleton for project-scoped
         turns) so a wedged join-set child can't stall the chat
-        forever. Late-arriving children are silently absorbed --
+        forever — except a join child with a PENDING escalation,
+        which holds the wait open (deadline slides; ``wait_join_held``
+        traced once). Late-arriving children are silently absorbed --
         whatever is terminal when the deadline hits is what we
         synthesise on.
 
@@ -435,6 +438,7 @@ class ChatLoop:
         poll_interval = 0.25
         children_found = False
         scoped_logged = False
+        held_logged = False
 
         def _split() -> tuple[list, list]:
             all_children = [
@@ -480,6 +484,29 @@ class ChatLoop:
                     join,
                     key=lambda c: c.completed_at or c.updated_at,
                 )
+            held = await self._join_hold_ids(join)
+            if held:
+                # A joined child awaits a human answer: hold the
+                # synthesis wait open (the deadline slides by the
+                # slice just waited). Never abandon a join over an
+                # unanswered question (soft-cap ruling 2026-09-16).
+                if not held_logged:
+                    if trace is not None:
+                        try:
+                            trace.append(
+                                "wait_join_held",
+                                {
+                                    "parent": parent_delegation_id,
+                                    "held": held,
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.warning(
+                                "ChatLoop: wait_join_held trace append failed for %s",
+                                parent_delegation_id,
+                            )
+                    held_logged = True
+                deadline += poll_interval
             now = asyncio.get_running_loop().time()
             if now >= deadline:
                 logger.warning(
@@ -547,6 +574,110 @@ class ChatLoop:
         if rec is None or rec.get("status") != "pending":
             return None
         return rec
+
+    async def _ceiling_hold(
+        self, *, delegation_id: str, trace: Any, error_text: str
+    ) -> str:
+        """Keep/stop/bypass for an iteration-ceiling trip on a chat turn.
+
+        Soft-cap ruling 2026-09-16 (same rule as the runner's
+        ``_ceiling_hold``): the ceiling no longer kills by count —
+        the human decides per hit (keep = the turn continues in
+        the same session; stop = the error stands as today).
+        Health trips keep failing fast.
+
+        Returns "keep" (answered keep), "stop" (answered stop /
+        skipped / timeout), or "bypass" (no store, not a ceiling
+        error, record gone — caller keeps today's failure path).
+        A pending NON-ceiling question is never touched. The wait
+        is unbounded (holds are unbounded by ruling); no chat-loop
+        timer bounds it (the per-turn LLM timer re-arms under
+        pending questions, and this wait runs outside it).
+        """
+        from sweave.runtime.delegation_store import (
+            ceiling_question_text,
+            is_ceiling_trip_error,
+            read_handoff,
+        )
+
+        if not is_ceiling_trip_error(error_text):
+            return "bypass"
+        store = self.escalation_store
+        if store is None:
+            return "bypass"
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+        except Exception:  # noqa: BLE001
+            return "bypass"
+        if rec is not None and rec.get("status") == "pending":
+            if not bool((rec.get("metadata") or {}).get("ceiling")):
+                return "bypass"
+        else:
+            from sweave.runtime.job_runner import SOFT_LIMIT_OPTIONS
+
+            handoff = read_handoff(trace)
+            try:
+                await store.create(
+                    delegation_id=delegation_id,
+                    question=ceiling_question_text(
+                        "orchestrator", handoff
+                    ),
+                    options=list(SOFT_LIMIT_OPTIONS),
+                    kind="question",
+                    audience="human",
+                    timeout_seconds=None,
+                    metadata={"soft_limit": True, "ceiling": True},
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "ChatLoop: ceiling question create failed for %s",
+                    delegation_id,
+                )
+                return "bypass"
+            try:
+                trace.append(
+                    "turn_ceiling_asked",
+                    {
+                        "reason": "max_steps",
+                        "iterations": handoff.get("iterations"),
+                        "tool_calls": handoff.get("toolCalls"),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        resolved = await self._wait_for_escalation(delegation_id)
+        if resolved is None:
+            return "bypass"
+        if resolved.get("status") == "answered" and str(
+            resolved.get("response", "") or ""
+        ).strip().lower().startswith("keep"):
+            return "keep"
+        return "stop"
+
+    async def _join_hold_ids(self, join: list) -> list[str]:
+        """Join children with a PENDING escalation (best-effort).
+
+        A joined child awaiting a human answer holds the synthesis
+        wait open (soft-cap ruling 2026-09-16). No store / store
+        error / settled child all read as "no hold".
+        """
+        store = self.escalation_store
+        if store is None:
+            return []
+        held: list[str] = []
+        for child in join or []:
+            child_id = getattr(child, "delegation_id", None)
+            if not child_id or is_join_settled(
+                getattr(child, "status", None)
+            ):
+                continue
+            try:
+                rec = await store.get(delegation_id=child_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(rec, dict) and rec.get("status") == "pending":
+                held.append(child_id)
+        return held
 
     @staticmethod
     def _escalation_note(rec: dict) -> str:
@@ -1781,6 +1912,55 @@ class ChatLoop:
             if composed.context_audit is not None:
                 trace.append("context.built", dict(composed.context_audit))
             if first_turn_text.startswith("[chat error:"):
+                # Soft cap (2026-09-16): an iteration-ceiling trip
+                # asks instead of failing. Keep runs a continuation
+                # turn in the SAME session (handoff resume note —
+                # history intact, no restart) and the turn proceeds
+                # below as if the first turn had succeeded; stop
+                # keeps today's failure path.
+                ceiling_verdict = await self._ceiling_hold(
+                    delegation_id=delegation.delegation_id,
+                    trace=trace,
+                    error_text=first_turn_text,
+                )
+                if ceiling_verdict == "keep":
+                    handoff = read_handoff(trace)
+                    iterations = handoff.get("iterations")
+                    summary = (
+                        f"after {iterations} iterations "
+                        f"({handoff.get('toolCalls')} tool calls)"
+                        if isinstance(iterations, int)
+                        else "at the iteration ceiling"
+                    )
+                    first_turn_text = await self._run_orchestrator_turn(
+                        specialist=specialist,
+                        delegation=delegation,
+                        worktree_path=project_dir or Path.home() / ".sweave",
+                        message=(
+                            f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
+                            "[sweave: continuation — the previous turn "
+                            f"hit the iteration ceiling {summary} and "
+                            "the human chose to keep going. The full "
+                            "session history is intact: continue the "
+                            "work from where it stands, do not restart "
+                            "completed steps.]"
+                        ),
+                        trace=trace,
+                        model_str=model_str,
+                        session_id_getter=_get_orch_id,
+                        session_id_setter=_set_orch_id,
+                        on_chunk=_on_chunk,
+                        on_reasoning=_on_reasoning,
+                        on_tool=_on_tool,
+                        timeout=turn_scope["timeout"],
+                        max_retries=turn_scope["retries"],
+                        project_harness=turn_scope["project_harness"],
+                    )
+                    trace.append(
+                        "turn_ceiling_keep_rerun",
+                        {"iterations": handoff.get("iterations")},
+                    )
+            if first_turn_text.startswith("[chat error:"):
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.
                 if _is_stale_session_error(first_turn_text):
@@ -1833,7 +2013,15 @@ class ChatLoop:
                         "kind": esc_rec.get("kind", "question"),
                     },
                 )
-                escalation_note = self._escalation_note(esc_rec)
+                if bool((esc_rec.get("metadata") or {}).get("ceiling")):
+                    # Ceiling Q&A is turn management, not user
+                    # content: traced above, never synthesized (the
+                    # continuation turn already carries the handoff).
+                    # Without this the answered hold would force a
+                    # spurious synthesis turn on childless turns.
+                    pass
+                else:
+                    escalation_note = self._escalation_note(esc_rec)
 
             # 6) Scan for children the orchestrator spawned via defer
             children = [
@@ -1978,14 +2166,15 @@ class ChatLoop:
                 synthesis_body += "\n\nHuman Q&A / escalations:\n" + "\n".join(
                     f"- {s}" for s in extra_sections
                 )
+            synthesis_message = (
+                f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
+                + synthesis_body
+            )
             synthesis_turn_text = await self._run_orchestrator_turn(
                 specialist=specialist,
                 delegation=delegation,
                 worktree_path=project_dir or Path.home() / ".sweave",
-                message=(
-                    f"[sweave: caller_delegation_id={delegation.delegation_id}]\n\n"
-                    + synthesis_body
-                ),
+                message=synthesis_message,
                 trace=trace,
                 model_str=model_str,
                 session_id_getter=_get_orch_id,
@@ -1997,6 +2186,33 @@ class ChatLoop:
                 max_retries=turn_scope["retries"],
                 project_harness=turn_scope["project_harness"],
             )
+            if synthesis_turn_text.startswith("[chat error:"):
+                # Soft cap (2026-09-16): same keep/stop conversion
+                # as the first turn — keep re-runs the synthesis in
+                # the same session, then falls through below.
+                ceiling_verdict = await self._ceiling_hold(
+                    delegation_id=delegation.delegation_id,
+                    trace=trace,
+                    error_text=synthesis_turn_text,
+                )
+                if ceiling_verdict == "keep":
+                    synthesis_turn_text = await self._run_orchestrator_turn(
+                        specialist=specialist,
+                        delegation=delegation,
+                        worktree_path=project_dir or Path.home() / ".sweave",
+                        message=synthesis_message,
+                        trace=trace,
+                        model_str=model_str,
+                        session_id_getter=_get_orch_id,
+                        session_id_setter=_set_orch_id,
+                        on_chunk=_on_chunk,
+                        on_reasoning=_on_reasoning,
+                        on_tool=_on_tool,
+                        timeout=turn_scope["timeout"],
+                        max_retries=turn_scope["retries"],
+                        project_harness=turn_scope["project_harness"],
+                    )
+                    trace.append("turn_ceiling_keep_rerun", {})
             if synthesis_turn_text.startswith("[chat error:"):
                 # Synthesis turn hard-failed. Return the explicit
                 # error; the children are still visible via the

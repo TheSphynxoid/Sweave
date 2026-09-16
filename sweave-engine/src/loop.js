@@ -519,7 +519,7 @@ export async function runLoop(loopCtx) {
     if (isAborted()) throw Object.assign(new Error("aborted"), { code: "aborted" });
     if (iterations >= maxIterations) {
       emit(handoffPayload("max_steps"));
-      throw Object.assign(new Error(`max loop iterations (${maxIterations}) exceeded`), { code: "max_steps" });
+      throw Object.assign(new Error(`max loop iterations (${maxIterations}) exceeded — partial work is kept; a keep/stop question may follow (keep continues the same session), else re-dispatch with narrower scope`), { code: "max_steps" });
     }
     iterations += 1;
     // Full live history every iteration (base + this turn's user

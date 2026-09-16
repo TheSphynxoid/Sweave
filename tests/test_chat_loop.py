@@ -101,6 +101,7 @@ def _build_chat_loop(
     send_error: Exception | None = None,
     event_bus: Any = None,
     turn_timeout: float = 10.0,
+    escalation_store: Any = None,
 ):
     """ChatLoop with a canned wire (unified M1.7/M1.8/rounds helper).
 
@@ -156,6 +157,7 @@ def _build_chat_loop(
         event_bus=event_bus,
         turn_timeout=turn_timeout,
         model_resolver=lambda agent, project=None: "deepseek-flash",
+        escalation_store=escalation_store,
     )
     return chat
 

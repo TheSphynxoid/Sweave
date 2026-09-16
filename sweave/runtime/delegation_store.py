@@ -143,6 +143,85 @@ def resolve_blocking(requested: bool | None, parent: Any | None) -> bool:
     return False
 
 
+def is_ceiling_trip_error(error_text: Any | None) -> bool:
+    """True iff an in-band turn error is an iteration-ceiling trip.
+
+    Contract with the engine sidecar (``harness/engine.py`` maps the
+    sidecar's SSE ``error`` event to ``[chat error: {code}: {msg}]``,
+    and the loop throws ``code="max_steps"`` with a ``max loop
+    iterations (N)`` message). Health trips (doom / stuckness /
+    volume) carry concrete proof of no-progress and keep failing
+    fast; the ceiling carries none, so callers convert it into a
+    keep/stop question (soft-cap ruling 2026-09-16) instead.
+    Substring-based like the chat loop's stale-session markers —
+    the harness wraps verbatim exactly once, never nested.
+    """
+    if not error_text or not isinstance(error_text, str):
+        return False
+    return "max_steps" in error_text and "max loop iterations" in error_text
+
+
+def read_handoff(trace: Any, reason: str = "max_steps") -> dict[str, Any]:
+    """Best-effort: the latest ``step.boundary`` handoff payload for
+    *reason* from the trace file behind *trace* (a ``TraceLog`` or
+    duck-typed double with ``delegation_id`` / ``base_dir``), or {}.
+
+    The handoff (iterations + tool calls + files touched) is what a
+    keep/stop question quotes so the human decides on evidence, and
+    what a continuation turn resumes from. Never raises: callers
+    fall back to generic question text.
+    """
+    try:
+        from sweave.runtime.trace_log import read_trace
+
+        delegation_id = getattr(trace, "delegation_id", "")
+        base_dir = getattr(trace, "base_dir", None)
+        if not delegation_id or base_dir is None:
+            return {}
+        events = read_trace(delegation_id, base_dir=base_dir)
+    except Exception:  # noqa: BLE001
+        return {}
+    for event in reversed(events):
+        if (
+            isinstance(event, dict)
+            and event.get("event") == "step.boundary"
+            and event.get("reason") == reason
+        ):
+            handoff = event.get("handoff")
+            return dict(handoff) if isinstance(handoff, dict) else {}
+    return {}
+
+
+def ceiling_question_text(agent_name: str, handoff: dict[str, Any]) -> str:
+    """Keep/stop question text for an iteration-ceiling hold.
+
+    Quotes the handoff (iterations + tool calls + files) so the
+    human decides on evidence. Shared by the runner and chat
+    conversions — one wording, one card.
+    """
+    iterations = handoff.get("iterations")
+    tool_calls = handoff.get("toolCalls")
+    if isinstance(iterations, int) and iterations > 0:
+        detail = (
+            f"reached the iteration ceiling "
+            f"({iterations} iterations"
+            f"{f', {tool_calls} tool calls' if isinstance(tool_calls, int) else ''})"
+        )
+    else:
+        detail = "reached the iteration ceiling"
+    files = handoff.get("filesTouched") or []
+    files_bit = (
+        f" Files touched so far: {', '.join(str(f) for f in files[:8])}."
+        if isinstance(files, list) and files
+        else ""
+    )
+    return (
+        f"'{agent_name}' {detail} with healthy work still going."
+        f"{files_bit} The full session is kept — keep going for "
+        f"another full window, or stop it?"
+    )
+
+
 def _now() -> datetime:
     return datetime.now()
 

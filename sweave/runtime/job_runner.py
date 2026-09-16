@@ -44,8 +44,11 @@ from sweave.runtime.delegation_store import (
     Delegation,
     Estimate,
     PerProjectDelegationStores,
+    ceiling_question_text,
     in_join_set,
+    is_ceiling_trip_error,
     is_join_settled,
+    read_handoff,
 )
 from sweave.runtime.review_bundle import (
     build_review_bundle,
@@ -1394,6 +1397,108 @@ class JobRunner:
         trace.append("turn_soft_limit_asked", {"budget": budget})
         return True
 
+    async def _ceiling_hold(
+        self, delegation: Delegation, trace: "TraceLog", wire_error: str
+    ) -> str:
+        """Keep/stop/bypass for an iteration-ceiling trip.
+
+        Soft-cap ruling 2026-09-16: the ceiling no longer kills by
+        count — a turn that ran the full window gets a human
+        decision per hit (keep = another full window on the same
+        tree + resumed session; stop = fail now as
+        ``turn_stopped_by_user``). Health trips (doom / stuckness /
+        volume) keep failing fast: they carry concrete proof of
+        no-progress, the ceiling carries none.
+
+        Returns "keep" (answered keep), "stop" (answered stop /
+        skipped / timeout), or "bypass" (no store, not a ceiling
+        error, record gone — caller falls through to the normal
+        failure path). A pending NON-ceiling question is never
+        touched: its own flow governs. The wait is unbounded
+        (holds are unbounded by ruling); the next attempt's fuse
+        slides under it via the hold branch.
+        """
+        if not is_ceiling_trip_error(wire_error):
+            return "bypass"
+        store = self._soft_store()
+        if store is None:
+            return "bypass"
+        try:
+            rec = await self._soft_record(delegation)
+        except Exception:  # noqa: BLE001
+            return "bypass"
+        if rec is not None and rec.get("status") == "pending":
+            if not bool((rec.get("metadata") or {}).get("ceiling")):
+                # Another question owns this delegation; don't
+                # overwrite a live ask.
+                return "bypass"
+        else:
+            handoff = read_handoff(trace)
+            try:
+                await store.create(
+                    delegation_id=delegation.delegation_id,
+                    question=ceiling_question_text(
+                        delegation.agent, handoff
+                    ),
+                    options=list(SOFT_LIMIT_OPTIONS),
+                    kind="question",
+                    audience="human",
+                    timeout_seconds=None,
+                    metadata={
+                        "soft_limit": True,
+                        "ceiling": True,
+                        "agent": delegation.agent,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "JobRunner: ceiling question create failed for %s",
+                    delegation.delegation_id,
+                    exc_info=True,
+                )
+                return "bypass"
+            trace.append(
+                "turn_ceiling_asked",
+                {
+                    "reason": "max_steps",
+                    "iterations": handoff.get("iterations"),
+                    "tool_calls": handoff.get("toolCalls"),
+                },
+            )
+        verdict = await self._await_soft_verdict(delegation)
+        if verdict == "keep":
+            return "keep"
+        if verdict == "stop":
+            return "stop"
+        return "bypass"
+
+    async def _join_hold_ids(self, join: list) -> list[str]:
+        """Join children with a PENDING escalation (best-effort).
+
+        A joined child awaiting a human answer holds the parent
+        gate open (soft-cap ruling 2026-09-16: no timer ends an
+        unanswered question — not by kill, not by abandoning the
+        join). No store / store error / settled child all read as
+        "no hold".
+        """
+        store = self._soft_store()
+        if store is None:
+            return []
+        held: list[str] = []
+        for child in join or []:
+            child_id = getattr(child, "delegation_id", None)
+            if not child_id or is_join_settled(
+                getattr(child, "status", None)
+            ):
+                continue
+            try:
+                rec = await store.get(delegation_id=child_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(rec, dict) and rec.get("status") == "pending":
+                held.append(child_id)
+        return held
+
     async def _run(self, delegation: Delegation, trace: TraceLog) -> None:
         """Background worker: drive the delegation through the state machine.
 
@@ -1793,6 +1898,7 @@ class JobRunner:
                 # final result. The legacy path below keeps its own
                 # single attempt (out of scope).
                 rerun_used = False
+                ceiling_keeps = 0
                 result: Any = None
                 while True:
                     ok, output = await _attempt()
@@ -1859,6 +1965,36 @@ class JobRunner:
                         "[chat error:"
                     ):
                         wire_error = _sentinel_output.strip()
+                        ceiling_verdict = await self._ceiling_hold(
+                            delegation, trace, wire_error
+                        )
+                        if ceiling_verdict == "keep":
+                            # Human-approved continuation: another full
+                            # window on the same tree + resumed
+                            # session. Unlike the pulsed one-shot,
+                            # every ceiling hit re-asks — the human,
+                            # not a counter, is the bound.
+                            ceiling_keeps += 1
+                            trace.append(
+                                "turn_ceiling_keep_rerun",
+                                {"keep_n": ceiling_keeps},
+                            )
+                            continue
+                        if ceiling_verdict == "stop":
+                            # Already asked: skip the pulsed gate
+                            # (never ask twice) and fail stopped.
+                            result = DelegationResult(
+                                success=False,
+                                agent=delegation.agent,
+                                task_id=delegation.task_id,
+                                output="",
+                                error="turn_stopped_by_user",
+                            )
+                            trace.append(
+                                "wire_death_recorded",
+                                {"error": "turn_stopped_by_user"},
+                            )
+                            break
                         rerun_verdict = await _pulsed_rerun_gate(wire_error)
                         if rerun_verdict == "keep" and not rerun_used:
                             rerun_used = True
@@ -2127,7 +2263,10 @@ class JobRunner:
         parent forever -- if the timeout hits we proceed and the
         parent transitions normally; the late-arriving child is
         silently absorbed (the parent's record is the audit
-        source-of-truth for the chain).
+        source-of-truth for the chain). One exception (soft-cap
+        ruling 2026-09-16): a join child with a PENDING escalation
+        holds the gate open (deadline slides, ``wait_join_held``
+        traced once) — no timer abandons an unanswered question.
 
         ``store`` is the per-project store that owns the parent's
         record. We use the same store's ``list()`` to enumerate
@@ -2139,6 +2278,7 @@ class JobRunner:
         poll_interval = 0.25
         children_found = False
         scoped_logged = False
+        held_logged = False
         while True:
             all_children = [
                 r for r in store.list()
@@ -2177,6 +2317,22 @@ class JobRunner:
                     },
                 )
                 return
+            held = await self._join_hold_ids(join)
+            if held:
+                # A joined child awaits a human answer: hold the
+                # gate open (the deadline slides by the slice just
+                # waited — the same hold rule as _bounded_turn).
+                # Never abandon a join over an unanswered question.
+                if not held_logged:
+                    trace.append(
+                        "wait_join_held",
+                        {
+                            "parent": delegation.delegation_id,
+                            "held": held,
+                        },
+                    )
+                    held_logged = True
+                deadline += poll_interval
             now = asyncio.get_running_loop().time()
             if now >= deadline:
                 trace.append(

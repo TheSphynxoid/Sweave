@@ -254,6 +254,26 @@
   hermetic tests). 1193 pytest green (2 deselected:
   pre-existing UI red + slow timing test); sidecar recycle
   needed to pick up (restart).
+- ✅ **Iteration-ceiling soft cap (2026-09-16, user ruling:
+  ceilings ask, never kill)** — the ceiling carries no proof
+  of no-progress, so a trip now files the existing keep/stop
+  question instead of failing (keep = another full window,
+  same tree + resumed session, re-asked per hit — the human,
+  not a counter, is the bound; stop = `turn_stopped_by_user`;
+  no store / foreign pending ask / record gone = today's
+  failure path, never overwrite a live ask). Runner turns +
+  chat first/synthesis turns (answered ceiling Q&A is turn
+  management — traced as `turn_ceiling_asked`, never
+  synthesized). Same ruling closes the last timer-vs-question
+  hole the audit found: join waits (chat synthesis + runner
+  parent gate) hold open while a joined child has a pending
+  escalation (`wait_join_held`) instead of expiring into a
+  partial join (all other clocks already suspended under
+  pending questions — verified, not assumed). Health trips
+  (doom/stuckness/volume) still fail fast. 11 new tests
+  (`tests/test_ceiling_soft_cap.py`); 1228 pytest green;
+  `run.py --check` 13/13. Sidecar message now names the
+  keep/stop follow-up; restart to pick up.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
@@ -393,6 +413,45 @@
      container-agnostic for the deferred UX-5 general dock (own future
      plan; one-specialist-at-a-time rule recorded). Steps 0–1 + 3 + 5
      stand.
+
+     **Backend slice DONE 2026-09-16 (2a+2b+2c+4c-backend; 4
+     step commits)** — 2a: the engine journal read path
+     (`sweave/web/transcript_view.py`) + the ADDITIVE
+     detail-fold key LOCKED as `transcript` (one block per
+     `/run` turn, `user_message_id` names the prompt unit;
+     tools joined via assistant `toolCalls` + journal tool
+     results; reasoning trace-joined via `engine_user_message`
+     boundaries; tokens from per-turn `tokens_used`; 20K/8K
+     caps) — glyph-identical with the frontend's `12f2788`
+     binding, landed in the same window. Degrade contract
+     tested: pre-change records project contentless, never
+     crash. 2b: opencode send sites trace `wire_prompt`
+     (sizes + 200-char preview, mirroring the chat
+     composed_prompt audit; full text stays in memory / rides
+     `prompt_sent` — the locked full-text-vs-sizes ruling),
+     templated renders get `system_render` while static
+     prompts keep the legacy one-off path. 2c:
+     `_emit_opencode_tool` lifecycle re-verified by grep
+     (complete, incl. started-synthesis on error-only first
+     parts) + the standing 'unknown parts traced raw'
+     requirement CLOSED (both readers emit `unknown_part
+     {type, raw}` once per type per turn, 300-char cap —
+     version-bump drift degrades, never fails the turn).
+     4c-backend: `JobRunner._run` forwards
+     `on_chunk`/`on_reasoning`/`on_tool` for child turns (the
+     freeze's second mechanism), ADDITIVE WS names locked —
+     `specialist.delta`/`specialist.thinking`/
+     `specialist.tool` keyed by the CHILD delegation_id (new
+     names, no session_id; chat consumers could never sweep
+     child fragments into the orchestrator bubble),
+     text/thinking coalesced 200ms/64ch, tools
+     latest-status-wins with a 100-new-calls cap; the other
+     live half, `livePoll.ts` (~4s poll, idle on settle),
+     landed from the frontend thread. WS vocab documented in
+     `sweave/web/events.py`. Gates: full pytest 1216 passed
+     (1 documented pre-existing UI red, invariant under
+     stash); run.py --check 13/13 per step; suites 3x where
+     the plan demands.
    - ▶ **Custom engine thread (2026-09-13): `docs/CUSTOM_ENGINE_PLAN.md`
       refreshed for side-by-side execution with the view track.**
       Solo-executed 2026-09-13 (no parallel worker): steps 0 (protocol
