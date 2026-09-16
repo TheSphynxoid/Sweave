@@ -62,6 +62,12 @@ Delegation  PERSISTENT record of implementation work delegated to a specialist:
             since M1.1 (schema v2); UI v1 compat via a ChildSession bridge (removed R4).
 SubAgentRun EPHEMERAL traditional sub-agent: disposable context, for exploration,
             read-only investigation, quick fanout. Dies when done; no durable identity.
+Template  PERSISTENT sub-agent definition (prompt + tool policy + model default +
+            worktree policy): the opencode-agent-definition shape. Seeds
+            (`sweave/agents/*/config.yaml`) are already template-shaped; each
+            run is ephemeral (fresh session, retired tree). Reviewer is the
+            first carrier — plan `docs/SUBAGENT_TEMPLATES_PLAN.md` (specified
+            2026-09-16, tier ruling proposed, not yet locked).
 Harness   executor adapter implementing AgentProcess (spawn/send/wait/terminate)
 Worktree  git isolation unit, branch sweave/{task_id}/{agent}, PR via gh or REST
 Integration branch  per-task branch where clean parallel work auto-merges (after the
@@ -302,6 +308,7 @@ OpenCodeHarness.spawn (`opencode serve`, cwd=worktree) → HTTP message → resu
 | **Supervisor step 4 (opencode activity ferry)** | ✅ | 2026-09-15 — bus probe re-run on 1.18.31 confirms mid-tool silence (drift gate holds), but the plugin API exposes `tool.execute.before`: the island plugin ferries tool starts (name + 200-char target, token-guarded) to `POST /api/activity/tool-started`, attributed via the session registry into `tool.started` pulses the supervisor already counts (zero supervisor change). Live gate green on free tier (both bash starts, valid token + session). 6 new tests |
 | **Supervisor step 5 (fuse retune + close-out)** | ✅ | 2026-09-15 — P3 enacted: `turn_timeout_s` default 1800→14400 (4h runaway fuse; pulses govern), runner + chat defaults aligned, pins moved, GOTCHAS timer entries rewritten, plan → done. Supervisor complete; remaining tracks: todo-handoff stack, learned loop guard (R6) |
 | **Review-hardening bundle (prompts + truncation + settle)** | ✅ | 2026-09-15, plan `docs/REVIEW_HARDENING_PLAN.md` — (1) policy-aware seed workspace: `prompt_template` gains `worktree_policy` + `workspace` (isolated/shared/by-design-fallback/none/chat sentences; inherit-from-chat names the orchestrator's view as intentional, ruling); all 3 seeds use `{{workspace}}` + absolute `{{worktree_path}}` + scratch discipline (fixes the single-brace/pwd-echo bug). (2) engine truncation parity: `read` defaults to 2000 lines with `Use offset=` teaching, `bash` keeps the tail (failures live at end), exit-error summary takes tail 2000 — removes the cause of the `test_out*.txt` file habit. (3) scratch containment: observed shapes gitignored, root cleared, gotcha. (4) settle commits stray WIP (`commit_wip`, sweave identity) before removal so dirty trees retire with work preserved on the kept branch (the `a5884977` leak class); `prune()` passthrough on clean paths; never force-removes uncommitted work. Reviewer doctrine locked: load-bearing gate (verdict M2.2 first), generic review permission (not a hardcoded exception), "prove, don't fix" |
+| **Subagent templates (reviewer first carrier)** | 📐 | Specified 2026-09-16, plan `docs/SUBAGENT_TEMPLATES_PLAN.md` (tier ruling PROPOSED, not locked — template persists, runs ephemeral; MCP `defer` stays the only spawn path; verdict stack untouched). Motivation: synthesis-leaked reviewer incident (blocking-true but unjoined) + no exact queue key + standing-state-without-conversation. Sequenced after tonight's live verdict flow; no supervisor dependency (supervisor DONE) |
 | Git history | ✅ | M1.prep + M1.0 + M1.1 + M1.2 + M1.3 + M1.4+M1.5 — 24 commits; `docs/M1_PREP_PLAN.md` ... `docs/M1_4_5_PLAN.md` are the plans of record |
 
 ## 5. Locked decisions

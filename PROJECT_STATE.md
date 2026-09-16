@@ -233,6 +233,13 @@
   description + charter contract in all 3 seeds; trip messages
   point at keep/stop. 5 new tests (incl. a 122s slow-burst live
   pin); 1185 effective green.
+- 📐 **Subagent templates specified (2026-09-16)** — plan of
+  record `docs/SUBAGENT_TEMPLATES_PLAN.md` (tier ruling
+  proposed: template persists, runs ephemeral, reviewer first
+  carrier; MCP defer stays the only spawn path). Motivated by
+  tonight's synthesis-leaked reviewer (`blocking:true` but
+  unjoined — single-wait design, working as coded). Execution
+  waits on the user lock + tonight's live verdict flow.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
