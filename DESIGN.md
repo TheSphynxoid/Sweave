@@ -865,8 +865,7 @@ conformance → hosted opt-in → secrets → docs).
 - **Remote access (optional add-on)**: `cloudflared` Tunnel + Access in front of the
   local server — use your Sweave UI from anywhere with zero-trust auth, no port
   forwarding (§8 Cloudflare map). Config-gated, off by default.
-- **Cross-platform verification**: CI or manual pass on macOS + Linux (Windows-first
-  until here; start/stop scripts, paths, process handling are the risk spots).
+- **Cross-platform verification**: CI or manual pass on Windows + Linux/UNIX (both prime targets; macOS out of scope by user ruling 2026-09-16 — supported only if it falls out for free, never targeted or verified; start/stop scripts, paths, process handling are the risk spots).
 - **Escalation UX v1**: human resolution flow for the R2 resolution queue — see the
   diff3 + manifests, choose resolve / re-queue / escalate, resolution recorded as a
   gold label (feeds R6 dispatch training).

@@ -452,6 +452,7 @@
      (1 documented pre-existing UI red, invariant under
      stash); run.py --check 13/13 per step; suites 3x where
      the plan demands.
+   - ▶ **Tool cards + ask batch (2026-09-16): plan of record `docs/TOOL_CARDS_PLAN.md`.** Enriched persisted tool rows (read window / write diff / bash cmd+collapsed output / grep pattern+count, all capped) in chat + specialist views, and additive `questions[]` (≤5) batching on `ask_human`. Rulings locked 2026-09-16 (F1–F7: enrich-the-row, bash-expander, structured window, write-diff-B, batch-5, enrich-all-badges, strict sequence). Steps: probe → backend → UI binding → batch. Multi-turn needs NO new infra (loop already runs 150/300-iter turns; batch = one call, one hold, one synthesis).
    - ▶ **Custom engine thread (2026-09-13): `docs/CUSTOM_ENGINE_PLAN.md`
       refreshed for side-by-side execution with the view track.**
       Solo-executed 2026-09-13 (no parallel worker): steps 0 (protocol
