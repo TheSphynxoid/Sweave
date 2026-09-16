@@ -1622,36 +1622,135 @@ class JobRunner:
                         str(delegation.worktree_path),
                         *(permission_roots or []),
                     ]
+                # Live child forwarding (view plan Amendment
+                # 2026-09-16, step 4c-backend): the runtime honors
+                # on_chunk / on_reasoning / on_tool on BOTH harnesses
+                # but JobRunner used to pass none, so nothing ticked
+                # mid-turn (the specialist-card/Children freeze).
+                # Additive WS names (locked): specialist.delta /
+                # specialist.thinking / specialist.tool — same
+                # shapes as the chat twins but keyed by the CHILD
+                # delegation_id (no session_id: a child turn belongs
+                # to its parent chat via the record, not a Session
+                # bubble; chat consumers were never affected). Text/
+                # thinking coalesce on child-keyed coalescers (same
+                # doctrine as the chat loop); tool events ride one
+                # per transition (tiny volume) with a 100-new-calls
+                # cap. The poll fallback (UI, running/queued) is the
+                # other live half — these events make mid-turn tails
+                # fresher than the poll alone. Never fails the turn.
+                _did = delegation.delegation_id
+                _coalescers: list = []
+
+                async def _pub(event: str, data: dict) -> None:
+                    try:
+                        await self._publish(event, data)
+                    except Exception as pub_err:
+                        logger.warning(
+                            "JobRunner: %s publish failed for %s: %s",
+                            event, _did, pub_err,
+                        )
+
+                from sweave.chat.streaming import ChatDeltaCoalescer
+
+                async def _emit_delta(text: str) -> None:
+                    await _pub(
+                        "specialist.delta", {"delegation_id": _did, "text": text}
+                    )
+
+                async def _emit_thinking(text: str) -> None:
+                    await _pub(
+                        "specialist.thinking", {"delegation_id": _did, "text": text}
+                    )
+
+                text_coalescer = ChatDeltaCoalescer(
+                    emit=_emit_delta, flush_interval_ms=200, char_threshold=64
+                )
+                text_coalescer.start()
+                thinking_coalescer = ChatDeltaCoalescer(
+                    emit=_emit_thinking, flush_interval_ms=200, char_threshold=64
+                )
+                thinking_coalescer.start()
+                _coalescers.extend([text_coalescer, thinking_coalescer])
+
+                _tool_order: list[str] = []
+
+                async def _on_chunk(text: str) -> None:
+                    text_coalescer.push(text)
+
+                async def _on_reasoning(text: str) -> None:
+                    thinking_coalescer.push(text)
+
+                async def _on_tool(event: dict) -> None:
+                    try:
+                        from sweave.chat.tools import (
+                            MAX_TOOLS_PER_MESSAGE,
+                            compact_tool_record,
+                        )
+
+                        row = compact_tool_record(event, round=0)
+                    except Exception:
+                        return
+                    call_id = str(row.get("callID") or "")
+                    if not call_id:
+                        return
+                    if call_id not in _tool_order:
+                        if len(_tool_order) >= MAX_TOOLS_PER_MESSAGE:
+                            return
+                        _tool_order.append(call_id)
+                    # Seen rows re-publish (latest-status-wins per
+                    # callID: the row carries the newest status); the
+                    # cap only bounds NEW callIDs.
+                    await _pub(
+                        "specialist.tool",
+                        {"delegation_id": _did, "tool": dict(row)},
+                    )
+
+                async def _close_forwarding() -> None:
+                    for c in _coalescers:
+                        try:
+                            await c.close_and_flush()
+                        except Exception:
+                            pass
+
                 async def _attempt():
                     # One attempt: same tree, resumed session on
                     # re-runs (nothing is re-created — worktree +
                     # session binding happen once, above).
-                    return await self._bounded_turn(
-                        self.specialist_runtime.run(
-                            specialist=specialist,
-                            delegation=delegation,
-                            worktree_path=worktree_path,
-                            message=delegation.task,
-                            trace=trace,
-                            model_ref=model_ref,
-                            harness=harness_override,
-                            project_dir=project_dir,
-                            permission_roots=permission_roots,
-                            max_retries=self._turn_retries_for(delegation),
-                            project_harness_default=self._project_harness_for(
-                                delegation
+                    try:
+                        return await self._bounded_turn(
+                            self.specialist_runtime.run(
+                                specialist=specialist,
+                                delegation=delegation,
+                                worktree_path=worktree_path,
+                                message=delegation.task,
+                                trace=trace,
+                                model_ref=model_ref,
+                                harness=harness_override,
+                                project_dir=project_dir,
+                                permission_roots=permission_roots,
+                                max_retries=self._turn_retries_for(delegation),
+                                project_harness_default=self._project_harness_for(
+                                    delegation
+                                ),
+                                # One clock owner (supervisor step 1):
+                                # the same budget the outer wait enforces
+                                # rides into the engine attempt — the
+                                # inner clocks must never hold an
+                                # independent value.
+                                turn_timeout=self._turn_budget_for(delegation),
+                                # Live child forwarding (view step 4c):
+                                # child-id keyed, additive events only.
+                                on_chunk=_on_chunk,
+                                on_reasoning=_on_reasoning,
+                                on_tool=_on_tool,
                             ),
-                            # One clock owner (supervisor step 1):
-                            # the same budget the outer wait enforces
-                            # rides into the engine attempt — the
-                            # inner clocks must never hold an
-                            # independent value.
-                            turn_timeout=self._turn_budget_for(delegation),
-                        ),
-                        delegation,
-                        trace,
-                        budget_override=self._turn_budget_for(delegation),
-                    )
+                            delegation,
+                            trace,
+                            budget_override=self._turn_budget_for(delegation),
+                        )
+                    finally:
+                        await _close_forwarding()
 
                 async def _pulsed_rerun_gate(failure_error: str) -> str | None:
                     """Keep/stop/gone for a pulsed-but-dead turn, or

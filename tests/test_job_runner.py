@@ -262,6 +262,12 @@ class _StubSpecialistRuntime:
         # Supervisor step 1: per-turn budget forwarded into engine
         # metadata (opencode path ignores it; the double too).
         turn_timeout=None,
+        # View step 4c: live child forwarding callbacks (additive —
+        # the record-once send path stays the same; the double also
+        # honors them so a stub-side forward assertion is possible).
+        on_chunk=None,
+        on_reasoning=None,
+        on_tool=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"

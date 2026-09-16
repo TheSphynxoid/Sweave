@@ -27,6 +27,15 @@ change the meaning of the ones below):
   status wins per callID)
 * ``message.added``               -- ``{session_id, message}`` (persisted message;
   the assistant copy carries ``metadata.delegation_id`` + ``metadata.thinking``)
+* ``specialist.delta``            -- ``{delegation_id, text}`` (view step
+  4c emits; coalesced child-turn text increments, keyed by the CHILD
+  delegation id — no session_id, a child turn belongs to its parent
+  chat via the record, not a Session bubble)
+* ``specialist.thinking``         -- ``{delegation_id, text}`` (same
+  capture, coalesced reasoning increments for the child's live block)
+* ``specialist.tool``             -- ``{delegation_id, tool}`` (one event
+  per tool transition; tool row like chat.tool's but round 0, child-id
+  keyed — the open card/modal tracks the running specialist's tools)
 * ``specialist.idle``             -- ``{name, model, ts}`` (M1.3 emits)
 * ``specialist.running``          -- ``{name, model, task_id, ts}`` (M1.3 emits)
 * ``model.changed``               -- ``{role, model, ts}``
