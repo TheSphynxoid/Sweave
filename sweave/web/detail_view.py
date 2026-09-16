@@ -43,6 +43,16 @@ sections the UI detail view patches into place (and the same data the
 * ``fix_rounds`` -- M2.2 follow-up: the fix-round children of this
   delegation (``{delegation_id, agent, status, fix_round}`` each,
   oldest first; [] when none). Read side of the fix lineage.
+* ``transcript`` -- Specialist-view plan Amendment 2026-09-16, step
+  2a: per-turn blocks projected from the native-engine sidecar
+  journal (prompt actually sent, assistant text, tools with
+  lifecycle, reasoning from the trace, per-turn tokens). One block
+  per ``/run`` turn; ``user_message_id`` (protocol v3) names the
+  prompt unit. ADDITIVE key owned by the transparency track
+  (``sweave/web/transcript_view.py``; the engine extends this
+  payload, never a second surface). Degrades to ``None`` for
+  opencode turns / pre-change records / unknown sessions — never
+  an empty promise, never a crash.
 * ``price`` -- USAGE_LEDGER Phase 0: the shared
   ``sweave/stats/pricing.py`` projection (summed ``tokens_used`` x
   sidecar rates, provider cost wins on key-presence). Additive, nulls
@@ -239,6 +249,7 @@ def render_detail_view(
     fix_rounds: list[dict[str, Any]] | None = None,
     model: str | None = None,
     meta_entry: dict[str, Any] | None = None,
+    journal_path: Path | None = None,
 ) -> dict[str, Any]:
     """Project a trace into the detail-view sections.
 
@@ -310,9 +321,28 @@ def render_detail_view(
                 }
             )
 
+    # Specialist-view plan Amendment 2026-09-16, step 2a: the
+    # ADDITIVE ``transcript`` key — engine journal -> per-turn
+    # blocks (prompt actually sent, assistant text, tools with
+    # lifecycle, reasoning, tokens). Degrades to None when there
+    # is nothing to project (opencode turns, pre-change records,
+    # unknown engine session) — the fold never raises on it.
+    from sweave.web.transcript_view import render_transcript_blocks
+
+    try:
+        transcript = render_transcript_blocks(
+            engine_session_id, events, journal_path=journal_path
+        )
+    except Exception:  # noqa: BLE001 — the fold must never raise
+        transcript = None
+
     return {
         "delegation_id": delegation_id,
         "composed_prompt": composed_prompt,
+        # Amendment 2026-09-16 step 2a: per-turn transcript blocks
+        # (engine journal). Additive key; pre-change delegations
+        # carry None (content absent, never a crash).
+        "transcript": transcript,
         "tool_timeline": list(tool_timeline.values()),
         "tokens": tokens,
         "status_timeline": status_timeline,
