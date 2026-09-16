@@ -221,13 +221,93 @@ async function editPath(cwd, filePath, oldString, newString, replaceAll) {
   }
   if (typeof oldString !== "string" || !oldString) return fail("edit: oldString must be non-empty");
   const count = raw.split(oldString).length - 1;
-  if (count === 0) return fail("edit: oldString not found in file");
+  if (count === 0) {
+    // Close-match hint (EDIT_HINT_PLAN, 2026-09-16): a near-miss
+    // stays a failure — the text just names where and how close,
+    // with visible whitespace so the model verifies instead of
+    // blind re-reading. Compare-only: normalization never reaches
+    // the write path (exact application below still runs on raw
+    // bytes). Far-miss keeps the bare contract string verbatim.
+    const hint = editCloseMatchHint(raw, oldString);
+    return fail(hint || "edit: oldString not found in file");
+  }
   if (count > 1 && !replaceAll) {
     return fail(`edit: oldString matches ${count} times; use replaceAll or add context`);
   }
   const next = replaceAll ? raw.split(oldString).join(newString) : raw.replace(oldString, newString);
   await fsp.writeFile(abs, next, "utf8");
   return ok(`edited ${filePath} (${count} replacement${count === 1 ? "" : "s"})`);
+}
+
+// Visible-whitespace rendering for the edit close-match hint:
+// the model verifies the shown region against its text instead
+// of trusting a claim. Non-ASCII markers ride the error string
+// (tool results already carry UTF-8; capResult bounds the size).
+function showWhitespace(text) {
+  return String(text).replace(/\r/g, "␍").replace(/\t/g, "→").replace(/ /g, "·");
+}
+
+function normWsLine(line) {
+  return line.replace(/[ \t]+/g, " ").trim();
+}
+
+function lineOf(text, index) {
+  let n = 1;
+  for (let i = 0; i < index && i < text.length; i++) {
+    if (text[i] === "\n") n++;
+  }
+  return n;
+}
+
+// Best-effort near-miss explanation for an edit with zero exact
+// matches. Returns a hint string or null (far-miss → caller keeps
+// the bare contract string). Never applies anything.
+function editCloseMatchHint(raw, oldString) {
+  const rawLf = raw.replace(/\r\n/g, "\n");
+  const oldLf = oldString.replace(/\r\n/g, "\n");
+  // 1) Line-ending retry (compare-only): LF-sent oldString against
+  // a CRLF file. Line numbers are identical on both sides (the
+  // fold drops no newlines).
+  if (rawLf !== raw || oldLf !== oldString) {
+    const idx = oldLf ? rawLf.indexOf(oldLf) : -1;
+    if (idx >= 0) {
+      const l1 = lineOf(rawLf, idx);
+      // Trailing newlines don't extend the region (an oldString of
+      // "line two\n" matched line 2, not "lines 2-3").
+      const l2 = l1 + oldLf.replace(/\n+$/, "").split("\n").length - 1;
+      return `edit: oldString not found (line-ending mismatch — the file uses CRLF around lines ${l1}-${l2}; resend oldString with \\r\\n endings, copied exactly as read)`;
+    }
+  }
+  // 2) Whitespace-insensitive window search: every normalized
+  // oldString line must equal the file window's normalized lines
+  // ("differs in whitespace only" — the high threshold; anything
+  // looser would mislead more than a bare failure). Bounded: huge
+  // files and huge oldStrings keep the bare failure.
+  if (raw.length > 1000000) return null;
+  const HINT_MAX_LINES = 20;
+  const HINT_MAX_CHARS = 2000;
+  const rawLines = raw.split("\n");
+  const normed = rawLines.map(normWsLine);
+  const normOld = oldLf.split("\n").map(normWsLine);
+  if (normOld.length > HINT_MAX_LINES) return null;
+  // Trailing blank lines don't extend the region (an oldString of
+  // "foo\n" names line N, not "lines N-N+1").
+  while (normOld.length > 1 && normOld[normOld.length - 1] === "") normOld.pop();
+  const anchor = normOld.findIndex((l) => l !== "");
+  if (anchor < 0) return null;
+  for (let s = 0; s + normOld.length <= normed.length; s++) {
+    if (normed[s + anchor] !== normOld[anchor]) continue;
+    let all = true;
+    for (let k = 0; k < normOld.length; k++) {
+      if (normed[s + k] !== normOld[k]) { all = false; break; }
+    }
+    if (!all) continue;
+    const a = s + 1;
+    const b = s + normOld.length;
+    const region = rawLines.slice(s, s + normOld.length).join("\n").slice(0, HINT_MAX_CHARS);
+    return `edit: oldString not found; closest region lines ${a}-${b} (whitespace differs — space=· tab=→ CR=␍; copy exactly as read):\n${showWhitespace(region)}`;
+  }
+  return null;
 }
 
 async function writePath(cwd, filePath, content) {

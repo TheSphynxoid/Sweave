@@ -247,10 +247,13 @@
   with the 2026-09-15 `.md`+`todo` grant. Same death class as
   the specialist 150→300 raise; health still governed by
   doom/streak/volume + supervisor. Waste half (≈15–20 iters on
-  5 whitespace-failed edits + blind re-reads) specced separately
-  (`docs/EDIT_HINT_PLAN.md`). 1190 pytest green (2 deselected:
+  5 whitespace-failed edits + blind re-reads) BUILT same day
+  (`docs/EDIT_HINT_PLAN.md` → done: `editPath` close-match hint
+  — CRLF names lines, whitespace shows the region with visible
+  markers, far-miss stays bare, hint-only never applies; 3 new
+  hermetic tests). 1193 pytest green (2 deselected:
   pre-existing UI red + slow timing test); sidecar recycle
-  needed to pick up.
+  needed to pick up (restart).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

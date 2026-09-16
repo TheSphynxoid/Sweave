@@ -1126,7 +1126,7 @@ async def test_git_oversized_head_cut_and_small_byte_identical(sidecar, worktree
 async def test_no_progress_trips_early(sidecar, worktree):
     """Stuckness trip: alternating failing calls dodge the identical-
     call doom guard but five straight all-failed iterations fail fast
-    with ``no_progress`` instead of burning all 50."""
+    with ``no_progress`` instead of burning to the ceiling."""
     _reset_stub()
     cmds = ["exit 1", "exit 2"]
     STUB["script"] = (
@@ -1163,3 +1163,86 @@ async def test_doom_rejections_feed_the_streak(sidecar, worktree):
     assert not result.success
     assert "no_progress" in (result.error or "")
     assert len(STUB["requests"]) < 10
+
+
+# ---------------------------------------------------------------------------
+# Edit close-match hint (EDIT_HINT_PLAN, 2026-09-16)
+# ---------------------------------------------------------------------------
+
+
+@needs_node
+async def test_edit_crlf_near_miss_names_lines(sidecar, worktree):
+    """CRLF file + LF oldString: the failure names the line-ending
+    cause + lines (hint-only: the file is untouched); a resent
+    CRLF-exact oldString then applies — normalization is
+    compare-only and never leaks into the write path."""
+    (worktree / "crlf.txt").write_bytes(b"line one\r\nline two\r\nline three\r\n")
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("edit", {"filePath": "crlf.txt", "oldString": "line two\n", "newString": "LINE TWO\n"})]},
+        {"calls": [_call("edit", {"filePath": "crlf.txt", "oldString": "line two\r\n", "newString": "LINE TWO\r\n"})]},
+        {"text": "HINT DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read", "edit"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("fix the line endings"), trace=trace)
+    assert result.success, result.error
+    assert result.output == "HINT DONE"
+    failed = trace.of("tool.failed")
+    assert len(failed) == 1 and failed[0]["tool"] == "edit"
+    err = failed[0]["state"]["error"]
+    assert "line-ending mismatch" in err
+    assert "lines 2-2" in err
+    assert "CRLF" in err
+    assert (worktree / "crlf.txt").read_bytes() == b"line one\r\nLINE TWO\r\nline three\r\n"
+
+
+@needs_node
+async def test_edit_whitespace_near_miss_shows_region(sidecar, worktree):
+    """Indentation-only miss: the failure names the closest region
+    with visible whitespace (hint-only: the file is untouched) and
+    stays capped."""
+    (worktree / "indented.txt").write_text(
+        "def f():\n    return 1\n", encoding="utf-8", newline="\n"
+    )
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("edit", {"filePath": "indented.txt", "oldString": "def f():\n  return 1\n", "newString": "def f():\n  return 2\n"})]},
+        {"text": "HINT DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read", "edit"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("fix the indent"), trace=trace)
+    assert result.success, result.error
+    failed = trace.of("tool.failed")
+    assert len(failed) == 1 and failed[0]["tool"] == "edit"
+    err = failed[0]["state"]["error"]
+    assert "closest region lines 1-2" in err
+    assert "·" in err  # visible-whitespace rendering, not a bare claim
+    assert len(err) < 3000  # region cap (~20 lines / 2K chars + framing)
+    assert (worktree / "indented.txt").read_text(encoding="utf-8") == "def f():\n    return 1\n"
+
+
+@needs_node
+async def test_edit_far_miss_stays_bare(sidecar, worktree):
+    """Genuinely absent oldString: the exact contract string is
+    preserved verbatim (a hint would mislead — the model is in the
+    wrong place)."""
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("edit", {"filePath": "notes.txt", "oldString": "no such content anywhere", "newString": "x"})]},
+        {"text": "HINT DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["read", "edit"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("edit nothing"), trace=trace)
+    assert result.success, result.error
+    failed = trace.of("tool.failed")
+    assert len(failed) == 1 and failed[0]["tool"] == "edit"
+    assert failed[0]["state"]["error"] == "edit: oldString not found in file"

@@ -1,7 +1,7 @@
 # Edit close-match hint — plan of record
 
-Status: **specified** (2026-09-16, this session — execution NOT
-started). Predecessor reading: `sweave-engine/src/tools.js`
+Status: **done** (2026-09-16 — built same day, single commit;
+rulings §1 user-locked at implementation request). Predecessor reading: `sweave-engine/src/tools.js`
 (`editPath`, `EXEC_TOOL_DEFS`, `capResult`), `docs/GOTCHAS.md`
 (doc-editing discipline + encoding groups),
 `docs/SUPERVISOR_PLAN.md` §10 (static guards stay exact-shape).
@@ -100,3 +100,26 @@ New hermetic tests green; existing engine suites green
 (62/62); full pytest green; no marker-assert collisions
 (`truncated` grep). Done-gate per series method (3× + live
 check where called — no live check needed: fully hermetic).
+
+## 7. Execution summary (2026-09-16)
+
+Built as specced in `sweave-engine/src/tools.js` (`editPath` +
+`editCloseMatchHint` + `showWhitespace`/`normWsLine`/`lineOf`
+helpers), with two refinements found by failing-first tests:
+
+- Trailing newlines don't extend the region on EITHER path
+  (oldString `"line two\n"` names "lines 2-2", not "2-3";
+  whitespace search strips trailing blank lines before
+  matching — a test-writing catch: Python's `write_text`
+  defaults to CRLF on Windows, which the hint surfaced via
+  `␍` markers before the test was pinned to LF).
+- `raw.length > 1MB` skips the window search (bare failure).
+
+Tests: `test_edit_crlf_near_miss_names_lines` (hint + CRLF-exact
+resend applies — compare-only proof), 
+`test_edit_whitespace_near_miss_shows_region` (region + cap +
+untouched file), `test_edit_far_miss_stays_bare` (verbatim
+contract string). Gates: 3/3 new, 72/72 engine files,
+1193 full pytest (2 deselected: pre-existing UI red + slow
+timing test), `run.py --check` 13/13. Takes effect on sidecar
+recycle (shared node process — restart to pick up).
