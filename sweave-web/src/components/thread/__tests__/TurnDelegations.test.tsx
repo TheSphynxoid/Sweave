@@ -353,4 +353,57 @@ describe("TurnDelegations", () => {
     await waitFor(() => expect(listMock).toHaveBeenCalled());
     expect(screen.queryByTestId("turn-delegations")).toBeNull();
   });
+
+  it("4b: a live running card with no output shows the frozen-state copy", async () => {
+    listMock.mockResolvedValue([
+      child({ delegation_id: "d-live", status: "running", output: "" }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+    expect(await screen.findByTestId("transcript-frozen")).toBeTruthy();
+    expect(screen.queryByTestId("turn-delegation-tail")).toBeNull();
+  });
+
+  it("4b: an expanded settled card shows a bounded tail preview (latest activity first)", async () => {
+    const longOutput =
+      Array.from({ length: 80 }, (_, i) => `line ${i}`).join("\n") + "\nFINAL LINE OF THE RUN";
+    listMock.mockResolvedValue([
+      child({ delegation_id: "d-done", status: "done", output: longOutput }),
+    ]);
+    renderTurn("chat-abc");
+    const card = await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(card.querySelector("button")!);
+    const tail = await screen.findByTestId("turn-delegation-tail");
+    expect(tail.textContent).toContain("FINAL LINE OF THE RUN");
+    expect(tail.textContent).toContain("(latest activity)");
+    expect(screen.queryByTestId("transcript-frozen")).toBeNull();
+  });
+
+  it("4b: Open full detail opens the tabbed surface at the Transcript tab", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-ask",
+        status: "running",
+        needs_attention: true,
+        output: "intermediate output so far",
+      }),
+    ]);
+    detailMock.mockResolvedValue({
+      delegation_id: "d-ask",
+      composed_prompt: null,
+      tool_timeline: [],
+      tokens: null,
+      status_timeline: [{ status: "running", source: "harness", ts: "2026-09-09T10:00:05" }],
+      transcript: [{ id: "b1", role: "assistant", text: "intermediate output so far" }],
+    });
+    renderTurn("chat-abc");
+    await screen.findByTestId("turn-delegation-card");
+    fireEvent.click(screen.getByTestId("turn-delegation-card").querySelector("button")!);
+    fireEvent.click(screen.getByTestId("turn-delegation-open-detail"));
+    const modal = await screen.findByTestId("detail-modal");
+    expect(modal).toBeTruthy();
+    const transcriptContent = await screen.findByTestId("tabcontent-transcript");
+    expect(transcriptContent.getAttribute("data-state")).toBe("active");
+  });
 });

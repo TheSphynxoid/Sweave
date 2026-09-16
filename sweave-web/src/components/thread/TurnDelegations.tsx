@@ -26,6 +26,7 @@ import { ChevronDown, ExternalLink, Network } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
 import { DetailView } from "@/pages/children/DetailView";
+import { FrozenStateNotice } from "@/pages/children/detail/sections";
 import { StatusPill } from "@/components/delegation/StatusPill";
 import { isTimeoutDelegation, parseTurnTimeout, formatRuntime } from "@/lib/delegation/taxonomy";
 import type { Delegation, EscalationRecord } from "@/types";
@@ -44,10 +45,44 @@ function agentInitial(agent: string): string {
   return clean ? clean.charAt(0).toUpperCase() : "?";
 }
 
+/**
+ * Bounded tail preview (4b): shows the most recent activity of the
+ * specialist's execution first (the tail of accumulated output), not
+ * the head — a running turn's latest lines are what the user wants to
+ * skim before opening the full tabbed surface. Bounded to
+ * OUTPUT_SNIPPET_CHARS so a long log never blows out the card.
+ */
+function tailOf(text: string, max: number): string {
+  const clean = text.trim();
+  if (clean.length <= max) return clean;
+  // Take the tail (latest activity) and prefix a continuity cue.
+  return `…${clean.slice(clean.length - max)}`;
+}
+
+function TailPreview({ text }: { text: string }) {
+  const snippet = tailOf(text, OUTPUT_SNIPPET_CHARS);
+  const truncated = snippet.length < text.trim().length;
+  return (
+    <p
+      data-testid="turn-delegation-tail"
+      className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground"
+    >
+      {snippet}
+      {truncated && (
+        <span className="ml-1 text-[10px] not-italic text-muted-foreground/70">
+          (latest activity)
+        </span>
+      )}
+    </p>
+  );
+}
+
 export function TurnDelegations({ parentDelegationId }: { parentDelegationId: string }) {
   const [children, setChildren] = useState<Delegation[] | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  // 4b: full-detail opens the tabbed surface at a specific tab (cards
+  // open at Transcript so the user lands on the live execution).
+  const [detail, setDetail] = useState<{ id: string; tab: "overview" | "transcript" | "tools" | "prompt" | "tokens" } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -225,14 +260,15 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                     )}
                     {timedOut ? (
                       child.output.trim() ? (
-                        <p className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
-                          {truncate(child.output, OUTPUT_SNIPPET_CHARS)}
-                        </p>
+                        <TailPreview text={child.output} />
                       ) : null
+                    ) : live && !summary ? (
+                      // 4c: frozen-state copy replaces the dead "still
+                      // working" bubble for a running turn with no output
+                      // yet — bounded, visible, never silent.
+                      <FrozenStateNotice />
                     ) : summary ? (
-                      <p className="whitespace-pre-wrap break-words rounded-lg bg-muted/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
-                        {truncate(summary, OUTPUT_SNIPPET_CHARS)}
-                      </p>
+                      <TailPreview text={summary} />
                     ) : (
                       <p className="flex items-center gap-1.5 px-1 text-xs italic text-muted-foreground/70">
                         <span className="typing-dots" aria-hidden>
@@ -253,7 +289,8 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                     )}
                     <button
                       type="button"
-                      onClick={() => setDetailId(child.delegation_id)}
+                      onClick={() => setDetail({ id: child.delegation_id, tab: "transcript" })}
+                      data-testid="turn-delegation-open-detail"
                       className="inline-flex items-center gap-1 px-1 text-[11px] font-semibold text-primary hover:underline"
                     >
                       <ExternalLink size={11} />
@@ -266,7 +303,13 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
           );
         })}
       </ol>
-      {detailId && <DetailView delegationId={detailId} onClose={() => setDetailId(null)} />}
+      {detail && (
+        <DetailView
+          delegationId={detail.id}
+          onClose={() => setDetail(null)}
+          initialTab={detail.tab}
+        />
+      )}
     </div>
   );
 }
