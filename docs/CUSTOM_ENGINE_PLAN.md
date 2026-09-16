@@ -467,7 +467,7 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | Session create / resume / recreate; per-Session + per-specialist binding | Planned (step 0: session attach/resume in protocol; durable store doubles as partials journal) |
 | Per-message model (structured provider/model) + agent pin | Planned (step 1; same provider catalog, model in `POST /run`) |
 | Token streaming + reasoning parts (honest granularity) | Planned (step 1 native SSE; block-mode providers stay block-mode, timeout stays honest) |
-| 6 tools (read / write+edit / bash / glob / grep / todo) + lifecycle + partial-output capture | Planned (step 2) |
+| 6 tools (read / write+edit / bash / glob / grep / todo) + lifecycle + partial-output capture | Planned (step 2). DONE 2026-09-13 (sidecar executor + permission enforcement, see step 2). AMENDED 2026-09-15: `git` joins as tool 8 — engine-native READ-ONLY inspection (argv-exec, verb allowlist log/show/status/diff/branch/ls-files/rev-parse, structural flag gate, `log` → `-n 20 --oneline` — its own plan `docs/GIT_READ_TOOL_PLAN.md` rules the addition; no version bump) |
 | Permission enforcement (scoped roots, ask → escalation, once/always) | Planned (step 2, orchestrator-rendered map enforced blindly) |
 | Sweave tools (defer / list / ask / escalate), identical strings | Planned (steps 1–2, native calls, no MCP hop) |
 | Consented abort (acknowledged vs UNCONFIRMED) | Planned (step 0 control verb; serves the view abort endpoint) |

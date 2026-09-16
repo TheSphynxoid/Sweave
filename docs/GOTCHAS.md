@@ -520,6 +520,21 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    factory + real `answer/skip/force_timeout`). When adding a new
    clear site, route it through the same rule — and wire the
    flagger in the test state, or the test proves nothing.
+8. **Native git inspection is argv-exec with a verb allowlist,
+   never a shell string** (2026-09-15, `docs/GIT_READ_TOOL_PLAN.md`).
+   `runGit` spawns `git [verb, ...args]` — no shell means `git log;
+   rm -rf` can't ride the call. Verbs are allowlisted (log/show/
+   status/diff/branch/ls-files/rev-parse) and args go through a
+   structural flag gate: bare `-` args are DENIED unless they ride
+   `GIT_FLAG_ALLOW` (`--stat/--oneline/-n/--name-only/--porcelain`)
+   or the fused `(-n<N>|--<flag>=<value>)` shape; `--upload-pack/
+   --exec/-c/--config` are denied even fused. Both rejections happen
+   BEFORE spawn (`rejected: ...` typed errors — doom-guard pattern,
+   the model self-corrects; never a permission ask). `log` pages
+   `-n 20 --oneline` by default, explicit args win (read→2000
+   doctrine). Adding a verb is a user ruling, never a model ask
+   (plan §0.3).
+
 9. **The engine `bash` tool names its shell per-boot — models
    cannot guess it** (incident b8544168fa59: 12 min of Unix pipes
    on Windows CMD, 24 failures, then a streak trip — the model was
@@ -530,7 +545,6 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    When the shell changes, update the description builder, never
    per-call prompts — and re-run the slow-burst pin
    (`test_slow_streak_survives_burst_rule`, ~122s by construction).
-8. **Native git inspection is argv-exec with a verb allowlist,
 
 ## Paths & config
 

@@ -967,6 +967,133 @@ async def test_orchestrator_ceiling_stays_fifty(sidecar, worktree):
     assert any("notes.txt" in f for f in hand["filesTouched"])
 
 
+# ---------------------------------------------------------------------------
+# Git read-only tool (GIT_READ_TOOL plan, 2026-09-15)
+# ---------------------------------------------------------------------------
+
+
+@needs_node
+async def test_git_unknown_verb_rejected_without_spawn(sidecar, worktree):
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("git", {"verb": "stash"})]},
+        {"text": "RECOVERED"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["git"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("stash it"), trace=trace)
+    assert result.success, result.error
+    failed = trace.of("tool.failed")
+    assert len(failed) == 1 and failed[0]["tool"] == "git"
+    assert "rejected: unknown git verb" in failed[0]["state"]["error"]
+
+
+@needs_node
+async def test_git_danger_flags_denied(sidecar, worktree):
+    for bad in (["--upload-pack"], ["-c", "x=1"], ["--exec", "x"], ["--config", "x"]):
+        _reset_stub()
+        STUB["script"] = [
+            {"calls": [_call("git", {"verb": "log", "args": bad})]},
+            {"text": "RECOVERED"},
+        ]
+        from sweave.harness.engine import SweaveEngineHarness
+
+        proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["git"]))
+        trace = _FakeTrace()
+        result = await proc.send(_message("sneaky log"), trace=trace)
+        assert result.success, result.error
+        failed = trace.of("tool.failed")
+        assert len(failed) == 1, bad
+        assert "rejected: git flag denied" in failed[0]["state"]["error"], bad
+
+
+@needs_node
+async def test_git_log_defaults_and_explicit_wins(sidecar, worktree):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
+    (worktree / "f.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "first"], cwd=worktree, check=True)
+    for i in range(30):
+        (worktree / "f.txt").write_text(f"one-{i}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-qm", f"c{i}"], cwd=worktree, check=True)
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("git", {"verb": "log", "args": []})]},
+        {"calls": [_call("git", {"verb": "log", "args": ["-n", "1", "--oneline"]})]},
+        {"text": "LOG DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["git"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("check history"), trace=trace)
+    assert result.success, result.error
+    outs = [p["state"]["output"].replace("\r\n", "\n") for p in trace.of("tool.completed")]
+    assert len(outs) == 2
+    assert len(outs[0].strip().splitlines()) == 20  # default -n 20 --oneline
+    assert len(outs[1].strip().splitlines()) == 1  # explicit wins
+
+
+@needs_node
+async def test_git_non_repo_cwd_fails_loud(sidecar, tmp_path):
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("git", {"verb": "status", "args": ["--porcelain"]})]},
+        {"text": "RECOVERED"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    bare = tmp_path / "not-a-repo"
+    bare.mkdir()
+    proc = await SweaveEngineHarness().spawn(_spec(bare, tools=["git"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("git status here"), trace=trace)
+    assert result.success, result.error
+    failed = trace.of("tool.failed")
+    assert len(failed) == 1 and failed[0]["tool"] == "git"
+    assert "not a git repository" in failed[0]["state"]["error"]
+    assert "git" in failed[0]["state"]["error"]
+
+
+@needs_node
+async def test_git_oversized_head_cut_and_small_byte_identical(sidecar, worktree):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=worktree, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=worktree, check=True)
+    (worktree / "big.txt").write_text("y\n" * 40_000, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "big"], cwd=worktree, check=True)
+    expected = subprocess.run(
+        ["git", "show", "HEAD:big.txt"], cwd=worktree, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    _reset_stub()
+    STUB["script"] = [
+        {"calls": [_call("git", {"verb": "show", "args": ["HEAD:big.txt"]})]},
+        {"calls": [_call("git", {"verb": "status", "args": ["--porcelain"]})]},
+        {"text": "GIT DONE"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["git"]))
+    trace = _FakeTrace()
+    result = await proc.send(_message("inspect the repo"), trace=trace)
+    assert result.success, result.error
+    outs = [p["state"]["output"] for p in trace.of("tool.completed")]
+    assert len(outs) == 2
+    assert len(outs[0]) <= 32768 + 200  # head-cut via capResult
+    assert "[truncated" in outs[0]
+    assert outs[1].strip() == ""  # clean status: small output byte-identical
+
+
 @needs_node
 async def test_no_progress_trips_early(sidecar, worktree):
     """Stuckness trip: alternating failing calls dodge the identical-
