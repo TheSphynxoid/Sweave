@@ -546,6 +546,34 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    per-call prompts — and re-run the slow-burst pin
    (`test_slow_streak_survives_burst_rule`, ~122s by construction).
 
+10. **The specialist transcript is a JOIN of two sources — never
+   one** (2026-09-16, view step 2a). The engine sidecar journal
+   (`~/.sweave/engine/sessions.json`) holds prompt + text + tool
+   calls, but NOT reasoning or tokens; the delegation trace holds
+   reasoning chunks (`reasoning`, per turn delimited by
+   `engine_user_message`) + `tokens_used`. Both degrade
+   independently: a trace-less block still projects (empty
+   reasoning/tokens), a journal-less delegation projects NO key
+   content (opencode turns, pre-change records). Adding a new
+   block field means deciding which source owns it — never a
+   second write of the same data (sizes bound growth: prompt/
+   text/result 20K, reasoning 8K, preview 200).
+11. **Trace prompt capture is sizes + bounded preview, never full
+   text** (2026-09-16, view step 2b). Long-turn prompts re-
+   represented verbatim in the trace would re-bill every
+   remaining iteration sized like the exec-tool bloat class
+   (the 32K cap lesson). `wire_prompt` carries sizes (preamble/
+   task/total/render) + a 200-char preview; the FULL task text
+   already rides `prompt_sent` (the record-side capture
+   predating this), so there is exactly one full copy per turn.
+12. **An unknown wire part is a ROW, never a crash** (2026-09-16,
+   view step 2c). Both stream readers' type switches must end
+   in an else that traces `unknown_part {type, raw}` once per
+   type per turn — a version bump that renames parts degrades
+   to unknown rows and the turn still completes. A silently-
+   ignored fall-through is the drift failure mode: nothing in
+   the trace, nothing in the UI, code assumes nothing changed.
+
 ## Paths & config
 
 1. The M1.prep-era `agents.yaml` was **CWD-relative** (`Path("agents.yaml")`) — M1.2
