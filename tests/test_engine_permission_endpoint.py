@@ -137,6 +137,43 @@ def test_resolve_waits_for_late_answer():
     assert store.polls >= 2
 
 
+class NeverStore:
+    """Create-only store that never settles (proves the no-wait path)."""
+
+    def __init__(self):
+        self.polls = 0
+
+    async def create_or_reuse(self, **kwargs):
+        return {
+            "status": "pending",
+            "escalation_id": "esc-wait-1",
+            "delegation_id": kwargs["delegation_id"],
+        }, True
+
+    async def get(self, *, delegation_id: str):
+        self.polls += 1
+        return {"status": "pending"}
+
+
+def test_resolve_wait_false_returns_immediately():
+    """Incident 2026-09-16: with wait:false the endpoint hands the
+    live escalation back at once (no socket held open for minutes)
+    and never polls — the caller waits via GET polling."""
+    store = NeverStore()
+    out = asyncio.run(
+        resolve_engine_permission(
+            _payload(wait=False), escalation_store=store
+        )
+    )
+    assert out == {
+        "status": "pending",
+        "response": None,
+        "escalation_id": "esc-wait-1",
+        "delegation_id": "d-1",
+    }
+    assert store.polls == 0
+
+
 def test_resolve_missing_fields_rejected():
     out = asyncio.run(
         resolve_engine_permission({"question": "q"}, escalation_store=FakeStore())
@@ -197,3 +234,19 @@ def test_http_rejects_missing_fields(client):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "rejected"
+
+
+def test_http_wait_false_returns_pending_immediately(client):
+    """The blocking default would hang this test forever against the
+    real store — wait:false must create and return at once."""
+    r = client.post(
+        "/api/engine/permission",
+        json=_payload(wait=False),
+        headers={"X-Sweave-MCP-Token": _token()},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "pending"
+    assert body["response"] is None
+    assert body["escalation_id"]
+    assert body["delegation_id"] == "d-1"

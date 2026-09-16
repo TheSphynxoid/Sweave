@@ -14,7 +14,15 @@ web UI or general API consumers.
   waits for answered/skipped/timeout, and returns
   ``{"status", "response": "once"|"always"|"reject"}``. Skip/timeout
   map to ``reject`` (fail closed — same mapping as the opencode
-  bridge in ``runtime/permission_bridge.py``).
+  bridge in ``runtime/permission_bridge.py``). With
+  ``{"wait": false}`` the endpoint returns the live escalation
+  IMMEDIATELY (``{"status": "pending", "response": null,
+  "escalation_id", ...}``) and the caller polls
+  ``GET /api/delegations/{id}/escalation`` for the answer instead
+  of holding the POST open: a held-open wait dies on the client's
+  own idle timeout (Node ~300s, incident 2026-09-16) and takes the
+  whole turn down with it. Additive — old callers that omit
+  ``wait`` keep the blocking behaviour.
 """
 
 from __future__ import annotations
@@ -79,7 +87,7 @@ async def resolve_engine_permission(
         request_id = f"eng_{_uuid.uuid4().hex[:10]}"
         metadata = {**metadata, "requestID": request_id}
     try:
-        _, _created = await escalation_store.create_or_reuse(
+        rec, _created = await escalation_store.create_or_reuse(
             delegation_id=delegation_id,
             question=question,
             options=list(options),
@@ -92,6 +100,18 @@ async def resolve_engine_permission(
     except Exception as e:  # noqa: BLE001
         logger.warning("engine_permission: escalation create failed: %s", e)
         return {"status": "error", "reason": str(e)}
+    if payload.get("wait") is False:
+        # Poll mode: hand the live escalation back immediately so no
+        # socket is held open for minutes (see module docstring).
+        # ``response`` stays null until a human settles it — the
+        # caller polls GET .../escalation and maps the settled
+        # record with map_engine_answer itself.
+        return {
+            "status": str(rec.get("status", "pending")),
+            "response": None,
+            "escalation_id": rec.get("escalation_id"),
+            "delegation_id": delegation_id,
+        }
     while True:
         await asyncio.sleep(0.5)
         try:

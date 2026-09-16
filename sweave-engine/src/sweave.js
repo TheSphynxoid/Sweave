@@ -275,8 +275,14 @@ export async function callEscalate(args, runCtx) {
 }
 
 /**
- * Permission ask round-trip: POST /api/engine/permission (the server
- * creates the blocking human escalation and waits) -> once|always|reject.
+ * Permission ask round-trip: POST /api/engine/permission (create only,
+ * returns the live escalation immediately) then poll
+ * GET /api/delegations/{id}/escalation for the answer — the same
+ * shape as ask_human's waitEscalation. NEVER a held-open POST: the
+ * server waits indefinitely by design, and a socket held open for
+ * minutes dies on the client's own idle timeout (undici ~300s;
+ * incident 2026-09-16: a 5-minute-unnoticed question killed the
+ * whole turn as provider_error while the server kept waiting).
  * Abort-aware: a turn stop settles the wait immediately (the server
  * side resolves the escalation as skipped via the cancel path, so no
  * orphaned question survives either).
@@ -294,17 +300,27 @@ export async function callEnginePermission({ delegationId, question, options, me
       { once: true }
     );
   });
-  const data = await Promise.race([
+  const created = await Promise.race([
     post("/api/engine/permission", {
       delegation_id: delegationId,
       question,
       options: options || ["allow once", "always allow", "deny"],
       metadata: metadata || {},
+      wait: false,
     }, signal),
     aborted,
   ]);
   void isAborted;
-  return data.response || "reject";
+  // A settled-on-create record (e.g. an already-answered reuse) maps
+  // directly; otherwise the answer arrives via polling. Raw human
+  // answers ("allow once"/"always allow"/"deny") flow through —
+  // the loop's mapPermissionResponse maps them, same as before.
+  if (created && created.status && created.status !== "pending") {
+    return created.response || "reject";
+  }
+  const rec = await waitEscalation(delegationId, isAborted, signal);
+  if (!rec || rec.status !== "answered") return "reject";
+  return rec.response || "once";
 }
 
 export async function callSweaveTool(name, args, runCtx) {

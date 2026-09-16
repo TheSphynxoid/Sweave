@@ -437,6 +437,39 @@ async def test_ask_reject_fails_tool_loudly(sidecar, worktree):
 
 
 @needs_node
+async def test_ask_pending_post_polls_for_answer(sidecar, worktree):
+    """Incident 2026-09-16: the permission wait must never hold one
+    socket open (the client's own idle timeout kills it and takes
+    the turn down). POST creates (pending, wait:false) and the
+    answer arrives via the GET poll."""
+    _reset_stub()
+    STUB["permission_status"] = {"status": "pending", "response": None}
+    STUB["script"] = [
+        {"calls": [_call("bash", {"command": "echo polled"})]},
+        {"text": "POLLED IT"},
+    ]
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(worktree, tools=["bash"]))
+    trace = _FakeTrace()
+    result = await proc.send(
+        _message(
+            "run it",
+            metadata={"permission_map": {"bash": "ask"}, "delegation_id": "dlg-ask-poll"},
+        ),
+        trace=trace,
+    )
+    assert result.success and result.output == "POLLED IT"
+    asked = trace.of("permission.asked")
+    assert len(asked) == 1 and asked[0]["permission"] == "bash"
+    # Create carried wait:false; the stub's GET poll (answered) settled it.
+    assert len(STUB["permissions"]) == 1
+    assert STUB["permissions"][0].get("wait") is False
+    completed = trace.of("tool.completed")
+    assert len(completed) == 1 and "polled" in completed[0]["state"]["output"]
+
+
+@needs_node
 async def test_last_match_wins(sidecar, worktree):
     from sweave.harness.engine import SweaveEngineHarness
 
