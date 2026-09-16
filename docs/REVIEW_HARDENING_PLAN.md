@@ -1,7 +1,13 @@
 # Reviewer + Engine Hardening — plan of record
 
 Status: **done** (2026-09-15 — steps 1–4 landed as step commits
-`c0aa557`/`3abd2ab`/`644232c`/`dad6367`; step 5 stays sequenced).
+`c0aa557`/`3abd2ab`/`644232c`/`dad6367`; step-5 items resolved
+individually the same day: M2.2 verdict + fix rounds + orchestrator
+`.md`/`todo` DONE, supervisor DONE per `docs/SUPERVISOR_PLAN.md`.
+Remaining step-5 items — review-target resolution, reviewer kit,
+gated reads, gotcha system, capture affordance — stay sequenced;
+subagent templates specified 2026-09-16 at
+`docs/SUBAGENT_TEMPLATES_PLAN.md`).
 Owner: this session.
 Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 `docs/REVIEW_PLAN.md`, `docs/CUSTOM_ENGINE_PLAN.md`, PROJECT_STATE.md.
@@ -168,15 +174,12 @@ Predecessor reading: DESIGN.md §6 (M2.2/M2.3/M2.4, Review Phase 1/2),
 * **Gotchas as a system**: structured records, dispatch-time
   injection by area, reviewer audits compliance + proposes new ones
   (human-approved); hindsight = soft patterns, gotchas = hard rules.
-* **Progress supervisor** (ruling 5): execution-ready detail
-  at `docs/SUPERVISOR_PLAN.md` (plan of record since 2026-09-15,
-  written after the f774d84b incident — nested clocks, corpse
-  re-arm, missed soft question). Steps 1–2 BUILT 2026-09-15 (one
-  clock owner + corpse guard; pulsed-dead keep/stop with one keep
-  re-run); steps 3–5 open. Proposes engine-first buildable NOW:
-  supervisor inputs already exist on the engine path; the
-  view-track remainder is human observability, not supervisor
-  input).
+* **Progress supervisor** (ruling 5) — DONE 2026-09-15 per
+  `docs/SUPERVISOR_PLAN.md` (plan of record: steps 0–5 landed,
+  P1–P5 locked — one clock owner + corpse guard, pulsed-dead
+  keep/stop, pulse windows, tool-started ferry, 4h fuse).
+  Incident record: f774d84b (nested clocks, corpse re-arm,
+  missed soft question).
 * **Full-capture test affordance** (ruling 7): run-tests path with
   output into trace/transcript (queryable, paged) — kills the file
   habit's cause. Batch-tool limits explicitly rejected (punishes the
