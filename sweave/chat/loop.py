@@ -718,11 +718,41 @@ class ChatLoop:
 
     @staticmethod
     def _escalation_note(rec: dict) -> str:
-        """One-block synthesis note for a resolved escalation."""
-        q = str(rec.get("question", "")).strip()
+        """One-block synthesis note for a resolved escalation.
+
+        Batch extension (TOOL_CARDS step 3): when the record carries
+        a multi-question ``questions[]``, every Q/A pair is quoted
+        (``1) Q: ...``) so the synthesis turn sees each answer. A
+        1-elem record (legacy or compat) renders BYTE-IDENTICAL to
+        the pre-batch note via the same ``question``/``response``
+        fields. Skipped batches quote every question (skip = whole
+        batch -> best judgment).
+        """
         status = str(rec.get("status", ""))
-        resp = str(rec.get("response", "") or "").strip()
         kind = str(rec.get("kind", "question"))
+        qs = rec.get("questions")
+        answers = rec.get("answers")
+        if (
+            isinstance(qs, list)
+            and len(qs) > 1
+            and all(isinstance(x, dict) for x in qs)
+        ):
+            ans = answers if isinstance(answers, list) else []
+            pairs = "\n".join(
+                f"{i + 1}) Q: {str((q or {}).get('question', '')).strip()} "
+                f"A: {str(ans[i]).strip() if i < len(ans) else '(no answer)'}"
+                for i, q in enumerate(qs)
+            )
+            if status == "answered":
+                return f"Human answers ({kind}):\n{pairs}"
+            if status == "skipped":
+                return (
+                    f"Human skipped the questions ({kind}):\n{pairs}\n"
+                    "— proceed with best judgment."
+                )
+            return f"Human Q&A ({kind}) resolved as {status}:\n{pairs}"
+        q = str(rec.get("question", "")).strip()
+        resp = str(rec.get("response", "") or "").strip()
         if status == "answered":
             return f"Human answer ({kind}): Q: {q} A: {resp or '(empty)'}"
         if status == "skipped":

@@ -98,6 +98,23 @@ prompt: |
   - `error: <message>` -- something else went wrong (e.g. unknown
     target). Re-list specialists and try a known name.
 
+  ## Ask Human (blocking questions)
+  When you genuinely need the human (blocked on a choice only they
+  can make), call the `ask_human` MCP tool. Never batch unrelated
+  questions; ask what the turn needs, at most 5 questions per call:
+
+  - `question` (string) + `options` (list[string], optional) -- the
+    legacy single ask. The turn BLOCKS (no timeout) until the human
+    answers or explicitly skips; the follow-up turn carries the
+    answer.
+  - `questions` ([{question, options?}], optional, max 5) -- batch:
+    one card, the human answers every question before the turn
+    continues. `caller_delegation_id` is always required.
+  - More than 5 questions returns `rejected: at most 5 questions
+    per ask_human call` -- split into multiple asks.
+  - Do NOT use ask_human for repo-factual questions (read the files
+    yourself) or for specialist notices (that is `escalate`).
+
   **Never edit, write, or run commands yourself, except `.md`
   docs.** Defer
   implementation work to a specialist; answer repo-factual

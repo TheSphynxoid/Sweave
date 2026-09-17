@@ -99,12 +99,27 @@ export const SWEAVE_TOOL_DEFS = [
   },
   {
     name: "ask_human",
-    description: "Ask the human a blocking question (waits for the answer).",
+    description:
+      "Ask the human a blocking question (waits for the answer). Batch: pass questions: [{question, options?}] (max 5) to ask several at once — one card, every question answered before the turn continues.",
     parameters: {
       type: "object",
       properties: {
         question: { type: "string" },
         options: { type: "array", items: { type: "string" } },
+        questions: {
+          type: "array",
+          maxItems: 5,
+          items: {
+            type: "object",
+            properties: {
+              question: { type: "string" },
+              options: { type: "array", items: { type: "string" } },
+            },
+            required: ["question"],
+          },
+          description:
+            "Optional batch form (max 5). Wins over question/options; the human answers every question before the turn proceeds.",
+        },
       },
       required: ["question"],
     },
@@ -210,8 +225,57 @@ async function waitEscalation(delegationId, isAborted, signal) {
 
 export async function callAskHuman(args, runCtx) {
   const a = args || {};
+  // Batch validation (TOOL_CARDS step 3): questions[] <=5 wins over
+  // the legacy question/options pair; rejected strings are IDENTICAL
+  // to the MCP _ask_human (contract parity).
+  let questions = null;
+  if (a.questions !== undefined) {
+    if (!Array.isArray(a.questions) || a.questions.length === 0) {
+      return {
+        ok: false,
+        text:
+          "rejected: 'questions' must be a non-empty list of {question, options?} objects when provided",
+      };
+    }
+    if (a.questions.length > 5) {
+      return {
+        ok: false,
+        text:
+          "rejected: at most 5 questions per ask_human call (batch cap; split into multiple asks)",
+      };
+    }
+    for (const item of a.questions) {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        typeof item.question !== "string" ||
+        !item.question.trim()
+      ) {
+        return {
+          ok: false,
+          text:
+            "rejected: every 'questions' entry needs a non-empty 'question' string",
+        };
+      }
+      if (
+        item.options !== undefined &&
+        item.options !== null &&
+        (!Array.isArray(item.options) || !item.options.every((o) => typeof o === "string"))
+      ) {
+        return {
+          ok: false,
+          text:
+            "rejected: every 'questions' entry 'options' must be a list of strings when provided",
+        };
+      }
+    }
+    questions = a.questions;
+  }
   if (typeof a.question !== "string" || !a.question.trim()) {
-    return { ok: false, text: "rejected: 'question' is required and must be a non-empty string" };
+    if (!questions) {
+      return { ok: false, text: "rejected: 'question' is required and must be a non-empty string" };
+    }
+    a.question = ""; // batch present: questions[] wins
   }
   if (a.options !== undefined && (!Array.isArray(a.options) || !a.options.every((o) => typeof o === "string"))) {
     return { ok: false, text: "rejected: 'options' must be a list of strings when provided" };
@@ -225,6 +289,13 @@ export async function callAskHuman(args, runCtx) {
   }
   const body = { question: a.question, caller_delegation_id: caller, kind: "question", audience: "human" };
   if (a.options) body.options = [...a.options];
+  if (questions) {
+    body.questions = questions.map((item) => {
+      const q = { question: item.question };
+      if (item.options) q.options = [...item.options];
+      return q;
+    });
+  }
   let escalationId = "?";
   try {
     const data = await post(`/api/delegations/${encodeURIComponent(caller)}/escalate`, body, runCtx.signal);
@@ -237,6 +308,17 @@ export async function callAskHuman(args, runCtx) {
   try {
     const rec = await waitEscalation(caller, runCtx.isAborted, runCtx.signal);
     if (rec.status === "answered") {
+      // Batch: quote every Q/A pair (one line per question) so the
+      // synthesis turn sees each answer; legacy 1-elem stays the
+      // bare-answer line ("1) " prefix only on multi-question rows).
+      const qs = Array.isArray(rec.questions) ? rec.questions : null;
+      const answers = Array.isArray(rec.answers) ? rec.answers : null;
+      if (qs && qs.length > 1 && answers && answers.length) {
+        const lines = qs.map(
+          (q, i) => `${i + 1}) Q: ${q.question} A: ${answers[i] || "(empty)"}`
+        );
+        return { ok: true, text: `Human answers:\n${lines.join("\n")}` };
+      }
       return { ok: true, text: `Human answer: ${rec.response || "(empty)"}` };
     }
     return { ok: true, text: `Question ${rec.status} — proceed with best judgment.` };

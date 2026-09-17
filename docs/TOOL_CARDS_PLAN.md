@@ -185,3 +185,88 @@ old_capture?}` — `old_capture` present ONLY on overwrite-with-captured-
 old rows; absent = no pre-write bytes side (create, or too-big/
 unreadable old: fallback polynomial renders a preview + stats, never
 fails the turn).
+
+### Step-3 backend execution record (2026-09-17, backend slice)
+
+**Files touched (backend only; UI files untouched — the parallel
+frontend slice binds to the shape below):**
+
+- `sweave/runtime/escalation.py`: `MAX_QUESTIONS_PER_ESCALATION = 5`;
+  `create_or_reuse/create` gain additive `questions=[{"question",
+  "options"?}]` (<=5) and store `questions[]` + `answers[]` on the
+  record (legacy pair projects as 1-elem via `_normalize_questions`);
+  `answer()` gains additive `answers` (positional, partial posts
+  persist WITHOUT resolving — status stays pending, no resolved event,
+  no flag clear; status flips ONLY when ALL answered → `response`
+  becomes the joined "1) a  2) b", bare string on 1-elem —
+  byte-identical legacy); `skip()` clears the whole batch to
+  "(skipped: best judgment)" answers + "all questions skipped" response
+  on batches (single-record skip text unchanged); `get()` projects
+  legacy/pre-batch files as 1-elem batches. `_projected_questions` /
+  `_joined_response` helpers.
+- `sweave/web/routers/delegations.py`: `EscalateRequest.questions?`
+  (list of `{question, options?}`; >5 -> HTTP 400 with a `rejected:`
+  detail — never a 500), `AnswerRequest.answers?`
+  (`response`="" default kept for batch posts). Legacy
+  question/response paths byte-identical.
+- `sweave/mcp/__init__.py`: `_ask_human` accepts `questions`
+  (max 5, per-entry `{question, options?}` validation) and posts
+  `body["questions"]`; `question` no longer required when `questions`
+  present. Schema gains the `questions` property (maxItems 5).
+- `sweave-engine/src/sweave.js`: `SWEAVE_TOOL_DEFS` ask_human gains
+  `questions` (maxItems 5); `callAskHuman` mirrors validation and
+  posts `body.questions`; the settled wait quotes every Q/A pair on a
+  multi-question record (`Human answers:
+1) Q: ... A: ...`) and the
+  legacy 1-elem path stays `Human answer: <response>`.
+- `sweave/chat/loop.py`: `_escalation_note` batch extension — a
+  multi-question record renders every Q/A pair (`1) Q: ... A: ...`),
+  skipped batches quote every question + "proceed with best
+  judgment"; 1-elem/legacy records render byte-identically through
+  the unchanged legacy path. Permission/ceiling branches untouched.
+- `sweave/agents/orchestrator/config.yaml`: new "Ask Human"
+  charter section documents the batch + max-5 + all-answered rule.
+
+**Identical `rejected:` strings (contract parity, pinned by test
+`test_mcp_and_engine_rejected_strings_identical` which runs BOTH
+surfaces node-side):**
+
+- `rejected: 'questions' must be a non-empty list of {question, options?} objects when provided`
+- `rejected: at most 5 questions per ask_human call (batch cap; split into multiple asks)`
+- `rejected: every 'questions' entry needs a non-empty 'question' string`
+- `rejected: every 'questions' entry 'options' must be a list of strings when provided`
+- `rejected: 'question' is required and must be a non-empty string` (when neither form present)
+
+**Locked record shape the UI binds to (GET .../escalation):**
+
+`{escalation_id, delegation_id, question, options,
+ questions: [{question, options?}] (always >= 1; legacy files project
+ as 1-elem), answers: string[] (positional; aligned by index),
+ status: pending|answered|skipped||seen|timeout, response,
+ answered_at, deadline_at, kind, audience, metadata}` —
+`answer` responses additionally carry additive
+`resolved: bool` (false on a partial persist).
+
+**Partial-semantics lock (pinned in
+`test_partial_answer_persists_without_resolving`):** a partial
+`answers` post PERSISTS on the record without resolving;
+overwrites of already-answered slots are ignored (first answer
+wins); the status flips only when every question has an answer.
+
+**Gates:** new `tests/test_ask_human_batch.py` (16 tests: legacy
+projection, batch create, pre-batch file projection, partial
+persistence + all-at-once flip, skip single/whole-batch, MCP
+rejections, MCP↔engine string parity, MCP body shape, router
+end-to-end batch/partial/full/over-5/legacy, synthesis notes,
+engine schema). Full pytest: 1293 passed / 5 failed — the 5
+(`test_m1_9_step2_chat` surface-file + vitest, `test_m1_9_step3_children`
+vitest, `test_tool_lifecycle_2c` flake) fail identically on the
+stashed pre-change tree (UI files owned by the frontend slice / a
+transient reader flake); ask/escalation/engine tool suites all green
+(`test_engine_tools`, `test_engine_protocol`, `test_m1_9_step3_ask_human`,
+`test_m1_11_question_replace`, `test_m1_12_turn_hold`).
+`run.py --check`: 13 passed, 0 failed.
+
+**Live gate:** NOT run (no quota approval this session) — hermetic
+gates above stand; the real-turn 2-question live gate re-runs when
+quota is approved.

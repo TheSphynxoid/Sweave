@@ -61,6 +61,77 @@ from typing import Any, Awaitable, Callable, Optional, Union
 logger = logging.getLogger(__name__)
 
 
+# Ask-batch cap (TOOL_CARDS_PLAN §3 step 3, F5): ask_human accepts
+# at most 5 questions per call. Legacy single ``question`` normalizes
+# to a 1-elem batch server-side.
+MAX_QUESTIONS_PER_ESCALATION = 5
+
+
+def _projected_questions(rec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Batch questions for a record (legacy-safe projection).
+
+    Pre-batch records (and legacy single-question paths) carry only
+    ``question``/``options`` — they read as a 1-elem batch. New
+    records always carry ``questions[]``.
+    """
+    qs = rec.get("questions")
+    if isinstance(qs, list) and qs:
+        return qs
+    return [
+        {
+            "question": str(rec.get("question", "") or ""),
+            "options": rec.get("options") if isinstance(rec.get("options"), list) else None,
+        }
+    ]
+
+
+def _joined_response(
+    answers: list[str], questions: list[dict[str, Any]]
+) -> str:
+    """Joined ``response`` for a fully-answered batch.
+
+    1-elem batch (or legacy single) → the bare answer string
+    (byte-identical to the pre-batch ``response``). Multi-elem →
+    "1) a  2) b" so the synthesis note quotes every pair.
+    """
+    parts = [str(a or "").strip() for a in answers]
+    if len(questions) <= 1:
+        return parts[0] if parts else ""
+    return "  ".join(f"{i + 1}) {p}" for i, p in enumerate(parts))
+
+
+def _normalize_questions(
+    question: str,
+    options: list[str] | None,
+    questions: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Project the create-time input into the normalized batch shape.
+
+    ``questions[{"question", "options"?}]`` wins when present; the
+    legacy ``question``/``options`` pair otherwise projects as a
+    1-elem batch. Every item always carries both keys (``options``
+    may be None) so consumers never index-guard.
+    """
+    if questions:
+        return [
+            {
+                "question": str(item.get("question", "") or ""),
+                "options": (
+                    [str(o) for o in item.get("options")]
+                    if item.get("options")
+                    else None
+                ),
+            }
+            for item in questions
+        ]
+    return [
+        {
+            "question": str(question or ""),
+            "options": [str(o) for o in options] if options else None,
+        }
+    ]
+
+
 # Default timeout (M1.9 legacy: 15 minutes). M1.11: questions have
 # NO timeout by user ruling — ``None`` means "wait indefinitely".
 # The constructor accepts ``float | None``; ``None`` (the new
@@ -208,8 +279,16 @@ class EscalationStore:
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
         reuse_request_id: str | None = None,
+        questions: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Persist a new escalation, or reuse the live one for the same ask.
+
+        Batch (TOOL_CARDS_PLAN §3 step 3): ``questions`` is an
+        optional list of ``{"question", "options"?}`` dicts (≤5).
+        When present it wins over the legacy ``question``/``options``
+        pair; when absent the legacy pair projects as a 1-elem batch
+        so every new record carries ``questions[]`` + ``answers[]``
+        (additive keys; single-question records are 1-elem).
 
         Atomic under the store lock (incident 2026-09-11: the in-band
         bridge and the stall branch both created unconditionally, and
@@ -240,6 +319,8 @@ class EscalationStore:
             "delegation_id": delegation_id,
             "question": question,
             "options": list(options) if options else None,
+            "questions": _normalize_questions(question, options, questions),
+            "answers": [],
             "kind": kind,
             "audience": audience,
             "status": "pending",
@@ -269,6 +350,7 @@ class EscalationStore:
                 "delegation_id": delegation_id,
                 "question": question,
                 "options": list(options) if options else None,
+                "questions": rec["questions"],
                 "kind": kind,
                 "audience": audience,
                 "deadline_at": rec["deadline_at"],
@@ -288,6 +370,7 @@ class EscalationStore:
         audience: str = "human",
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
+        questions: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Persist a new escalation. Returns the escalation record.
 
@@ -304,6 +387,7 @@ class EscalationStore:
             audience=audience,
             timeout_seconds=timeout_seconds,
             metadata=metadata,
+            questions=questions,
         )
         return rec
 
@@ -332,15 +416,26 @@ class EscalationStore:
         *,
         delegation_id: str,
         response: str,
+        answers: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Record the user's answer. Returns the updated escalation
-        or None if no such escalation exists.
+        """Record the human's answer to the escalation.
 
-        Side effects:
-        * Clears the asking delegation's ``needs_attention`` flag
-          (via the WSEventBus).
-        * Publishes ``specialist.escalation_resolved`` with the
-          response + status.
+        Batch semantics (TOOL_CARDS_PLAN §3 step 3, locked by test):
+
+        * ``answers`` (optional list) answers the batch positionally.
+          A partial post (fewer answers than questions) PERSISTS on
+          ``rec["answers"]`` WITHOUT resolving — status stays
+          ``pending``, no resolved event and no flag clear fire, so
+          the UI can post per-question answers as they land.
+        * When every question has an answer, status flips to
+          ``answered``, ``response`` becomes the joined answers
+          ("1) ... 2) ..."), and the resolved event + flag clear
+          fire (all-at-once ruling).
+        * Legacy ``response`` (no ``answers``) is the 1-element
+          batch's answer — resolves exactly as before.
+
+        Returns the updated escalation (with additive ``resolved``
+        bool) or None if no such escalation exists.
         """
         async with self._lock:
             rec = self._records.get(delegation_id)
@@ -351,8 +446,27 @@ class EscalationStore:
                 # as a no-op (the MCP path is the only caller and it
                 # holds the lock; this guard is for safety).
                 return dict(rec)
+            questions = _projected_questions(rec)
+            if answers:
+                stored = list(rec.get("answers") or [])
+                for i, a in enumerate(answers[: len(questions)]):
+                    a = str(a)
+                    if i >= len(stored):
+                        stored.extend([""] * (i - len(stored) + 1))
+                    if not str(stored[i]).strip():
+                        stored[i] = a
+                rec["answers"] = stored
+            else:
+                rec["answers"] = [str(response)]
+            if len(rec["answers"]) < len(questions):
+                # Partial post: persist without resolving (locked
+                # semantics — per-question UI posts land incrementally).
+                await self._persist(delegation_id)
+                partial = dict(rec)
+                partial["resolved"] = False
+                return partial
             rec["status"] = "answered"
-            rec["response"] = response
+            rec["response"] = _joined_response(rec["answers"], questions)
             rec["answered_at"] = _now_iso()
             await self._persist(delegation_id)
         await self._emit(
@@ -361,11 +475,13 @@ class EscalationStore:
                 "escalation_id": rec["escalation_id"],
                 "delegation_id": delegation_id,
                 "status": "answered",
-                "response": response,
+                "response": rec["response"],
             },
         )
         await self._flag(delegation_id, False)
-        return dict(rec)
+        out = dict(rec)
+        out["resolved"] = True
+        return out
 
     async def force_timeout(self, *, delegation_id: str) -> dict[str, Any] | None:
         """Mark the escalation as timed out (manual path + test seam).
@@ -399,9 +515,14 @@ class EscalationStore:
         if rec is None:
             return None
         # Backward compat: pre-M1.11 records lack kind/audience.
+        # Batch projection: legacy records without ``questions[]``
+        # read as a 1-elem batch (additive, never crashes a consumer
+        # that indexes questions[]).
         out = dict(rec)
         out.setdefault("kind", "question")
         out.setdefault("audience", "human")
+        out["questions"] = _projected_questions(out)
+        out["answers"] = list(out.get("answers") or [])
         return out
 
     async def skip(
@@ -424,7 +545,19 @@ class EscalationStore:
             if rec["status"] != "pending":
                 return dict(rec)
             rec["status"] = "skipped"
-            rec["response"] = "skipped by user — proceed with best judgment"
+            # Batch: skip = the WHOLE batch -> best judgment.
+            _qs = _projected_questions(rec)
+            rec["answers"] = [
+                "(skipped: best judgment)" for _ in _qs
+            ]
+            rec["response"] = (
+                "skipped by user — proceed with best judgment"
+            )
+            if len(_qs) > 1:
+                rec["response"] = (
+                    "all questions skipped by user — "
+                    "proceed with best judgment"
+                )
             rec["answered_at"] = _now_iso()
             await self._persist(delegation_id)
         await self._emit(

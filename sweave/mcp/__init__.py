@@ -345,9 +345,13 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     """Ask the human a blocking question. The turn waits for an answer.
 
     Arguments (per the orchestrator's tool contract):
-    * ``question`` (str, required): the question for the human.
-    * ``options`` (list[str], optional): when present, the UI shows
-      multiple-choice buttons; when absent, a free-form text input.
+    * ``question`` (str): the question for the human (legacy single
+      ask). Required unless ``questions`` is provided.
+    * ``questions`` (list[{question, options?}], optional): batch
+      form, max 5 (TOOL_CARDS step 3); wins over ``question``.
+    * ``options`` (list[str], optional): choices for the legacy
+      single question; when present, the UI shows multiple-choice
+      buttons; when absent, a free-form text input.
     * ``caller_delegation_id`` (str, required): the asking
       delegation's id; the escalation is keyed to it.
 
@@ -361,13 +365,56 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
     args = params.arguments or {}
     question = args.get("question")
     options = args.get("options")
+    questions = args.get("questions")
     caller_delegation_id = args.get("caller_delegation_id")
 
+    # Batch (TOOL_CARDS step 3, additive): questions[] (max 5) wins
+    # over the legacy question/options pair; >5 -> rejected (never
+    # a crash). Rejected strings are IDENTICAL to the engine's
+    # callAskHuman (contract parity).
+    if questions is not None:
+        if not isinstance(questions, list) or not questions:
+            return _result_text(
+                "rejected: 'questions' must be a non-empty list of "
+                "{question, options?} objects when provided",
+                is_error=True,
+            )
+        if len(questions) > 5:
+            return _result_text(
+                "rejected: at most 5 questions per ask_human call "
+                "(batch cap; split into multiple asks)",
+                is_error=True,
+            )
+        for item in questions:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("question"), str)
+                or not item.get("question").strip()
+            ):
+                return _result_text(
+                    "rejected: every 'questions' entry needs a "
+                    "non-empty 'question' string",
+                    is_error=True,
+                )
+            opts = item.get("options")
+            if opts is not None and (
+                not isinstance(opts, list)
+                or not all(isinstance(o, str) for o in opts)
+            ):
+                return _result_text(
+                    "rejected: every 'questions' entry 'options' must "
+                    "be a list of strings when provided",
+                    is_error=True,
+                )
+
     if not isinstance(question, str) or not question.strip():
-        return _result_text(
-            "rejected: 'question' is required and must be a non-empty string",
-            is_error=True,
-        )
+        if not (isinstance(questions, list) and questions):
+            return _result_text(
+                "rejected: 'question' is required and must be a non-empty string",
+                is_error=True,
+            )
+        question = ""  # batch present: questions[] wins
+
     if options is not None and (
         not isinstance(options, list)
         or not all(isinstance(o, str) for o in options)
@@ -384,13 +431,25 @@ async def _ask_human(ctx: Any, params: types.CallToolRequestParams) -> types.Cal
         )
 
     body: dict[str, Any] = {
-        "question": question,
+        "question": question or "",
         "caller_delegation_id": caller_delegation_id,
         "kind": "question",
         "audience": "human",
     }
     if options:
         body["options"] = list(options)
+    if questions:
+        body["questions"] = [
+            {
+                "question": str(item.get("question")),
+                **(
+                    {"options": list(item["options"])}
+                    if item.get("options")
+                    else {}
+                ),
+            }
+            for item in questions
+        ]
 
     token = _token_from_env_or_file()
     try:
@@ -589,7 +648,11 @@ async def _list_tools_handler(
                     "properties": {
                         "question": {
                             "type": "string",
-                            "description": "The question for the human.",
+                            "description": (
+                                "The question for the human (legacy "
+                                "single ask). Required unless "
+                                "'questions' is provided."
+                            ),
                         },
                         "options": {
                             "type": "array",
@@ -598,6 +661,27 @@ async def _list_tools_handler(
                                 "Optional choices (rendered as buttons; "
                                 "absent = free-form input)."
                             ),
+                        },
+                        "questions": {
+                            "type": "array",
+                            "maxItems": 5,
+                            "description": (
+                                "Optional batch form: [{question, "
+                                "options?}] (max 5); one card, every "
+                                "question answered before the turn "
+                                "proceeds. Wins over question/options."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {"type": "string"},
+                                    "options": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": ["question"],
+                            },
                         },
                         "caller_delegation_id": {
                             "type": "string",

@@ -167,27 +167,43 @@ class FixRoundIn(BaseModel):
 
 
 class EscalateRequest(BaseModel):
-    """M1.9 step 3 (+ M1.11 kinds): ask_human / escalate request.
+    """M1.9 step 3 (+ M1.11 kinds) + ask batch (TOOL_CARDS step 3).
 
     * ``question`` -- the question (or escalation message) for the
-      human / orchestrator (required).
-    * ``options`` -- optional list of choices; when present the UI
-      renders buttons, when absent a free-form text input.
+      human / orchestrator (required -- legacy single-question path,
+      unchanged for the ``escalate`` notice path).
+    * ``options`` -- optional list of choices for the legacy single
+      question; when present the UI renders buttons.
+    * ``questions`` -- optional batch (<=5) of ``{"question",
+      "options"?}`` dicts; when present it wins over the legacy pair
+      (which normalizes as 1-elem without it). ``>5`` stays a
+      ``rejected:`` line upstream (MCP/engine), never a 500 here.
     * ``kind`` -- ``question`` (orchestrator -> human, blocking) or
       ``escalation`` (specialist -> orchestrator, notice).
     * ``audience`` -- ``human`` | ``orchestrator`` (mirrors kind).
     """
 
+    model_config = {"extra": "ignore"}
+
     question: str
     options: list[str] | None = None
     kind: str = "question"
     audience: str = "human"
+    questions: Optional[list[dict[str, Any]]] = None
 
 
 class AnswerRequest(BaseModel):
-    """M1.9 step 3: the human's answer to an open escalation."""
+    """M1.9 step 3 (+ batch): the human's answer to an escalation.
 
-    response: str
+    ``response`` is the legacy single answer (kept for compat);
+    ``answers`` is the additive batch list, answered positionally.
+    Partial batches persist WITHOUT resolving (locked semantics).
+    """
+
+    model_config = {"extra": "ignore"}
+
+    response: str = ""
+    answers: Optional[list[str]] = None
 
 
 class SkipRequest(BaseModel):
@@ -754,12 +770,32 @@ async def escalate_delegation(
         raise HTTPException(
             404, f"Delegation '{delegation_id}' not found"
         )
+    # Batch (TOOL_CARDS step 3): questions[] wins over the legacy
+    # question/options pair; store projects legacy as a 1-elem batch.
+    questions = getattr(request, "questions", None)
+    if questions:
+        qs = [q for q in questions if isinstance(q, dict)]
+        clean = [
+            {"question": str((q.get("question") or "")).strip(),
+             "options": [str(o) for o in q["options"]] if q.get("options") else None}
+            for q in qs
+        ]
+        clean = [q for q in clean if q["question"]]
+        if len(clean) > 5:
+            raise HTTPException(
+                400,
+                "rejected: at most 5 questions per escalation "
+                "(batch cap; split into multiple asks)",
+            )
+        if clean:
+            questions = clean
     rec = await state.escalation_store.create(
         delegation_id=delegation_id,
         question=request.question,
         options=request.options,
         kind=request.kind or "question",
         audience=request.audience or "human",
+        questions=questions,
     )
     # Flip the asking delegation's needs_attention flag. Best-effort:
     # the persistence is the EscalationStore; the flag is the
@@ -796,7 +832,9 @@ async def answer_delegation(
     if state.escalation_store is None:
         raise HTTPException(503, "EscalationStore not initialised")
     rec = await state.escalation_store.answer(
-        delegation_id=delegation_id, response=request.response
+        delegation_id=delegation_id,
+        response=request.response,
+        answers=request.answers,
     )
     if rec is None:
         raise HTTPException(
