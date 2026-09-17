@@ -310,11 +310,34 @@ function editCloseMatchHint(raw, oldString) {
       return null;
 }
 
+// TOOL_CARDS 2b (2026-09-17): the overwrite diff needs the PRE-WRITE
+// bytes. Captured here (the site that owns the write window, racing
+// nothing else in this turn), so toolStateExtra can project
+// mode/linesRemoved/old_capture WITHOUT a second read. Best-effort:
+// a missing file means a create, an unreadable or too-big old file
+// means NO capture (the detail degrades to preview + stats), and
+// NOTHING here can fail the turn (writePath still writes).
+const WRITE_OLD_CAPTURE_CHARS = 200000;
+
+async function captureOldWrite(abs) {
+  try {
+    const pre = await fsp.readFile(abs, "utf8");
+    if (!pre) return null;
+    return pre.length <= WRITE_OLD_CAPTURE_CHARS ? pre : null;
+  } catch {
+    // No pre-existing file (or unreadable) -> the write is a create
+    // (or degrades to preview + stats). Never fails the turn.
+    return null;
+  }
+}
+
 async function writePath(cwd, filePath, content) {
   const abs = resolve(cwd, filePath);
+  // Pre-write old-capture BEFORE the bytes change (never after).
+  const old = await captureOldWrite(abs);
   await fsp.mkdir(join(abs, ".."), { recursive: true });
   await fsp.writeFile(abs, content === undefined ? "" : String(content), "utf8");
-  return ok(`wrote ${filePath}`);
+  return { ...ok(`wrote ${filePath}`), _old: old };
 }
 
 function runBash(cwd, command, timeoutMs, signal) {
@@ -729,12 +752,22 @@ export function toolStateExtra(name, args = {}, settled) {
     }
     case "write": {
       const content = typeof a.content === "string" ? a.content : "";
-      extras.mode = "create";
+      // 2b: the pre-write capture rides `settled._old` (see writePath).
+      // Overwrite = old present (mode flips, linesRemoved + the diff
+      // payload name it); create = nothing else is carried.
+      const old = r && typeof r._old === "string" ? r._old : null;
+      if (old) {
+        extras.mode = "overwrite";
+        extras.linesRemoved = old.split("\n").length;
+        extras.old_capture = old;
+      } else {
+        extras.mode = "create";
+      }
       extras.linesAdded = content ? content.split("\n").length : 0;
       if (content) extras.preview = content.slice(0, 200);
       break;
     }
-    case "edit": {
+case "edit": {
       const oldText = typeof a.oldString === "string" ? a.oldString : "";
       const newText = typeof a.newString === "string" ? a.newString : "";
       extras.linesAdded = newText.split("\n").length;

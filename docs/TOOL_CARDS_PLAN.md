@@ -157,3 +157,31 @@ live turn drags the batch only if its schema is later captured
 amends: "opencode batching surface is the probe baseline; adopt what
 earns its keep" — the probe baseline is a BLOCKED one, so the sweep
 falls to our own surface (which is what the plan already targeted).
+
+### 2b-backend amendment (2026-09-17, justified: wire shape differs from the step-1 sketch)
+
+The plan's step-1 write row said "old-capture for overwrite (small files
+only, capped at 200K, fail-safe None -> falls back to preview+stats)"
+without saying WHERE the old bytes come from; the Python detail sketch
+read them from `input.old`. The 2b lock makes the wire explicit, with
+one carrier per line:
+
+- **Engine:** `writePath` captures the pre-write file bytes
+  (`captureOldWrite`, 200K cap, null on read failure / missing file) and
+  returns `_old` on the settled result — additive only, the
+  provider-visible `wrote {path}` string unchanged. `toolStateExtra`
+  write emits `{mode: 'overwrite', linesRemoved, old_capture}` when old
+  is present, else `{mode: 'create'}` (+ the create-side linesAdded /
+  200-char preview as step 1).
+- **Python** `build_tool_detail` projects the ENGINE extras FIRST
+  (`state.old_capture` wins; `input.old` is the pre-state-row fallback
+  for opencode turns + engine turns persisted before the sidecar
+  upgrade) — the old bytes NEVER ride twice (single source of truth,
+  tested); the row budget stays capped (12K row JSON pin).
+
+Wire shape the frontend binds (locked 2026-09-17):
+`{mode: 'create'|'overwrite', linesAdded, linesRemoved?, preview,
+old_capture?}` — `old_capture` present ONLY on overwrite-with-captured-
+old rows; absent = no pre-write bytes side (create, or too-big/
+unreadable old: fallback polynomial renders a preview + stats, never
+fails the turn).

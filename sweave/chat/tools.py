@@ -275,17 +275,42 @@ def build_tool_detail(tool: Any, tool_input: Any, state: dict, output: Any, erro
                 out["window"] = ow
             # filePath is the summary's job; only the window is additive.
         elif name == "write":
-            out["mode"] = "create" if not inp.get("old") else "overwrite"
+            # TOOL_CARDS 2b: the engine carries the pre-write capture on
+            # its structured state extras (mode/linesRemoved/old_capture
+            # from writePath's read-before-write). Project those first;
+            # pre-state rows (opencode path / engine turns before the
+            # sidecar upgrade) fall back to input.old, which the
+            # `_capped_input` edit-like rule kept. Old bytes NEVER ride
+            # twice — only one of the two paths carries them.
+            state_old = state.get("old_capture")
+            if isinstance(state_old, str) and state_old:
+                out["mode"] = "overwrite"
+                out["old_capture"] = _clip(state_old, WRITE_OLD_CAPTURE_CHARS)
+                out["linesRemoved"] = (
+                    int(state["linesRemoved"]) if isinstance(state.get("linesRemoved"), (int, float))
+                    else len(state_old.splitlines())
+                )
+            elif inp.get("old"):
+                out["mode"] = "overwrite"
+                out["old_capture"] = _clip(inp.get("old"), WRITE_OLD_CAPTURE_CHARS)
+                out["linesRemoved"] = len(str(inp.get("old")).splitlines())
+            else:
+                engine_mode = state.get("mode")
+                if engine_mode in ("create", "overwrite"):
+                    out["mode"] = engine_mode
+                else:
+                    out["mode"] = "create"
             out["linesAdded"] = (
                 len(str(inp.get("content") or "").splitlines())
-                if isinstance(inp.get("content"), str) else None
+                if isinstance(inp.get("content"), str)
+                else None
+            )
+            preview_src = (
+                state.get("preview") if isinstance(state.get("preview"), str) else inp.get("content")
             )
             out["preview"] = (
-                _clip(inp.get("content"), 200) if isinstance(inp.get("content"), str) else None
+                _clip(preview_src, 200) if isinstance(preview_src, str) else None
             )
-            if inp.get("old"):
-                out["linesRemoved"] = len(str(inp.get("old")).splitlines())
-                out["old_capture"] = _clip(inp.get("old"), WRITE_OLD_CAPTURE_CHARS)
         elif name == "edit":
             # Edit keeps full old/new in `input` already (the
             # _capped_input edit-like rule); detail carries the churn
