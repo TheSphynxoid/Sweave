@@ -49,6 +49,7 @@ import {
   Bot,
   Brain,
   Check,
+  ChevronDown,
   Copy,
   Loader2,
   OctagonX,
@@ -71,6 +72,7 @@ import { AssistantTextPart } from "./markdown/AssistantTextPart";
 import { Markdown } from "./markdown/Markdown";
 import { TurnDelegations } from "./TurnDelegations";
 import { TurnQuestions } from "./TurnQuestions";
+import { ToolDetailMeta } from "./ToolDetailMeta";
 import { CopyIdBadge } from "@/components/CopyId";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 import { cn } from "@/utils/cn";
@@ -746,6 +748,11 @@ export function SegmentedBody({
       groups.push({ kind: seg.kind, text: seg.text });
     }
   }
+  // Track read windows so a repeated (path, range) read can show the
+  // "same window" affordance (plan F3) without re-keying the backend.
+  // Mark a read as sameWindow only on its SECOND+ occurrence (the
+  // first sighting is the canonical window).
+  const seenWindows = new Set<string>();
   return (
     <>
       {groups.map((g, i) =>
@@ -756,7 +763,20 @@ export function SegmentedBody({
             {isEditRow(g.row) ? (
               <EditTool part={toToolEditPart(g.row)} isCollapsible />
             ) : (
-              <ToolRow row={g.row} streaming={streaming} />
+              <ToolRow
+                row={g.row}
+                streaming={streaming}
+                sameWindow={
+                  (g.row.tool || "").toLowerCase() === "read" &&
+                  (() => {
+                    const wkey = readWindowKey(g.row);
+                    if (!wkey) return false;
+                    const dup = seenWindows.has(wkey);
+                    seenWindows.add(wkey);
+                    return dup;
+                  })()
+                }
+              />
             )}
           </div>
         ) : (
@@ -802,17 +822,22 @@ export function TurnTools({
   streaming: boolean;
 }) {
   if (tools.length === 0) return null;
+  const seen = new Set<string>();
   return (
     <div className="mb-2.5 space-y-1" data-testid="turn-tools">
-      {tools.map((t) =>
-        isEditRow(t) ? (
+      {tools.map((t) => {
+        const isRead = (t.tool || "").toLowerCase() === "read";
+        const key = readWindowKey(t);
+        const sameWindow = isRead && !!key && seen.has(key);
+        if (key) seen.add(key);
+        return isEditRow(t) ? (
           <div key={t.callID} data-testid={`tool-row-${t.callID}`}>
             <EditTool part={toToolEditPart(t)} isCollapsible />
           </div>
         ) : (
-          <ToolRow key={t.callID} row={t} streaming={streaming} />
-        ),
-      )}
+          <ToolRow key={t.callID} row={t} streaming={streaming} sameWindow={sameWindow} />
+        );
+      })}
     </div>
   );
 }
@@ -823,29 +848,221 @@ function toolVerb(tool: string): string {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-/** One-liner detail: summary (path/command/pattern), else title, else nothing. */
+/** One-liner detail text: summary (path/command/pattern), else title. */
 function toolDetail(row: ChatToolRow): string {
   if (row.summary) return row.summary;
   if (row.title) return row.title;
   return "";
 }
 
-function ToolRow({ row, streaming }: { row: ChatToolRow; streaming: boolean }) {
-  const detail = toolDetail(row);
+/**
+ * TOOL_CARDS step 2 — enriched one-liner (plan §3 step 2 + F6).
+ *
+ * The collapsed row MUST stay one line tall (minimal-clutter rule), so
+ * the one-liner gains the audit-ready parameters derived from `detail`
+ * when present, and falls back to the legacy `summary`/`title` when the
+ * server is pre step-1 (no `detail` key — the degrade contract). Never
+ * dumps result content: read window, write mode, bash command, grep
+ * pattern+count, glob count, git verb, todo titles only.
+ */
+function enrichedOneLiner(row: ChatToolRow): string {
+  const d = row.detail;
+  switch ((row.tool || "").toLowerCase()) {
+    case "read": {
+      if (d?.window && d.window.shownFrom != null && d.window.shownTo != null) {
+        const total = d.window.total != null ? `/${d.window.total}` : "";
+        return `${row.summary || "(file)"} · L${d.window.shownFrom}–${d.window.shownTo}${total}`;
+      }
+      return toolDetail(row);
+    }
+    case "write": {
+      if (d?.mode) {
+        const added = d.linesAdded != null ? ` +${d.linesAdded}` : "";
+        const removed = d.linesRemoved != null ? ` −${d.linesRemoved}` : "";
+        const verb = d.mode === "overwrite" ? "overwrote" : "created";
+        return `${row.summary || "(file)"} · ${verb}${added}${removed}`;
+      }
+      return toolDetail(row);
+    }
+    case "edit": {
+      if (d?.linesAdded != null || d?.linesRemoved != null) {
+        const added = d.linesAdded != null ? ` +${d.linesAdded}` : "";
+        const removed = d.linesRemoved != null ? ` −${d.linesRemoved}` : "";
+        return `${row.summary || "(file)"} · edited${added}${removed}`;
+      }
+      return toolDetail(row);
+    }
+    case "bash":
+      // Command ALWAYS visible (F2); `summary` already carries it for
+      // legacy rows, so the enriched one-liner is just the command.
+      return toolDetail(row);
+    case "grep": {
+      if (d?.pattern != null) {
+        const where = d.path ? ` in ${d.path}` : "";
+        const inc = d.include ? ` (${d.include})` : "";
+        const n = d.matchCount != null ? ` (${d.matchCount})` : "";
+        return `“${d.pattern}”${where}${inc}${n}`;
+      }
+      return toolDetail(row);
+    }
+    case "glob": {
+      if (d?.pattern != null) {
+        const n = d.count != null ? ` (${d.count})` : "";
+        return `${d.pattern}${n}`;
+      }
+      return toolDetail(row);
+    }
+    case "git": {
+      if (d?.verb != null) {
+        const args = Array.isArray(d.args) ? d.args.join(" ") : d.args ? String(d.args) : "";
+        return `${d.verb}${args ? ` ${args}` : ""}`;
+      }
+      return toolDetail(row);
+    }
+    case "todo": {
+      if (d?.titles && d.titles.length) {
+        const more = d.titles.length > 1 ? ` +${d.titles.length - 1}` : "";
+        return `${d.titles[0]}${more}`;
+      }
+      return toolDetail(row);
+    }
+    default:
+      return toolDetail(row);
+  }
+}
+
+/** Whether the row has detail worth revealing in an expander panel. */
+function hasExpandableDetail(row: ChatToolRow): boolean {
+  const d = row.detail;
+  if (!d) return false;
+  // Same-window badge is shown inline (no expander needed); the rest
+  // reveal the source parameters / output when there is something to
+  // show beyond the one-liner.
+  if (d.command != null && d.command !== "") return true;
+  if (d.output_excerpt != null && d.output_excerpt !== "") return true;
+  if (d.preview != null && d.preview !== "") return true;
+  if (d.old_capture != null && d.old_capture !== "") return true;
+  if (d.matchCount != null) return true;
+  if (d.count != null) return true;
+  if (d.linesAdded != null || d.linesRemoved != null) return true;
+  if (d.titles && d.titles.length) return true;
+  return false;
+}
+
+function ToolRow({
+  row,
+  streaming,
+  sameWindow = false,
+}: {
+  row: ChatToolRow;
+  streaming: boolean;
+  /** Read rows only: this read repeats a prior read's (path, window). */
+  sameWindow?: boolean;
+}) {
+  const detail = enrichedOneLiner(row);
   const live = streaming && (row.status === "pending" || row.status === "running");
+  const expandable = hasExpandableDetail(row);
+  return (
+    <ToolRowShell
+      row={row}
+      live={live}
+      detail={detail}
+      expandable={expandable}
+      sameWindow={sameWindow}
+    />
+  );
+}
+
+/** The "same window" key for a read row (plan F3): path + shown range. */
+function readWindowKey(row: ChatToolRow): string | null {
+  if ((row.tool || "").toLowerCase() !== "read") return null;
+  const w = row.detail?.window;
+  if (!w || w.shownFrom == null || w.shownTo == null) return null;
+  return `${row.summary || ""}#${w.shownFrom}-${w.shownTo}`;
+}
+
+/**
+ * Row shell: the one-liner (same height as today — minimal-clutter
+ * rule) plus an OPTIONAL collapsible panel below that reveals the
+ * enriched detail (bash response 2K inline, write preview/diff,
+ * grep/glob counts, git args, todo titles). The collapsed row never
+ * grows taller than the legacy one-liner.
+ */
+function ToolRowShell({
+  row,
+  live,
+  detail,
+  expandable,
+  sameWindow,
+}: {
+  row: ChatToolRow;
+  live: boolean;
+  detail: string;
+  expandable: boolean;
+  sameWindow: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid={`tool-row-${row.callID}`} data-tool-status={row.status}>
+      <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground">
+        <ToolStatusIcon status={row.status} live={live} />
+        <span className="font-medium text-foreground/80">{toolVerb(row.tool)}</span>
+        {detail ? (
+          <span className="truncate font-mono text-[11px]" title={detail}>
+            {detail}
+          </span>
+        ) : null}
+        {sameWindow ? (
+          <span
+            data-testid={`same-window-${row.callID}`}
+            className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            title="Same file + window as a prior read this turn"
+          >
+            same window
+          </span>
+        ) : null}
+        {expandable ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={open ? "Hide tool detail" : "Show tool detail"}
+            data-testid={`tool-expand-${row.callID}`}
+            onClick={() => setOpen((v) => !v)}
+            className="ml-auto flex shrink-0 items-center rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <ChevronDown
+              size={13}
+              className={"transition-transform " + (open ? "rotate-180" : "")}
+            />
+          </button>
+        ) : null}
+      </div>
+      {expandable && open ? <ToolRowDetail row={row} /> : null}
+    </div>
+  );
+}
+
+/** The collapsible enriched-detail panel (rendered only when open). */
+function ToolRowDetail({ row }: { row: ChatToolRow }) {
+  const d = row.detail;
+  if (!d) return null;
   return (
     <div
-      data-testid={`tool-row-${row.callID}`}
-      data-tool-status={row.status}
-      className="flex min-w-0 items-center gap-1.5 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1 text-xs text-muted-foreground"
+      data-testid={`tool-detail-${row.callID}`}
+      className="mt-1 space-y-1.5 rounded-lg border border-border/50 bg-muted/20 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground"
     >
-      <ToolStatusIcon status={row.status} live={live} />
-      <span className="font-medium text-foreground/80">{toolVerb(row.tool)}</span>
-      {detail ? (
-        <span className="truncate font-mono text-[11px]" title={detail}>
-          {detail}
-        </span>
+      {/* Bash: the 2K inline excerpt (F2) lives only in the chat
+          expander — the detail surface already shows the full output
+          via the BashTool card. */}
+      {d.output_excerpt ? (
+        <pre
+          data-testid={`bash-output-${row.callID}`}
+          className="max-h-40 overflow-auto rounded bg-background/60 p-1.5 font-mono text-[11px] whitespace-pre-wrap break-words"
+        >
+          {d.output_excerpt}
+        </pre>
       ) : null}
+      <ToolDetailMeta tool={row.tool} detail={d} className="space-y-1.5" />
     </div>
   );
 }

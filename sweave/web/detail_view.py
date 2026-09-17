@@ -302,6 +302,32 @@ def render_detail_view(
             entry["title"] = latest_state.get("title")
             entry["input"] = latest_state.get("input")
             entry["time"] = latest_state.get("time")
+            # TOOL_CARDS step 2: project the additive `detail` blob from
+            # the LATEST state the same backend builder the chat rows use
+            # (one builder serves both renderers -- the vitest matrix pins
+            # both against the same shape). The extras live on `state`
+            # (window/exit/count/old-capture); absent on legacy traces ->
+            # the UI degrades to the raw output card. Never raises.
+            try:
+                from sweave.chat.tools import build_tool_detail
+
+                st = latest_state if isinstance(latest_state, dict) else {}
+                extras = {
+                    k: v
+                    for k, v in st.items()
+                    if k not in ("status", "input", "output", "error", "title", "time")
+                }
+                detail = build_tool_detail(
+                    entry.get("tool"),
+                    st.get("input", {}) or {},
+                    extras,
+                    st.get("output"),
+                    st.get("error"),
+                )
+                if detail:
+                    entry["detail"] = detail
+            except Exception:  # noqa: BLE001 -- the fold must never raise
+                pass
         elif name == "tokens_used":
             tokens = {
                 "input": ev.get("input", 0),

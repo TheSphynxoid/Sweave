@@ -437,6 +437,10 @@ export function toolsOf(message: SessionMessage): ChatToolRow[] {
         typeof row.round === "number" && Number.isInteger(row.round) && row.round >= 0
           ? row.round
           : null,
+      // TOOL_CARDS step 2: additive detail (legacy servers omit it -> degrade).
+      detail: (row.detail as ChatToolRow["detail"]) ?? null,
+      output_excerpt:
+        typeof row.output_excerpt === "string" ? row.output_excerpt : null,
     });
   }
   return out;
@@ -761,6 +765,10 @@ export function normalizeToolRow(tool: unknown, round: number = 0): ChatToolRow 
         ? (row.input as Record<string, unknown>)
         : null,
     round,
+    // TOOL_CARDS step 2: additive detail (legacy servers omit it -> degrade).
+    detail: (row.detail as ChatToolRow["detail"]) ?? null,
+    output_excerpt:
+      typeof row.output_excerpt === "string" ? row.output_excerpt : null,
   };
 }
 

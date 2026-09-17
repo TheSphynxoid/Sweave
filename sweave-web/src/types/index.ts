@@ -126,6 +126,55 @@ export interface TurnSnapshot {
  * ``metadata.tools[]`` (persisted). UI-only: the composer never
  * reads it, so it cannot leak into the model context.
  */
+/**
+ * Per-tool additive `detail` blob (TOOL_CARDS plan step 2, 2026-09-16).
+ *
+ * One builder (`sweave/chat/tools.py:build_tool_detail`) serves BOTH the
+ * chat rows (`ChatToolRow.detail`) and the detail surface
+ * (`ToolTimelineEntry.detail`), so the two renderers never diverge.
+ * Every field is OPTIONAL: legacy servers (pre step-1) emit NO `detail`
+ * key at all, and the chat card degrades to today's one-liner. The bash
+ * `output_excerpt` rides its own optional field so a 32K result stays
+ * 2K in the thread; the full text already lands in the trace / detail
+ * surface. Never a crash, never a leak (composer isolation holds).
+ */
+export interface ToolRowDetail {
+  // read: structured window (F3 — render from this, never the footer).
+  window?: {
+    shownFrom?: number | null;
+    shownTo?: number | null;
+    total?: number | null;
+    nextOffset?: number | null;
+    from_footer?: boolean | null;
+  } | null;
+  // write: create-vs-overwrite + churn stats (F4).
+  mode?: "create" | "overwrite" | null;
+  linesAdded?: number | null;
+  linesRemoved?: number | null;
+  preview?: string | null;
+  old_capture?: string | null;
+  // edit: churn stats (old/new already in `input`).
+  // bash: command ALWAYS visible (F2) + structured exit + 2K excerpt.
+  command?: string | null;
+  exit?: number | null;
+  output_excerpt?: string | null;
+  truncated?: boolean | null;
+  // grep: pattern (+ path/include, match count) — NEVER match content.
+  pattern?: string | null;
+  path?: string | null;
+  include?: string | null;
+  matchCount?: number | null;
+  // glob: pattern + count.
+  count?: number | null;
+  // git: verb + args.
+  verb?: string | null;
+  args?: unknown;
+  // todo: titles list.
+  titles?: string[] | null;
+  // Fail-safe: the detail blob was clipped to DETAIL_JSON_CHARS.
+  clipped?: boolean | null;
+}
+
 export interface ChatToolRow {
   callID: string;
   tool: string;
@@ -137,6 +186,18 @@ export interface ChatToolRow {
   /** Capped input JSON (edit/write rows only — the expandable diff). */
   input?: Record<string, unknown> | null;
   round?: number | null;
+  /**
+   * TOOL_CARDS step 2: additive per-tool detail (see {@link ToolRowDetail}).
+   * Absent on legacy servers — readers MUST degrade to the one-liner.
+   */
+  detail?: ToolRowDetail | null;
+  /**
+   * TOOL_CARDS step 2: the 2K inline bash tail (F2). Absent on legacy
+   * servers and on non-bash rows. `detail.output_excerpt` is the
+   * capped source-of-truth; this mirrors it on the row for cheap
+   * access. Readers fall back to `detail.output_excerpt` when absent.
+   */
+  output_excerpt?: string | null;
 }
 
 /**
@@ -308,6 +369,13 @@ export interface ToolTimelineEntry {
   time?: { start?: number; end?: number } | null;
   states: Array<Record<string, unknown>>;
   started_at: string | null;
+  /**
+   * TOOL_CARDS step 2: additive per-tool detail (see {@link ToolRowDetail}).
+   * The detail-view builder projects it from the latest tool state so the
+   * Tools tab + Transcript tab render the enriched window/counts/stats.
+   * Absent on legacy traces — readers degrade to the raw output card.
+   */
+  detail?: ToolRowDetail | null;
 }
 
 export interface Tokens {

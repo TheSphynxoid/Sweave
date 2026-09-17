@@ -24,6 +24,7 @@ import { Markdown } from "@/components/thread/markdown/Markdown";
 import { BashTool } from "@/components/agent-elements/tools/bash-tool";
 import { EditTool } from "@/components/agent-elements/tools/edit-tool";
 import { AgentToolCard } from "@/components/agent/AgentToolCard";
+import { ToolDetailMeta } from "@/components/thread/ToolDetailMeta";
 import type {
   ComposedPrompt,
   DelegationDetail,
@@ -97,15 +98,17 @@ function toEditPart(t: ToolTimelineEntry): Record<string, unknown> {
 
 /** Render a single tool timeline entry via the agent-elements cards. */
 export function ToolTimelineRow({ tool }: { tool: ToolTimelineEntry }) {
+  const bash = isBashTool(tool);
+  const edit = isEditTool(tool);
   return (
     <li
       key={tool.callID}
       data-testid={`tool-${tool.callID}`}
       className="animate-in fade-in-0 slide-in-from-bottom-1"
     >
-      {isBashTool(tool) ? (
+      {bash ? (
         <BashTool part={toBashPart(tool)} />
-      ) : isEditTool(tool) ? (
+      ) : edit ? (
         <EditTool part={toEditPart(tool)} isCollapsible />
       ) : (
         <AgentToolCard
@@ -116,6 +119,13 @@ export function ToolTimelineRow({ tool }: { tool: ToolTimelineEntry }) {
           error={tool.error}
         />
       )}
+      {/* TOOL_CARDS step 2: enriched window/counts/stats rows ride the
+          same backend `detail` blob the chat surface uses (one renderer
+          — `ToolDetailMeta`). Bash keeps its full output card; the
+          additive meta shows command/exit/counts/stats above it. Read
+          shows the structured window (F3); grep/glob/git/todo show
+          pattern/counts/args/titles (F6 — never match content). */}
+      <ToolDetailMeta tool={tool.tool ?? ""} detail={tool.detail} />
     </li>
   );
 }
