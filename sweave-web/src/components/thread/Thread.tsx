@@ -503,6 +503,14 @@ function AssistantMessage() {
   const showLanes =
     custom.turnFinal !== false || isRunning || custom.isActiveTurn === true;
 
+  // Lane dedupe (2026-09-17): rounds share one chat delegation id,
+  // so without this the same activity box renders under the round-0
+  // message AND the round-1 synthesis. Children/questions belong to
+  // the spawning round (round 0 today — sequential waves will stamp
+  // the round at spawn per WAVE_LOOP_PLAN.md ruling 4); only that
+  // round's message mounts the lanes.
+  const isSpawnRound = (custom.round ?? 0) === 0;
+
   const body = (
     <>
       {custom.segments && custom.segments.length > 0 ? (
@@ -526,11 +534,11 @@ function AssistantMessage() {
         </>
       )}
 
-      {custom.delegationId && showLanes && (
+      {custom.delegationId && showLanes && isSpawnRound && (
         <TurnQuestions delegationId={custom.delegationId} />
       )}
 
-      {custom.delegationId && showLanes && (
+      {custom.delegationId && showLanes && isSpawnRound && (
         <TurnDelegations parentDelegationId={custom.delegationId} />
       )}
 

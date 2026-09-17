@@ -126,7 +126,7 @@ export function CommandPalette() {
                     });
                     await qc.invalidateQueries({ queryKey: ["sessions", activeProject.name] });
                     await setActiveSession(res.session.id);
-                    navigate("/chat");
+                    navigate(`/chat/${encodeURIComponent(res.session.id)}`);
                   } catch (err) {
                     pushNotification("error", `Failed to create session: ${(err as Error).message}`);
                   }

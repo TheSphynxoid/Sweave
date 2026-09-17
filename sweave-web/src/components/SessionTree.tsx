@@ -7,6 +7,7 @@
  * ``session.deleted`` events refresh it without polling.
  */
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Plus, MessageSquare, Trash2, Loader2 } from "lucide-react";
 import { api } from "@/api/client";
@@ -22,6 +23,7 @@ import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 export function SessionTree() {
   const { activeProject, activeSession, setActiveSession, pushNotification } = useApp();
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
@@ -46,6 +48,7 @@ export function SessionTree() {
       await qc.invalidateQueries({ queryKey: ["sessions", activeProject?.name] });
       await setActiveSession(res.session.id);
       setName("");
+      navigate(`/chat/${encodeURIComponent(res.session.id)}`);
     },
     onError: (err) => {
       pushNotification("error", `Failed to create session: ${(err as Error).message}`);
@@ -109,6 +112,7 @@ export function SessionTree() {
                     if (s.id === activeSession?.id) return;
                     try {
                       await setActiveSession(s.id);
+                      navigate(`/chat/${encodeURIComponent(s.id)}`);
                     } catch (err) {
                       pushNotification("error", `Failed to switch session: ${(err as Error).message}`);
                     }

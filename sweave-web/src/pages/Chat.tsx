@@ -17,6 +17,7 @@
  * create/switch/rename-in-thread lands in R4.2 step 3.
  */
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import { useParams } from "react-router-dom";
 import { MessagesSquare, Sparkles } from "lucide-react";
 import { useApp } from "@/context/AppProvider";
 import { useUIStore } from "@/store/ui";
@@ -29,7 +30,13 @@ import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 export function ChatPage() {
   const { activeProject, activeSession } = useApp();
   const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
-  const { runtime, rerun, cancel } = useSweaveChatRuntime(activeSession?.id ?? null);
+  // Viewed session is URL-local (2026-09-17): each tab keeps its
+  // own /chat/:sessionId, so a cross-tab server broadcast can never
+  // yank this tab's thread elsewhere. Falls back to the
+  // server-active session for fresh/legacy /chat URLs.
+  const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const viewedSessionId = urlSessionId ?? activeSession?.id ?? null;
+  const { runtime, rerun, cancel } = useSweaveChatRuntime(viewedSessionId);
 
   if (!activeProject) {
     return (
@@ -52,7 +59,7 @@ export function ChatPage() {
     );
   }
 
-  if (!activeSession) {
+  if (!viewedSessionId) {
     return (
       <div className="chat-hero-orb flex h-full items-center justify-center p-6" data-testid="chat-page">
         <div className="animate-message-in max-w-sm space-y-3 text-center">

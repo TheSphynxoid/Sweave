@@ -94,6 +94,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // invalidates the smallest set of query keys that need to
   // refresh. The active session change refreshes the
   // /sessions/active fetch (the AppProvider's own state).
+  //
+  // 2026-09-17: NO local setActiveSession on the broadcast.
+  // The broadcast is server-global (one pointer for all tabs);
+  // the viewed session is URL-local (/chat/:sessionId), so
+  // following it would yank every tab to the newest selection.
+  // Tabs pick the broadcast up lazily (stale active pill
+  // refreshes on next navigation/action).
   useEffect(() => {
     const unsubs: Array<() => void> = [];
 
@@ -112,21 +119,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           for (const key of invalidationsForEvent(env)) {
             qc.invalidateQueries({ queryKey: key });
           }
-          // The active_session.changed event also refreshes
-          // the AppProvider's own active session (the local
-          // cache that the topbar statusline + sidebar
-          // active-pill read). The active_session.changed
-          // handler is the only one with a side effect beyond
-          // query invalidation.
+          // The broadcast is observed, never followed: refresh
+          // the query cache so the pill reads current on next
+          // navigation, but leave this tab's local viewed session
+          // alone (see above).
           if (eventName === "active_session.changed") {
-            (async () => {
-              try {
-                const refreshed = await api.getActiveSession();
-                setActiveSession(refreshed);
-              } catch {
-                // ignore; the next user action will resync
-              }
-            })();
+            void qc.invalidateQueries({ queryKey: ["active-session"] });
           }
           // R4.4: if the active project was deleted, drop both the
           // active project + session pointers so the UI falls back to

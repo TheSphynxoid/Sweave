@@ -19,7 +19,7 @@
  *   6. WS `message.added` (assistant) -> finalize + turn idle.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
@@ -74,6 +74,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
   // snapshot for the current session (2026-09-10 recovery contract).
   const { state: wsState, subscribe } = useWS();
   const [state, setState] = useState<SweaveThreadState>(initialThreadState);
+  const qc = useQueryClient();
   // Which session the local state belongs to. A session switch
   // replaces (never merges): merging would leak the old session's
   // in-flight bubble into the new thread.
@@ -136,6 +137,18 @@ export function useSweaveChatRuntime(sessionId: string | null) {
     };
   }, [sessionId, wsState, sessionDetail]);
 
+  // History staleness (2026-09-17): the ["session", id] query is
+  // never invalidated elsewhere (no invalidate targets it anywhere
+  // in the app), so without this a remount within the 5-min
+  // staleTime rebuilds from pre-turn messages — the just-sent
+  // user text vanishes until refresh. message.added (both roles)
+  // invalidates; mergeHistory keeps the in-flight bubble across
+  // the refetch by design.
+  const touchSessionHistory = useCallback(() => {
+    if (!sessionId) return;
+    void qc.invalidateQueries({ queryKey: ["session", sessionId] });
+  }, [qc, sessionId]);
+
   // WS subscriptions, scoped to the active session. `sessionId` is in
   // the dep list but the closures read the current value directly.
   useEffect(() => {
@@ -168,6 +181,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       const message = data.message as SessionMessage | undefined;
       if (!message) return;
       setState((s) => applyMessageAdded(s, message));
+      touchSessionHistory();
     });
     const offStatus = subscribe("delegation.status_changed", (env) => {
       const data = env.data as Record<string, unknown>;
@@ -184,7 +198,7 @@ export function useSweaveChatRuntime(sessionId: string | null) {
       offAdded();
       offStatus();
     };
-  }, [sessionId, subscribe]);
+  }, [sessionId, subscribe, touchSessionHistory]);
 
   // Projection -> assistant-ui runtime.
   const messages = useMemo(() => projectThread(state), [state]);
@@ -236,7 +250,8 @@ export function useSweaveChatRuntime(sessionId: string | null) {
         return applySubmit(s, text);
       });
       // The optimistic user message stays: the running turn's own
-      // `message.added` (user) reconciles it against the persisted copy.
+      // `message.added` (user) reconciles it against the persisted copy
+      // (and invalidates the session query via the subscription above).
       try {
         await api.sendMessage(sessionId, { role: "user", content: text });
       } catch (err: unknown) {

@@ -416,6 +416,29 @@ describe("rerun: edit + resend / retry (supersede, don't delete)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Lane dedupe (2026-09-17): activity lanes belong to the spawn round
+// ---------------------------------------------------------------------------
+
+describe("lane dedupe: spawn-round gate", () => {
+  /** The Thread's lane-gate rule: lanes mount on the spawning round
+      only (round 0 today; sequential waves stamp it at spawn). */
+  function lanesMount(round: number | null | undefined): boolean {
+    return (round ?? 0) === 0;
+  }
+
+  it("round 0 mounts the lanes", () => {
+    expect(lanesMount(0)).toBe(true);
+    expect(lanesMount(null)).toBe(true);
+    expect(lanesMount(undefined)).toBe(true);
+  });
+
+  it("synthesis rounds never mount the lanes (shared delegation id)", () => {
+    expect(lanesMount(1)).toBe(false);
+    expect(lanesMount(2)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Turn recovery (2026-09-10 contract): applyTurnSnapshot
 // ---------------------------------------------------------------------------
 

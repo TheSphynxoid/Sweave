@@ -89,7 +89,7 @@ export function ProjectSessionTree() {
       await setActiveSession(res.session.id);
       setNewName("");
       setCreatingFor(null);
-      navigate("/chat");
+      navigate(`/chat/${encodeURIComponent(res.session.id)}`);
     },
     onError: (err) => pushNotification("error", `Failed to create session: ${(err as Error).message}`),
   });
@@ -184,7 +184,7 @@ export function ProjectSessionTree() {
                 if (id === activeSession?.id) return;
                 try {
                   await setActiveSession(id);
-                  navigate("/chat");
+                  navigate(`/chat/${encodeURIComponent(id)}`);
                 } catch (err) {
                   pushNotification("error", `Failed to switch session: ${(err as Error).message}`);
                 }

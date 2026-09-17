@@ -60,10 +60,12 @@ export default function App() {
                   }
                 >
                   {/* Wave-1 entries: chat is the input funnel;
-                       children is the output funnel. */}
+                       children is the output funnel. The chat
+                       :sessionId param keeps each tab's viewed
+                       session local to its URL (2026-09-17). */}
                   <Route index element={<Navigate to="/chat" replace />} />
                   <Route
-                    path="chat"
+                    path="chat/:sessionId?"
                     element={
                       <RouteErrorBoundary label="Chat">
                         <ChatPage />
