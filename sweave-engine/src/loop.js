@@ -29,6 +29,7 @@ import {
   gateToolCall,
   matchTarget,
   permissionKey,
+  toolStateExtra,
 } from "./tools.js";
 import { callEnginePermission, callSweaveTool, sweaveToolsFor } from "./sweave.js";
 import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
@@ -609,7 +610,7 @@ export async function runLoop(loopCtx) {
       if (!offered) {
         const errText = `rejected: unknown tool ${JSON.stringify(call.name)}`;
         emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
-        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
+        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
         continue;
       }
@@ -622,7 +623,7 @@ export async function runLoop(loopCtx) {
       if (lastRepeat.count >= DOOM_REPEATS && !isSweave) {
         const errText = "rejected: doom_loop suspected (identical call 3x) — try a different approach";
         emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
-        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
+        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
         continue;
       }
@@ -633,9 +634,9 @@ export async function runLoop(loopCtx) {
         const text = result.text;
         if (result.ok) {
           iterSuccess += 1;
-          emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: text } });
+          emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: text, ...toolStateExtra(call.name, call.args, { ok: true, output: text }) } });
         } else {
-          emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: text } });
+          emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: text, ...toolStateExtra(call.name, call.args, { ok: false, error: text }) } });
         }
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: text, at: Date.now() });
         continue;
@@ -649,7 +650,7 @@ export async function runLoop(loopCtx) {
       emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
       if (gate.verdict === "deny") {
         const errText = `permission denied: ${gate.permission} for ${gate.patterns.join(", ")}`;
-        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
+        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
         continue;
       }
@@ -657,7 +658,7 @@ export async function runLoop(loopCtx) {
         const answer = mapPermissionResponse(await resolveAsk({ ...execCtxBase }, gate, call.name, callId, call.args || {}));
         if (answer === "reject") {
           const errText = `permission rejected: ${gate.permission} for ${gate.patterns.join(", ")}`;
-          emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
+          emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
           store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
           continue;
         }
@@ -677,12 +678,12 @@ export async function runLoop(loopCtx) {
         iterSuccess += 1;
         if (isPath && target) noteFile(absPath || target);
         const out = settled.output || "";
-        emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: out } });
+        emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: out, ...toolStateExtra(call.name, call.args, settled) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: out || "(no output)", at: Date.now() });
       } else {
         if (isPath && target) noteFile(absPath || target);
         const errText = settled.partial ? `${settled.error}\nPartial output:\n${settled.partial}` : settled.error;
-        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText } });
+        emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args, settled) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
       }
     }

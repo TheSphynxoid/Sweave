@@ -307,7 +307,7 @@ function editCloseMatchHint(raw, oldString) {
     const region = rawLines.slice(s, s + normOld.length).join("\n").slice(0, HINT_MAX_CHARS);
     return `edit: oldString not found; closest region lines ${a}-${b} (whitespace differs — space=· tab=→ CR=␍; copy exactly as read):\n${showWhitespace(region)}`;
   }
-  return null;
+      return null;
 }
 
 async function writePath(cwd, filePath, content) {
@@ -697,6 +697,81 @@ export const EXEC_TOOL_DEFS = [
     },
   },
 ];
+
+/**
+ * TOOL_CARDS step 1 (2026-09-16): structured per-tool state
+ * extras — additive fields on the tool.* emit `state` payloads
+ * so the Python side's `detail` builder projects them WITHOUT
+ * parsing the free-text output (the footer stays for the model;
+ * the chat cards render from these keys — ruling F3's
+ * "never parse the footer" bar). Additive only: provider-visible
+ * text outputs unchanged; unknown keys ignored downstream (the
+ * degrade contract holds on both harnesses).
+ */
+export function toolStateExtra(name, args = {}, settled) {
+  const a = args || {};
+  const r = settled || {};
+  const extras = {};
+  switch (name) {
+    case "read": {
+      if (r.ok && typeof r.output === "string") {
+        const m = r.output.match(/\(Showing lines (\d+)-(\d+) of (\d+)\. Use offset=(\d+)/);
+        if (m) {
+          extras.window = {
+            shownFrom: Number(m[1]),
+            shownTo: Number(m[2]),
+            total: Number(m[3]),
+            nextOffset: Number(m[4]),
+          };
+        }
+      }
+      break;
+    }
+    case "write": {
+      const content = typeof a.content === "string" ? a.content : "";
+      extras.mode = "create";
+      extras.linesAdded = content ? content.split("\n").length : 0;
+      if (content) extras.preview = content.slice(0, 200);
+      break;
+    }
+    case "edit": {
+      const oldText = typeof a.oldString === "string" ? a.oldString : "";
+      const newText = typeof a.newString === "string" ? a.newString : "";
+      extras.linesAdded = newText.split("\n").length;
+      extras.linesRemoved = oldText.split("\n").length;
+      break;
+    }
+    case "bash": {
+      extras.command = a.command || "";
+      const err = settled && settled.error ? String(settled.error) : "";
+      const m = /\bexit (-?\d+)/.exec(err);
+      extras.exit = m ? Number(m[1]) : settled && settled.ok ? 0 : null;
+      if (settled && typeof settled.output === "string" && settled.output) {
+        extras.output_excerpt = settled.output.slice(-2000);
+        extras.truncated = settled.output.length > 2000;
+      }
+      break;
+    }
+    case "grep": {
+      if (r.ok && typeof r.output === "string") {
+        extras.matchCount = r.output.split("\n").filter(Boolean).length;
+      }
+      break;
+    }
+    case "glob": {
+      if (r.ok && typeof r.output === "string") {
+        extras.count = r.output.split("\n").filter(Boolean).length;
+      }
+      break;
+    }
+    case "git":
+    case "todo":
+      break;
+    default:
+      break;
+  }
+  return extras;
+}
 
 /**
  * Execute one execution tool (permission already decided by the
