@@ -165,6 +165,43 @@ def _is_stale_session_error(error_text: str) -> bool:
     return any(m in error_text for m in STALE_SESSION_ERROR_MARKERS)
 
 
+def _is_reviewer_agent(agent_name: Any) -> bool:
+    """True when an agent name is the reviewer role (seed ``reviewer``
+    or a ``reviewer-*`` custom). Name-shaped heuristic for the
+    review-backstop coverage check — the verdict/fix_of links are
+    the primary signals, this catches reviewer children that never
+    filed either."""
+    name = str(agent_name or "").strip().lower()
+    return name == "reviewer" or name.startswith(("reviewer-", "reviewer_"))
+
+
+def _build_review_task(target: Any, request: dict[str, Any]) -> str:
+    """Compose the reviewer brief for one uncovered review target.
+
+    Points at the diff (branch/worktree/PR from the review_request)
+    and the original task; the reviewer reports blocking /
+    non-blocking findings in its final summary (the verdict
+    endpoint records them structurally).
+    """
+    diff = request.get("diff_ref") or {}
+    branch = diff.get("branch") or "(no branch)"
+    worktree = diff.get("worktree_path") or "(no worktree)"
+    pr_url = diff.get("pr_url") or "(no PR)"
+    summary = request.get("manifest_summary") or getattr(target, "task", "")
+    return (
+        f"[review backstop for {getattr(target, 'task_id', '?')}] "
+        f"Review this finished work.\n\n"
+        f"Original task: {summary}\n"
+        f"Branch: {branch}\n"
+        f"Worktree: {worktree}\n"
+        f"PR: {pr_url}\n\n"
+        f"Verify correctness, security, and scope against the task; "
+        f"report blocking vs non-blocking findings with file "
+        f"references in your final summary. Commit nothing, merge "
+        f"nothing — review only."
+    )
+
+
 class ChatLoop:
     """The orchestrator chat loop, one per server.
 
@@ -1073,7 +1110,7 @@ class ChatLoop:
             coalescer_box: list = [None]
             thinking_box: list = [None]
             try:
-                return await self._run_turn_body(
+                result = await self._run_turn_body(
                     session_id=session_id,
                     user_content=user_content,
                     delegation_id=delegation_id,
@@ -1117,6 +1154,12 @@ class ChatLoop:
                 if thinking_box[0] is not None:
                     await thinking_box[0].close_and_flush()
                 self._unregister_active_turn(session_id)
+            # Normal completion only (every branch above raises):
+            # backstop reviewer coverage for review-requests this
+            # turn left without a reviewer. Best-effort — the turn
+            # already finalized, so this never fails it.
+            await self._backstop_uncovered_reviews(session_id, delegation_id)
+            return result
 
     async def _crash_finalise(
         self,
@@ -1284,6 +1327,136 @@ class ChatLoop:
             )
         except Exception as exc:  # noqa: BLE001
             return f"preamble_fallback:{type(exc).__name__}"
+
+    def _review_target_covered(self, store: Any, target: Any) -> bool:
+        """True when a review target already has reviewer coverage.
+
+        Covered = a verdict on record, a fix-round child (review
+        happened — it produced rework), or a reviewer child still
+        live or settled well (queued/running/review/done). A
+        FAILED reviewer child does NOT cover: the review never
+        completed, so re-review is still owed.
+        """
+        if getattr(target, "verdict", None) is not None:
+            return True
+        target_id = getattr(target, "delegation_id", None)
+        for rec in store.list():
+            if getattr(rec, "parent_task_id", None) != target_id:
+                continue
+            if getattr(rec, "fix_of", None) == target_id:
+                return True
+            if _is_reviewer_agent(getattr(rec, "agent", None)):
+                if getattr(rec, "status", None) in (
+                    "queued", "running", "review", "done",
+                ):
+                    return True
+        return False
+
+    async def _backstop_uncovered_reviews(
+        self, session_id: str, delegation_id: str
+    ) -> None:
+        """Dispatch reviewer coverage this turn left without any.
+
+        Incident 2026-09-17 (session
+        Sweave-20260916-215042-3dba3a): the orchestrator verbalized
+        reviewer need in synthesis ("both need reviewer pass") and
+        the turn closed with zero reviewer delegations — intent with
+        no execution. Depending on a closing turn to remember a
+        defer is the gap; this backstop closes it: every direct
+        child of the finished turn still sitting in ``review`` with
+        a review_request but no coverage gets a reviewer delegation
+        parented to ITSELF (the review target, per the synthesis
+        contract — never the chat turn), validated through the same
+        chain rules as an MCP defer (depth/loop/budget rejections
+        skip loudly in trace, never fail anything).
+
+        Runs once per normally-completed turn (cancel/crash paths
+        raise before reaching it). Best-effort throughout: trace
+        events only, never raises.
+        """
+        from sweave.runtime.job_runner import REVIEWER_HINT
+        from sweave.runtime.trace_log import TraceLog
+
+        try:
+            if self.job_runner is None:
+                return
+            session = self.project_manager.get_session(session_id)
+            if session is None:
+                return
+            project_dir = (
+                self.project_dir_resolver(session.project_name)
+                if session.project_name
+                else None
+            )
+            store = await self.delegation_stores.for_project(
+                project_dir or Path.home() / ".sweave"
+            )
+            manager = getattr(self.job_runner, "delegation_manager", None)
+            if manager is None:
+                return
+            targets = [
+                r for r in store.list()
+                if getattr(r, "parent_task_id", None) == delegation_id
+                and getattr(r, "status", None) == "review"
+                and isinstance(getattr(r, "review_request", None), dict)
+                and getattr(r, "review_request", None)
+            ]
+            for target in targets:
+                target_id = target.delegation_id
+                if self._review_target_covered(store, target):
+                    continue
+                request = target.review_request or {}
+                brief = _build_review_task(target, request)
+                reason = (
+                    f"review backstop for {target_id} "
+                    f"(uncovered review_request)"
+                )
+                try:
+                    checked = manager.validate(
+                        parent=target,
+                        target=REVIEWER_HINT,
+                        task=brief,
+                        reason=reason,
+                    )
+                except Exception as chain_err:  # noqa: BLE001
+                    try:
+                        TraceLog(delegation_id).append(
+                            "review_backstop_rejected",
+                            {"target": target_id, "error": str(chain_err)[:200]},
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                try:
+                    child = await self.job_runner.submit(
+                        agent=REVIEWER_HINT,
+                        task=brief,
+                        parent_task_id=target_id,
+                        parent_session_id=session_id,
+                        project_name=getattr(target, "project_name", None),
+                        manifest={"intent": reason, "source": "review_backstop"},
+                        depth=checked.depth,
+                        chain_root_id=checked.chain_root_id,
+                        coordination_tokens=checked.coordination_tokens,
+                    )
+                except Exception as submit_err:  # noqa: BLE001
+                    logger.warning(
+                        "ChatLoop: review backstop submit failed for %s: %s",
+                        target_id, submit_err,
+                    )
+                    continue
+                try:
+                    TraceLog(delegation_id).append(
+                        "review_backstop_spawned",
+                        {"target": target_id, "reviewer": child.delegation_id},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as backstop_err:  # noqa: BLE001 — never fail a finished turn
+            logger.warning(
+                "ChatLoop: review backstop failed for %s: %s",
+                delegation_id, backstop_err,
+            )
 
     async def cancel_turn(self, session_id: str) -> dict[str, Any]:
         """Stop the live turn for *session_id* (Stop button).
