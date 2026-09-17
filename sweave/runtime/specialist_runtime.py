@@ -252,9 +252,10 @@ async def _attempt_engine_stop(
 
     NO-ROTATION RULING: the session is always kept — a stop kills the
     work, never the conversation. The suffix tells the user the kill
-    outcome; an UNCONFIRMED kill stays LOUD (retry continues the same
-    session once the orphan settles, or Stop escalates to a serve
-    restart on the opencode path).
+    outcome (user ruling 2026-09-17: no unconfirmed state — a stop
+    is delivered or there was nothing live to stop; the asyncio
+    cancel the caller also issues backs the signal, and Stop
+    escalates to a serve restart on the opencode path).
     """
     if not KILL_ON_SILENCE:
         if trace is not None:
@@ -286,7 +287,7 @@ async def _attempt_engine_stop(
                     pass
 
         _trace("abort_skipped", {"reason": "no abort channel"})
-        return "; stop UNCONFIRMED — orphaned run possible (no abort channel)"
+        return "; stop not confirmed (no abort channel)"
     try:
         headers_fn = getattr(process, "_default_headers", None)
         headers = headers_fn() if callable(headers_fn) else {}
@@ -305,7 +306,7 @@ async def _attempt_engine_stop(
                 pass
         if ok:
             return "; serve acknowledged stop"
-        return "; stop UNCONFIRMED — orphaned run possible (abort rejected)"
+        return "; stop not confirmed (abort rejected)"
     except Exception as e:  # noqa: BLE001
 
         def _trace(event: str, payload: dict[str, Any]) -> None:
@@ -316,7 +317,7 @@ async def _attempt_engine_stop(
                     pass
 
         _trace("abort_failed", {"error": f"{type(e).__name__}: {e}"})
-        return "; stop UNCONFIRMED — orphaned run possible"
+        return "; stop not confirmed (abort failed)"
 
 
 class _ToolActivityProbe:

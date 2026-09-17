@@ -434,7 +434,7 @@ async def test_busy_guard_409_and_abort_flow(sidecar):
             assert resp.status_code == 409
             resp = await client.post("/abort", json={"session_id": "busy-1"})
             assert resp.status_code == 200
-            assert resp.json()["outcome"] in ("acknowledged", "UNCONFIRMED")
+            assert resp.json()["outcome"] == "acknowledged"
             resp = await client.post("/abort", json={"session_id": "busy-1"})
             assert resp.status_code in (200, 409)
     finally:

@@ -169,13 +169,13 @@ are both carried to the user, not just the former.
    `last_activity_s + source`, `current_tool | null`, `tool_budget_s |
    null`, `abortable: bool`). New `POST /api/delegations/{id}/abort`:
    consented — always attempts engine-stop (NOT gated by
-   `KILL_ON_SILENCE`; user-initiated kill ≠ watchdog auto-kill), records
-   `abort_sent/acknowledged|UNCONFIRMED` on the trace, sets
+    `KILL_ON_SILENCE`; user-initiated kill ≠ watchdog auto-kill), records
+    `abort_sent/acknowledged` on the trace, sets
    `failed(aborted_by_user)` with no auto-retry; 409 when no live turn
    (busy-guard semantics match revert). Answer/skip/permission-reply paths
-   reused verbatim, not duplicated. Done-gate: pytest (abort acknowledged
-   → failed+trace; abort rejected → loud UNCONFIRMED, delegation failed
-   anyway; abort on settled → 409; `live` nulls when settled); `run.py
+    reused verbatim, not duplicated. Done-gate: pytest (abort acknowledged
+    → failed+trace; abort rejected → loud abort_failed, delegation failed
+    anyway; abort on settled → 409; `live` nulls when settled); `run.py
    --check`; ephemeral-server live probe (real abort acknowledged).
 4. **Pane UI (~1 sess, binds to shipped contracts).** Live row/section on the
    existing cards + DetailView modal reading `live`: identity, elapsed +

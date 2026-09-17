@@ -223,8 +223,10 @@ def test_harness_tool_lifecycle_parity_pin():
 # --- control verbs --------------------------------------------------------
 
 
-def test_abort_outcomes_are_acknowledged_vs_unconfirmed():
-    assert set(ABORT_OUTCOMES) == {"acknowledged", "UNCONFIRMED"}
+def test_abort_outcome_is_acknowledged_only():
+    # User ruling 2026-09-17: no unconfirmed state — a stop is
+    # acknowledged or the turn was never live (409), never limbo.
+    assert set(ABORT_OUTCOMES) == {"acknowledged"}
 
 
 def test_valid_revert_body_passes_through():

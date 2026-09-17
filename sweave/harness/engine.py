@@ -845,12 +845,13 @@ class SweaveEngineHarness(Harness):
     async def abort_turn(self, session_id: str) -> bool:
         """POST /abort to the sidecar for *session_id* (best-effort).
 
-        Returns True when the sidecar stopped (``acknowledged``) or
-        attempted the stop (``UNCONFIRMED`` — the asyncio cancel the
-        caller also issues is the real guarantee); False when there
-        is no live turn (409), no sidecar, or the call fails. Never
+        Returns True when the sidecar acknowledged the stop
+        (signal delivered — past it the loop starts no new work).
+        False when there is no live turn (409: already settled,
+        nothing to stop), no sidecar, or the call fails. Never
         starts a sidecar just to abort: no sidecar means no live
-        turn by definition.
+        turn by definition. The caller also cancels the driving
+        asyncio task.
         """
         import os
 
@@ -881,7 +882,7 @@ async def abort_engine_session(engine_session_id: str | None) -> bool:
     Returns True when the sidecar was asked to stop; False when
     there is nothing to stop (no id, non-engine id, no harness) or
     the abort failed. Never raises — the asyncio task cancel the
-    caller also issues is the real guarantee; the kill path (signal
+    caller also issues backs the signal; the kill path (signal
     into tools, bash child kill) settles the sidecar turn promptly.
     No-rotation invariant: the caller keeps the session binding
     regardless — a stop kills the work, never the conversation.

@@ -117,7 +117,7 @@ shape identical to the M1.9 audit anchor. `GET /health`, protocol version
 header, per-specialist `harness` selection semantics (default + fallback).
 Control verbs (2026-09-13 — both are load-bearing for the transparency
 track, so they are protocol, not later additions): `POST /abort
-{session_id}` (consented engine-stop; acknowledged vs UNCONFIRMED outcome,
+{session_id}` (consented engine-stop; acknowledged outcome (no unconfirmed state, 2026-09-17 ruling),
 serves the view track's abort endpoint) and `POST /revert
 {session_id, to_message}` (engine rewind for supersede-via-revert §C —
 the `revert(to_message)` contract verb; opencode's pointer + shadow-git
@@ -470,7 +470,7 @@ on opencode (specialists stay there until step-2 parity per ruling 6).
 | 6 tools (read / write+edit / bash / glob / grep / todo) + lifecycle + partial-output capture | Planned (step 2). DONE 2026-09-13 (sidecar executor + permission enforcement, see step 2). AMENDED 2026-09-15: `git` joins as tool 8 — engine-native READ-ONLY inspection (argv-exec, verb allowlist log/show/status/diff/branch/ls-files/rev-parse, structural flag gate, `log` → `-n 20 --oneline` — its own plan `docs/GIT_READ_TOOL_PLAN.md` rules the addition; no version bump) |
 | Permission enforcement (scoped roots, ask → escalation, once/always) | Planned (step 2, orchestrator-rendered map enforced blindly) |
 | Sweave tools (defer / list / ask / escalate), identical strings | Planned (steps 1–2, native calls, no MCP hop) |
-| Consented abort (acknowledged vs UNCONFIRMED) | Planned (step 0 control verb; serves the view abort endpoint) |
+| Consented abort (acknowledged) | Planned (step 0 control verb; serves the view abort endpoint) |
 | Revert / rewind (`revert(to_message)` per §C spec) | Planned (step 0 control verb; opencode pointer + shadow-git semantics are the reference) |
 | Per-turn `tokens_used` + cost (M1.9 anchor, usage ledger) | Planned (terminal shape identical; per-tool telemetry native) |
 | Provider auth for the FULL catalog (no provider left behind) | Partial (step-1 constraint live for openrouter/zai/ollama/gmicloud/nvidia; 2026-09-14 Go slice: `opencode-go` mapped — public `/zen/go/v1` endpoints, pasted-key auth via env/bootstrap, chat/completions live; responses/messages flavors fail loud `bad_request` naming the pending transport; loop-path `resolved.ok` gate closed. Validated-client headers (Go docs "Where can I use it"): `User-Agent: sweave-engine/0.1.0` + stable `x-opencode-session` (durable eng_* id) on every provider call, single-shot and loop iterations, pinned hermetically. Still open: messages/google transports, Zen live proof (chat mapped + hermetic green 2026-09-14; live: Bearer accepted/key valid, but deepseek-free → 400 unavailable and muse-free → 500 — server-side, $0 spent; needs a servable model or one approved paid micro-turn), thinkingmachines/gmi endpoint probes, copilot deferred, engine OAuth long-term). Responses transport DONE hermetic 2026-09-14 (`responses.js`: text deltas + function_call items + usage mapping, single-shot + loop, identical trace vocabulary; live proof needs a responses-model micro-turn). 2026-09-14 credential-ownership (user ruling): `~/.sweave/credentials.json` (0600) is canonical — adopt-once from opencode store (ledgered), drift→pending-import prompts, reverse-sync ours→theirs (backup kept), API-key types only, OAuth detect-only; local/keyless + custom endpoints explicitly out of scope; sidecar reads the Sweave tier (env → sweave → opencode-legacy); `GET /api/providers` = universe × availability; keychain UI rides the next slice |
@@ -504,7 +504,7 @@ connect via `ProtocolMismatch`, never fails turns cryptically):
 model, turn_timeout, cwd}` → SSE `{token, tool.started|updated|
 completed|failed, step.boundary, permission.asked, done|error}` +
 terminal `tokens_used`; `GET /health` (handshake `{protocol_version,
-...}`); `POST /abort {session_id}` → `acknowledged | UNCONFIRMED`
+...}`); `POST /abort {session_id}` → `acknowledged`
 (consented, never gated by `KILL_ON_SILENCE`; 409 when no live turn);
 `POST /revert {session_id, to_message}` (whole-message v1, busy-409).
 `auth_missing` is a named turn-start failure (full-catalog auth is the

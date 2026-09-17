@@ -235,7 +235,7 @@ async def test_stall_message_carries_turn_age(tmp_path: Path):
 async def test_stall_message_unchanged_without_t0(tmp_path: Path):
     """Without t0 the stall shape is preserved (existing callers +
     pinned assertions) — the session is kept and the kill outcome is
-    named (this fake has no abort channel, so UNCONFIRMED)."""
+    named (this fake has no abort channel, so not confirmed)."""
     from sweave.runtime.serve_runner import ServeRunnerRegistry
     from sweave.runtime.specialist_runtime import SpecialistRuntime
 
@@ -249,7 +249,7 @@ async def test_stall_message_unchanged_without_t0(tmp_path: Path):
         "[chat error: stalled after 0s without data "
         "(response headers never arrived; the stalled work was "
         "killed; the session is kept — retry continues it"
-        "; stop UNCONFIRMED — orphaned run possible (no abort channel))]"
+        "; stop not confirmed (no abort channel))]"
     )
     events = [e["event"] for e in _trace_events("d-hang", tmp_path)]
     assert "abort_skipped" in events
@@ -311,8 +311,8 @@ async def test_stall_attempts_abort_acknowledged(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stall_abort_rejection_stays_loud(tmp_path: Path, monkeypatch):
-    """A rejected/failed abort is UNCONFIRMED in the message — never
-    silent (the orphaned-run case stays visible). Flag on."""
+    """A rejected/failed abort stays loud in the message — never
+    silent (a failed kill stays visible). Flag on."""
     import sweave.runtime.specialist_runtime as rt
     monkeypatch.setattr(rt, "KILL_ON_SILENCE", True)
     from sweave.runtime.serve_runner import ServeRunnerRegistry
@@ -333,7 +333,7 @@ async def test_stall_abort_rejection_stays_loud(tmp_path: Path, monkeypatch):
         _Proc(), {"parts": [{"type": "text", "text": "hi"}]}, trace,
         stall_seconds=0.05,
     )
-    assert "stop UNCONFIRMED" in out, out
+    assert "stop not confirmed" in out, out
     from sweave.runtime.trace_log import read_trace
 
     events = [e["event"] for e in read_trace("d-abortfail", base_dir=tmp_path)]

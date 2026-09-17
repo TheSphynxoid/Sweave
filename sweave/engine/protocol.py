@@ -196,13 +196,21 @@ def parse_event_name(raw: str) -> str:
 
 
 #: ``POST /abort {session_id}`` outcomes. Consented engine-stop for the
-#: view track's abort endpoint: ``acknowledged`` = the engine stopped
-#: the turn; ``UNCONFIRMED`` = stop was attempted but the turn may
-#: still be running server-side — LOUD either way, never silent. NOT
-#: gated by ``KILL_ON_SILENCE`` (user-initiated kill != watchdog
-#: auto-kill). 409 when no live turn (busy-guard semantics match
-#: opencode's ``assertNotBusy`` + our ``TurnActiveError``).
-ABORT_OUTCOMES: tuple[str, ...] = ("acknowledged", "UNCONFIRMED")
+#: view track's abort endpoint: ``acknowledged`` = the abort signal
+#: was delivered to a live turn (user ruling 2026-09-17: no
+#: unconfirmed state — a stop is acknowledged or the turn was never
+#: live, never limbo). Delivery is the guarantee: past the signal
+#: the loop cannot start new work (every gate is abort-aware; tools
+#: settle explicitly; provider calls carry the signal), so the turn
+#: is dead even while the stream closes; the sidecar awaits the reap
+#: (10s) for hygiene and logs a wedged-I/O line instead of
+#: inventing a third outcome. Readers tolerate unknown outcomes as
+#: not-acknowledged (old sidecars may still emit ``UNCONFIRMED``) —
+#: no version bump for this sender-side shrink. NOT gated by
+#: ``KILL_ON_SILENCE`` (user-initiated kill != watchdog auto-kill).
+#: 409 when no live turn (busy-guard semantics match opencode's
+#: ``assertNotBusy`` + our ``TurnActiveError``).
+ABORT_OUTCOMES: tuple[str, ...] = ("acknowledged",)
 
 
 #: ``POST /revert {session_id, to_message}`` — engine rewind for

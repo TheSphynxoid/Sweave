@@ -579,13 +579,27 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 409, { error: "no_live_turn", reason: "session has no live turn" });
       }
       turn.controller.abort(new Error("user-abort"));
-      const deadline = Date.now() + 2000;
+      // Reap wait (user ruling: no unconfirmed state — a stop is
+      // acknowledged or the turn was never live, never limbo). The
+      // abort signal is delivered synchronously above and the loop
+      // cannot start new work past it (every gate is abort-aware;
+      // tools settle explicitly; provider calls carry the signal),
+      // so acknowledged means delivered + unwinding. The wait below
+      // (10s — covers the <=2s-granularity abort-aware sleeps) is
+      // hygiene for a clean stream close; a stderr line marks the
+      // wedged-I/O case without inventing a third outcome.
+      const deadline = Date.now() + 10000;
       while (!turn.finished && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 50));
       }
-      if (turn.finished) return sendJson(res, 200, { outcome: "acknowledged", session_id: body.session_id });
-      // Stop was attempted but the turn may still run provider-side.
-      return sendJson(res, 200, { outcome: "UNCONFIRMED", session_id: body.session_id });
+      if (!turn.finished) {
+        try {
+          process.stderr.write(
+            `sweave-engine:${body.session_id}: abort delivered but turn still unwinding after 10s\n`
+          );
+        } catch {}
+      }
+      return sendJson(res, 200, { outcome: "acknowledged", session_id: body.session_id });
     }
     if (req.method === "POST" && url.pathname === "/revert") {
       let body;
