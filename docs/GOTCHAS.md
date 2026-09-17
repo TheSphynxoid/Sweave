@@ -574,6 +574,31 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    ignored fall-through is the drift failure mode: nothing in
    the trace, nothing in the UI, code assumes nothing changed.
 
+13. **Never hold one socket open for a human-timescale wait**
+    (incident 2026-09-16: the engine permission wait held
+    `POST /api/engine/permission` open; Node's ~300s fetch idle
+    timeout killed it at ~307s as `provider_error: fetch failed`
+    while the server kept waiting — the user's later answer
+    landed nowhere). Waits resolve by create-and-poll: the POST
+    creates (or reuses) the escalation and returns it at once
+    (`{"wait": false}`), the answer arrives via `GET`
+    polling — the same shape as `ask_human`'s `waitEscalation`.
+    Any new blocking wait goes through the poll shape; a
+    held-open socket is a 5-minute time bomb with a misleading
+    error label (the failure reads as provider trouble, never
+    as what it is: an unanswered question outliving the socket).
+
+14. **Cancel reads the STORE mid-run — settle-time writes come
+    too late** (incident 2026-09-17: `engine_session_id` rode
+    only the settle write, so Stop found `None`, the abort never
+    fired, and the specialist committed 3 min after the user
+    stopped it). Anything cancel needs (session ids, abort
+    handles) persists at BIND time via the `on_session_bound`
+    hook — both harnesses plus the chat path; the settle write
+    stays as fallback/forensics. Pin the mid-run record in
+    tests, not just the settled one (`test_stop_session_bind.py`:
+    the hooked id must be on the store row while the turn runs).
+
 ## Paths & config
 
 1. The M1.prep-era `agents.yaml` was **CWD-relative** (`Path("agents.yaml")`) — M1.2
@@ -775,6 +800,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     `activateTab`): `el.focus(); fireEvent.click(el);` then assert.
     The unfocused-click failure also emits `act(...)` warnings from
     Tabs/RovingFocus, which are noise, not the bug.
+
+7. **Optimistic updates must mirror the server record model**
+    (incident 2026-09-17: edit swapped the new text onto the
+    ORIGINAL row while the server appends a revision row — the
+    edited text rendered twice once `message.added` arrived; a
+    reload healed it, which is why it hid). Shape rule: the
+    target keeps its content + `superseded` flag, the new text
+    rides an optimistic `local-` revision with `fork_from`
+    linkage, and the existing id-swap reconcile converges the
+    two — never a shape the server would never emit. Pinned by
+    the edit-reconcile test in `runtime.test.ts` (duplicate text
+    fails the gate).
 
 ## Opencode harness & wire protocol
 

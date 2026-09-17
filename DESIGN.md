@@ -663,6 +663,11 @@ Rulings: stack = sweave-web's (Vite + React 18 + TS + Tailwind + Zustand + React
 Query); existing page code rewritten (pre-M1.x, v1 endpoints); wave 1 = daily-driver
 core + theming from day one; **flag-day cutover** (no coexistence); AGENTS ground
 rule amended (build allowed, dist served not committed). Full plan: `docs/R4_PLAN.md`.
+UI stays a client SPA (user ruling 2026-09-17): no SEO need (localhost
+single-user), and the surface is stateful realtime interaction
+(streaming deltas, live trees, optimistic updates) — the build/cache/npm
+friction in GOTCHAS is toolchain tax, not architecture failure; revisit
+only if the UI grows document-style/SEO needs.
 Wave 1 (done): design system (5 v1 presets + custom-color override,
 localStorage-persisted), chat with streaming (chat.delta + message.added
 events, the M1.8 no-rerender invariant carried through to React via a
@@ -891,6 +896,16 @@ discussion; cheap model as PM, strong models as engineers.
 - **Orchestrator scope decision** (open): does the orchestrator get its own RAG over
   project   docs/manifests (markdown-only knowledge), vs re-reading session state?
   Latency question (local orchestrator + cloud specialists) also lands here.
+- **Training fuel: verdicts turn exhaust into labels** (2026-09-17): raw
+  traces are exhaust; review verdicts (blocking/non-blocking + fix
+  outcome), human promote/skip/answer, and estimate-vs-actual pairs
+  are the labels. Sponsorship rule: a label counts only when verified
+  by a verdict, never when self-certified by the orchestrator (the
+  fix-vs-work gaming guard doubles as label hygiene). Verifier stack:
+  deterministic gates (always) → model judges calibrated by → human
+  verdicts rationed to the uncertain cases. Process supervision
+  (step-level tool events + delegation records) is the differentiator
+  over outcome-only harnesses.
 
 ### R7 — Memory openness (pluggable embedder + store)
 Decomposition per §2.3. First increment (after M1, before/parallel with R4):
