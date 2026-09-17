@@ -26,6 +26,7 @@ import {
   mergeHistory,
   projectEntry,
   projectThread,
+  shouldShowLanes,
   stateFromHistory,
   type SweaveThreadState,
 } from "../runtime";
@@ -416,25 +417,24 @@ describe("rerun: edit + resend / retry (supersede, don't delete)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lane dedupe (2026-09-17): activity lanes belong to the spawn round
+// Lane dedupe (2026-09-17, fixed 2026-09-18): activity lanes mount once
 // ---------------------------------------------------------------------------
 
-describe("lane dedupe: spawn-round gate", () => {
-  /** The Thread's lane-gate rule: lanes mount on the spawning round
-      only (round 0 today; sequential waves stamp it at spawn). */
-  function lanesMount(round: number | null | undefined): boolean {
-    return (round ?? 0) === 0;
-  }
-
-  it("round 0 mounts the lanes", () => {
-    expect(lanesMount(0)).toBe(true);
-    expect(lanesMount(null)).toBe(true);
-    expect(lanesMount(undefined)).toBe(true);
+describe("lane dedupe: live on spawn round, settled on final", () => {
+  it("live turn: spawn round mounts, synthesis does not (no duplicate)", () => {
+    // Round 0 intermediate during the child wait.
+    expect(shouldShowLanes({ round: 0, turnFinal: false, isActiveTurn: true }, false)).toBe(true);
+    // Streaming synthesis bubble of the same turn.
+    expect(shouldShowLanes({ round: 1, turnFinal: true, isActiveTurn: true }, true)).toBe(false);
   });
 
-  it("synthesis rounds never mount the lanes (shared delegation id)", () => {
-    expect(lanesMount(1)).toBe(false);
-    expect(lanesMount(2)).toBe(false);
+  it("settled turn: final mounts, collapsed spawn round does not", () => {
+    expect(shouldShowLanes({ round: 1, turnFinal: true }, false)).toBe(true);
+    expect(shouldShowLanes({ round: 0, turnFinal: false }, false)).toBe(false);
+  });
+
+  it("legacy/single-message turns keep the old behavior", () => {
+    expect(shouldShowLanes({}, false)).toBe(true);
   });
 });
 

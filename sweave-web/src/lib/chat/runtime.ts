@@ -114,6 +114,30 @@ export function isFinal(message: SessionMessage): boolean {
 }
 
 /**
+ * Lane-placement rule (2026-09-17, fixed 2026-09-18): rounds share
+ * one chat delegation id, so mounting lanes under every message
+ * with that id duplicates the box. While the turn is live the lanes
+ * mount on the spawning round (round 0 today — sequential waves
+ * will stamp the round at spawn per WAVE_LOOP_PLAN.md ruling 4) so
+ * they stay visible across the child-wait gap; once settled they
+ * mount on the final message (the visible copy — the spawn round
+ * collapses). Pure; Thread.tsx and the pin test share it. Callers
+ * still check delegationId.
+ */
+export interface LanePlacement {
+  turnFinal?: boolean | null;
+  round?: number | null;
+  isActiveTurn?: boolean | null;
+}
+
+export function shouldShowLanes(custom: LanePlacement, isRunning: boolean): boolean {
+  const isLive = isRunning || custom.isActiveTurn === true;
+  const isSpawnRound = (custom.round ?? 0) === 0;
+  if (isLive) return isSpawnRound;
+  return custom.turnFinal !== false;
+}
+
+/**
  * Streaming-bubble id for a (delegation, round) pair. Round 0 keeps
  * the historical ``stream-<id>`` shape (the crash-path placeholder
  * lookup matches on it); later rounds suffix.
