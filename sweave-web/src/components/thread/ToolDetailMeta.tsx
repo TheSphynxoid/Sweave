@@ -21,10 +21,16 @@ export function ToolDetailMeta({
   tool,
   detail,
   className,
+  /** When true, hide the `$ command` row (the caller already shows the
+   *  command — e.g. the BashTool card in the detail surface). Exit code
+   *  and the `truncated` marker are still rendered so the audit line
+   *  stays complete (plan item 1, step 2b). */
+  hideCommand,
 }: {
   tool: string;
   detail: ToolRowDetail | null | undefined;
   className?: string;
+  hideCommand?: boolean;
 }) {
   if (!detail) return null;
   const d = detail;
@@ -71,21 +77,26 @@ export function ToolDetailMeta({
 
       {/* Bash: command (always) + exit/truncated (F2). The full output
           is rendered by the BashTool card in the detail surface; the
-          chat surface shows the 2K excerpt inline. */}
-      {d.command != null ? (
+          chat surface shows the 2K excerpt inline. In the detail surface
+          the `$ command` row is suppressed (BashTool already shows it)
+          via `hideCommand`, but the exit code + truncated marker always
+          ride along on their own row so the audit line stays complete. */}
+      {d.command != null && !hideCommand ? (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono">
           <span className="font-medium text-foreground/80">$ {d.command}</span>
-          {d.exit != null ? (
-            <span
-              className={
-                d.exit === 0
-                  ? "text-emerald-600 dark:text-emerald-400"
-                  : "text-rose-600 dark:text-rose-400"
-              }
-            >
-              exit {d.exit}
-            </span>
-          ) : null}
+        </div>
+      ) : null}
+      {d.exit != null ? (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono">
+          <span
+            className={
+              d.exit === 0
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-rose-600 dark:text-rose-400"
+            }
+          >
+            exit {d.exit}
+          </span>
           {d.truncated ? <span className="text-muted-foreground/70">· truncated</span> : null}
         </div>
       ) : null}

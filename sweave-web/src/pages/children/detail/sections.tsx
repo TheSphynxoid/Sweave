@@ -52,10 +52,15 @@ function toBashPart(t: ToolTimelineEntry): Record<string, unknown> {
     id: t.callID,
     toolCallId: t.callID,
     toolName: t.tool ?? "Bash",
+    type: "tool-bash",
     state,
     input,
     output: t.output,
     result: t.error ? { error: t.error } : t.output,
+    // The BashTool card shows the full command + output; the shared
+    // `ToolDetailMeta` (mounted with `hideCommand`) renders exit +
+    // truncated from the same additive `detail` blob.
+    detail: t.detail ?? null,
   };
 }
 
@@ -63,15 +68,27 @@ function isBashTool(t: ToolTimelineEntry): boolean {
   return /bash|shell|terminal|sh$/i.test(t.tool ?? "") || (t.title ?? "").includes("$");
 }
 
+/**
+ * TOOL_CARDS step 2b: accept camelCase routes alongside snake_case.
+ * The engine persists `filePath/oldString/newString/content` (and the
+ * backend `detail` builder reads those), but the opencode v2 parts +
+ * legacy rows used `file_path/old_string/new_string/path`. Either shape
+ * must route to the `EditTool` diff card (snake_case-only used to fall
+ * through to the raw `AgentToolCard` dump).
+ */
 function isEditTool(t: ToolTimelineEntry): boolean {
   const tool = t.tool ?? "";
   if (!/edit|write|create|file|patch/i.test(tool)) return false;
   const input = typeof t.input === "object" && t.input ? (t.input as Record<string, unknown>) : {};
   return (
+    "filePath" in input ||
     "file_path" in input ||
+    "oldString" in input ||
     "old_string" in input ||
+    "newString" in input ||
     "new_string" in input ||
-    "path" in input
+    "path" in input ||
+    "content" in input
   );
 }
 
@@ -88,18 +105,59 @@ function toEditPart(t: ToolTimelineEntry): Record<string, unknown> {
   return {
     id: t.callID,
     toolCallId: t.callID,
-    type: isWrite ? "tool-write" : "tool-edit",
+    // Capitalized so the shared `mapToolInvocationToStep` adapter matches
+    // its `case "Write"/"Edit"` branches (the chat path emits lowercase
+    // `tool-write`/`tool-edit` and is intentionally left as-is per the
+    // Thread.tsx freeze — only the detail surface routes via this type).
+    type: isWrite ? "tool-Write" : "tool-Edit",
     state,
     input,
     output: t.output,
     result: t.error ? { error: t.error } : t.output,
+    // Feed the additive `detail` blob so the diff card can show the
+    // write overwrite green/red (`detail.old_capture` = pre-write
+    // bytes) and the create +N line stat. Absent detail degrades to
+    // today's input-based diff.
+    detail: t.detail ?? null,
   };
 }
 
-/** Render a single tool timeline entry via the agent-elements cards. */
+/**
+ * Curated header tools (F6 — parameters + counts, never full dumps):
+ * grep / glob / git / todo. These get a one-line audit row from the
+ * shared `ToolDetailMeta` renderer and a collapsible raw-JSON toggle
+ * (forensics only). Truly unknown tools still get the raw `AgentToolCard`.
+ */
+function isCuratedMetaTool(t: ToolTimelineEntry): boolean {
+  const tool = (t.tool ?? "").toLowerCase();
+  return tool === "grep" || tool === "glob" || tool === "git" || tool === "todo";
+}
+
+/**
+ * Render a single tool timeline entry (TOOL_CARDS step 2b fold-in).
+ *
+ * Routing:
+ *  - bash   → `BashTool` card (full command + output) + `ToolDetailMeta`
+ *            with `hideCommand` (command already shown by the card; exit
+ *            + truncated still render below it).
+ *  - edit/write/create/file/patch → `EditTool` diff card (camelCase
+ *            `filePath/oldString/newString/content` AND legacy
+ *            snake_case both route here; `detail.old_capture` drives the
+ *            write overwrite green/red). This fixes the engine's
+ *            camelCase rows that used to fall to the raw `AgentToolCard`.
+ *  - grep/glob/git/todo → curated audit row (the shared `ToolDetailMeta`
+ *            renderer: pattern/counts/args/titles — F6, NEVER match
+ *            content) with a collapsible raw-JSON toggle for forensics.
+ *  - read   → curated `ToolDetailMeta` window row (F3) + raw toggle.
+ *  - truly unknown tool → the raw `AgentToolCard` dump (last resort).
+ *
+ * The additive `detail` blob is the single source of shape (same builder
+ * the chat surface uses), so the two renderers can never diverge.
+ */
 export function ToolTimelineRow({ tool }: { tool: ToolTimelineEntry }) {
   const bash = isBashTool(tool);
   const edit = isEditTool(tool);
+  const curated = isCuratedMetaTool(tool) || (tool.tool ?? "").toLowerCase() === "read";
   return (
     <li
       key={tool.callID}
@@ -107,9 +165,17 @@ export function ToolTimelineRow({ tool }: { tool: ToolTimelineEntry }) {
       className="animate-in fade-in-0 slide-in-from-bottom-1"
     >
       {bash ? (
-        <BashTool part={toBashPart(tool)} />
+        <>
+          <BashTool part={toBashPart(tool)} />
+          {/* The BashTool card already shows `$ command`; suppress the
+              duplicate command row but keep exit/truncated (item 1). */}
+          <ToolDetailMeta tool={tool.tool ?? ""} detail={tool.detail} hideCommand />
+        </>
       ) : edit ? (
         <EditTool part={toEditPart(tool)} isCollapsible />
+      ) : curated ? (
+        // Curated audit row + collapsible raw JSON (forensics only).
+        <CuratedToolRow tool={tool} />
       ) : (
         <AgentToolCard
           tool={tool.tool ?? "tool"}
@@ -119,14 +185,56 @@ export function ToolTimelineRow({ tool }: { tool: ToolTimelineEntry }) {
           error={tool.error}
         />
       )}
-      {/* TOOL_CARDS step 2: enriched window/counts/stats rows ride the
-          same backend `detail` blob the chat surface uses (one renderer
-          — `ToolDetailMeta`). Bash keeps its full output card; the
-          additive meta shows command/exit/counts/stats above it. Read
-          shows the structured window (F3); grep/glob/git/todo show
-          pattern/counts/args/titles (F6 — never match content). */}
-      <ToolDetailMeta tool={tool.tool ?? ""} detail={tool.detail} />
     </li>
+  );
+}
+
+/**
+ * Curated meta tool row: a one-line audit summary (`ToolDetailMeta`) plus
+ * a "raw JSON" expander that reveals the full `input`/`output` the way
+ * the old `AgentToolCard` did — but now behind an explicit toggle so the
+ * default surface stays scan-safe (F6) and the ugly JSON wall isn't the
+ * default.
+ */
+function CuratedToolRow({ tool }: { tool: ToolTimelineEntry }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid={`curated-${tool.callID}`} className="space-y-1.5">
+      <ToolDetailMeta tool={tool.tool ?? ""} detail={tool.detail} />
+      {(() => {
+        // The raw JSON toggle reveals the full additive `detail` blob +
+        // input/output/error for forensics — available whenever there is
+        // anything to inspect (the curated audit row is the default, so
+        // the wall of JSON stays collapsed until asked).
+        const hasRaw =
+          tool.detail != null ||
+          tool.input != null ||
+          tool.output != null ||
+          (tool.error != null && tool.error !== "");
+        if (!hasRaw) return null;
+        return (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={open ? "Hide raw JSON" : "Show raw JSON"}
+            data-testid={`curated-raw-toggle-${tool.callID}`}
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1 rounded border border-border/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            {open ? "Hide raw JSON" : "Raw JSON"}
+          </button>
+        );
+      })()}
+      {open ? (
+        <AgentToolCard
+          tool={tool.tool ?? "tool"}
+          status={tool.status ?? "unknown"}
+          input={tool.input}
+          output={tool.output}
+          error={tool.error}
+        />
+      ) : null}
+    </div>
   );
 }
 

@@ -19,6 +19,10 @@ export type EditToolDiffCardProps = {
   output?: Record<string, unknown>;
   isCollapsible?: boolean;
   approval?: ToolApproval;
+  /** Write overwrite (F4): pre-write file bytes from `detail.old_capture`.
+   *  When present the diff shows real green/red; absent degrades to a
+   *  create-style all-green (or legacy input-based) diff. Never required. */
+  oldCapture?: string | null;
 };
 
 export function EditToolDiffCard({
@@ -29,6 +33,7 @@ export function EditToolDiffCard({
   output,
   isCollapsible = false,
   approval,
+  oldCapture,
 }: EditToolDiffCardProps) {
   useToolComplete(state === "animating", step.duration, onComplete);
   const isPending = state === "animating";
@@ -67,13 +72,23 @@ export function EditToolDiffCard({
       typeof output?.old_content === "string" ? output.old_content : undefined;
     const newFromOutput =
       typeof output?.content === "string" ? output.content : undefined;
-    const oldFromInput =
-      !oldFromOutput && typeof input?.old_string === "string"
-        ? input.old_string
+    const oldFromInput: string | undefined =
+      !oldFromOutput
+        ? typeof input?.old_string === "string"
+          ? input.old_string
+          : typeof input?.oldString === "string"
+            ? input.oldString
+            : undefined
         : undefined;
-    const newFromInput =
-      !newFromOutput && typeof input?.new_string === "string"
-        ? input.new_string
+    const newFromInput: string | undefined =
+      !newFromOutput
+        ? typeof input?.new_string === "string"
+          ? input.new_string
+          : typeof input?.newString === "string"
+            ? input.newString
+            : typeof input?.content === "string"
+              ? input.content
+              : undefined
         : undefined;
 
     const fallbackOld = step.diffLines
@@ -85,7 +100,16 @@ export function EditToolDiffCard({
       .map((line) => line.content)
       .join("\n");
 
-    const oldContents = oldFromInput ?? oldFromOutput ?? fallbackOld ?? "";
+    // Write overwrite (F4): prefer the backend's pre-write `old_capture`
+    // as the diff old-side so the card renders real green/red (engine
+    // persists camelCase `content` + `detail.old_capture`). Absent →
+    // degrade to the input/output-based or fallback diff (create-style
+    // all-green when there's nothing to remove).
+    const oldFromCapture =
+      typeof oldCapture === "string" && oldCapture.length > 0 ? oldCapture : undefined;
+
+    const oldContents =
+      oldFromCapture ?? oldFromInput ?? oldFromOutput ?? fallbackOld ?? "";
     const newContents = newFromInput ?? newFromOutput ?? fallbackNew ?? "";
 
     if (!oldContents && !newContents) return null;
@@ -100,7 +124,7 @@ export function EditToolDiffCard({
     };
 
     return { oldFile, newFile };
-  }, [fileName, input, output, step.diffLines]);
+  }, [fileName, input, output, step.diffLines, oldCapture]);
 
   const diffCssVars = React.useMemo(
     () =>
@@ -279,6 +303,16 @@ export const EditTool = memo(function EditTool({
   );
   const noop = () => {};
 
+  // Write overwrite green/red (F4): the backend `detail.old_capture`
+  // carries the pre-write bytes (engine persists it on the sidecar
+  // state; the DetailView projects it onto `part.detail`). The chat
+  // surface doesn't pass it (no overwrite there); the detail card does.
+  const rawDetail = part?.detail as { old_capture?: string | null } | undefined;
+  const oldCapture =
+    rawDetail && typeof rawDetail.old_capture === "string"
+      ? rawDetail.old_capture
+      : null;
+
   return (
     <EditToolDiffCard
       step={step}
@@ -288,6 +322,7 @@ export const EditTool = memo(function EditTool({
       output={part.output ?? part.result}
       isCollapsible={isCollapsible}
       approval={approval}
+      oldCapture={oldCapture}
     />
   );
 });

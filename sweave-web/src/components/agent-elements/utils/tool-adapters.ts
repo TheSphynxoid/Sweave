@@ -72,15 +72,19 @@ function extractToolDetail(
 ): string {
   switch (toolName) {
     case "Bash":
-      return args?.command ? String(args.command).slice(0, 80) : "";
+      return args?.command ?? args?.cmd
+        ? String(args.command ?? args.cmd).slice(0, 80)
+        : "";
     case "Edit":
     case "Write":
     case "Read":
-      return args?.file_path
-        ? (String(args.file_path).split("/").pop() ?? "")
+      return args?.filePath ?? args?.file_path
+        ? (String(args.filePath ?? args.file_path).split("/").pop() ?? "")
         : "";
     case "Grep":
-      return args?.pattern ? String(args.pattern) : "";
+      return args?.pattern ?? args?.regex
+        ? String(args.pattern ?? args.regex)
+        : "";
     case "Glob":
       return args?.pattern ? String(args.pattern) : "";
     case "WebSearch":
@@ -122,7 +126,8 @@ export function mapToolInvocationToStep(
   };
 
   if (toolName === "Bash") {
-    step.bashCommand = args?.command ? String(args.command) : undefined;
+    const command = args?.command ?? args?.cmd;
+    step.bashCommand = command ? String(command) : undefined;
     if (toolInvocation.state === "result" && result) {
       if (typeof result === "string") {
         step.bashOutput = result;
@@ -148,7 +153,8 @@ export function mapToolInvocationToStep(
   }
 
   if (toolName === "Edit" || toolName === "Write" || toolName === "Read") {
-    step.filePath = args?.file_path ? String(args.file_path) : undefined;
+    const filePath = args?.filePath ?? args?.file_path;
+    step.filePath = filePath ? String(filePath) : undefined;
   }
 
   if (toolName === "Write") {

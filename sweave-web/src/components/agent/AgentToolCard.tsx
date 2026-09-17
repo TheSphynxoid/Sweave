@@ -49,7 +49,10 @@ export const AgentToolCard = memo(function AgentToolCard({
   const outStr = error ? error : stringify(output);
 
   return (
-    <div className="rounded-[10px] border border-[var(--an-tool-border-color)] bg-[var(--an-tool-background)] overflow-hidden">
+    <div
+      data-testid="agent-tool-card"
+      className="rounded-[10px] border border-[var(--an-tool-border-color)] bg-[var(--an-tool-background)] overflow-hidden"
+    >
       <div className="flex items-center justify-between gap-2 pl-2.5 pr-2 h-7">
         <div className="flex items-center gap-1.5 min-w-0">
           <Wrench size={13} className="shrink-0 text-[var(--an-tool-color-muted)]" />
