@@ -17,7 +17,8 @@
  * create/switch/rename-in-thread lands in R4.2 step 3.
  */
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
+import { useEffect } from "react";
 import { MessagesSquare, Sparkles } from "lucide-react";
 import { useApp } from "@/context/AppProvider";
 import { useUIStore } from "@/store/ui";
@@ -27,14 +28,35 @@ import { Thread } from "@/components/thread/Thread";
 import { Button } from "@/components/ui/button";
 import { TextShimmer } from "@/components/agent-elements/text-shimmer";
 
+/** Whether a bare /chat URL should resolve to the given session.
+ * Pure helper for the pin test. A missing id means nothing to
+ * resolve to (stay bare); an explicit id is already canonical. */
+export function shouldBackfillUrl(
+  urlSessionId: string | undefined,
+  activeSessionId: string | null,
+): activeSessionId is string {
+  return !urlSessionId && !!activeSessionId;
+}
+
 export function ChatPage() {
   const { activeProject, activeSession } = useApp();
   const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
   // Viewed session is URL-local (2026-09-17): each tab keeps its
   // own /chat/:sessionId, so a cross-tab server broadcast can never
-  // yank this tab's thread elsewhere. Falls back to the
-  // server-active session for fresh/legacy /chat URLs.
+  // yank this tab's thread elsewhere.
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const navigate = useNavigate();
+  // Bare /chat resolves ONCE to the server-active session (fresh
+  // tabs open on the global default) via replace, so afterwards
+  // every tab carries an explicit id: refreshes restore the tab's
+  // own session and later global moves never touch it.
+  useEffect(() => {
+    if (shouldBackfillUrl(urlSessionId, activeSession?.id ?? null)) {
+      navigate(`/chat/${encodeURIComponent(activeSession!.id)}`, {
+        replace: true,
+      });
+    }
+  }, [urlSessionId, activeSession?.id, navigate]);
   const viewedSessionId = urlSessionId ?? activeSession?.id ?? null;
   const { runtime, rerun, cancel } = useSweaveChatRuntime(viewedSessionId);
 

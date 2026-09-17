@@ -7,7 +7,7 @@
  * ``session.deleted`` events refresh it without polling.
  */
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Plus, MessageSquare, Trash2, Loader2 } from "lucide-react";
 import { api } from "@/api/client";
@@ -24,6 +24,11 @@ export function SessionTree() {
   const { activeProject, activeSession, setActiveSession, pushNotification } = useApp();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  // Highlight follows the VIEWED session (URL on chat routes),
+  // not the server-global pointer — otherwise every tab's tree
+  // tracks the last selection made anywhere (2026-09-17).
+  const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const viewedSessionId = urlSessionId ?? activeSession?.id ?? null;
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
@@ -102,14 +107,14 @@ export function SessionTree() {
             <li className="px-2 py-1 text-xs text-muted-foreground">No sessions yet</li>
           )}
           {sessions.map((s) => {
-            const isActive = activeSession?.id === s.id;
+            const isActive = viewedSessionId === s.id;
             return (
               <li key={s.id} className="group relative">
                 <button
                   type="button"
                   title={s.id}
                   onClick={async () => {
-                    if (s.id === activeSession?.id) return;
+                    if (s.id === viewedSessionId) return;
                     try {
                       await setActiveSession(s.id);
                       navigate(`/chat/${encodeURIComponent(s.id)}`);

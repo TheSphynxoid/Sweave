@@ -43,6 +43,7 @@ vi.mock("@/store/ui", () => ({
 
 vi.mock("react-router-dom", () => ({
   useNavigate: () => vi.fn(),
+  useParams: () => ({}),
 }));
 
 const listSessionsMock = vi.mocked(api.listSessions);

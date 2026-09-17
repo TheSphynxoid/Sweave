@@ -13,7 +13,7 @@
  * free and expanding never refetches.
  */
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -39,6 +39,10 @@ import type { ProjectSummary, SessionSummary } from "@/types";
 export function ProjectSessionTree() {
   const { activeProject, activeSession, setActiveProject, setActiveSession, pushNotification } =
     useApp();
+  // Highlight follows the VIEWED session (URL on chat routes),
+  // not the server-global pointer (2026-09-17, cross-tab follow).
+  const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
+  const viewedSessionId = urlSessionId ?? activeSession?.id ?? undefined;
   const setCreateOpen = useUIStore((s) => s.setCreateProjectOpen);
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -153,7 +157,7 @@ export function ProjectSessionTree() {
               isActiveProject={activeProject?.name === p.name}
               holdsActiveSession={activeSession?.project_name === p.name}
               isOpen={expanded.has(p.name)}
-              activeSessionId={activeSession?.id}
+              activeSessionId={viewedSessionId}
               creating={creatingFor === p.name}
               newName={newName}
               creatingPending={createSession.isPending}
@@ -181,7 +185,7 @@ export function ProjectSessionTree() {
                 setPendingDeleteSession({ id, name });
               }}
               onPickSession={async (id) => {
-                if (id === activeSession?.id) return;
+                if (id === viewedSessionId) return;
                 try {
                   await setActiveSession(id);
                   navigate(`/chat/${encodeURIComponent(id)}`);
