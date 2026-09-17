@@ -393,6 +393,29 @@ class ApiClient {
   }
 
   /**
+   * TOOL_CARDS Step 3: batch answer for a multi-question record.
+   * Sends the full `answers[]` array (parallel to the record's
+   * `questions[]`); the server persists partials without resolving
+   * the record until every slot is filled (all-at-once flip). The
+   * caller supplies the COMPLETE array — already-answered slots
+   * carried forward (never dropped) and the targeted index set to
+   * the new value. Legacy single-question callers keep using
+   * `answerEscalation(id, response)` (byte-identical on the wire:
+   * `{response}`); this is purely additive. A `lengthsMatch` hint
+   * is NOT sent — the server validates against its own `questions[]`.
+   */
+  async answerEscalationBatch(
+    delegationId: string,
+    answers: string[],
+  ): Promise<EscalationRecord> {
+    const r = await this.client.post<EscalationRecord>(
+      `/delegations/${encodeURIComponent(delegationId)}/answer`,
+      { answers },
+    );
+    return r.data;
+  }
+
+  /**
    * M1.11 explicit skip (opencode-Esc equivalent). The caller must
    * have shown the system-issued "are you sure?" confirm first;
    * the server rejects unconfirmed skips (409).

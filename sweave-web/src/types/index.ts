@@ -426,6 +426,20 @@ export interface StatusChange {
   ts: string;
 }
 
+/**
+ * One additive question in a batched (TOOL_CARDS Step 3) escalation.
+ * The batch holds a single `questions[]` (≤5) on one record; a
+ * legacy single-question record has NO `questions[]` and instead
+ * uses the top-level `question` / `options` fields. Readers MUST
+ * degrade: absent `questions` → render as the today's single card
+ * via the top-level fields.
+ */
+export interface EscalationQuestion {
+  question: string;
+  /** Optional single-pick options (render as buttons). */
+  options?: string[] | null;
+}
+
 export interface EscalationRecord {
   escalation_id: string;
   delegation_id: string;
@@ -441,6 +455,22 @@ export interface EscalationRecord {
   /** M1.12: structured detail for permission questions (requestID,
    *  patterns, command). */
   metadata?: Record<string, unknown> | null;
+  /**
+   * TOOL_CARDS Step 3 (additive): batched questions on ONE record
+   * (the ask_human `questions[]` payload, ≤5). Absent on legacy
+   * single-question records — those degrade to the top-level
+   * `question` / `options` fields. Render per-question state from
+   * the answers array below; never assume all-or-nothing.
+   */
+  questions?: EscalationQuestion[] | null;
+  /**
+   * TOOL_CARDS Step 3 (additive): parallel to `questions[]`. Index
+   * `i` holds the answer to `questions[i]` (or `null` when still
+   * pending). Absent / shorter-than-questions on legacy payloads —
+   * readers extend with `null`s. Partials persist WITHOUT resolving
+   * the record until every slot is filled (all-at-once flip).
+   */
+  answers?: (string | null)[] | null;
 }
 
 // ---------- Models + rules + config ----------

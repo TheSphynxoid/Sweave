@@ -16,6 +16,7 @@ vi.mock("@/api/client", () => ({
   api: {
     getEscalation: vi.fn(),
     answerEscalation: vi.fn(),
+    answerEscalationBatch: vi.fn(),
     skipEscalation: vi.fn(),
   },
 }));
@@ -40,6 +41,7 @@ vi.mock("@/context/WSProvider", () => ({
 
 const getMock = vi.mocked(api.getEscalation);
 const answerMock = vi.mocked(api.answerEscalation);
+const answerBatchMock = vi.mocked(api.answerEscalationBatch);
 const skipMock = vi.mocked(api.skipEscalation);
 
 function rec(overrides: Partial<EscalationRecord> = {}): EscalationRecord {
@@ -155,5 +157,133 @@ describe("TurnQuestions", () => {
     render(<TurnQuestions delegationId="chat-abc" />);
     await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
     expect(await screen.findByTestId("turn-question-card")).toBeTruthy();
+  });
+});
+
+// ---- TOOL_CARDS Step 3: batched multi-question escalation -----------------
+
+describe("TurnQuestions (batched)", () => {
+  function batchRec(overrides: Partial<EscalationRecord> = {}): EscalationRecord {
+    return rec({
+      question: "unused-legacy-field",
+      options: null,
+      questions: [
+        { question: "JWT or session?", options: ["JWT", "session"] },
+        { question: "Cache strategy?", options: ["in-memory", "redis"] },
+      ],
+      answers: [null, null],
+      ...overrides,
+    });
+  }
+
+  it("renders stacked sections for every question in a batch", async () => {
+    getMock.mockResolvedValue(batchRec());
+    answerBatchMock.mockResolvedValue(batchRec({ status: "answered" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    const card = await screen.findByTestId("turn-question-card");
+    expect(card.getAttribute("data-batch")).toBe("2");
+    expect(await screen.findByTestId("turn-question-section-0")).toBeTruthy();
+    expect(await screen.findByTestId("turn-question-section-1")).toBeTruthy();
+    expect(screen.getByText("JWT or session?")).toBeTruthy();
+    expect(screen.getByText("Cache strategy?")).toBeTruthy();
+  });
+
+  it("renders option buttons per question", async () => {
+    getMock.mockResolvedValue(batchRec());
+    answerBatchMock.mockResolvedValue(batchRec({ status: "answered" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await screen.findByTestId("turn-question-card");
+    expect(screen.getByTestId("turn-question-option-0-JWT")).toBeTruthy();
+    expect(screen.getByTestId("turn-question-option-0-session")).toBeTruthy();
+    expect(screen.getByTestId("turn-question-option-1-in-memory")).toBeTruthy();
+    expect(screen.getByTestId("turn-question-option-1-redis")).toBeTruthy();
+    // The legacy single-question option testid must NOT leak into batch.
+    expect(screen.queryByTestId("turn-question-option-JWT")).toBeNull();
+  });
+
+  it("answering one option posts the full answers[] (that index set, others carried)", async () => {
+    getMock.mockResolvedValue(batchRec({ answers: [null, "redis"] }));
+    answerBatchMock.mockResolvedValue(batchRec({ status: "answered" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await screen.findByTestId("turn-question-card");
+    fireEvent.click(screen.getByTestId("turn-question-option-0-JWT"));
+    await waitFor(() =>
+      expect(answerBatchMock).toHaveBeenCalledWith("chat-abc", [
+        "JWT",
+        "redis",
+      ]),
+    );
+  });
+
+  it("Send-all posts the full answers[] from filled drafts", async () => {
+    getMock.mockResolvedValue(batchRec());
+    answerBatchMock.mockResolvedValue(batchRec({ status: "answered" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await screen.findByTestId("turn-question-card");
+    fireEvent.change(screen.getByTestId("turn-question-input-0"), {
+      target: { value: "JWT" },
+    });
+    fireEvent.change(screen.getByTestId("turn-question-input-1"), {
+      target: { value: "redis" },
+    });
+    fireEvent.click(screen.getByTestId("turn-question-send"));
+    await waitFor(() =>
+      expect(answerBatchMock).toHaveBeenCalledWith("chat-abc", [
+        "JWT",
+        "redis",
+      ]),
+    );
+  });
+
+  it("per-question answer button posts the full answers[] with that index set", async () => {
+    getMock.mockResolvedValue(batchRec());
+    answerBatchMock.mockResolvedValue(batchRec({ status: "answered" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await screen.findByTestId("turn-question-card");
+    fireEvent.change(screen.getByTestId("turn-question-input-1"), {
+      target: { value: "redis" },
+    });
+    fireEvent.click(screen.getByTestId("turn-question-answer-1"));
+    await waitFor(() =>
+      expect(answerBatchMock).toHaveBeenCalledWith("chat-abc", [
+        "",
+        "redis",
+      ]),
+    );
+  });
+
+  it("legacy single-question record degrades to today's single card", async () => {
+    // No `questions[]` → single card via the top-level fields.
+    getMock.mockResolvedValue(rec({ options: ["JWT", "session"] }));
+    answerMock.mockResolvedValue(rec({ status: "answered", response: "JWT" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    const card = await screen.findByTestId("turn-question-card");
+    expect(card.getAttribute("data-batch")).toBeNull();
+    expect(screen.getByTestId("turn-question-input")).toBeTruthy();
+    expect(screen.getByTestId("turn-question-option-JWT")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("turn-question-option-JWT"));
+    await waitFor(() =>
+      expect(answerMock).toHaveBeenCalledWith("chat-abc", "JWT"),
+    );
+    // Batch API must NOT be touched by the legacy path.
+    expect(answerBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("skip posts once after a confirmed system dialog (whole batch)", async () => {
+    getMock.mockResolvedValue(batchRec());
+    skipMock.mockResolvedValue(batchRec({ status: "skipped" }));
+    render(<TurnQuestions delegationId="chat-abc" />);
+    await screen.findByTestId("turn-question-card");
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockReturnValue(false);
+    fireEvent.click(screen.getByTestId("turn-question-skip"));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(skipMock).not.toHaveBeenCalled();
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByTestId("turn-question-skip"));
+    await waitFor(() => expect(skipMock).toHaveBeenCalledWith("chat-abc"));
+    expect(skipMock).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
   });
 });
