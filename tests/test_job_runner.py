@@ -268,6 +268,9 @@ class _StubSpecialistRuntime:
         on_chunk=None,
         on_reasoning=None,
         on_tool=None,
+        # Stop-button fix: bind-time session persist hook (accepted
+        # and ignored — the double binds nothing live).
+        on_session_bound=None,
     ) -> str:
         self.calls.append({"specialist": specialist.name, "message": message})
         specialist.session_id = "ses_stub_1"

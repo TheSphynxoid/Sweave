@@ -953,10 +953,19 @@ export function applyMessageAdded(
 
 /**
  * Optimistic rerun (edit + resend / retry). Flags every entry after
- * the target user message superseded and (for edits) swaps its
- * content, then moves the turn to ``queued`` — the WS events for the
- * new turn (status/delta/message.added) drive the rest, exactly like
- * a fresh submit. Returns the SAME state object when the target is
+ * the target user message superseded and moves the turn to
+ * ``queued`` — the WS events for the new turn (status/delta/
+ * message.added) drive the rest, exactly like a fresh submit.
+ *
+ * A retry (no content, or identical text) reuses the target row:
+ * the target stays live, only its tail is flagged. An edit mirrors
+ * the server's record model (loop.py ``rerun_turn``): the target
+ * keeps its ORIGINAL content flagged superseded, and an optimistic
+ * revision (``local-`` id, ``fork_from`` linkage) carries the new
+ * text — the server's ``message.added`` swaps the revision in by
+ * id. Swapping the new text onto the target instead would show the
+ * edited text twice once the revision arrives (incident
+ * 2026-09-17). Returns the SAME state object when the target is
  * missing or not a persisted user message (the caller uses
  * referential equality to decide whether to POST).
  */
@@ -969,15 +978,31 @@ export function applyRerun(
     (e) => !e.streaming && !e.optimistic && e.message.id === messageId,
   );
   if (idx < 0 || state.entries[idx].message.role !== "user") return state;
+  const target = state.entries[idx];
+  const edited =
+    content !== undefined && content !== target.message.content;
   const entries = state.entries.map((e, i) => {
     if (i < idx) return e;
-    if (i === idx) {
-      if (content === undefined || content === e.message.content) return e;
-      return { ...e, message: { ...e.message, content } };
-    }
+    // Retry reuses the live target row (the backend flags only its
+    // tail); an edit supersedes the target too (it keeps its
+    // original content for the revision pager).
+    if (i === idx && !edited) return e;
     if (isSuperseded(e.message)) return e;
     return { ...e, message: { ...e.message, metadata: { ...e.message.metadata, superseded: true } } };
   });
+  if (edited) {
+    const revision: SessionMessage = {
+      id: `${OPTIMISTIC_PREFIX}rev-${Date.now()}`,
+      role: "user",
+      content: content as string,
+      timestamp: new Date().toISOString(),
+      agent: null,
+      tool_name: null,
+      tool_result: null,
+      metadata: { fork_from: messageId, revision: true },
+    };
+    entries.push({ message: revision, streaming: false, optimistic: true });
+  }
   return { ...state, entries, turn: "queued", activeDelegationId: null };
 }
 

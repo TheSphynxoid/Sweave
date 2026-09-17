@@ -363,15 +363,39 @@ describe("rerun: edit + resend / retry (supersede, don't delete)", () => {
     expect(s.entries).toHaveLength(4);
   });
 
-  it("edit swaps the content and flags the rest", () => {
+  it("edit keeps the target text, flags it superseded, appends a revision", () => {
     const s = applyRerun(twoTurns(), "u2", "second q, edited");
     const byId = Object.fromEntries(s.entries.map((e) => [e.message.id, e.message]));
-    expect(byId["u2"].content).toBe("second q, edited");
-    expect(isSuperseded(byId["u2"])).toBe(false);
+    // Target keeps its ORIGINAL content, flagged superseded (the
+    // server's record model — the revision pager flips between them).
+    expect(byId["u2"].content).toBe("second q");
+    expect(isSuperseded(byId["u2"])).toBe(true);
     expect(isSuperseded(byId["a2"])).toBe(true);
     // Earlier turns untouched.
     expect(isSuperseded(byId["u1"])).toBe(false);
     expect(isSuperseded(byId["a1"])).toBe(false);
+    // One optimistic revision carries the new text + fork linkage.
+    const revs = s.entries.filter((e) => e.optimistic);
+    expect(revs).toHaveLength(1);
+    expect(revs[0].message.content).toBe("second q, edited");
+    expect(revs[0].message.metadata).toMatchObject({ fork_from: "u2", revision: true });
+    expect(s.entries).toHaveLength(5);
+  });
+
+  it("edit revision reconciles by id with no duplicate text", () => {
+    // Incident 2026-09-17: the old swap-onto-target showed the
+    // edited text twice once the server revision arrived.
+    const s = applyRerun(twoTurns(), "u2", "second q, edited");
+    const serverRev = userMessage("u2-rev", "second q, edited");
+    serverRev.metadata = { fork_from: "u2", revision: true };
+    const s2 = applyMessageAdded(s, serverRev);
+    const bodies = s2.entries
+      .filter((e) => !e.streaming && e.message.role === "user")
+      .map((e) => e.message.content);
+    // Original text once (superseded), edited text once (revision).
+    expect(bodies.filter((b) => b === "second q")).toHaveLength(1);
+    expect(bodies.filter((b) => b === "second q, edited")).toHaveLength(1);
+    expect(s2.entries.some((e) => e.optimistic)).toBe(false);
   });
 
   it("is a no-op (same ref) for missing or non-user targets", () => {

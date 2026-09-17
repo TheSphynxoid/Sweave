@@ -200,6 +200,25 @@ def offered_tools_line(*, harness_name: str, is_orchestrator: bool) -> str:
     )
 
 
+async def _notify_session_bound(
+    callback: Callable[[str], Any] | None, session_id: str
+) -> None:
+    """Fire the ``on_session_bound`` hook (best-effort, never raises).
+
+    The callback may be sync or async. Invoked at session-bind
+    time so the caller can persist the id while the turn still
+    runs — cancel reads the store mid-run.
+    """
+    if callback is None or not session_id:
+        return
+    try:
+        result = callback(session_id)
+        if hasattr(result, "__await__"):
+            await result
+    except Exception:  # noqa: BLE001 — binding persistence never fails a turn
+        pass
+
+
 # Module-level queue lock: keyed by (specialist_name, worktree_path) so
 # different specialists + worktrees don't block each other. The
 # lock is a simple per-key asyncio.Lock; the dict is process-local.
@@ -613,6 +632,14 @@ class SpecialistRuntime:
         # default (legacy/tests). The opencode path ignores it
         # (separate timer stack, step 4 scope).
         turn_timeout: float | None = None,
+        # Session-bind hook (Stop-button fix, incident 2026-09-17):
+        # invoked with the bound session id as soon as the turn's
+        # session is known (create or resume, both harnesses) so the
+        # caller can persist it while the turn is still running —
+        # cancel reads the STORE mid-run, and the settle-time write
+        # comes too late for an abort. Best-effort: never fail a
+        # turn on it. May be sync or async (awaited when awaitable).
+        on_session_bound: Callable[[str], Any] | None = None,
     ) -> str:
         """Run one delegation on the selected harness.
 
@@ -677,6 +704,7 @@ class SpecialistRuntime:
                 permission_roots=permission_roots,
                 max_retries=max_retries,
                 turn_timeout=turn_timeout,
+                on_session_bound=on_session_bound,
             )
             if failure_reason is None:
                 return output  # type: ignore[return-value]
@@ -705,6 +733,7 @@ class SpecialistRuntime:
                 on_chunk=on_chunk,
                 on_reasoning=on_reasoning,
                 on_tool=on_tool,
+                on_session_bound=on_session_bound,
             )
         # Unreachable: the registry check above accepts only registered
         # names, and the two adapters are the only ones registered.
@@ -901,6 +930,9 @@ class SpecialistRuntime:
         # the message metadata so the harness + sidecar enforce the
         # outer budget (one clock owner). None = harness default.
         turn_timeout: float | None = None,
+        # Session-bind hook: see run(). Invoked with the bound
+        # session id right after attach/spawn, before the turn runs.
+        on_session_bound: Callable[[str], Any] | None = None,
     ) -> tuple[str | None, str | None]:
         """Attempt one turn on the native engine.
 
@@ -1082,6 +1114,10 @@ class SpecialistRuntime:
 
             # Persist the engine session binding (best-effort, like
             # the opencode path) + record it on the delegation.
+            # The bind hook fires here — at session-bind time, not
+            # settle — so a mid-run cancel finds the id in the
+            # store (incident 2026-09-17: settle-only persistence
+            # left every live engine turn unabortable).
             try:
                 engine_sid = (
                     getattr(process, "_session_id", "")
@@ -1094,6 +1130,7 @@ class SpecialistRuntime:
                     else:
                         specialist.session_id = engine_sid
                     delegation.engine_session_id = engine_sid
+                    await _notify_session_bound(on_session_bound, engine_sid)
                     trace.append(
                         "session_created" if new_session else "session_resumed",
                         {"session_id": engine_sid},
@@ -1168,7 +1205,10 @@ class SpecialistRuntime:
         # Reasoning never pollutes the returned text output.
         on_reasoning: "Callable[[str], Any] | None" = None,
         # Tool transparency: one normalized event per tool transition.
-        on_tool: "Callable[[dict[str, Any]], Any] | None" = None,
+        on_tool: "Callable[[dict[str], Any]], Any] | None" = None,
+        # Session-bind hook: see run(). Fired after _ensure_session
+        # resolves the turn's session, before any turn message.
+        on_session_bound: Callable[[str], Any] | None = None,
     ) -> str:
         """Run one delegation on the opencode harness. Returns the
         agent's text output.
@@ -1239,11 +1279,15 @@ class SpecialistRuntime:
             # M2.1-follow-up: record which engine session runs this
             # delegation (display + forensics without trace-digging).
             # The id is resolved here; JobRunner persists it with the
-            # result write. Best-effort: never fail a turn on it.
+            # result write. The bind hook ALSO fires here (bind
+            # time, not settle) so a mid-run cancel finds the id in
+            # the store (incident 2026-09-17). Best-effort: never
+            # fail a turn on it.
             try:
                 _engine_sid = getattr(process, "_session_id", "") or ""
                 if _engine_sid:
                     delegation.engine_session_id = _engine_sid
+                    await _notify_session_bound(on_session_bound, _engine_sid)
             except Exception:  # noqa: BLE001
                 pass
 

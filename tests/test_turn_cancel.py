@@ -384,3 +384,113 @@ def test_api_cancel_idle_turn_is_404(monkeypatch, tmp_path):
     with TestClient(app) as c:
         r = c.post("/api/sessions/NOPE/turn/cancel", json={})
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Stop-race fixes (incident 2026-09-17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_abort_failure_under_cancel_routes_to_stopped_bubble(tmp_path: Path):
+    pm = _project_manager(tmp_path)
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(tmp_path)
+    ref: dict = {}
+
+    class _AbortRaceRuntime:
+        async def run(self, **kwargs):
+            ref["chat"]._cancel_requested.add(
+                kwargs["delegation"].delegation_id
+            )
+            return "[chat error: engine_failed_before_work: provider_error: user-abort]"
+
+    chat = _chat_loop(pm, stores, _AbortRaceRuntime(), tmp_path)
+    ref["chat"] = chat
+    session = pm.create_session("demo", session_name="s-race")
+
+    bubble = await chat.run_turn(session_id=session.id, user_content="go?")
+
+    assert bubble["metadata"]["cancelled"] is True
+    assert bubble["metadata"]["turn_final"] is True
+    assert "stopped by user" in bubble["content"]
+    assert "user-abort" not in bubble["content"]
+    session = pm.get_session(session.id)
+    assert session is not None
+    assert [m.role for m in session.messages] == ["user", "assistant"]
+    recs = [r for r in store.list() if r.kind == "chat"]
+    assert len(recs) == 1 and recs[0].status == "failed"
+    assert recs[0].error == CANCELLED_BY_USER_ERROR
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_settled_bubble_instead_of_500(tmp_path: Path):
+    """The turn settled between the active check and the handshake:
+    cancel returns its bubble (no RuntimeError)."""
+    pm = _project_manager(tmp_path)
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(tmp_path)
+    chat = _chat_loop(pm, stores, _stub_runtime(), tmp_path)
+    session = pm.create_session("demo", session_name="s-settled")
+    session.add_message(role="user", content="q")
+
+    did = "chat-settled-1"
+    session.add_message(
+        role="assistant",
+        content="already replied",
+        agent="orchestrator",
+        metadata={"delegation_id": did, "turn_final": True},
+    )
+    pm.save_session(session)
+    await store.add(
+        Delegation(
+            agent="orchestrator", task="q", project_name="demo",
+            status="failed", error="boom",
+        )
+    )
+    rec = next(r for r in store.list() if r.status == "failed")
+    did = rec.delegation_id
+    # Re-point the bubble at the real delegation id.
+    session.messages[-1].metadata["delegation_id"] = did
+    pm.save_session(session)
+
+    async def _done():
+        return None
+
+    task = asyncio.ensure_future(_done())
+    await task
+    chat._turn_tasks[session.id] = task
+    chat._register_active_turn(session.id, did)
+
+    bubble = await chat.cancel_turn(session_id=session.id)
+    assert bubble["content"] == "already replied"
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_no_bubble_still_raises(tmp_path: Path):
+    """The loud path is preserved when nothing was persisted."""
+    pm = _project_manager(tmp_path)
+    stores = PerProjectDelegationStores()
+    store = await stores.for_project(tmp_path)
+    chat = _chat_loop(pm, stores, _stub_runtime(), tmp_path)
+    session = pm.create_session("demo", session_name="s-empty")
+    session.add_message(role="user", content="q")
+    pm.save_session(session)
+    await store.add(
+        Delegation(
+            agent="orchestrator", task="q", project_name="demo",
+            status="failed", error="boom",
+        )
+    )
+    rec = next(r for r in store.list() if r.status == "failed")
+
+    async def _done():
+        return None
+
+    task = asyncio.ensure_future(_done())
+    await task
+    chat._turn_tasks[session.id] = task
+    chat._register_active_turn(session.id, rec.delegation_id)
+
+    with pytest.raises(RuntimeError, match="stopped bubble was not persisted"):
+        await chat.cancel_turn(session_id=session.id)

@@ -198,7 +198,7 @@ async def test_runtime_path_respects_turn_timeout(tmp_path: Path):
     runners = ServeRunnerRegistry()
     runtime = SpecialistRuntime(runners=runners)
 
-    async def slow_run(*, specialist, delegation, worktree_path, message, trace, model_ref=None, fresh=False):
+    async def slow_run(*, specialist, delegation, worktree_path, message, trace, model_ref=None, fresh=False, on_session_bound=None):
         await asyncio.sleep(10)
         return "slow"
 

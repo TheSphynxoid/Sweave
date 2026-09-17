@@ -1818,6 +1818,21 @@ class JobRunner:
                         except Exception:
                             pass
 
+                async def _persist_session_binding(sid: str) -> None:
+                    # Stop-button fix (incident 2026-09-17): the
+                    # session id must reach the STORE at bind time,
+                    # not settle — cancel reads the record mid-run.
+                    # Field-only write under the store lock; status
+                    # and result fields are untouched.
+                    try:
+                        bound_store = await self._store_for(delegation)
+                        await bound_store.update(
+                            delegation.delegation_id,
+                            engine_session_id=sid,
+                        )
+                    except Exception:  # noqa: BLE001 — best-effort
+                        pass
+
                 async def _attempt():
                     # One attempt: same tree, resumed session on
                     # re-runs (nothing is re-created — worktree +
@@ -1849,6 +1864,8 @@ class JobRunner:
                                 on_chunk=_on_chunk,
                                 on_reasoning=_on_reasoning,
                                 on_tool=_on_tool,
+                                # Bind-time session persist (Stop fix).
+                                on_session_bound=_persist_session_binding,
                             ),
                             delegation,
                             trace,

@@ -1336,6 +1336,12 @@ class ChatLoop:
                     await self.escalation_store.skip(delegation_id=did)
                 except Exception:  # noqa: BLE001
                     continue
+        # Flag BEFORE killing (incident 2026-09-17): the kill can
+        # convert the live turn into a failure faster than
+        # task.cancel() lands — the body must already know a Stop
+        # is in flight so it routes to the cancel handshake
+        # instead of persisting a loud error bubble.
+        self._cancel_requested.add(delegation_id)
         # Kill the work, keep the session (no-rotation invariant).
         # The asyncio cancel below is the waiting guarantee; this
         # owns stopping the provider-side work: engine turns die via
@@ -1379,7 +1385,7 @@ class ChatLoop:
                     delegation_id, child_kill_err,
                 )
 
-        self._cancel_requested.add(delegation_id)
+        # (Flag already set above, before the kill.)
         task.cancel()
         try:
             await asyncio.wait_for(
@@ -1393,11 +1399,51 @@ class ChatLoop:
             )
         result = self._cancel_results.pop(delegation_id, None)
         if result is None:
-            raise RuntimeError(
-                f"Turn for session '{session_id}' stopped but the "
-                "stopped bubble was not persisted"
+            # The turn settled before the cancel handshake ran (its
+            # bubble is already the thread's latest message) — return
+            # it instead of 500ing a Stop the user legitimately hit
+            # (incident 2026-09-17). Only when the settled bubble
+            # demonstrably belongs to this turn; anything else is
+            # still a loud internal error.
+            result = self._already_settled_turn_bubble(
+                session_id, delegation_id
+            )
+            if result is None:
+                raise RuntimeError(
+                    f"Turn for session '{session_id}' stopped but the "
+                    "stopped bubble was not persisted"
+                )
+            logger.warning(
+                "ChatLoop: turn %s settled before the cancel "
+                "handshake; returning its bubble",
+                delegation_id,
             )
         return result
+
+    def _already_settled_turn_bubble(
+        self, session_id: str, delegation_id: str
+    ) -> dict[str, Any] | None:
+        """Return this turn's already-persisted bubble, if any.
+
+        Narrow fallback for the cancel race: the turn task finished
+        (bubble persisted, delegation terminal) between the active
+        check and the cancel handshake. Matches only when the
+        thread's latest assistant message demonstrably belongs to
+        this turn; never raises.
+        """
+        try:
+            session = self.project_manager.get_session(session_id)
+            if session is None or not session.messages:
+                return None
+            last = session.messages[-1]
+            if getattr(last, "role", None) != "assistant":
+                return None
+            meta = getattr(last, "metadata", None) or {}
+            if meta.get("delegation_id") != delegation_id:
+                return None
+            return last.to_dict()
+        except Exception:  # noqa: BLE001
+            return None
 
     async def _cancel_finalise(
         self,
@@ -1961,6 +2007,19 @@ class ChatLoop:
                         {"iterations": handoff.get("iterations")},
                     )
             if first_turn_text.startswith("[chat error:"):
+                if delegation.delegation_id in self._cancel_requested:
+                    # Stop landed while the turn was failing (the kill
+                    # beat the cancel handshake, incident 2026-09-17):
+                    # the user stopped, so persist the stopped bubble
+                    # instead of the failure. Any failure under an
+                    # active cancel is post-stop noise by definition.
+                    self._cancel_requested.discard(delegation.delegation_id)
+                    stopped = await self._cancel_finalise(
+                        session_id=session_id,
+                        delegation_id=delegation.delegation_id,
+                    )
+                    self._cancel_results[delegation.delegation_id] = stopped
+                    return stopped
                 # First turn hard-failed (timeout, exception, etc.).
                 # No synthesis; the error is the assistant reply.
                 if _is_stale_session_error(first_turn_text):
@@ -2214,6 +2273,15 @@ class ChatLoop:
                     )
                     trace.append("turn_ceiling_keep_rerun", {})
             if synthesis_turn_text.startswith("[chat error:"):
+                if delegation.delegation_id in self._cancel_requested:
+                    # Same Stop-race routing as the first turn above.
+                    self._cancel_requested.discard(delegation.delegation_id)
+                    stopped = await self._cancel_finalise(
+                        session_id=session_id,
+                        delegation_id=delegation.delegation_id,
+                    )
+                    self._cancel_results[delegation.delegation_id] = stopped
+                    return stopped
                 # Synthesis turn hard-failed. Return the explicit
                 # error; the children are still visible via the
                 # Children tab, so the user can pick up the
@@ -2356,6 +2424,22 @@ class ChatLoop:
             permission_roots = None
         turn_timeout = float(timeout) if timeout else float(self.turn_timeout)
         turn_retries = self.turn_retries if max_retries is None else max_retries
+
+        async def _persist_session_binding(sid: str) -> None:
+            # Stop-button fix (incident 2026-09-17): same bind-time
+            # persist as the JobRunner path — _kill_parent_turn
+            # reads the chat record mid-run.
+            try:
+                bound_store = await self.delegation_stores.for_project(
+                    worktree_path
+                )
+                await bound_store.update(
+                    delegation.delegation_id,
+                    engine_session_id=sid,
+                )
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+
         inner = self.runtime.run(
             specialist=specialist,
             delegation=delegation,
@@ -2376,6 +2460,8 @@ class ChatLoop:
             # loop's own wait budget rides down too — same nested
             # clocks as the runner path (incident f774d84b).
             turn_timeout=turn_timeout,
+            # Bind-time session persist (Stop fix).
+            on_session_bound=_persist_session_binding,
         )
         task = asyncio.ensure_future(inner)
         remaining = turn_timeout
