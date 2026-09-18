@@ -36,6 +36,7 @@ export {
 
 export {
   type ActiveTheme,
+  type ChatBackdrop,
   defaultActiveTheme,
   loadActiveTheme,
   saveActiveTheme,
@@ -45,6 +46,12 @@ export {
   prefersDark,
   resolveSystemPresetName,
   THEME_DATA_ATTR,
+  DEFAULT_BACKDROP,
+  listBackdrops,
+  loadBackdrop,
+  saveBackdrop,
+  applyBackdropToDocument,
+  CHAT_BACKDROP_ATTR,
 } from "./switcher";
 
 export { ThemeProvider, useTheme } from "./ThemeProvider";

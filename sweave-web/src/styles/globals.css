@@ -275,7 +275,15 @@ button {
 /* Ambient backdrop for the thread: a soft primary glow pooled at the
  * top of the pane so the workspace reads as a live "agentic" surface
  * instead of a flat card. Pinned to the non-scrolling Root so it
- * stays put while messages scroll beneath it. */
+ * stays put while messages scroll beneath it.
+ *
+ * Texture axis (`data-chat-backdrop` on :root, owned by
+ * `applyBackdropToDocument`): `glow` (default, this rule), `floral`
+ * (a subtle tileable motif layered over the same glow), `none`.
+ * Bubbles stay solid surfaces above the pattern, so text contrast is
+ * unaffected; the motif is stroke-only at baked low opacity and reads
+ * on both dark and light presets. Static image — no motion, nothing
+ * to disable under prefers-reduced-motion. */
 .chat-thread-ambient {
   background:
     radial-gradient(
@@ -283,6 +291,23 @@ button {
       color-mix(in oklch, var(--color-primary) 12%, transparent),
       transparent 62%
     );
+}
+
+:root[data-chat-backdrop="none"] .chat-thread-ambient {
+  background: none;
+}
+
+:root[data-chat-backdrop="floral"] .chat-thread-ambient {
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='none' stroke='%238a8a8a' stroke-opacity='0.16' stroke-width='1.2'%3E%3Cg transform='translate(40 40)'%3E%3Cellipse rx='4' ry='10'/%3E%3Cellipse rx='4' ry='10' transform='rotate(90)'/%3E%3Cellipse rx='4' ry='10' transform='rotate(45)'/%3E%3Cellipse rx='4' ry='10' transform='rotate(135)'/%3E%3Ccircle r='2.5'/%3E%3C/g%3E%3Cg transform='translate(120 120)'%3E%3Cellipse rx='4' ry='10'/%3E%3Cellipse rx='4' ry='10' transform='rotate(90)'/%3E%3Cellipse rx='4' ry='10' transform='rotate(45)'/%3E%3Cellipse rx='4' ry='10' transform='rotate(135)'/%3E%3Ccircle r='2.5'/%3E%3C/g%3E%3Ccircle cx='120' cy='40' r='2'/%3E%3Ccircle cx='40' cy='120' r='2'/%3E%3C/g%3E%3C/svg%3E"),
+    radial-gradient(
+      70rem 40rem at 50% -14%,
+      color-mix(in oklch, var(--color-primary) 12%, transparent),
+      transparent 62%
+    );
+  background-size:
+    160px 160px,
+    auto;
 }
 
 @media (prefers-reduced-motion: reduce) {

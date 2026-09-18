@@ -171,3 +171,55 @@ export function setActiveTheme(theme: ActiveTheme): void {
   saveActiveTheme(theme);
   applyThemeToDocument(theme);
 }
+
+/**
+ * Chat-thread backdrop (texture axis, independent of the color theme).
+ *
+ * `glow` is the historical ambient (primary-tinted radial pooled at the
+ * top of the thread pane) and the default, so existing users see zero
+ * change. `floral` layers a subtle tileable SVG motif under the same
+ * glow; `none` strips the ambient entirely. Persisted separately from
+ * the preset+custom pair so adopting a backdrop never invalidates the
+ * color persistence — and the no-FOUC inline script stays color-only
+ * (first paint renders `glow` CSS; hydration applies the stored
+ * backdrop immediately after).
+ */
+export type ChatBackdrop = "glow" | "floral" | "none";
+
+const STORAGE_KEY_BACKDROP = "sweave.theme.backdrop";
+
+export const CHAT_BACKDROP_ATTR = "data-chat-backdrop";
+
+const BACKDROPS: readonly ChatBackdrop[] = ["glow", "floral", "none"];
+
+export const DEFAULT_BACKDROP: ChatBackdrop = "glow";
+
+export function listBackdrops(): ChatBackdrop[] {
+  return [...BACKDROPS];
+}
+
+function isChatBackdrop(value: string): value is ChatBackdrop {
+  return (BACKDROPS as readonly string[]).includes(value);
+}
+
+/** Load the chat backdrop, falling back to `glow` on anything unknown. */
+export function loadBackdrop(): ChatBackdrop {
+  const raw = safeGet(STORAGE_KEY_BACKDROP);
+  if (raw && isChatBackdrop(raw)) return raw;
+  return DEFAULT_BACKDROP;
+}
+
+/** Persist the chat backdrop (best-effort, like the theme keys). */
+export function saveBackdrop(backdrop: ChatBackdrop): void {
+  safeSet(STORAGE_KEY_BACKDROP, backdrop);
+}
+
+/**
+ * Apply the backdrop to the document root as `data-chat-backdrop`.
+ * The thread CSS (`chat-thread-ambient` in globals.css) keys off this
+ * attribute. Idempotent; safe to call on every state change.
+ */
+export function applyBackdropToDocument(backdrop: ChatBackdrop): void {
+  if (typeof document === "undefined") return;
+  document.documentElement.setAttribute(CHAT_BACKDROP_ATTR, backdrop);
+}

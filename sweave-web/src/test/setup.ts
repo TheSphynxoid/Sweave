@@ -21,6 +21,7 @@ afterEach(() => {
   try {
     window.localStorage.removeItem("sweave.theme.preset");
     window.localStorage.removeItem("sweave.theme.custom");
+    window.localStorage.removeItem("sweave.theme.backdrop");
   } catch {
     // ignore
   }
@@ -29,6 +30,7 @@ afterEach(() => {
   if (el) el.remove();
   // Reset the data attribute + dark class on :root.
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-chat-backdrop");
   document.documentElement.classList.remove("dark");
   document.documentElement.style.colorScheme = "";
 });
