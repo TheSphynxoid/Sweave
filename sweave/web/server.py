@@ -664,27 +664,36 @@ async def _spa_cache_headers(request: Request, call_next):
     return response
 
 # M1.9 / R4 step 4: the new wave-1 UI ships from sweave-web/dist.
-# When the dist/ artefact exists, mount it as the SPA; the
-# /static mount (the old vanilla assets) becomes the fallback.
-# The conditional keeps the repo buildable + testable without
-# `npm run build` (the v1 vanilla UI is still served when dist/
-# is missing).
+# When the dist/ artefact exists, mount it as the SPA. The v1
+# vanilla UI (sweave/web/static) was retired in M1.9 step 4
+# (commit 5949e41 deleted it), so the old unconditional fallback
+# mount is gone: a missing dist/ must degrade to API-only, never
+# crash the import (2026-09-18: a wiped dist/ took down the whole
+# server via StaticFiles' check_dir on the dead /static path).
+# Fix: only mount directories that actually exist.
 _SWEAVE_WEB_DIST = Path("sweave-web/dist")
 _HAS_WEB_DIST = (_SWEAVE_WEB_DIST / "index.html").exists()
 if _HAS_WEB_DIST:
     # Serve the bundled JS + CSS under /assets/ (vite's default
     # asset directory; the dist/index.html references these).
-    app.mount(
-        "/assets",
-        StaticFiles(directory=str(_SWEAVE_WEB_DIST / "assets")),
-        name="sweave-web-assets",
-    )
+    # Guarded: a partial build (index.html without assets/) must
+    # not crash the import either.
+    _SWEAVE_WEB_ASSETS = _SWEAVE_WEB_DIST / "assets"
+    if _SWEAVE_WEB_ASSETS.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_SWEAVE_WEB_ASSETS)),
+            name="sweave-web-assets",
+        )
+    else:
+        logger.warning(
+            "sweave-web/dist/index.html exists but assets/ is missing; "
+            "serving SPA shell without bundled assets (rebuild the UI)"
+        )
 else:
-    # Fallback: the v1 vanilla UI. Will be removed in step 4.3
-    # once the new Playwright suite is in place + the v1 tests
-    # are retired.
-    app.mount(
-        "/static", StaticFiles(directory="sweave/web/static"), name="static"
+    logger.warning(
+        "sweave-web/dist/index.html not found; serving API-only "
+        "(run `cd sweave-web && npm run build` to restore the UI)"
     )
 
 
@@ -752,23 +761,17 @@ for _r in (
 # ============================================================================
 
 # M1.9 / R4 step 4: the new wave-1 UI (sweave-web/dist) is the
-# source of truth. The v1 vanilla UI is the fallback when the
-# dist/ artefact is missing (the repo is buildable + testable
-# without `npm run build`). The cutover is conditional on the
-# dist/ artefact -- a single env var can pin the v1 UI for
-# debugging.
-_USE_WEB_DIST = _HAS_WEB_DIST and os.environ.get(
-    "SWEAVE_UI_VANILLA"
-) != "1"
+# source of truth. The v1 vanilla UI was retired the same day
+# (commit 5949e41 deleted sweave/web/static/); there is no
+# fallback UI. Without the dist/ artefact the server runs
+# API-only (the SPA routes serve a "UI not found" placeholder).
+_USE_WEB_DIST = _HAS_WEB_DIST
 _WEB_DIST_INDEX = _SWEAVE_WEB_DIST / "index.html"
-_VANILLA_INDEX = Path("sweave/web/static/index.html")
 
 
 def _read_index_html() -> str:
     if _USE_WEB_DIST and _WEB_DIST_INDEX.exists():
         return _WEB_DIST_INDEX.read_text(encoding="utf-8")
-    if _VANILLA_INDEX.exists():
-        return _VANILLA_INDEX.read_text(encoding="utf-8")
     return "<h1>Sweave UI not found</h1><p>index.html missing</p>"
 
 
@@ -781,9 +784,7 @@ async def index():
 # new wave-1 UI uses BrowserRouter (a SPA); the server must
 # serve index.html for any non-API path so React Router can
 # pick up the URL. The catch-all is only registered when the
-# dist/ artefact is present (v1 vanilla UI had dedicated
-# routes for /agents, /tasks, etc.; keeping those below for
-# the fallback).
+# dist/ artefact is present.
 if _USE_WEB_DIST:
     # Serve the favicon from the sweave-web public/ directory.
     _FAVICON_PATH = Path("sweave-web/public/favicon.svg")
@@ -803,7 +804,6 @@ if _USE_WEB_DIST:
             path.startswith("api/")
             or path.startswith("ws")
             or path.startswith("assets/")
-            or path.startswith("static/")
             or path == "favicon.svg"
             or "." in path.split("/")[-1]  # any path with a file extension
         ):
@@ -815,8 +815,11 @@ if _USE_WEB_DIST:
         return HTMLResponse(_read_index_html())
 
 
-# Legacy vanilla-UI paths (used only when dist/ is missing;
-# kept for the M1.x compatibility window).
+# Legacy named routes. Subsumed by the SPA catch-all above when
+# dist/ is present (the catch-all is registered first, so these
+# never fire); without dist/ they serve the same "UI not found"
+# placeholder as `/`. Kept so the route table still names the
+# known client-side paths.
 @app.get("/agents", response_class=HTMLResponse)
 async def agents_page():
     return HTMLResponse(_read_index_html())
