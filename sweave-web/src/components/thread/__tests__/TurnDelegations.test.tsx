@@ -143,6 +143,38 @@ describe("TurnDelegations", () => {
     expect(screen.getByText("All 12 tests pass.")).toBeTruthy();
   });
 
+  it("shows the branch chip in the header and the worktree path when expanded", async () => {
+    listMock.mockResolvedValue([
+      child({
+        delegation_id: "d-tree",
+        status: "running",
+        branch: "sweave/abc123/backend",
+        worktree_path: "C:/work/abc123/backend",
+      }),
+    ]);
+    renderTurn("chat-abc");
+    const chip = await screen.findByTestId("turn-delegation-branch");
+    expect(chip.textContent).toContain("sweave/abc123/backend");
+    expect(chip.getAttribute("title")).toBe("C:/work/abc123/backend");
+    // Header only until expanded.
+    expect(screen.queryByTestId("turn-delegation-worktree")).toBeNull();
+    fireEvent.click((await screen.findAllByTestId("turn-delegation-card"))[0].querySelector("button")!);
+    const body = screen.getByTestId("turn-delegation-worktree");
+    expect(body.textContent).toContain("sweave/abc123/backend");
+    expect(body.textContent).toContain("C:/work/abc123/backend");
+  });
+
+  it("hides branch and worktree affordances for in-tree runs", async () => {
+    listMock.mockResolvedValue([
+      child({ delegation_id: "d-plain", status: "done", output: "ok" }),
+    ]);
+    renderTurn("chat-abc");
+    await screen.findByTestId("turn-delegation-card");
+    expect(screen.queryByTestId("turn-delegation-branch")).toBeNull();
+    fireEvent.click((await screen.findAllByTestId("turn-delegation-card"))[0].querySelector("button")!);
+    expect(screen.queryByTestId("turn-delegation-worktree")).toBeNull();
+  });
+
   it("a non-timeout failure keeps the red failed treatment", async () => {
     listMock.mockResolvedValue([
       child({

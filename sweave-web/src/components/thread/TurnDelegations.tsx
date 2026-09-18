@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDown, ExternalLink, Network } from "lucide-react";
+import { ChevronDown, ExternalLink, GitBranch, Network } from "lucide-react";
 import { api } from "@/api/client";
 import { useWS } from "@/context/WSProvider";
 import { DetailView } from "@/pages/children/DetailView";
@@ -251,6 +251,16 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                       needs input
                     </span>
                   )}
+                  {child.branch && (
+                    <span
+                      title={child.worktree_path ?? child.branch}
+                      data-testid="turn-delegation-branch"
+                      className="flex min-w-0 max-w-40 shrink-0 items-center gap-1 truncate font-mono text-[10px] text-muted-foreground"
+                    >
+                      <GitBranch size={11} className="shrink-0" />
+                      <span className="truncate">{child.branch}</span>
+                    </span>
+                  )}
                   <span className="min-w-0 flex-1 truncate text-muted-foreground">
                     {truncate(child.task, TASK_SNIPPET_CHARS)}
                   </span>
@@ -259,6 +269,16 @@ export function TurnDelegations({ parentDelegationId }: { parentDelegationId: st
                   <div className="animate-fade-in space-y-2 border-t border-border/50 px-2.5 py-2">
                     {child.needs_attention && (
                       <ChildEscalationPreview delegationId={child.delegation_id} />
+                    )}
+                    {(child.branch || child.worktree_path) && (
+                      <p
+                        data-testid="turn-delegation-worktree"
+                        className="break-all px-1 font-mono text-[10px] leading-relaxed text-muted-foreground"
+                      >
+                        {child.branch && <span>{child.branch}</span>}
+                        {child.branch && child.worktree_path && <span> · </span>}
+                        {child.worktree_path && <span>{child.worktree_path}</span>}
+                      </p>
                     )}
                     {timedOut && (
                       <TimeoutNotice
