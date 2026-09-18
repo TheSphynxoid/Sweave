@@ -127,15 +127,40 @@ def _tool_from_journal(
         # result shape degrades to ``unknown``.
         "status": ("completed" if result is not None else "unknown"),
         "args": args,
+        # Timeline shape (2026-09-18: bare-"bash" fix). The renderer
+        # (ToolTimelineRow) reads input/output/detail — the journal
+        # carries both, but this projector used to emit only
+        # args/result, so every transcript tool row degraded to a
+        # bare verb with no info. Map them onto the same keys the
+        # tool_timeline fold uses.
+        "input": args,
     }
     if result is None:
         out["result"] = None
         return out
     content = result.get("content", "")
-    out["result"] = _clip(content, MAX_TOOL_RESULT_CHARS)
+    clipped = _clip(content, MAX_TOOL_RESULT_CHARS)
+    out["result"] = clipped
+    out["output"] = clipped
     if result.get("failed"):
         out["status"] = "error"
         out["error"] = str(result.get("error") or "unknown tool error")
+    # Additive detail via the shared chat builder (the same blob
+    # the timeline/chat rows use — one builder, both renderers).
+    # Extras are empty on the journal path (no exit/window journaled);
+    # the builder degrades those to absent, never raises.
+    try:
+        from sweave.chat.tools import build_tool_detail
+
+        detail = build_tool_detail(
+            out["tool"], args or {}, {},
+            content if isinstance(content, str) else "",
+            out.get("error"),
+        )
+        if detail:
+            out["detail"] = detail
+    except Exception:  # noqa: BLE001 — the fold must never raise
+        pass
     return out
 
 
@@ -278,6 +303,7 @@ def render_transcript_blocks(
                         "status": "unknown",
                         "args": None,
                         "result": _clip(msg.get("content"), MAX_TOOL_RESULT_CHARS),
+                        "output": _clip(msg.get("content"), MAX_TOOL_RESULT_CHARS),
                     }
                 )
         elif current is None and role in ("assistant", "tool"):
@@ -304,6 +330,7 @@ def render_transcript_blocks(
                         "status": "unknown",
                         "args": None,
                         "result": _clip(msg.get("content"), MAX_TOOL_RESULT_CHARS),
+                        "output": _clip(msg.get("content"), MAX_TOOL_RESULT_CHARS),
                     }
                 )
             blocks.append(current)

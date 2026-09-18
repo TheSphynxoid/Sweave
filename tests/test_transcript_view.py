@@ -86,16 +86,16 @@ def test_blocks_one_per_run_turn(tmp_path: Path):
     # Assistant text parts of one turn (tool call in between) JOIN.
     assert b["text"] == "Reading the file first.Done: the notes say x."
     assert b["model"] == "openrouter/x/y:free"
-    assert b["tools"] == [
-        {
-            "callID": "call_1",
-            "tool": "read",
-            "status": "completed",
-            "args": {"filePath": "notes.txt"},
-            "result": "file body",
-        }
-    ]
     assert b["failed"] is False and b["error"] is None
+    (entry,) = b["tools"]
+    assert entry["callID"] == "call_1"
+    assert entry["tool"] == "read"
+    assert entry["status"] == "completed"
+    assert entry["args"] == {"filePath": "notes.txt"}
+    assert entry["result"] == "file body"
+    # Timeline shape for the renderer (2026-09-18 bare-tool fix).
+    assert entry["input"] == {"filePath": "notes.txt"}
+    assert entry["output"] == "file body"
 
 
 def test_block_multi_turn_and_parts_join(tmp_path: Path):
@@ -365,3 +365,77 @@ def test_real_journal_session_projects(monkeypatch, tmp_path):
     assert b["tools"][0]["tool"] == "defer"
     assert b["tools"][0]["status"] == "completed"
     assert "queued: 6a4d76b82560" in b["tools"][0]["result"]
+
+
+def _bash_turn_session():
+    """Bash call + result (the live-journal shape behind the
+    bare-'bash' report, 2026-09-18)."""
+    return {
+        "id": _SID,
+        "messages": [
+            {
+                "id": "msg_u1",
+                "role": "user",
+                "content": "Check git state",
+                "at": 1789350554169,
+            },
+            {
+                "id": "msg_a1",
+                "role": "assistant",
+                "content": "Checking.",
+                "toolCalls": [
+                    {
+                        "id": "call_b1",
+                        "name": "bash",
+                        "args": {"command": "git log --oneline -5"},
+                    }
+                ],
+                "model": "openrouter/x/y:free",
+                "at": 1789350599000,
+            },
+            {
+                "id": "msg_t1",
+                "role": "tool",
+                "toolCallId": "call_b1",
+                "name": "bash",
+                "content": "abc1234 Implement widgets\n",
+                "at": 1789350600000,
+            },
+        ],
+    }
+
+
+def test_journal_bash_carries_timeline_shape(tmp_path: Path):
+    """Regression pin for the bare-'bash' report (2026-09-18): the
+    renderer reads input/output/detail, so the projector must emit
+    them — args/result alone render a verb with no info."""
+    jp = _journal(tmp_path, {_SID: _bash_turn_session()})
+    blocks = render_transcript_blocks(_SID, [], journal_path=jp)
+    assert len(blocks) == 1
+    (entry,) = blocks[0]["tools"]
+    assert entry["tool"] == "bash"
+    assert entry["status"] == "completed"
+    # Timeline keys the renderer reads:
+    assert entry["input"] == {"command": "git log --oneline -5"}
+    assert "abc1234 Implement widgets" in entry["output"]
+    assert entry["detail"]["command"] == "git log --oneline -5"
+    # Legacy keys stay (back-compat for older readers).
+    assert entry["args"] == {"command": "git log --oneline -5"}
+    assert "abc1234 Implement widgets" in entry["result"]
+
+
+def test_journal_read_carries_input_for_card_routing(tmp_path: Path):
+    """Read rows route to the window card via input keys — absent
+    input falls through to the raw dump."""
+    session = _bash_turn_session()
+    session["messages"][1]["toolCalls"] = [
+        {"id": "call_r1", "name": "read", "args": {"filePath": "notes.txt"}}
+    ]
+    session["messages"][2]["toolCallId"] = "call_r1"
+    session["messages"][2]["name"] = "read"
+    session["messages"][2]["content"] = "file body"
+    jp = _journal(tmp_path, {_SID: session})
+    blocks = render_transcript_blocks(_SID, [], journal_path=jp)
+    (entry,) = blocks[0]["tools"]
+    assert entry["input"] == {"filePath": "notes.txt"}
+    assert entry["output"] == "file body"
