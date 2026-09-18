@@ -1059,6 +1059,33 @@ class SpecialistRuntime:
                 process = await harness_obj.attach(stored, spec)
             else:
                 process = await harness_obj.spawn(spec)
+            # Stop-button fix, engine path (incident 2026-09-18,
+            # session Sweave-20260918-021652-374bd3): persist the
+            # session binding BEFORE process.send() — a mid-turn
+            # Stop cancels the in-flight send, so anything after
+            # it never runs and the abort finds None
+            # (turn_killed: no_live_turn while the sidecar turn
+            # keeps burning). Mirrors the opencode path: bind
+            # time, not settle.
+            try:
+                _bound_sid = (
+                    getattr(process, "_session_id", "")
+                    or getattr(process, "session_id", "")
+                    or ""
+                )
+                if _bound_sid:
+                    if session_id_setter is not None:
+                        session_id_setter(_bound_sid)
+                    else:
+                        specialist.session_id = _bound_sid
+                    delegation.engine_session_id = _bound_sid
+                    await _notify_session_bound(on_session_bound, _bound_sid)
+                    trace.append(
+                        "session_created" if new_session else "session_resumed",
+                        {"session_id": _bound_sid},
+                    )
+            except Exception:  # noqa: BLE001
+                pass
             msg = EngineMessage(
                 type="user",
                 content=prompt_text,
@@ -1113,31 +1140,31 @@ class SpecialistRuntime:
             except Exception:  # noqa: BLE001
                 pass
 
-            # Persist the engine session binding (best-effort, like
-            # the opencode path) + record it on the delegation.
-            # The bind hook fires here — at session-bind time, not
-            # settle — so a mid-run cancel finds the id in the
-            # store (incident 2026-09-17: settle-only persistence
-            # left every live engine turn unabortable).
-            try:
-                engine_sid = (
-                    getattr(process, "_session_id", "")
-                    or getattr(process, "session_id", "")
-                    or ""
-                )
-                if engine_sid:
-                    if session_id_setter is not None:
-                        session_id_setter(engine_sid)
-                    else:
-                        specialist.session_id = engine_sid
-                    delegation.engine_session_id = engine_sid
-                    await _notify_session_bound(on_session_bound, engine_sid)
-                    trace.append(
-                        "session_created" if new_session else "session_resumed",
-                        {"session_id": engine_sid},
+            # Post-send backfill (best-effort, like the opencode
+            # path): the binding already persisted pre-send above;
+            # this only covers a session id minted during send
+            # itself. Guarded so the hook fires once per turn and
+            # the trace carries a single session event.
+            if not getattr(delegation, "engine_session_id", None):
+                try:
+                    engine_sid = (
+                        getattr(process, "_session_id", "")
+                        or getattr(process, "session_id", "")
+                        or ""
                     )
-            except Exception:  # noqa: BLE001
-                pass
+                    if engine_sid:
+                        if session_id_setter is not None:
+                            session_id_setter(engine_sid)
+                        else:
+                            specialist.session_id = engine_sid
+                        delegation.engine_session_id = engine_sid
+                        await _notify_session_bound(on_session_bound, engine_sid)
+                        trace.append(
+                            "session_created" if new_session else "session_resumed",
+                            {"session_id": engine_sid},
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
             trace.append(
                 "model_used",
                 {
