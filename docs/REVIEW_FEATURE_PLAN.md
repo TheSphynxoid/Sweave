@@ -94,6 +94,14 @@ Mark done.
 > in this step is the HUMAN side below (affordance + assignee);
 > the dispatch half is done and pinned by
 > `tests/test_review_backstop.py`.
+>
+> Amendment 2026-09-18 (fix lineage landed): fix children cut
+> their tree FROM the reviewed branch (`_fix_base_branch` — the
+> fixer's tree contains the code under review; unverifiable base
+> falls back to HEAD with a trace event), and the fix brief
+> carries the branch/worktree pointer. Pinned by
+> `tests/test_fix_lineage.py` (incl. a real-git proof). The fix
+> endpoint / verdict contract is unchanged.
 
 1. Contract check first: `review_request` auto-build covers
    the system side; the human side needs "ask X for a verdict"

@@ -183,7 +183,11 @@ def fake_worktree_manager_factory(root: Path | None = None):
     a ``JobRunner(worktree_manager_factory=...)`` value creating real
     DIRS (never git worktrees) and ``calls`` records
     ``{"created": [(task_id, agent, path)], "committed": [...],
-    "removed": [...]}``.
+    "removed": [...], "bases": [(task_id, agent, base)],
+    "branches_gone": [branch, ...]}`` (``base`` is the lineage
+    branch the tree was cut from, None = HEAD; ``branches_gone``
+    names branches ``branch_exists`` must deny — tests register
+    deletions there).
     ``root`` defaults to a pid-scoped system-temp dir (task ids are
     uuid-unique, so sharing across tests is collision-free).
     Worktree isolation tests that need REAL git init their own repos;
@@ -196,17 +200,30 @@ def fake_worktree_manager_factory(root: Path | None = None):
         root = Path(tempfile.gettempdir()) / f"sweave-test-wts-{os.getpid()}"
     from types import SimpleNamespace
 
-    calls: dict[str, list] = {"created": [], "removed": [], "committed": []}
+    calls: dict[str, list] = {
+        "created": [], "removed": [], "committed": [], "bases": [],
+        "branches_gone": [],
+    }
 
     def _factory(base: str, git_dir: Path):
+        root = base
+
         class _FakeWorktrees:
-            async def async_create_worktree(self, task_id: str, agent: str):
-                path = Path(base) / f"{task_id}-{agent}"
+            async def async_create_worktree(
+                self, task_id: str, agent: str, base: str | None = None
+            ):
+                path = Path(root) / f"{task_id}-{agent}"
                 path.mkdir(parents=True, exist_ok=True)
                 calls["created"].append((task_id, agent, str(path)))
+                calls["bases"].append((task_id, agent, base))
                 return SimpleNamespace(
                     path=path, branch=f"sweave/{task_id}/{agent}"
                 )
+
+            def branch_exists(self, branch: str) -> bool:
+                # Hermetic stand-in: everything exists unless the
+                # test registered it as deleted in branches_gone.
+                return branch not in calls["branches_gone"]
 
             async def async_commit_wip(
                 self, task_id: str, agent: str, message: str = "sweave: settle WIP"

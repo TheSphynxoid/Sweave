@@ -284,6 +284,60 @@ class JobRunner:
         # writer, so the error text + events stay uniform).
         self._user_cancelled: set[str] = set()
 
+    def _fix_base_branch(
+        self, delegation: Delegation, store: Any, manager: Any, trace: Any
+    ) -> str | None:
+        """Branch a fix-round child starts from (fix lineage, 2026-09-18).
+
+        A fix child reworks a reviewed branch; cutting its tree from
+        HEAD leaves it blind to the code under review (the review
+        branch is unmerged by definition while its record sits in
+        ``review``). When the delegation carries ``fix_of``, resolve
+        the reviewed record's branch and verify it still exists
+        locally. Anything missing/unverifiable falls back to None
+        (HEAD behavior) with a ``worktree_base_fallback`` trace —
+        lineage never fails a turn. Non-fix delegations always get
+        None (fresh work starts at HEAD by design).
+        """
+        fix_of = getattr(delegation, "fix_of", None)
+        if not fix_of:
+            return None
+        try:
+            reviewed = store.get(fix_of)
+        except Exception:  # noqa: BLE001
+            reviewed = None
+        branch = getattr(reviewed, "branch", None) if reviewed is not None else None
+        if not branch:
+            try:
+                trace.append(
+                    "worktree_base_fallback",
+                    {"fix_of": fix_of, "reason": "reviewed_has_no_branch"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        try:
+            exists = manager.branch_exists(branch)
+        except Exception:  # noqa: BLE001 — doubles without the seam
+            exists = True
+        if not exists:
+            try:
+                trace.append(
+                    "worktree_base_fallback",
+                    {"fix_of": fix_of, "branch": branch, "reason": "branch_gone"},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        try:
+            trace.append(
+                "worktree_based_on_review",
+                {"fix_of": fix_of, "base": branch},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return branch
+
     async def _store_for(self, delegation: Delegation) -> Any:
         """Return the :class:`DelegationStore` for *delegation*'s project."""
         return await self.stores.for_project(self._project_dir_for(delegation))
@@ -1649,7 +1703,11 @@ class JobRunner:
                                 project_dir, delegation.project_name
                             )
                             worktree_info = await wt_manager.async_create_worktree(
-                                delegation.task_id, delegation.agent
+                                delegation.task_id,
+                                delegation.agent,
+                                base=self._fix_base_branch(
+                                    delegation, store, wt_manager, trace
+                                ),
                             )
                         except Exception as exc:  # noqa: BLE001
                             err = (

@@ -1171,11 +1171,20 @@ def _find_fix_children(state: AppState, delegation_id: str) -> list:
 
 
 def _build_fix_task(rec, *, comments: str, reviewer: str, fix_round: int) -> str:
-    """Task text for a fix-round child (greppable round marker)."""
+    """Task text for a fix-round child (greppable round marker).
+
+    Carries the lineage pointer (branch/worktree of the code under
+    review): the fix tree is cut from that branch, and the pointer
+    keeps the linkage visible in Children even so.
+    """
     who = reviewer or "reviewer"
+    branch = getattr(rec, "branch", None) or "(no branch)"
+    worktree = getattr(rec, "worktree_path", None) or "(no worktree)"
     return (
         f"[fix-round {fix_round} for {rec.task_id}] Address review findings.\n\n"
         f"Reviewer ({who}): {comments.strip()}\n\n"
+        f"Code under review: branch {branch} (worktree {worktree}) — "
+        f"your tree starts from this branch.\n\n"
         f"Original task: {rec.task or ''}".rstrip()
     )
 

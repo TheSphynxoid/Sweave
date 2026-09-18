@@ -125,13 +125,43 @@ class WorktreeManager:
             # worktree. The contract is the return string.
             return "no_integration_branch"
 
-    def create_worktree(self, task_id: str, agent_name: str) -> WorktreeInfo:
-        """Create a new worktree for a task/agent combination."""
+    def branch_exists(self, branch: str) -> bool:
+        """True when *branch* exists as a local head (best-effort).
+
+        Never raises: a missing git binary, non-repo dir, or unknown
+        ref all read as False (callers fall back, never fail).
+        """
+        try:
+            run_no_window(
+                ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+                cwd=self.git_dir,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return True
+        except Exception:  # noqa: BLE001 — absence and breakage both mean "no"
+            return False
+
+    def create_worktree(
+        self, task_id: str, agent_name: str, base: str | None = None
+    ) -> WorktreeInfo:
+        """Create a new worktree for a task/agent combination.
+
+        ``base`` names the branch the new tree is cut from (fix-round
+        lineage: a fix child starts on the reviewed branch, not on
+        HEAD). None (the default) keeps the legacy HEAD behavior.
+        A dangling base fails here via git — callers that want a
+        fallback verify with :meth:`branch_exists` first.
+        """
         branch_name = f"sweave/{task_id}/{agent_name}"
         worktree_path = self.base_path / f"{task_id}-{agent_name}"
-        
+
         # Create worktree with new branch
-        self._run_git(["worktree", "add", "-b", branch_name, str(worktree_path)])
+        cmd = ["worktree", "add", "-b", branch_name, str(worktree_path)]
+        if base:
+            cmd.append(base)
+        self._run_git(cmd)
         
         info = WorktreeInfo(
             path=worktree_path,
@@ -384,9 +414,13 @@ class WorktreeManager:
             check=True,
         )
     
-    async def async_create_worktree(self, task_id: str, agent_name: str) -> WorktreeInfo:
+    async def async_create_worktree(
+        self, task_id: str, agent_name: str, base: str | None = None
+    ) -> WorktreeInfo:
         """Async wrapper for create_worktree."""
-        return await asyncio.to_thread(self.create_worktree, task_id, agent_name)
+        return await asyncio.to_thread(
+            self.create_worktree, task_id, agent_name, base
+        )
     
     async def async_remove_worktree(self, task_id: str, agent_name: str, force: bool = False) -> bool:
         """Async wrapper for remove_worktree."""
