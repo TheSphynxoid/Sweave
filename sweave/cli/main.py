@@ -584,10 +584,6 @@ def main():
     app()
 
 
-if __name__ == "__main__":
-    main()
-
-
 # ---------------------------------------------------------------------------
 # M1.9 step 4: visibility CLI commands (log / watch / tail).
 # Imported at the bottom so the @app.command decorators register
@@ -818,3 +814,125 @@ def watch():
         _asyncio.run(_loop())
     except KeyboardInterrupt:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Debug inspection (read-only): session / delegation / trace.
+# Replaces the throwaway per-incident scripts; logic lives in
+# ``sweave.cli.debug`` (tested), commands below are thin rendering.
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def session(
+    session_id: str = typer.Argument(..., help="Session id to inspect"),
+    full: bool = typer.Option(False, "--full", help="Print full message text"),
+):
+    """Show a session's messages (roles, tools, previews)."""
+    from sweave.cli.debug import find_session, session_messages, sweave_home
+
+    found = find_session(sweave_home(), session_id)
+    if found is None:
+        console.print(f"[yellow]Session {session_id} not found.[/yellow]")
+        return
+    project_name, data = found
+    messages = session_messages(data)
+    console.print(f"[bold]Session {data.get('id')} [{project_name}][/bold]")
+    console.print(
+        f"status={data.get('status')} "
+        f"created={data.get('created_at')} messages={len(messages)}"
+    )
+    for m in messages:
+        meta = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+        tools = meta.get("tools") if isinstance(meta.get("tools"), list) else []
+        console.print(
+            f"[cyan]{m.get('timestamp')}[/cyan] | {m.get('role')} "
+            f"| {m.get('agent') or ''} | {len(tools)} tools"
+        )
+        for t in tools[:30]:
+            summary = ""
+            if isinstance(t, dict):
+                summary = str(t.get("summary") or "")[:100]
+            console.print(
+                f"  [dim]{t.get('callID') if isinstance(t, dict) else '?'}[/dim] "
+                f"{t.get('tool') if isinstance(t, dict) else t} {summary}"
+            )
+        text = m.get("content") or ""
+        console.print(f"  {(text if full else text[:300]) or '(empty)'}")
+
+
+@app.command()
+def delegation(
+    delegation_id: str = typer.Argument(..., help="Delegation id to inspect"),
+    trace: bool = typer.Option(False, "--trace", help="Include trace tool rows"),
+    tool_limit: int = typer.Option(20, "--tools", help="Max tool rows with --trace"),
+):
+    """Show a delegation record, its children, and optionally its trace."""
+    import asyncio as _asyncio
+
+    from sweave.cli.debug import find_delegation, summarize_trace, sweave_home
+
+    home = sweave_home()
+    record, children, record_dir = _asyncio.run(find_delegation(home, delegation_id))
+    if record is None:
+        console.print(f"[yellow]Delegation {delegation_id} not found.[/yellow]")
+        if children:
+            console.print(f"But {len(children)} child row(s) reference it as parent:")
+        else:
+            return
+    else:
+        table = Table(title=f"Delegation {delegation_id}")
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="green")
+        for key in (
+            "agent", "status", "kind", "parent_task_id", "task_id",
+            "branch", "worktree_path", "engine_session_id", "fix_of",
+            "fix_round", "depth", "blocking", "created_at", "updated_at",
+            "error",
+        ):
+            table.add_row(key, str(getattr(record, key, None))[:160])
+        table.add_row("task", str(getattr(record, "task", ""))[:300])
+        table.add_row("output", str(getattr(record, "output", "") or "")[:300])
+        table.add_row("verdict", str(getattr(record, "verdict", None))[:200])
+        table.add_row(
+            "review_request", str(getattr(record, "review_request", None))[:200]
+        )
+        table.add_row("store", str(record_dir))
+        console.print(table)
+    if children:
+        kids = Table(title=f"Children ({len(children)})")
+        kids.add_column("id", style="cyan")
+        kids.add_column("agent", style="green")
+        kids.add_column("status", style="yellow")
+        kids.add_column("branch", style="blue")
+        for c in sorted(children, key=lambda r: str(getattr(r, "created_at", ""))):
+            kids.add_row(
+                str(getattr(c, "delegation_id", "?")),
+                str(getattr(c, "agent", "?")),
+                str(getattr(c, "status", "?")),
+                str(getattr(c, "branch", ""))[:60],
+            )
+        console.print(kids)
+    if trace:
+        counts, rows = summarize_trace(home, delegation_id, tool_limit)
+        console.print(f"[bold]Trace events ({sum(counts.values())}):[/bold] {counts}")
+        if rows:
+            t = Table(title=f"Tool rows (last {len(rows)})")
+            t.add_column("callID", style="cyan")
+            t.add_column("tool", style="green")
+            t.add_column("status", style="yellow")
+            t.add_column("summary", style="blue")
+            for r in rows:
+                t.add_row(
+                    str(r["callID"])[-12:], str(r["tool"]),
+                    str(r["status"]), str(r["summary"])[:120],
+                )
+            console.print(t)
+
+
+# Entry point LAST: ``python -m sweave.cli.main`` executes the file
+# top to bottom, so an earlier ``if __name__`` guard would run the
+# app before the commands below register (all of log/tail/watch and
+# anything appended after them silently missing from the CLI).
+if __name__ == "__main__":
+    main()
