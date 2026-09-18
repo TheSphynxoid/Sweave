@@ -1,9 +1,11 @@
 # Review as a feature — plan of record
 
-Status: planned (2026-09-17). Review today is not a feature (a
-status + a promote button); this plan makes it one. Scope locked
-with user: Verdict UI + Request flow + pre-promote Diff review.
-Fix-round tracking stays with chat/specialist (out of scope here).
+Status: planned (2026-09-17); execution order locked 2026-09-18:
+step 0 (backstop live-verify) → step 1 → step 3 → step 2-human.
+Review today is not a feature (a status + a promote button);
+this plan makes it one. Scope locked with user: Verdict UI +
+Request flow + pre-promote Diff review. Fix-round tracking stays
+with chat/specialist (out of scope here).
 
 Thread: verdicts (`decision/comments/confidence/reviewer/
 gotcha_hits/fix_assignee`) are write-only today — submitted via
@@ -58,6 +60,16 @@ Mark done.
   so promotion is eyes-on, never blind.
 
 ## 2. Steps
+
+### Step 0 — Backstop live-verify (ops, first)
+
+1. Restart the server (picks up `12656bb`), run a review-owed
+   turn, and check the reviewer's `parent_task_id` == the review
+   TARGET's id (not the chat turn). Evidence session
+   `Sweave-20260918-002816-34a49c` ran pre-restart: reviewer
+   `4e6868a49400` chat-parented, no verdict — the old pattern.
+2. Done-gate: one probe turn with correct parentage; then steps
+   1/3 build on real data.
 
 ### Step 1 — Verdict display (backend: none; UI only)
 

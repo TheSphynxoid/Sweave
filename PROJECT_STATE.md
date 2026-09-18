@@ -1901,6 +1901,36 @@ The user wants:
   process was bound to a test port; killed before final sweep so the
   new code loads cleanly.
 
+### Session 2026-09-17/18: review backstop + UI fixes + wave/review plans
+
+- **Review backstop** (`12656bb`): `ChatLoop._backstop_uncovered_reviews`
+  runs on normal turn completion — uncovered `review_request` children
+  get a reviewer delegation parented to the review TARGET (chain-rule
+  validated, traced, never fails the turn). Pinned by
+  `tests/test_review_backstop.py` (8 tests). Incident behind it:
+  `Sweave-20260916-215042-3dba3a` closed with verbalized-but-never-
+  dispatched reviewer need.
+- **UI fixes** (`3923f4b`, regression fix `8a4515e`): per-tab session
+  view (`/chat/:sessionId`, no cross-tab follow), session-query
+  invalidation on `message.added` (remounts never rebuild from
+  pre-turn history), lanes mount live-on-spawn / settled-on-final
+  (`shouldShowLanes`, shared pure helper).
+- **Incidents → GOTCHAS**: held-open waits die on client idle
+  timeouts (poll, don't hold); cancel reads the store mid-run
+  (bind-time `engine_session_id` persist); optimistic UI must mirror
+  the server record model.
+- **Plans of record for the next session(s)** (all user-locked):
+  `docs/REVIEW_FEATURE_PLAN.md` (order: step 0 backstop live-verify
+  → step 1 verdict display → step 3 diff-before-done → step 2 human
+  request flow), `docs/WAVE_LOOP_PLAN.md` (1 + 2 + sponsored-fix,
+  proof-not-claim, ping-pong fuse, spawn-round attribution).
+  Field fossil: `Sweave-20260918-002816-34a49c` (synthesis-round
+  defer accepted-but-never-joined; reviewer chat-parented, no
+  verdict) — ran pre-restart, so the backstop's first live test
+  (restart + probe turn + parentage check) is still open.
+- **Rulings**: SPA stays (DESIGN R4 note); R6 training-fuel note
+  (verdicts-as-labels, verifier stack) in DESIGN R6.
+
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.
 

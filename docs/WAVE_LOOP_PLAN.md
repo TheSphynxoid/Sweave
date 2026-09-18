@@ -60,6 +60,12 @@ makes waves real instead.
 
 ## Open points for the planning session
 
+- Field fossil (2026-09-18, session
+  `Sweave-20260918-002816-34a49c`): reviewer `4e6868a49400`
+  created 01:01:10 during the synthesis round, turn closed
+  01:01:27 without joining it — the accepted-but-never-joined
+  middle in the wild. The loop must join synthesis-round defers
+  or reject them; silent orphaning ends here.
 - Exact wave-cap number (2 locked as margin; fuse threshold open).
 - Fix-round fuse mechanics (per-turn count vs per-chain; escalate
   vs fail-loud on trip).
