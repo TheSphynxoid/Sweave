@@ -307,3 +307,65 @@ async def test_bash_exit_code_is_tool_error(sidecar, tmp_path):
     assert len(STUB["requests"]) == 2
     failed = {p["tool"]: p["state"].get("error", "") for p in trace.of("tool.failed")}
     assert "exit 3" in failed.get("bash", "")
+
+
+@needs_node
+async def test_bash_heredoc_rejected_with_write_pointer(sidecar, tmp_path):
+    """Agent parity: `cat <<EOF` file authoring is rejected with a
+    typed pointer to the write tool — never executed, never fatal."""
+    STUB["script"] = [
+        {"calls": [_call("bash", {"command": "cat <<'EOF'\nhi\nEOF"})]},
+        {"text": "RECOVERED"},
+    ]
+    STUB["requests"] = []
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec(tmp_path, ["bash"]))
+    trace = _Trace()
+    result = await proc.send(_message(), trace=trace)
+    assert result.success, result.error
+    assert result.output == "RECOVERED"
+    assert len(STUB["requests"]) == 2
+    failed = {p["tool"]: p["state"].get("error", "") for p in trace.of("tool.failed")}
+    assert "heredoc" in failed.get("bash", "")
+    assert "write tool" in failed.get("bash", "")
+
+
+@needs_node
+async def test_bash_herestring_and_shift_pass_guard(tmp_path):
+    """The heredoc predicate (pure, no shell): herestrings, shifts,
+    lowercase redirections, and non-strings pass; UPPERCASE heredoc
+    delimiters reject. Runs node directly — no sidecar needed."""
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    script = (
+        "import('./sweave-engine/src/tools.js').then((m) => {"
+        "const cases = ["
+        "['cat <<\\'EOF\\'\\nhi\\nEOF', true],"
+        "['cat <<EOF\\nhi\\nEOF', true],"
+        "['python3 << \\'PY\\'\\nprint(1)\\nPY', true],"
+        "['cmd <<-EOS\\nx\\nEOS', true],"
+        "['echo a<<<b', false],"
+        "['node -e \"x<<2\"', false],"
+        "['echo \"a << b\"', false],"
+        "['echo hi', false],"
+        "['', false],"
+        "];"
+        "let bad = 0;"
+        "for (const [cmd, want] of cases) {"
+        "const got = m.bashHeredocRejected(cmd);"
+        "if (got !== want) { bad += 1; console.log('MISS', JSON.stringify(cmd), got); }"
+        "}"
+        "if (bad) process.exit(1);"
+        "console.log('heredoc predicate ok');"
+        "});"
+    )
+    proc = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr + proc.stdout

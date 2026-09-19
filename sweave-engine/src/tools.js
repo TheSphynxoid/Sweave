@@ -394,8 +394,37 @@ async function writePath(cwd, filePath, content) {
   return { ...ok(`wrote ${filePath}`), _old: old };
 }
 
+/**
+ * True when a bash command uses a heredoc (`<<`/`<<-` with an
+ * UPPERCASE delimiter: `<<EOF`, `<<'PY'`). Herestrings (`<<<`),
+ * shifts (`x<<2`), and lowercase redirections (`<< b`) return
+ * false. Exported for tests (pure predicate over the command
+ * string — no shell involved).
+ */
+export function bashHeredocRejected(command) {
+  return (
+    typeof command === "string" &&
+    /(?<!<)<<-?\s*['"]?[A-Z][A-Z0-9_]*['"]?/.test(command)
+  );
+}
+
 function runBash(cwd, command, timeoutMs, signal) {
   return new Promise((resolvePromise) => {
+    // Heredoc guard (agent parity): `cat <<EOF ...` file authoring
+    // through bash burns rounds on quoting (Git-Bash heredocs cost a
+    // live turn six attempts once) and bypasses the gated write
+    // path. Reject with a typed pointer to the write tool instead of
+    // executing (see bashHeredocRejected for the exact shape).
+    if (bashHeredocRejected(command)) {
+      resolvePromise({
+        ok: false,
+        error:
+          "rejected: bash heredocs (<<) are not executed — author file content " +
+          "with the write tool (gated, quoted correctly), or feed stdin with " +
+          "printf/a pipe instead",
+      });
+      return;
+    }
     // No-rotation invariant: a kill must actually kill. An aborted
     // turn leaves no blind work behind — the child dies here, not at
     // its own timeout.
