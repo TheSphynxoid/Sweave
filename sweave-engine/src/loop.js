@@ -269,7 +269,7 @@ async function providerChatStream({ baseURL, key, provider, modelId, sessionId, 
       // as-is; never mixed into `text` (the turn output).
       const rtext = extractReasoningDelta(delta);
       if (rtext && onReasoning) onReasoning(rtext);
-      for (const tc of delta.tool_calls || []) {
+      for (const tc of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {
         const slot = toolDeltas.get(tc.index ?? 0) || { id: "", name: "", arguments: "" };
         if (tc.id) slot.id = tc.id;
         if (tc.type) slot.type = tc.type;
@@ -414,11 +414,22 @@ async function resolveAsk(execCtx, gate, toolName, callId, input) {
       ? `. 'Always allow' covers ${folderGrant} and everything under it`
       : "") +
     ". Answer 'allow once' / 'always allow' / 'deny' (or skip = deny).";
-  const response = await callEnginePermission(
-    { delegationId, question, options: ["allow once", "always allow", "deny"], metadata: { requestId, permission: gate.permission, patterns: gate.patterns, tool: toolName } },
-    isAborted,
-    sweaveCtx.signal
-  );
+  // Fail closed, never turn-fatal: a permission-create failure
+  // (server restart/deploy, expired token, validation 400) used to
+  // reject runLoop outright — whole turn dead AND an unanswered
+  // assistant call left in the journal (the 2026-09-19 poison
+  // class). Only abort control signals propagate.
+  let response;
+  try {
+    response = await callEnginePermission(
+      { delegationId, question, options: ["allow once", "always allow", "deny"], metadata: { requestId, permission: gate.permission, patterns: gate.patterns, tool: toolName } },
+      isAborted,
+      sweaveCtx.signal
+    );
+  } catch (e) {
+    if (e && (e.code === "aborted" || e.name === "AbortError")) throw e;
+    return "reject";
+  }
   // NOTE: compare the MAPPED answer, not the raw string — the human
   // picks the multi-word "always allow" option, which never `===`
   // "always" (the pre-folder bug that made always-allow store
@@ -515,6 +526,21 @@ export async function runLoop(loopCtx) {
       failedIterations: failedIters,
     },
   });
+  // Duplicate call-id guard: providers occasionally reuse an id
+  // across indices, and a replayed duplicate `tool_call_id` /
+  // `call_id` 400s deterministically on every resume until revert
+  // (sanitizeHistory matches by id-set, so dups pass it). Rewrite
+  // collisions to fresh ids BEFORE the assistant entry is appended,
+  // so tool outputs stay consistent within the turn.
+  const seenCallIds = new Set();
+  for (const m of store.historyForRun(session)) {
+    if (m && m.role === "tool" && m.toolCallId) seenCallIds.add(m.toolCallId);
+    if (m && m.role === "assistant" && Array.isArray(m.toolCalls)) {
+      for (const tc of m.toolCalls) {
+        if (tc && tc.id) seenCallIds.add(tc.id);
+      }
+    }
+  }
 
   for (;;) {
     if (isAborted()) throw Object.assign(new Error("aborted"), { code: "aborted" });
@@ -554,6 +580,10 @@ export async function runLoop(loopCtx) {
     });
     stepText = stepResult.text;
     stepCalls = stepResult.calls;
+    for (const c of stepCalls) {
+      if (c && c.id && seenCallIds.has(c.id)) c.id = newCallId();
+      if (c && c.id) seenCallIds.add(c.id);
+    }
     stepUsage = stepResult.usage;
     const inTok = stepUsage?.prompt_tokens || 0;
     const outTok = stepUsage?.completion_tokens || 0;
@@ -663,7 +693,7 @@ export async function runLoop(loopCtx) {
           continue;
         }
       }
-      const runExec = () => executeTool(call.name, call.args || {}, { cwd, session, signal });
+      const runExec = () => executeTool(call.name, call.args || {}, { cwd, session, signal, saveSession });
       // No blind work: an abort during a tool settles the turn now —
       // the tool's own signal handling (bash kill) stops the work.
       const settled = await Promise.race([

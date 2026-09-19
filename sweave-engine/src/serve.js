@@ -80,6 +80,12 @@ function validateRun(body) {
   if (typeof body.turn_timeout !== "number" || !(body.turn_timeout > 0)) {
     return "bad:turn_timeout (must be > 0 seconds)";
   }
+  // loop.js resolvePath(cwd, ...) throws TypeError on non-string cwd
+  // (turn-fatal + journal poison past the assistant entry) — reject
+  // at the gate with a name, never inside the turn.
+  if (typeof body.cwd !== "string") {
+    return "bad:cwd (must be a string path when present)";
+  }
   // Retry budget (additive): retries AFTER the first provider attempt
   // (default 3). Absent keeps the default; the orchestrator sends its
   // configured value per turn.

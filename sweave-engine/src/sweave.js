@@ -146,6 +146,14 @@ function rejectedPrefix(msg) {
   return low.includes("loop detected") || low.includes("depth") || low.includes("budget");
 }
 
+// Abort control signals always propagate: sweave-tool catches must
+// rethrow them via rethrowAbort, or a turn stop during defer/list/
+// ask/escalate degrades into "turn won't stop" (the loop keeps
+// billing calls after abort).
+function rethrowAbort(e) {
+  if (e && (e.code === "aborted" || e.name === "AbortError")) throw e;
+}
+
 export async function callDefer(args, runCtx) {
   const a = args || {};
   const target = a.target;
@@ -183,6 +191,7 @@ export async function callDefer(args, runCtx) {
     const data = await post("/api/v2/tasks", body, runCtx.signal);
     return { ok: true, text: `queued: ${data.delegation_id || "?"} (target=${target})` };
   } catch (e) {
+    rethrowAbort(e);
     const msg = e.message || String(e);
     if (rejectedPrefix(msg)) return { ok: false, text: `rejected: ${msg}` };
     return { ok: false, text: `error: ${msg}` };
@@ -201,12 +210,12 @@ export async function callListSpecialists() {
         .join("\n"),
     };
   } catch (e) {
+    rethrowAbort(e);
     return { ok: false, text: `error: ${e.name || "Error"}: ${e.message}` };
   }
 }
 
-async function waitEscalation(delegationId, isAborted, signal) {
-  for (;;) {
+async function waitEscalation(delegationId, isAborted, signal) {  for (;;) {
     if (isAborted()) throw new Error("aborted");
     if (signal && signal.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
     await sleep(2000);
@@ -301,6 +310,7 @@ export async function callAskHuman(args, runCtx) {
     const data = await post(`/api/delegations/${encodeURIComponent(caller)}/escalate`, body, runCtx.signal);
     escalationId = data.escalation_id || "?";
   } catch (e) {
+    rethrowAbort(e);
     return { ok: false, text: `error: ${e.message}` };
   }
   // BLOCK inside the call (the engine owns the ChatLoop's hold-open
@@ -323,6 +333,7 @@ export async function callAskHuman(args, runCtx) {
     }
     return { ok: true, text: `Question ${rec.status} — proceed with best judgment.` };
   } catch (e) {
+    rethrowAbort(e);
     return { ok: false, text: `error: ${e.message}` };
   }
 }
@@ -352,6 +363,7 @@ export async function callEscalate(args, runCtx) {
       text: `escalated: ${data.escalation_id || "?"} (to orchestrator; your turn continues — state the block in your summary too)`,
     };
   } catch (e) {
+    rethrowAbort(e);
     return { ok: false, text: `error: ${e}` };
   }
 }

@@ -5,10 +5,12 @@
 // (internet cut, DNS, reset, timeout). The turn waits and retries
 // instead of failing loudly on the first blip.
 //
-// Never retried: auth (401/403, bad key, quota-exhausted), bad
-// request (400 — including wrong-transport flavor errors, which are
-// deterministic), context overflow. Those fail the turn immediately
-// with their own named error.
+// Never retried: auth (401/403, bad key, quota-exhausted), DETERMINISTIC
+// bad request (400 with no transient text — wrong-transport flavor
+// errors included), context overflow. A 400 carrying transient text
+// (overload/unavailable blips the gateway surfaces as 400, observed
+// live: "Model is unavailable") DOES retry. Those fail the turn
+// immediately with their own named error.
 //
 // Delays mirror opencode: honor `retry-after-ms` / `retry-after`
 // response headers when present, else 2s * 2^(n-1) + 25% jitter,
@@ -23,14 +25,14 @@ export const RETRY_JITTER_FACTOR = 0.25;
 export const RETRY_MAX_DELAY_NO_HEADERS_MS = 30000;
 export const DEFAULT_MAX_RETRIES = 3;
 
-const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 524]);
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 524]);
 
 // Message-shape subset of opencode's RETRYABLE_MESSAGE_PATTERNS (the
 // patterns our providers actually emit; SDK-vendor prefixes omitted).
 const RETRYABLE_PATTERNS = [
-  /429|500|502|503|504|524/i,
+  /408|429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
-  /overloaded|service unavailable|service_unavailable|service-unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
+  /overloaded|service unavailable|service_unavailable|service-unavailable|unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
   /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
   /^timeout$|\b(?:request|response|connection|network|stream|read) (?:timeout|timed out|time out)\b/i,
   /try your request again|retry your request|resource exhausted|resource_exhausted/i,
@@ -68,9 +70,13 @@ export function isRetryableMessage(text) {
 export function isRetryable(err) {
   if (!err || typeof err !== "object") return isRetryableMessage(String(err || ""));
   const status = err.status;
-  if (status === 401 || status === 403 || status === 400) return false;
+  if (status === 401 || status === 403) return false;
   const text = `${err.message || ""}\n${err.body || ""}`;
   if (matchesAny(text, NEVER_PATTERNS)) return false;
+  // 400 is split: deterministic bad-requests (flavor errors, poisoned
+  // history) fail fast; transient-text 400s (overload/unavailable
+  // blips) ride the normal backoff.
+  if (status === 400) return matchesAny(text, RETRYABLE_PATTERNS);
   if (typeof status === "number" && RETRYABLE_STATUS.has(status)) return true;
   return isRetryableMessage(text);
 }

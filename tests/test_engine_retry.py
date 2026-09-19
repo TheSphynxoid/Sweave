@@ -1,8 +1,9 @@
 """Engine retry tests (user ruling: wait and retry like opencode).
 
 Sidecar retries transient provider failures INSIDE the turn (same
-history, no rotation): 429 / 5xx / rate-limit / network-down. Auth,
-bad-request, quota-exhausted and context-overflow never retry.
+history, no rotation): 429 / 5xx / 408 / rate-limit / network-down /
+transient-text 400s. Auth, deterministic bad-request, quota-exhausted
+and context-overflow never retry.
 
 Live half: a scripted stub provider fails N times (429 with
 ``retry-after-ms``, then 500) before succeeding — the turn recovers
@@ -214,6 +215,52 @@ async def test_auth_failure_never_retries(sidecar, tmp_path: Path):
     assert not result.success
     assert "401" in (result.error or "")
     assert STUB["hits"] == 1
+
+
+@needs_node
+async def test_transient_400_retries(sidecar, tmp_path: Path):
+    """400 with transient text (gateway "Model is unavailable" blip)
+    retries like a 503, then succeeds on the next attempt."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["script"] = [(400, {}, '{"error": "Model is unavailable"}')]
+    STUB["hits"] = 0
+    proc = await SweaveEngineHarness().attach("eng_retry_400t", _spec(tmp_path))
+    result, _ = await _send(proc)
+    assert result.success, result.error
+    assert result.output == "recovered"
+    assert STUB["hits"] == 2
+
+
+@needs_node
+async def test_deterministic_400_fails_fast(sidecar, tmp_path: Path):
+    """400 with deterministic text (poisoned-history shape) fails after
+    exactly one attempt — no backoff burn against a wall."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["script"] = [
+        (400, {}, '{"error": "No tool output found for function call call_x"}')
+    ]
+    STUB["hits"] = 0
+    proc = await SweaveEngineHarness().attach("eng_retry_400d", _spec(tmp_path))
+    result, _ = await _send(proc)
+    assert not result.success
+    assert "400" in (result.error or "")
+    assert STUB["hits"] == 1
+
+
+@needs_node
+async def test_408_retries(sidecar, tmp_path: Path):
+    """408 Request Timeout is timeout-class: retry, then succeed."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["script"] = [(408, {}, '{"error": "Request Timeout"}')]
+    STUB["hits"] = 0
+    proc = await SweaveEngineHarness().attach("eng_retry_408", _spec(tmp_path))
+    result, _ = await _send(proc)
+    assert result.success, result.error
+    assert result.output == "recovered"
+    assert STUB["hits"] == 2
 
 
 @needs_node

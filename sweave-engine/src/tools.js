@@ -573,6 +573,14 @@ function todoWrite(session, todos) {
 
 // Read-only git inspection (argv-exec, never a shell string).
 const GIT_VERBS = new Set(["log", "show", "status", "diff", "branch", "ls-files", "rev-parse"]);
+// Bounds: git must never hang the turn on a credential prompt or
+// pager, and must never accumulate unbounded bytes. The shared
+// 1200s per-tool race is the backstop, not the plan: 60s per git
+// call, ignored stdin (prompts read EOF), no TTY (pipes never page),
+// askpass neutered, 1MB accumulation cap (capResult's 32K still
+// applies downstream).
+const GIT_TIMEOUT_MS = 60000;
+const GIT_ACCUMULATE_CAP = 1024 * 1024;
 // Args starting with "-" are denied except this allowlist (structural,
 // not a parser). Dangerous git flags are denied explicitly below.
 const GIT_FLAG_ALLOW = new Set(["--stat", "--oneline", "-n", "--name-only", "--porcelain"]);
@@ -616,7 +624,13 @@ function runGit(cwd, verb, args, signal) {
     const settle = (value) => resolvePromise(value);
     let child;
     try {
-      const spawnOpts = { cwd, windowsHide: true };
+      const spawnOpts = {
+        cwd,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: GIT_TIMEOUT_MS,
+        env: { ...process.env, GIT_ASKPASS: "echo", GIT_TERMINAL_PROMPT: "0" },
+      };
       if (signal && typeof AbortSignal !== "undefined" && signal instanceof AbortSignal) {
         spawnOpts.signal = signal;
       }
@@ -627,9 +641,15 @@ function runGit(cwd, verb, args, signal) {
     }
     let out = "";
     let err = "";
+    let capped = false;
     const onData = (buf, acc) => {
-      const s = String(buf);
-      return acc + s;
+      if (capped) return acc;
+      const next = acc + String(buf);
+      if (next.length > GIT_ACCUMULATE_CAP) {
+        capped = true;
+        return next.slice(0, GIT_ACCUMULATE_CAP);
+      }
+      return next;
     };
     if (child.stdout) child.stdout.on("data", (d) => { out = onData(d, out); });
     if (child.stderr) child.stderr.on("data", (d) => { err = onData(d, err); });
@@ -639,14 +659,19 @@ function runGit(cwd, verb, args, signal) {
         : `git: failed to start (${e && e.message ? e.message : e})`;
       settle({ ok: false, error: msg });
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signalName) => {
       const text = (out + (err ? `\n[stderr]\n${err}` : "")).trim();
-      if (code === 0) {
-        settle(ok(text));
+      const tail = capped ? `\n... [accumulation capped at ${GIT_ACCUMULATE_CAP} chars]` : "";
+      if (signal && signal.aborted) {
+        settle({ ok: false, error: "git: aborted (killed on turn stop)" });
+      } else if (signalName === "SIGTERM" && code === null) {
+        settle({ ok: false, error: `git: timed out after ${GIT_TIMEOUT_MS}ms${tail}` });
+      } else if (code === 0) {
+        settle(ok(text + tail));
       } else if (/not a git repository/i.test(text)) {
         settle({ ok: false, error: `git: not a git repository (${cwd})` });
       } else {
-        settle({ ok: false, error: `git: exit ${code}: ${text.slice(-2000)}` });
+        settle({ ok: false, error: `git: exit ${code}: ${text.slice(-2000)}${tail}` });
       }
     });
   });
@@ -894,7 +919,7 @@ export async function executeTool(name, args, execCtx) {
   }
 }
 
-async function executeToolInner(name, a, { cwd, session, signal }) {
+async function executeToolInner(name, a, { cwd, session, signal, saveSession }) {
   let result;
   switch (name) {
     case "read": {
@@ -921,9 +946,19 @@ async function executeToolInner(name, a, { cwd, session, signal }) {
     case "grep":
       result = await grepSearch(cwd, a.pattern || "", a.path, a.include);
       break;
-    case "todo":
+    case "todo": {
       result = await todoWrite(session, a.todos);
+      // Durability: todoWrite mutates the in-memory session only;
+      // the next store.append would persist it, but a crash before
+      // then reverts the list. Persist here (best-effort — a save
+      // failure must not fail the tool).
+      if (result && result.ok && typeof saveSession === "function") {
+        try {
+          await saveSession();
+        } catch {}
+      }
       break;
+    }
     case "git":
       result = await runGit(cwd, a.verb, a.args, signal);
       break;
