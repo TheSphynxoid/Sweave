@@ -247,34 +247,22 @@ def _sidecar_with_journal(stub_url: str, tmp_path_factory, journal: dict):
 
 
 def _straddling_journal() -> dict:
-    """Review fix (cap/sever interaction): an answered pair sitting
-    exactly on the ceiling cut — the assistant half is dropped as
-    oldest while the tool half survives. The mapper must drop the
-    orphan output too; replaying it alone 400s both flavors."""
+    """Charter pinning (agent parity): the first message is the
+    session's charter+task anchor and must survive the ceiling even
+    when it is the oldest entry. A 410-message journal capped to 400
+    keeps message zero."""
     now = int(time.time() * 1000)
     msgs = [
         {
-            "id": "msg_old_asst",
-            "role": "assistant",
-            "content": "",
-            "toolCalls": [{"id": "call_straddle", "name": "bash", "args": {}}],
-            "model": "m/m",
+            "id": "msg_anchor",
+            "role": "user",
+            "content": "CHARTER ANCHOR",
             "at": now,
-        },
-        {
-            "id": "msg_old_tool",
-            "role": "tool",
-            "toolCallId": "call_straddle",
-            "name": "bash",
-            "content": "old output",
-            "at": now + 1,
-        },
+        }
     ]
-    # 398 fillers + live prompt = 401 total -> the ceiling drops
-    # exactly the assistant half, stranding its tool output.
-    for i in range(398):
+    for i in range(409):
         msgs.append(
-            {"id": f"msg_f_{i}", "role": "user", "content": f"f{i}", "at": now + 2 + i}
+            {"id": f"msg_f_{i}", "role": "user", "content": f"f{i}", "at": now + 1 + i}
         )
     return {
         "eng_straddle": {
@@ -504,11 +492,11 @@ async def test_session_fresh_named_on_done(stub_url, tmp_path_factory, tmp_path)
 
 
 @needs_node
-async def test_straddling_pair_drops_orphan_output_chat(
+async def test_charter_anchor_survives_ceiling(
     stub_url, tmp_path_factory, tmp_path
 ):
-    """Review fix: ceiling severs an answered pair (assistant dropped,
-    tool survives) — the orphan output must not reach the chat wire."""
+    """Charter pinning: the first message (session anchor) survives
+    the ceiling while newer filler drops."""
     HITS.clear()
     from sweave.harness.engine import SweaveEngineHarness
 
@@ -518,30 +506,81 @@ async def test_straddling_pair_drops_orphan_output_chat(
         )
         result = await proc.send(_message("continue"), trace=_Trace())
     assert result.success, result.error
-    tools = [
-        m for m in HITS[0]["messages"] if isinstance(m, dict) and m.get("role") == "tool"
-    ]
-    assert all(t.get("tool_call_id") != "call_straddle" for t in tools)
+    wired = HITS[0]["messages"]
+    assert len(wired) == 401
+    assert wired[0].get("role") == "user"
+    assert "sweave history note" in wired[0].get("content", "")
+    assert wired[1].get("content") == "CHARTER ANCHOR"
+    assert wired[-1].get("content") == "continue"
 
 
 @needs_node
-async def test_straddling_pair_drops_orphan_output_responses(
+async def test_orphan_tool_output_dropped_without_cap(
     stub_url, tmp_path_factory, tmp_path
 ):
-    """Same severed pair on the responses wire: no unattributed
-    function_call_output."""
+    """Orphan-output pass, no ceiling involved: a tool result whose
+    call has no surviving assistant entry never reaches either wire."""
     HITS.clear()
     from sweave.harness.engine import SweaveEngineHarness
 
-    with _sidecar_with_journal(stub_url, tmp_path_factory, _straddling_journal()):
-        proc = await SweaveEngineHarness().attach(
-            "eng_straddle", _spec(RESP_MODEL, tmp_path, tools=[])
-        )
-        result = await proc.send(_message("continue"), trace=_Trace())
-    assert result.success, result.error
-    outputs = [
+    now = int(time.time() * 1000)
+    journal = {
+        "eng_orphan": {
+            "id": "eng_orphan",
+            "created": now,
+            "revert": None,
+            "messages": [
+                {"id": "u", "role": "user", "content": "go", "at": now},
+                {
+                    "id": "a",
+                    "role": "assistant",
+                    "content": "did things",
+                    "toolCalls": [
+                        {"id": "c_kept", "name": "read", "args": {}},
+                        {"id": "c_gone", "name": "bash", "args": {}},
+                    ],
+                    "model": "m/m",
+                    "at": now + 1,
+                },
+                {
+                    "id": "t1",
+                    "role": "tool",
+                    "toolCallId": "c_kept",
+                    "name": "read",
+                    "content": "kept output",
+                    "at": now + 2,
+                },
+                {
+                    "id": "t2",
+                    "role": "tool",
+                    "toolCallId": "c_stray",
+                    "name": "bash",
+                    "content": "stray output",
+                    "at": now + 3,
+                },
+            ],
+        }
+    }
+    for model, flavor in ((CHAT_MODEL, "messages"), (RESP_MODEL, "input")):
+        with _sidecar_with_journal(stub_url, tmp_path_factory, journal):
+            proc = await SweaveEngineHarness().attach(
+                "eng_orphan", _spec(model, tmp_path, tools=[])
+            )
+            result = await proc.send(_message("continue"), trace=_Trace())
+        assert result.success, (model, result.error)
+    # Single-shot chat flattens journal tool results into user-text
+    # messages (no tool role on this path): assert on content. The
+    # stray output must be gone; the answered one stays.
+    chat_texts = [
+        m.get("content", "")
+        for m in HITS[0]["messages"]
+        if isinstance(m, dict) and m.get("role") == "user"
+    ]
+    assert not any("stray output" in t for t in chat_texts)
+    assert any("kept output" in t for t in chat_texts)
+    resp_outputs = [
         i
-        for i in HITS[0]["input"]
+        for i in HITS[1]["input"]
         if isinstance(i, dict) and i.get("type") == "function_call_output"
     ]
-    assert all(o.get("call_id") != "call_straddle" for o in outputs)
+    assert [o.get("call_id") for o in resp_outputs] == ["c_kept"]

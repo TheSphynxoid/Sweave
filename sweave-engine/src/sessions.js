@@ -238,11 +238,15 @@ export function capHistory(entries) {
   let droppedMessages = 0;
   let droppedChars = 0;
   let droppedTurns = 0;
+  // Charter pin: index 0 is the session's charter+task anchor (the
+  // role prompt rides the first user message, never repeated). Drop
+  // from index 1 while more than two messages remain; the anchor and
+  // the live prompt are never capped away from the model.
   while (
     (list.length > HISTORY_MAX_MESSAGES || chars > HISTORY_MAX_CHARS) &&
-    list.length > 1
+    list.length > 2
   ) {
-    const m = list.shift();
+    const m = list.splice(1, 1)[0];
     droppedMessages += 1;
     if (m && m.role === "user") droppedTurns += 1;
     const c = entryChars(m);

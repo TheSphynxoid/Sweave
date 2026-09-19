@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
-import { SessionStore, newMessageId, capHistory, historyTruncationNote } from "./sessions.js";
+import { SessionStore, newMessageId, capHistory, sanitizeHistory, historyTruncationNote } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import {
   historyToResponsesInput,
@@ -266,9 +266,12 @@ async function runTurn(sessionId, body, res) {
   }
 
   // Single-shot chat path: the inline map strips tool calls (so it
-  // is poison-immune), but the pre-flight history ceiling still
-  // applies — same budgets as the loop mappers. The live prompt is
-  // capped WITH history (newest-first survival keeps it; the cap
+  // is poison-immune), and the pre-flight history ceiling applies —
+  // same budgets as the loop mappers. Sanitize first so orphan tool
+  // outputs (never-completed calls) don't ride as noise text: the
+  // map below flattens every surviving tool result into a user
+  // message, so only surviving pairs cost context. The live prompt
+  // is capped WITH history (newest-first survival keeps it; the cap
   // never drops the final message), so both flavors wire ≤401
   // messages identically.
   const _base = store
@@ -276,15 +279,17 @@ async function runTurn(sessionId, body, res) {
     .filter((m) => m.id !== userMsg.id); // appended above; re-add below in order
   _base.push({ role: "user", content: body.composed_prompt });
   const _capped = capHistory(_base);
-  const history = _capped.entries.map((m) => ({
+  const _clean = sanitizeHistory(_capped.entries);
+  const history = _clean.map((m) => ({
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.failed ? `[previous error: ${m.error || "unknown"}]` : m.content,
   }));
-  if (_capped.droppedMessages > 0) {
+  const _omitted = _base.length - _clean.length;
+  if (_omitted > 0) {
     history.unshift({
       role: "user",
       content: historyTruncationNote(
-        _capped.droppedMessages, _capped.droppedChars, _capped.droppedTurns
+        _omitted, _capped.droppedChars, _capped.droppedTurns
       ),
     });
   }
