@@ -708,6 +708,22 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     and reading the diff against the commit claims (one claim was
     false).
 
+19. **Agent parity 2026-09-19 (sweave-engine up to par with
+    traditional agents — 5 commits).** Unknown-tool rejections name
+    the offered set; grep gains `literal:true`; doom_loop names the
+    stuck call with concrete outs; handoffs carry `lastError`
+    (500ch); the ceiling note counts turns. The first message
+    (charter+task anchor) is pinned outside the cap — dropping
+    oldest resumes at index 1. Bash heredocs (`<<EOF` shapes) are
+    rejected with a write-tool pointer (herestrings/shifts pass;
+    pure predicate, node-level matrix test). Thinking persists on
+    journal assistant entries (8K cap, counted by the ceiling) and
+    replays as native Responses `reasoning` items; rejecting
+    gateways get one strip-and-retry fallback, chat flavor persists
+    without replay (no standard field — strict gateways 400 unknown
+    keys). Deliberately deferred: reasoning-effort `variant`
+    (provider semantics need a ruling).
+
 
 ## Paths & config
 
