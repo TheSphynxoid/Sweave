@@ -15,7 +15,7 @@
 // executing (typed error the model can adjust to — the native
 // direction; opencode routes this through a permission ask).
 
-import { newMessageId, sanitizeHistory, capHistory, historyTruncationNote } from "./sessions.js";
+import { newMessageId, sanitizeHistory, capHistory, historyTruncationNote, REASONING_MAX_CHARS } from "./sessions.js";
 import { resolve as resolvePath, sep, dirname, relative } from "node:path";
 import {
   providerHttpError,
@@ -580,6 +580,11 @@ export async function runLoop(loopCtx) {
     let stepText = "";
     let stepCalls = [];
     let stepUsage = null;
+    // Per-iteration thinking capture (agent parity): reasoning deltas
+    // persist on the journal assistant entry (capped) so resumed
+    // turns re-read prior thinking instead of reconstructing it from
+    // bare tool calls. Forwarded live exactly as before.
+    let stepReasoning = "";
     const stepResult = await providerStream({
       baseURL: resolved.baseURL,
       key: resolved.key,
@@ -591,7 +596,10 @@ export async function runLoop(loopCtx) {
       defs: all,
       signal,
       onToken: (t) => emit({ event: "token", text: t }),
-      onReasoning: (t) => emit({ event: "reasoning", text: t }),
+      onReasoning: (t) => {
+        stepReasoning += t;
+        emit({ event: "reasoning", text: t });
+      },
       maxRetries: body.max_retries,
       logPrefix: `sweave-engine:${session.id}`,
     });
@@ -634,6 +642,9 @@ export async function runLoop(loopCtx) {
         content: stepText,
         model: `${model.provider}/${model.model_id}`,
         at: Date.now(),
+        ...(stepReasoning
+          ? { reasoning: stepReasoning.slice(0, REASONING_MAX_CHARS) }
+          : {}),
       });
       break;
     }
@@ -646,6 +657,9 @@ export async function runLoop(loopCtx) {
       model: `${model.provider}/${model.model_id}`,
       at: Date.now(),
     };
+    if (stepReasoning) {
+      assistantEntry.reasoning = stepReasoning.slice(0, REASONING_MAX_CHARS);
+    }
     store.append(session, assistantEntry);
 
     let iterSuccess = 0;

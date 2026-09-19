@@ -66,6 +66,10 @@ POISON_CALL_ID = "call_poison_dangling_1"
 ANSWERED_CALL_ID = "call_answered_kept_1"
 
 HITS: list[dict] = []
+# Scripted responses steps (agent-parity reasoning tests). Each step
+# is {"text"|"calls"|"reasoning"|"fail400"}. Empty = legacy fixed
+# text behavior (all pre-existing tests unaffected).
+RSCRIPT: list[dict] = []
 
 
 def _poisoned_journal() -> dict:
@@ -158,6 +162,65 @@ class _Handler(BaseHTTPRequestHandler):
         body = self._read_json()
         if self.path == "/responses":
             HITS.append({"flavor": "responses", "input": body.get("input", [])})
+            if RSCRIPT:
+                step = RSCRIPT.pop(0)
+                if "fail400" in step:
+                    payload = json.dumps({"error": step["fail400"]}).encode()
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    try:
+                        self.wfile.write(payload)
+                    except (ConnectionResetError, BrokenPipeError):
+                        pass
+                    return
+                chunks = []
+                if step.get("reasoning"):
+                    chunks.append(
+                        _sse(
+                            {
+                                "type": "response.reasoning_summary_text.delta",
+                                "delta": step["reasoning"],
+                            }
+                        )
+                    )
+                if step.get("text"):
+                    chunks.append(
+                        _sse(
+                            {
+                                "type": "response.output_text.delta",
+                                "delta": step["text"],
+                            }
+                        )
+                    )
+                for call in step.get("calls", []):
+                    chunks.append(
+                        _sse(
+                            {
+                                "type": "response.output_item.done",
+                                "item": {
+                                    "type": "function_call",
+                                    "id": call.get("id", "item_1"),
+                                    "call_id": call.get("call_id", "call_1"),
+                                    "name": call["name"],
+                                    "arguments": json.dumps(call.get("args", {})),
+                                },
+                            }
+                        )
+                    )
+                chunks.append(
+                    _sse(
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "usage": {"input_tokens": 7, "output_tokens": 2}
+                            },
+                        }
+                    )
+                )
+                self._send_sse(chunks)
+                return
             self._send_sse(
                 [
                     _sse({"type": "response.output_text.delta", "delta": "RESP OK"}),
@@ -489,6 +552,107 @@ async def test_session_fresh_named_on_done(stub_url, tmp_path_factory, tmp_path)
         second = await proc.send(_message("two"), trace=_Trace())
         assert second.success, second.error
         assert "session_fresh" not in second.metadata
+
+
+@needs_node
+async def test_reasoning_round_trip_loop(stub_url, tmp_path_factory, tmp_path):
+    """Agent parity: thinking streamed in iteration 1 persists to the
+    journal and replays as a native reasoning item in iteration 2."""
+    HITS.clear()
+    RSCRIPT.clear()
+    RSCRIPT.append(
+        {
+            "reasoning": "plan: read the notes first",
+            "calls": [{"name": "read", "args": {"filePath": "notes.txt"}}],
+        }
+    )
+    RSCRIPT.append({"text": "READ DONE"})
+    (tmp_path / "notes.txt").write_text("alpha\n", encoding="utf-8")
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_think", _spec(RESP_MODEL, tmp_path)
+        )
+        result = await proc.send(_message("read the notes"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "READ DONE"
+    assert len(HITS) == 2
+    second_input = HITS[1]["input"]
+    thinking = [
+        i
+        for i in second_input
+        if isinstance(i, dict) and i.get("type") == "reasoning"
+    ]
+    assert len(thinking) == 1
+    summaries = thinking[0].get("summary", [])
+    assert any(
+        "plan: read the notes first" in str(s.get("text", "")) for s in summaries
+    )
+    # The answered call still replays alongside its output.
+    kinds = [i.get("type", i.get("role")) for i in second_input]
+    assert "function_call" in kinds
+    assert "function_call_output" in kinds
+
+
+@needs_node
+async def test_reasoning_compat_fallback(stub_url, tmp_path_factory, tmp_path):
+    """A gateway rejecting reasoning items 400s once; the turn strips
+    them and retries thinking-less within the same turn (2 hits, the
+    second reasoning-free, turn succeeds)."""
+    HITS.clear()
+    RSCRIPT.clear()
+    RSCRIPT.append(
+        {"fail400": "reasoning input items are not supported by this model"}
+    )
+    now = int(time.time() * 1000)
+    journal = {
+        "eng_compat": {
+            "id": "eng_compat",
+            "created": now,
+            "revert": None,
+            "messages": [
+                {"id": "u", "role": "user", "content": "go", "at": now},
+                {
+                    "id": "a",
+                    "role": "assistant",
+                    "content": "working",
+                    "reasoning": "old plan",
+                    "toolCalls": [
+                        {"id": "c1", "name": "read", "args": {"filePath": "n"}}
+                    ],
+                    "model": "m/m",
+                    "at": now + 1,
+                },
+                {
+                    "id": "t",
+                    "role": "tool",
+                    "toolCallId": "c1",
+                    "name": "read",
+                    "content": "out",
+                    "at": now + 2,
+                },
+            ],
+        }
+    }
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, journal):
+        proc = await SweaveEngineHarness().attach(
+            "eng_compat", _spec(RESP_MODEL, tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "RESP OK"
+    assert len(HITS) == 2
+    first_input = HITS[0]["input"]
+    assert any(
+        isinstance(i, dict) and i.get("type") == "reasoning" for i in first_input
+    )
+    second_input = HITS[1]["input"]
+    assert not any(
+        isinstance(i, dict) and i.get("type") == "reasoning" for i in second_input
+    )
 
 
 @needs_node

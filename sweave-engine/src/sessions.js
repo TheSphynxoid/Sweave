@@ -207,10 +207,15 @@ export function sanitizeHistory(entries) {
 // dependency the sidecar refuses).
 export const HISTORY_MAX_MESSAGES = 400;
 export const HISTORY_MAX_CHARS = 500000;
+// Per-turn reasoning persistence bound (matches the transcript
+// reader's cap): thinking is replayed from the journal, so it must
+// be bounded like every other history bytes class.
+export const REASONING_MAX_CHARS = 8000;
 
 function entryChars(m) {
   let n = 0;
   if (m && typeof m.content === "string") n += m.content.length;
+  if (m && typeof m.reasoning === "string") n += m.reasoning.length;
   if (m && Array.isArray(m.toolCalls)) {
     for (const tc of m.toolCalls) {
       try {

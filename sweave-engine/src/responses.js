@@ -28,6 +28,25 @@ export function historyToResponsesInput(entries) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {
+      // Thinking replay (agent parity): the model re-reads its own
+      // prior reasoning as native `reasoning` input items (summary
+      // text only — never encrypted payloads, which we never store).
+      // Emission order mirrors generation: thinking, then text,
+      // then the calls it produced. A gateway that rejects the
+      // shape fails the turn LOUDLY on first contact (never a silent
+      // drop); providerResponsesStream strips-and-retries once with
+      // a session-tagged stderr line, so an incompatible gateway
+      // degrades to thinking-less turns instead of bricking the
+      // session. Chat flavor deliberately does NOT replay thinking
+      // (no standard field; strict gateways 400 unknown keys — the
+      // _sweave_managed lesson) — journal persistence still serves
+      // the transcript there.
+      if (typeof m.reasoning === "string" && m.reasoning) {
+        out.push({
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: m.reasoning }],
+        });
+      }
       if (m.toolCalls && m.toolCalls.length > 0) {
         if (m.content) out.push({ role: "assistant", content: m.content });
         for (const tc of m.toolCalls) {
@@ -63,6 +82,63 @@ export function responsesToolDefs(defs) {
 }
 
 export async function providerResponsesStream({
+  baseURL,
+  key,
+  modelId,
+  sessionId,
+  input,
+  defs,
+  signal,
+  onToken,
+  onReasoning,
+}) {
+  const attempt = (clientInput) =>
+    providerResponsesAttempt({
+      baseURL,
+      key,
+      modelId,
+      sessionId,
+      input: clientInput,
+      defs,
+      signal,
+      onToken,
+      onReasoning,
+    });
+  try {
+    return await attempt(input);
+  } catch (err) {
+    // Compat fallback: a gateway that rejects replayed `reasoning`
+    // input items 400s here. Strip them and retry ONCE within the
+    // same turn — an incompatible gateway degrades to thinking-less
+    // turns (logged, session-tagged) instead of bricking every turn
+    // on the session. Only fires when the error names reasoning and
+    // the input actually carried it; everything else rethrows.
+    const text = `${(err && err.message) || ""}\n${(err && err.body) || ""}`;
+    const carriesReasoning =
+      Array.isArray(input) &&
+      input.some((i) => i && i.type === "reasoning");
+    if (
+      !err ||
+      err.status !== 400 ||
+      !/reasoning/i.test(text) ||
+      !carriesReasoning
+    ) {
+      throw err;
+    }
+    try {
+      process.stderr.write(
+        `sweave-engine:${sessionId || "unknown"}: reasoning input rejected (400); ` +
+          `retrying thinking-less once\n`
+      );
+    } catch {}
+    const stripped = input.filter((i) => !(i && i.type === "reasoning"));
+    const out = await attempt(stripped);
+    out.reasoningCompatRetry = true;
+    return out;
+  }
+}
+
+async function providerResponsesAttempt({
   baseURL,
   key,
   modelId,

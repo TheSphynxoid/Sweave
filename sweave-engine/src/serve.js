@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
-import { SessionStore, newMessageId, capHistory, sanitizeHistory, historyTruncationNote } from "./sessions.js";
+import { SessionStore, newMessageId, capHistory, sanitizeHistory, historyTruncationNote, REASONING_MAX_CHARS } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import {
   historyToResponsesInput,
@@ -297,6 +297,9 @@ async function runTurn(sessionId, body, res) {
   const assistantId = newMessageId("msg");
   let output = "";
   let usage = null;
+  // Single-shot thinking capture (agent parity, same as the loop):
+  // reasoning persists on the journal entry for resume replay.
+  let singleReasoning = "";
   if (resolved.flavor === "responses") {
     // Responses flavor: same downstream events, different wire. The
     // small tail below mirrors the chat path's (append + done +
@@ -324,6 +327,7 @@ async function runTurn(sessionId, body, res) {
           sseEvent(res, { event: "token", text: t });
         },
         onReasoning: (t) => {
+          singleReasoning += t;
           sseEvent(res, { event: "reasoning", text: t });
         },
       }), {
@@ -377,6 +381,9 @@ async function runTurn(sessionId, body, res) {
       content: output,
       model: `${model.provider}/${model.model_id}`,
       at: Date.now(),
+      ...(singleReasoning
+        ? { reasoning: singleReasoning.slice(0, REASONING_MAX_CHARS) }
+        : {}),
     });
     sseEvent(res, {
       event: "done",
@@ -488,8 +495,14 @@ async function runTurn(sessionId, body, res) {
           }
           // Thinking capture (single-shot chat path mirrors the
           // loop's providerStream): reasoning never joins output.
+          // Persisted on the journal entry for resume replay (chat
+          // flavor does not replay it — no standard field — but the
+          // transcript and future turns on responses flavors use it).
           const rdelta = extractReasoningDelta(obj?.choices?.[0]?.delta);
-          if (rdelta) sseEvent(res, { event: "reasoning", text: rdelta });
+          if (rdelta) {
+            singleReasoning += rdelta;
+            sseEvent(res, { event: "reasoning", text: rdelta });
+          }
           if (obj?.usage) usage = obj.usage;
         }
         if (turn.finished) {
@@ -512,6 +525,9 @@ async function runTurn(sessionId, body, res) {
       content: output,
       model: `${model.provider}/${model.model_id}`,
       at: Date.now(),
+      ...(singleReasoning
+        ? { reasoning: singleReasoning.slice(0, REASONING_MAX_CHARS) }
+        : {}),
     };
     store.append(session, assistantMsg);
     sseEvent(res, {
