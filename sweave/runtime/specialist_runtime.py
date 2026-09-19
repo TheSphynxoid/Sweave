@@ -1087,8 +1087,21 @@ class SpecialistRuntime:
                         "session_created" if new_session else "session_resumed",
                         {"session_id": _bound_sid},
                     )
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _bind_err:  # noqa: BLE001
+                # Hygiene B6: a failed bind used to vanish silently —
+                # the turn ran fine but Stop/cancel later read None
+                # (the 2026-09-18 shape). Trace it so forensics can
+                # tell "bind skipped (empty id)" from "bind failed".
+                try:
+                    trace.append(
+                        "session_bind_failed",
+                        {
+                            "error": f"{type(_bind_err).__name__}: {_bind_err}",
+                            "specialist": specialist.name,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             msg = EngineMessage(
                 type="user",
                 content=prompt_text,
@@ -1184,8 +1197,24 @@ class SpecialistRuntime:
                             "session_created" if new_session else "session_resumed",
                             {"session_id": engine_sid},
                         )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _backfill_err:  # noqa: BLE001
+                    # Hygiene B6: same bind-failure trace as the
+                    # pre-send site (see above) — silent amnesia
+                    # must stay distinguishable from a clean skip.
+                    try:
+                        trace.append(
+                            "session_bind_failed",
+                            {
+                                "error": (
+                                    f"{type(_backfill_err).__name__}: "
+                                    f"{_backfill_err}"
+                                ),
+                                "specialist": specialist.name,
+                                "phase": "post_send_backfill",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             trace.append(
                 "model_used",
                 {

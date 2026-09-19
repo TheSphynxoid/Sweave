@@ -553,6 +553,36 @@ class ChatLoop:
                     cap,
                     len(join),
                 )
+                # Hygiene B6: a partial join must be VISIBLE. The
+                # synthesis input silently drops to "whatever is
+                # terminal" here — trace exactly who was unsettled so
+                # the final bubble is auditable as partial coverage,
+                # not mistaken for complete.
+                if trace is not None:
+                    try:
+                        trace.append(
+                            "child_wait_timeout",
+                            {
+                                "parent": parent_delegation_id,
+                                "cap": cap,
+                                "joined": [r.delegation_id for r in join],
+                                "settled": [
+                                    r.delegation_id
+                                    for r in join
+                                    if is_join_settled(r.status)
+                                ],
+                                "pending": [
+                                    r.delegation_id
+                                    for r in join
+                                    if not is_join_settled(r.status)
+                                ],
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "ChatLoop: child_wait_timeout trace append failed for %s",
+                            parent_delegation_id,
+                        )
                 return sorted(
                     join,
                     key=lambda c: c.completed_at or c.updated_at,
@@ -576,10 +606,12 @@ class ChatLoop:
         store = self.escalation_store
         if store is None:
             return None
-        try:
-            rec = await store.get(delegation_id=delegation_id)
-        except Exception:  # noqa: BLE001
-            return None
+        # Hygiene B6: bounded retries + distinct logging on store
+        # errors (a one-shot miss here used to read a live question
+        # as "never asked" and resolve the wait instantly).
+        from sweave.runtime.escalation import read_record_resilient
+
+        rec, _err = await read_record_resilient(store, delegation_id)
         if rec is None:
             return None
         if rec.get("status") != "pending":
@@ -2244,11 +2276,59 @@ class ChatLoop:
                             "kill": kill_outcome,
                         },
                     )
+                # Hygiene B6: persist the buffered round-0 partials
+                # BEFORE the error bubble. A hard-failing first turn
+                # with zero deferrals used to discard streamed text /
+                # thinking / tool rows (the childless narration-loss
+                # shape) — refresh showed a bare error with no record
+                # of what ran before the stall. The partial persists
+                # as a NON-final round-0 message (same shape as the
+                # children path below); the error stays the final
+                # bubble. Empty buffers change nothing.
+                await coalescer.flush()
+                await thinking_coalescer.flush()
+                _partial_entry = self._active_turns.get(session_id)
+                _partial_text = (
+                    _partial_entry.stream_text or ""
+                    if _partial_entry is not None
+                    else ""
+                )
+                _partial_thinking = "".join(
+                    t for kind, t in segments if kind == "reasoning"
+                )
+                _partial_has_tools = any(
+                    kind == "tool" for kind, _ in segments
+                )
+                if _partial_text or _partial_thinking or _partial_has_tools:
+                    await self._persist_round_message(
+                        session=session,
+                        session_id=session_id,
+                        delegation_id=delegation.delegation_id,
+                        round=0,
+                        text=_partial_text,
+                        thinking_text=_partial_thinking or None,
+                        segments=[
+                            {"kind": "tool", "callID": t}
+                            if kind == "tool"
+                            else {"kind": kind, "text": t}
+                            for kind, t in segments
+                        ] if _partial_thinking or _partial_has_tools else None,
+                        tools=_round_tools() or None,
+                    )
+                    try:
+                        trace.append(
+                            "round_partial_persisted",
+                            {"delegation_id": delegation.delegation_id},
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "ChatLoop: round_partial_persisted trace append failed for %s",
+                            delegation.delegation_id,
+                        )
                 return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=first_turn_text,
                 )
-
             # 5) Blocking-question gate (M1.11). ask_human returns
             # immediately at the MCP layer, but the chat turn stays
             # open (no assistant persisted) until the human answers
@@ -2424,6 +2504,25 @@ class ChatLoop:
                             f"A: {str(child_esc.get('response', '') or '').strip() or '(pending)'}"
                         )
             synthesis_body = composed_synth.to_body()
+            # Hygiene B6: partial-join honesty. The wait above returns
+            # whatever is terminal at the deadline — name the unsettled
+            # remainder server-side so synthesis (and the user) never
+            # mistakes partial coverage for complete. The
+            # child_wait_timeout trace event is the audit record.
+            unsettled = [
+                c for c in children if not is_join_settled(c.status)
+            ]
+            if unsettled:
+                names = ", ".join(
+                    f"{c.agent} ({c.delegation_id}, {c.status})" for c in unsettled
+                )
+                extra_sections.append(
+                    f"Join coverage PARTIAL: {len(children) - len(unsettled)} of "
+                    f"{len(children)} joined children settled at the wait "
+                    f"timeout; unsettled: {names}. Synthesize from settled "
+                    f"results only; do not present the missing children "
+                    f"as complete."
+                )
             if extra_sections:
                 synthesis_body += "\n\nHuman Q&A / escalations:\n" + "\n".join(
                     f"- {s}" for s in extra_sections
@@ -2640,8 +2739,23 @@ class ChatLoop:
                     delegation.delegation_id,
                     engine_session_id=sid,
                 )
-            except Exception:  # noqa: BLE001 — best-effort
-                pass
+            except Exception as _bind_err:  # noqa: BLE001 — best-effort
+                # Hygiene B6: trace the failure (same
+                # session_bind_failed vocabulary as the runtime and
+                # runner sites) — a silent drop here is the next
+                # Stop-button incident.
+                try:
+                    trace.append(
+                        "session_bind_failed",
+                        {
+                            "error": (
+                                f"{type(_bind_err).__name__}: {_bind_err}"
+                            ),
+                            "delegation_id": delegation.delegation_id,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
         inner = self.runtime.run(
             specialist=specialist,
@@ -2689,10 +2803,34 @@ class ChatLoop:
                             return task.result()
                         except BaseException:
                             raise
-                    pending_q = await self._pending_human_question(
+                    pending_q, pending_q_err = await self._pending_human_question(
                         delegation.delegation_id
                     )
                     if pending_q is None:
+                        if pending_q_err is not None:
+                            # The store was unreadable at the timeout
+                            # instant: we cannot know whether a human
+                            # question was pending. Kill bounded (the
+                            # fuse must still win over unknown), but
+                            # attribute it honestly — a plain timeout
+                            # here used to masquerade as "no question".
+                            try:
+                                trace.append(
+                                    "escalation_store_unreadable",
+                                    {
+                                        "delegation_id": delegation.delegation_id,
+                                        "error": (
+                                            f"{type(pending_q_err).__name__}: "
+                                            f"{pending_q_err}"
+                                        ),
+                                    },
+                                )
+                            except Exception:  # noqa: BLE001
+                                logger.warning(
+                                    "ChatLoop: escalation_store_unreadable trace "
+                                    "append failed for %s",
+                                    delegation.delegation_id,
+                                )
                         task.cancel()
                         await asyncio.gather(task, return_exceptions=True)
                         return (
@@ -2726,22 +2864,25 @@ class ChatLoop:
 
     async def _pending_human_question(
         self, delegation_id: str
-    ) -> dict | None:
+    ) -> tuple[dict | None, BaseException | None]:
         """The delegation's pending escalation (kind question or
-        permission), or None. Used by the turn-timer suspension."""
+        permission), or (None, error?) — used by the turn-timer
+        suspension. Hygiene B6: a store error is returned distinctly
+        (not conflated with "no question") so the timeout path can
+        attribute the kill honestly instead of timing out a turn
+        that was correctly awaiting the human."""
         store = self.escalation_store
         if store is None:
-            return None
-        try:
-            rec = await store.get(delegation_id=delegation_id)
-        except Exception:  # noqa: BLE001
-            return None
+            return None, None
+        from sweave.runtime.escalation import read_record_resilient
+
+        rec, err = await read_record_resilient(store, delegation_id)
         if rec is None or rec.get("status") != "pending":
-            return None
+            return None, err
         kind = str(rec.get("kind", "question"))
         if kind in ("permission", "question"):
-            return rec
-        return None
+            return rec, None
+        return None, None
 
     async def _persist_round_message(
         self,

@@ -1205,9 +1205,12 @@ class JobRunner:
 
         Reads the SpecialistRuntime's escalation store (the same
         store the permission bridge + stall branch create records
-        in). Best-effort: no runtime / no store / store error all
-        mean "not held" — the bound then behaves exactly as before
-        this fix.
+        in). Best-effort: no runtime / no store mean "not held".
+        Store errors are retried boundedly inside the read (transient
+        lock contention) and logged distinctly — a persistent break
+        still reads False (the bound behaves as before), but the
+        warning separates "store unreadable" from "no question" in
+        forensics (hygiene B6).
 
         Kept for its test pin (test_m1_12_turn_hold); ``_bounded_turn``
         now reads via :meth:`_soft_record` (same store, record-level
@@ -1220,10 +1223,11 @@ class JobRunner:
         )
         if store is None:
             return False
-        try:
-            rec = await store.get(delegation_id=delegation.delegation_id)
-        except Exception:  # noqa: BLE001
-            return False
+        from sweave.runtime.escalation import read_record_resilient
+
+        rec, _err = await read_record_resilient(
+            store, delegation.delegation_id
+        )
         return bool(rec) and rec.get("status") == "pending"
 
     def _soft_store(self) -> Any | None:
@@ -1404,16 +1408,18 @@ class JobRunner:
     async def _soft_record(self, delegation: Delegation) -> dict[str, Any] | None:
         """This delegation's escalation record at any status (or None).
 
-        Best-effort like :meth:`_escalation_pending`: no runtime /
-        no store / store error all mean "no record".
+        Best-effort like :meth:`_escalation_pending`: no runtime / no
+        store mean "no record". Store errors are retried boundedly
+        and logged distinctly by the shared read (hygiene B6) — a
+        persistent break still reads None, but forensics can tell
+        "unreadable" from "absent".
         """
         store = self._soft_store()
         if store is None:
             return None
-        try:
-            rec = await store.get(delegation_id=delegation.delegation_id)
-        except Exception:  # noqa: BLE001
-            return None
+        from sweave.runtime.escalation import read_record_resilient
+
+        rec, _err = await read_record_resilient(store, delegation.delegation_id)
         return rec if isinstance(rec, dict) else None
 
     async def _ask_soft_limit(
@@ -1907,8 +1913,24 @@ class JobRunner:
                             delegation.delegation_id,
                             engine_session_id=sid,
                         )
-                    except Exception:  # noqa: BLE001 — best-effort
-                        pass
+                    except Exception as _bind_err:  # noqa: BLE001 — best-effort
+                        # Hygiene B6: trace the failure (same
+                        # session_bind_failed vocabulary as the
+                        # runtime sites) — a silent drop here is the
+                        # next Stop-button incident.
+                        try:
+                            trace.append(
+                                "session_bind_failed",
+                                {
+                                    "error": (
+                                        f"{type(_bind_err).__name__}: "
+                                        f"{_bind_err}"
+                                    ),
+                                    "delegation_id": delegation.delegation_id,
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 async def _attempt():
                     # One attempt: same tree, resumed session on
@@ -2249,7 +2271,10 @@ class JobRunner:
             # can't stall the parent forever.
             if final_status != "failed":
                 await self._wait_for_children(
-                    delegation, store, trace
+                    delegation,
+                    store,
+                    trace,
+                    budget=self._turn_budget_for(delegation),
                 )
             # M2.1 step 4: on the success branch (landing in
             # ``review``), attach the review-request record + a
@@ -2334,10 +2359,13 @@ class JobRunner:
     # ------------------------------------------------------------------
 
     async def _wait_for_children(
-        self, delegation: Delegation, store: Any, trace: TraceLog
+        self,
+        delegation: Delegation,
+        store: Any,
+        trace: TraceLog,
+        budget: float | None = None,
     ) -> None:
         """M1.6 step 3: parent gating (M2.1 step 5: wait-set-scoped).
-
         Wait until every JOIN-SET child (``blocking == True``) whose
         ``parent_task_id`` equals this delegation's id reaches a
         join-settled state — the shared ``JOIN_SETTLED_STATUSES``
@@ -2352,8 +2380,9 @@ class JobRunner:
         ``done``/``failed`` settled, wedging the parent until
         ``turn_timeout``).
 
-        The wait is bounded by ``self.turn_timeout`` (the same cap
-        as the agent turn) so a stuck join-set child can't wedge the
+        The wait is bounded by the delegation's budget (explicit
+        ``budget`` arg, else the per-delegation overlay — never the
+        bare runner singleton) so a stuck join-set child can't wedge the
         parent forever -- if the timeout hits we proceed and the
         parent transitions normally; the late-arriving child is
         silently absorbed (the parent's record is the audit
@@ -2368,7 +2397,23 @@ class JobRunner:
         interval is 250ms (responsive enough for the UI without
         hammering the disk).
         """
-        deadline = asyncio.get_running_loop().time() + self.turn_timeout
+        # Hygiene B6: the gate honors the delegation's own budget
+        # (project overlay via _turn_budget_for), not the runner
+        # singleton — a 900s-budget project waited 4h here (apparent
+        # wedge), a long-budget one timed out early with the blame on
+        # the wrong budget. Invalid/absent falls back to the
+        # singleton (legacy/tests).
+        try:
+            gate_budget = (
+                float(budget)
+                if budget is not None
+                and not isinstance(budget, bool)
+                and float(budget) > 0
+                else self._turn_budget_for(delegation)
+            )
+        except Exception:  # noqa: BLE001
+            gate_budget = self.turn_timeout
+        deadline = asyncio.get_running_loop().time() + gate_budget
         poll_interval = 0.25
         children_found = False
         scoped_logged = False
@@ -2434,13 +2479,13 @@ class JobRunner:
                     {
                         "parent": delegation.delegation_id,
                         "count": len(join),
-                        "timeout": self.turn_timeout,
+                        "timeout": gate_budget,
                     },
                 )
                 logger.warning(
                     "JobRunner: parent %s children-settle timeout after %ss",
                     delegation.delegation_id,
-                    self.turn_timeout,
+                    gate_budget,
                 )
                 return
             await asyncio.sleep(poll_interval)

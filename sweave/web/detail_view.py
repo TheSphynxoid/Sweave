@@ -353,6 +353,25 @@ def render_detail_view(
     # lifecycle, reasoning, tokens). Degrades to None when there
     # is nothing to project (opencode turns, pre-change records,
     # unknown engine session) — the fold never raises on it.
+    #
+    # Hygiene B6: freeze honest end-state on tool rows. An abort /
+    # max_steps / timeout mid-tool-loop leaves tool.started without
+    # a terminal event; latest-status-wins then shows the tool as
+    # pending/running FOREVER on a terminal delegation (and the
+    # DetailView liveness check reads it as still live). When the
+    # record is terminal (done/failed/review — the turn is over by
+    # definition), a still-open row is rewritten to "aborted". Live
+    # (queued/running) delegations are untouched, and the UI's
+    # status ternaries degrade "aborted" to their neutral branch.
+    _terminal = isinstance(record, dict) and record.get("status") in {
+        "done",
+        "failed",
+        "review",
+    }
+    if _terminal:
+        for _entry in tool_timeline.values():
+            if _entry.get("status") in ("pending", "running"):
+                _entry["status"] = "aborted"
     from sweave.web.transcript_view import render_transcript_blocks
 
     try:

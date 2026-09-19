@@ -154,6 +154,41 @@ def _now() -> datetime:
     return datetime.now()
 
 
+async def read_record_resilient(
+    store: Any,
+    delegation_id: str,
+    *,
+    attempts: int = 3,
+    delay_s: float = 0.1,
+) -> tuple[dict[str, Any] | None, BaseException | None]:
+    """Read one escalation record, tolerating transient store errors.
+
+    File-lock contention makes single reads flaky at millisecond
+    scale; a one-shot ``except -> None`` at a timer-suspension check
+    reads a live human question as "no question" and the timer kills
+    a turn that was correctly awaiting the human (hygiene B6).
+    Retries boundedly (default 3×100ms — never a wedge), then
+    returns ``(None, last_error)`` so the caller can distinguish
+    "store unreadable" (warn + attribute the kill honestly) from
+    "no record" instead of conflating both as None.
+    """
+    last: BaseException | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            rec = await store.get(delegation_id=delegation_id)
+            return (rec if isinstance(rec, dict) else None), None
+        except Exception as e:  # noqa: BLE001
+            last = e
+            await asyncio.sleep(delay_s)
+    logger.warning(
+        "EscalationStore: record unreadable for %s after %d tries: %s",
+        delegation_id,
+        attempts,
+        last,
+    )
+    return None, last
+
+
 def _now_iso() -> str:
     return _now().isoformat()
 
