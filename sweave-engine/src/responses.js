@@ -12,11 +12,15 @@
 // dropped, never sent.
 
 import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
-import { sanitizeHistory } from "./sessions.js";
+import { sanitizeHistory, capHistory, historyTruncationNote } from "./sessions.js";
 
 export function historyToResponsesInput(entries) {
+  const { entries: capped, droppedMessages, droppedChars } = capHistory(sanitizeHistory(entries));
   const out = [];
-  for (const m of sanitizeHistory(entries)) {
+  if (droppedMessages > 0) {
+    out.push({ role: "user", content: historyTruncationNote(droppedMessages, droppedChars) });
+  }
+  for (const m of capped) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {

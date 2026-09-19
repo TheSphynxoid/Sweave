@@ -8,7 +8,7 @@
 // /run builds history truncated after to_message (the prompt replaces
 // the reverted tail).
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 
 let counter = 0;
@@ -36,6 +36,18 @@ export class SessionStore {
             delete s.approvals;
             scrubbed = true;
           }
+          // Shape validation (hygiene B5): a torn/hand-edited entry
+          // (string, array, null, or object without a messages
+          // array) used to poison every later append/historyForRun
+          // with a TypeError. Drop it loudly — one corrupt session
+          // recreates on demand, never bricks the boot.
+          if (!s || typeof s !== "object" || !Array.isArray(s.messages)) {
+            try {
+              process.stderr.write(`sweave-engine: dropping corrupt session ${JSON.stringify(id)}\n`);
+            } catch {}
+            scrubbed = true;
+            continue;
+          }
           this.sessions.set(id, s);
         }
         // Persist the scrub so the stale bytes don't linger either.
@@ -49,9 +61,18 @@ export class SessionStore {
 
   save() {
     try {
-      writeFileSync(this.file, JSON.stringify(Object.fromEntries(this.sessions)), "utf8");
-    } catch {
-      // Best-effort journaling; the in-memory session still serves.
+      // Atomic write (tmp + rename): a crash mid-write must never
+      // tear the whole journal (which would read back as corrupt and
+      // silently amnesia every session on the next boot).
+      const tmp = `${this.file}.tmp`;
+      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.sessions)), "utf8");
+      renameSync(tmp, this.file);
+    } catch (e) {
+      // Loud, not silent: a lost journal means turns succeed and
+      // then vanish on restart. The in-memory session still serves.
+      try {
+        process.stderr.write(`sweave-engine: journal save failed: ${(e && e.message) || e}\n`);
+      } catch {}
     }
   }
 
@@ -96,7 +117,6 @@ export class SessionStore {
 
 /**
  * Drop unanswered tool calls from replayed history (both flavors).
- *
  * A turn that dies mid-tool-loop (abort, timeout, crash/restart after
  * the assistant entry was appended but before every tool output
  * landed) leaves an assistant function_call/tool_calls entry with no
@@ -150,4 +170,57 @@ export function sanitizeHistory(entries) {
     }
   }
   return out;
+}
+
+// Pre-flight history ceiling (hygiene B5): immortal sessions grow
+// forever (live 1000–2395 msgs observed) and every loop iteration
+// re-sends full history, so an old session eventually 400s on
+// context length — deterministically, every turn, recoverable only
+// by manual /revert. Cap the MAPPED history (journal truth is
+// untouched): drop oldest first, keep at least the newest message
+// (the live prompt always rides), and report what was cut so the
+// mappers can name it honestly instead of silently narrowing
+// context. Budgets are deliberately message+byte (tokenizers are a
+// dependency the sidecar refuses).
+export const HISTORY_MAX_MESSAGES = 400;
+export const HISTORY_MAX_CHARS = 500000;
+
+function entryChars(m) {
+  let n = 0;
+  if (m && typeof m.content === "string") n += m.content.length;
+  if (m && Array.isArray(m.toolCalls)) {
+    for (const tc of m.toolCalls) {
+      try {
+        n += JSON.stringify(tc && tc.args ? tc.args : {}).length;
+      } catch {}
+      if (tc && typeof tc.name === "string") n += tc.name.length;
+    }
+  }
+  return n;
+}
+
+export function historyTruncationNote(droppedMessages, droppedChars) {
+  return (
+    `[sweave history note: ${droppedMessages} oldest message(s) ` +
+    `(${droppedChars} chars) omitted to fit context; earlier work is ` +
+    `out of scope — continue from what is shown]`
+  );
+}
+
+export function capHistory(entries) {
+  const list = Array.isArray(entries) ? [...entries] : [];
+  let chars = list.reduce((n, m) => n + entryChars(m), 0);
+  let droppedMessages = 0;
+  let droppedChars = 0;
+  while (
+    (list.length > HISTORY_MAX_MESSAGES || chars > HISTORY_MAX_CHARS) &&
+    list.length > 1
+  ) {
+    const m = list.shift();
+    droppedMessages += 1;
+    const c = entryChars(m);
+    droppedChars += c;
+    chars -= c;
+  }
+  return { entries: list, droppedMessages, droppedChars };
 }

@@ -1142,6 +1142,24 @@ class SpecialistRuntime:
                     probe.append("engine_user_message", {"id": _umid})
             except Exception:  # noqa: BLE001
                 pass
+            # Journal-loss signal (hygiene B5): we attached expecting
+            # a resume but the sidecar created fresh (deleted journal,
+            # moved home, torn write). The turn ran charter-less on an
+            # empty history — trace it LOUD as a recreation, never let
+            # it masquerade as a resume (the old silent amnesia).
+            try:
+                if not new_session and (result.metadata or {}).get(
+                    "session_fresh"
+                ):
+                    trace.append(
+                        "session_recreated_after_journal_loss",
+                        {
+                            "session_id": delegation.engine_session_id,
+                            "specialist": specialist.name,
+                        },
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
             # Post-send backfill (best-effort, like the opencode
             # path): the binding already persisted pre-send above;

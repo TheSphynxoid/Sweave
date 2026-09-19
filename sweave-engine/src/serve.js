@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
-import { SessionStore, newMessageId } from "./sessions.js";
+import { SessionStore, newMessageId, capHistory, historyTruncationNote } from "./sessions.js";
 import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import {
   historyToResponsesInput,
@@ -120,7 +120,7 @@ function sseEvent(res, obj) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMessageId) {
+async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMessageId, sessionFresh) {
   const emit = (obj) => {
     try {
       sseEvent(res, obj);
@@ -159,7 +159,7 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
     // user_message_id (protocol v3): lets the orchestrator name this
     // turn's prompt in a later /revert (edit = history rewrite, never
     // a session rotation).
-    emit({ event: "done", output, user_message_id: userMessageId || null, model_used: { provider: body.model.provider, model_id: body.model.model_id } });
+    emit({ event: "done", output, user_message_id: userMessageId || null, model_used: { provider: body.model.provider, model_id: body.model.model_id }, session_fresh: Boolean(sessionFresh) });
     const hasUsage = usage && (usage.input > 0 || usage.output > 0);
     emit({
       event: "tokens_used",
@@ -199,6 +199,12 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
 }
 
 async function runTurn(sessionId, body, res) {
+  // Journal-loss signal (hygiene B5): ensure() silently recreates a
+  // missing session, and the orchestrator would trace a resume that
+  // never happened (silent amnesia — model loses mid-task context,
+  // no charter, trace claims session_resumed). Capture freshness
+  // BEFORE ensure so every done event can name it.
+  const sessionFresh = !store.get(sessionId);
   const session = store.ensure(sessionId);
   const model = body.model;
   const turnTimeoutMs = Math.max(1, body.turn_timeout) * 1000;
@@ -248,18 +254,31 @@ async function runTurn(sessionId, body, res) {
   // requested). The legacy single-shot chat path below stays
   // byte-identical for tool-less non-orchestrator turns.
   if (needsLoop(body)) {
-    await runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMsg.id);
+    await runLoopTurn(sessionId, session, body, res, turn, finish, timer, userMsg.id, sessionFresh);
     return;
   }
 
-  const history = store
+  // Single-shot chat path: the inline map strips tool calls (so it
+  // is poison-immune), but the pre-flight history ceiling still
+  // applies — same budgets as the loop mappers. The live prompt is
+  // capped WITH history (newest-first survival keeps it; the cap
+  // never drops the final message), so both flavors wire ≤401
+  // messages identically.
+  const _base = store
     .historyForRun(session)
-    .filter((m) => m.id !== userMsg.id) // appended above; re-add below in order
-    .map((m) => ({
-      role: m.role === "assistant" ? "assistant" : "user",
-      content: m.failed ? `[previous error: ${m.error || "unknown"}]` : m.content,
-    }));
-  history.push({ role: "user", content: body.composed_prompt });
+    .filter((m) => m.id !== userMsg.id); // appended above; re-add below in order
+  _base.push({ role: "user", content: body.composed_prompt });
+  const _capped = capHistory(_base);
+  const history = _capped.entries.map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.failed ? `[previous error: ${m.error || "unknown"}]` : m.content,
+  }));
+  if (_capped.droppedMessages > 0) {
+    history.unshift({
+      role: "user",
+      content: historyTruncationNote(_capped.droppedMessages, _capped.droppedChars),
+    });
+  }
 
   const assistantId = newMessageId("msg");
   let output = "";
@@ -351,6 +370,7 @@ async function runTurn(sessionId, body, res) {
       message_id: assistantId,
       user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
+      session_fresh: sessionFresh,
     });
     sseEvent(res, {
       event: "tokens_used",
@@ -481,6 +501,7 @@ async function runTurn(sessionId, body, res) {
       message_id: assistantId,
       user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
+      session_fresh: sessionFresh,
     });
     // tokens_used terminal — identical shape to the M1.9 audit anchor.
     // cost is 0 until a pricing table lands (tokens are real).

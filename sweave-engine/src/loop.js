@@ -15,7 +15,7 @@
 // executing (typed error the model can adjust to — the native
 // direction; opencode routes this through a permission ask).
 
-import { newMessageId, sanitizeHistory } from "./sessions.js";
+import { newMessageId, sanitizeHistory, capHistory, historyTruncationNote } from "./sessions.js";
 import { resolve as resolvePath, sep, dirname, relative } from "node:path";
 import {
   providerHttpError,
@@ -120,8 +120,12 @@ function withTimeout(promise, ms, onTimeout) {
 }
 
 export function historyToProviderMessages(entries) {
+  const { entries: capped, droppedMessages, droppedChars } = capHistory(sanitizeHistory(entries));
   const out = [];
-  for (const m of sanitizeHistory(entries)) {
+  if (droppedMessages > 0) {
+    out.push({ role: "user", content: historyTruncationNote(droppedMessages, droppedChars) });
+  }
+  for (const m of capped) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {

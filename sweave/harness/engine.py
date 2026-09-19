@@ -556,6 +556,7 @@ class SweaveEngineProcess:
             # `done` event into the result metadata — the runtime traces
             # it per delegation so edit-rerun can rewrite history.
             user_message_id: str | None = None
+            session_fresh = False
             try:
                 async with self._client.stream(
                     "POST", "/run", json=body, timeout=turn_timeout + 30.0
@@ -724,6 +725,12 @@ class SweaveEngineProcess:
                             # follows done on the wire, then EOF ends us.
                             if isinstance(event.get("user_message_id"), str):
                                 user_message_id = event["user_message_id"]
+                            # Journal-loss signal (hygiene B5): the
+                            # sidecar names a freshly-created session so
+                            # the runtime can tell silent amnesia from a
+                            # true resume.
+                            if event.get("session_fresh") is True:
+                                session_fresh = True
                             pass
             except ProtocolMismatch:
                 raise
@@ -752,6 +759,8 @@ class SweaveEngineProcess:
             result = AgentResult(success=True, output=output)
             if user_message_id:
                 result.metadata["user_message_id"] = user_message_id
+            if session_fresh:
+                result.metadata["session_fresh"] = True
             return result
         except ProtocolMismatch:
             raise

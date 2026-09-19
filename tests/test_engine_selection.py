@@ -576,6 +576,81 @@ async def test_run_engine_attempt_forwards_on_reasoning(
 
 
 # ---------------------------------------------------------------------------
+# Journal-loss signal: fresh-done on an expected resume traces loud
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_engine_attempt_fresh_done_on_resume_traces_recreated(
+    monkeypatch, tmp_path: Path
+):
+    """Attach expected a resume but the sidecar created fresh (lost
+    journal): the turn's charter-less empty-history run must trace
+    ``session_recreated_after_journal_loss``, never masquerade as a
+    resume. Hygiene B5."""
+    from sweave.harness.base import AgentResult
+
+    seen: list = []
+
+    async def script(message, trace):
+        result = AgentResult(success=True, output="did it charter-less")
+        result.metadata["session_fresh"] = True
+        return result
+
+    _register_fake(monkeypatch, script, seen)
+    runtime = _runtime()
+    trace = _Trace()
+    delegation = _delegation()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_and_gone"),
+        delegation=delegation,
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert fallback is None
+    assert out == "did it charter-less"
+    kinds = [e for e, _ in trace.events]
+    # The bind-time session_resumed stands (the binding was real);
+    # the post-turn correction is the loud signal that it was amnesia.
+    assert "session_recreated_after_journal_loss" in kinds
+
+
+@pytest.mark.asyncio
+async def test_engine_attempt_plain_resume_traces_resumed(
+    monkeypatch, tmp_path: Path
+):
+    """Control: no freshness flag → the classic session_resumed trace."""
+    from sweave.harness.base import AgentResult
+
+    seen: list = []
+
+    async def script(message, trace):
+        return AgentResult(success=True, output="did it")
+
+    _register_fake(monkeypatch, script, seen)
+    runtime = _runtime()
+    trace = _Trace()
+    delegation = _delegation()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_and_fine"),
+        delegation=delegation,
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert fallback is None
+    assert out == "did it"
+    kinds = [e for e, _ in trace.events]
+    assert "session_resumed" in kinds
+    assert "session_recreated_after_journal_loss" not in kinds
+
+
+# ---------------------------------------------------------------------------
 # v2/tasks override: validation helper + JobRunner transient channel
 # ---------------------------------------------------------------------------
 

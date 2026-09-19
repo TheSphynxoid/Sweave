@@ -24,6 +24,16 @@ Hermetic: a localhost stub plays both gateway endpoints while the
 REAL sidecar boots against a pre-seeded POISONED journal. Proves
 both flavors serve the next turn (poison stripped from the wire
 input) and answered pairs survive (no over-strip).
+
+Hygiene B5 additions (same file, same harness):
+* pre-flight history ceiling (``capHistory``): a 405-message journal
+  serves with the wire input capped at 400 + an honest truncation
+  note — immortal sessions can no longer 400 on context length;
+* corrupt journal entries (non-object / missing messages array) are
+  dropped at boot; the sidecar still serves;
+* the ``done`` event names freshly-created sessions
+  (``session_fresh``) so the orchestrator can tell silent journal
+  amnesia from a true resume.
 """
 
 from __future__ import annotations
@@ -236,7 +246,28 @@ def _sidecar_with_journal(stub_url: str, tmp_path_factory, journal: dict):
         stop_sidecar(proc)
 
 
-def _spec(model: str, worktree: Path):
+def _fat_journal(n_pairs: int = 205) -> dict:
+    """A journal past the pre-flight ceiling (400 msgs): tiny text pairs."""
+    now = int(time.time() * 1000)
+    msgs = []
+    for i in range(n_pairs):
+        msgs.append(
+            {"id": f"msg_fat_u_{i}", "role": "user", "content": f"u{i}", "at": now + i}
+        )
+        msgs.append(
+            {
+                "id": f"msg_fat_a_{i}",
+                "role": "assistant",
+                "content": f"a{i}",
+                "at": now + i,
+            }
+        )
+    return {
+        "eng_fat": {"id": "eng_fat", "created": now, "revert": None, "messages": msgs}
+    }
+
+
+def _spec(model: str, worktree: Path, tools=None):
     from sweave.harness.base import AgentSpec
 
     return AgentSpec(
@@ -246,7 +277,7 @@ def _spec(model: str, worktree: Path):
         system_prompt="",
         worktree_path=worktree,
         memory_bank="session-hyg",
-        tools=["read"],
+        tools=list(tools) if tools is not None else ["read"],
         harness="sweave-engine",
     )
 
@@ -332,3 +363,101 @@ async def test_chat_poisoned_session_serves(stub_url, tmp_path_factory, tmp_path
     assert len(kept) == 1
     tool_msgs = [m for m in first_messages if m.get("role") == "tool"]
     assert any(t.get("tool_call_id") == ANSWERED_CALL_ID for t in tool_msgs)
+
+
+@needs_node
+async def test_chat_history_ceiling_caps_wire(stub_url, tmp_path_factory, tmp_path):
+    """410-msg journal on the single-shot chat path: wire capped at
+    400 + honest note first, live prompt last, turn serves."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, _fat_journal()):
+        proc = await SweaveEngineHarness().attach(
+            "eng_fat", _spec(CHAT_MODEL, tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "CHAT OK"
+    assert len(HITS) == 1
+    wired = HITS[0]["messages"]
+    # 400 capped (prompt included, newest survives) + truncation note.
+    assert len(wired) == 401
+    assert "sweave history note" in wired[0]["content"]
+    assert wired[-1]["content"] == "continue"  # live prompt survives
+
+
+@needs_node
+async def test_responses_history_ceiling_caps_wire(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """Same ceiling on the single-shot responses path."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, _fat_journal()):
+        proc = await SweaveEngineHarness().attach(
+            "eng_fat", _spec(RESP_MODEL, tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "RESP OK"
+    assert len(HITS) == 1
+    wired = HITS[0]["input"]
+    assert len(wired) == 401  # same shape as the chat path
+    assert wired[0].get("role") == "user"
+    assert "sweave history note" in wired[0].get("content", "")
+    assert wired[-1].get("content") == "continue"
+
+
+@needs_node
+async def test_corrupt_journal_entry_dropped(stub_url, tmp_path_factory, tmp_path):
+    """Non-object / messages-less journal entries are dropped at boot;
+    the sidecar still serves (on both the healthy and the healed id)."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    now = int(time.time() * 1000)
+    journal = {
+        "eng_ok": {
+            "id": "eng_ok",
+            "created": now,
+            "revert": None,
+            "messages": [
+                {
+                    "id": "m1",
+                    "role": "user",
+                    "content": "hi",
+                    "at": now,
+                }
+            ],
+        },
+        "eng_bad_str": "torn bytes",
+        "eng_bad_obj": {"id": "eng_bad_obj"},
+    }
+    with _sidecar_with_journal(stub_url, tmp_path_factory, journal):
+        for sid in ("eng_ok", "eng_bad_str"):
+            proc = await SweaveEngineHarness().attach(
+                sid, _spec(CHAT_MODEL, tmp_path, tools=[])
+            )
+            result = await proc.send(_message("continue"), trace=_Trace())
+            assert result.success, (sid, result.error)
+            assert result.output == "CHAT OK"
+
+
+@needs_node
+async def test_session_fresh_named_on_done(stub_url, tmp_path_factory, tmp_path):
+    """First turn on a fresh id carries session_fresh; the second does
+    not — the orchestrator can tell journal amnesia from a resume."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_brand_new", _spec(CHAT_MODEL, tmp_path, tools=[])
+        )
+        first = await proc.send(_message("one"), trace=_Trace())
+        assert first.success, first.error
+        assert first.metadata.get("session_fresh") is True
+        second = await proc.send(_message("two"), trace=_Trace())
+        assert second.success, second.error
+        assert "session_fresh" not in second.metadata
