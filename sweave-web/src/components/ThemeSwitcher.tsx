@@ -103,7 +103,7 @@ function PresetGroup({
 
 const BACKDROP_OPTIONS: readonly { id: ChatBackdrop; label: string; hint: string }[] = [
   { id: "glow", label: "Glow", hint: "Soft ambient glow" },
-  { id: "floral", label: "Floral", hint: "Subtle floral pattern" },
+  { id: "nebula", label: "Nebula", hint: "Cosmic clouds + starfield" },
   { id: "none", label: "None", hint: "Flat background" },
 ];
 

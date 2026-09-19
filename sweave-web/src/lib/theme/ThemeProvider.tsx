@@ -38,7 +38,7 @@ interface ThemeContextValue {
   isSystem: boolean;
   /** Concrete preset name currently in effect (resolves "system"). */
   effectivePresetName: PresetName;
-  /** Chat-thread backdrop texture (glow default; floral/none opt-in). */
+  /** Chat-thread backdrop texture (glow default; nebula/none opt-in). */
   backdrop: ChatBackdrop;
   setBackdrop: (backdrop: ChatBackdrop) => void;
 }

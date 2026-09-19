@@ -109,9 +109,9 @@ describe("Settings without an active project", () => {
     renderPage();
     const group = await screen.findByTestId("settings-backdrop");
     expect(group).toBeTruthy();
-    fireEvent.click(screen.getByTestId("settings-backdrop-floral"));
-    expect(window.localStorage.getItem("sweave.theme.backdrop")).toBe("floral");
-    expect(document.documentElement.getAttribute("data-chat-backdrop")).toBe("floral");
+    fireEvent.click(screen.getByTestId("settings-backdrop-nebula"));
+    expect(window.localStorage.getItem("sweave.theme.backdrop")).toBe("nebula");
+    expect(document.documentElement.getAttribute("data-chat-backdrop")).toBe("nebula");
     fireEvent.click(screen.getByTestId("settings-backdrop-glow"));
     expect(window.localStorage.getItem("sweave.theme.backdrop")).toBe("glow");
   });

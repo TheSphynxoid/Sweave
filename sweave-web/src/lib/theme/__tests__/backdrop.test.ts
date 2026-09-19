@@ -15,6 +15,7 @@ describe("chat backdrop", () => {
   });
 
   it("round-trips each option through localStorage", () => {
+    expect(listBackdrops()).toEqual(["glow", "nebula", "none"]);
     for (const name of listBackdrops()) {
       saveBackdrop(name);
       expect(loadBackdrop()).toBe(name);
@@ -22,7 +23,7 @@ describe("chat backdrop", () => {
   });
 
   it("falls back to glow on unknown or missing values", () => {
-    window.localStorage.setItem("sweave.theme.backdrop", "wallpaper");
+    window.localStorage.setItem("sweave.theme.backdrop", "tapestry");
     expect(loadBackdrop()).toBe("glow");
     window.localStorage.removeItem("sweave.theme.backdrop");
     expect(loadBackdrop()).toBe("glow");
@@ -31,14 +32,14 @@ describe("chat backdrop", () => {
   it("applyBackdropToDocument writes the attribute (glow keeps current visuals)", () => {
     applyBackdropToDocument("glow");
     expect(document.documentElement.getAttribute(CHAT_BACKDROP_ATTR)).toBe("glow");
-    applyBackdropToDocument("floral");
-    expect(document.documentElement.getAttribute(CHAT_BACKDROP_ATTR)).toBe("floral");
+    applyBackdropToDocument("nebula");
+    expect(document.documentElement.getAttribute(CHAT_BACKDROP_ATTR)).toBe("nebula");
     applyBackdropToDocument("none");
     expect(document.documentElement.getAttribute(CHAT_BACKDROP_ATTR)).toBe("none");
   });
 
   it("never touches the color theme keys", () => {
-    saveBackdrop("floral");
+    saveBackdrop("nebula");
     expect(window.localStorage.getItem("sweave.theme.preset")).toBeNull();
     expect(window.localStorage.getItem("sweave.theme.custom")).toBeNull();
   });

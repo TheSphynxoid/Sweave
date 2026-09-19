@@ -177,20 +177,21 @@ export function setActiveTheme(theme: ActiveTheme): void {
  *
  * `glow` is the historical ambient (primary-tinted radial pooled at the
  * top of the thread pane) and the default, so existing users see zero
- * change. `floral` layers a subtle tileable SVG motif under the same
- * glow; `none` strips the ambient entirely. Persisted separately from
+ * change. `nebula` layers violet/cyan/magenta gas clouds plus a sparse
+ * starfield under the same glow; `none` strips
+ * the ambient entirely. Persisted separately from
  * the preset+custom pair so adopting a backdrop never invalidates the
  * color persistence — and the no-FOUC inline script stays color-only
  * (first paint renders `glow` CSS; hydration applies the stored
  * backdrop immediately after).
  */
-export type ChatBackdrop = "glow" | "floral" | "none";
+export type ChatBackdrop = "glow" | "nebula" | "none";
 
 const STORAGE_KEY_BACKDROP = "sweave.theme.backdrop";
 
 export const CHAT_BACKDROP_ATTR = "data-chat-backdrop";
 
-const BACKDROPS: readonly ChatBackdrop[] = ["glow", "floral", "none"];
+const BACKDROPS: readonly ChatBackdrop[] = ["glow", "nebula", "none"];
 
 export const DEFAULT_BACKDROP: ChatBackdrop = "glow";
 

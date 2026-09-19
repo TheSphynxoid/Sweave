@@ -246,7 +246,7 @@ function AppearanceSettings() {
             {(
               [
                 { id: "glow", label: "Glow", hint: "Soft ambient glow (default)" },
-                { id: "floral", label: "Floral", hint: "Subtle floral pattern" },
+                { id: "nebula", label: "Nebula", hint: "Cosmic clouds + starfield" },
                 { id: "none", label: "None", hint: "Flat background" },
               ] as const
             ).map((opt) => {
