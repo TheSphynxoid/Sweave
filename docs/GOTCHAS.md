@@ -724,6 +724,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     keys). Deliberately deferred: reasoning-effort `variant`
     (provider semantics need a ruling).
 
+20. **Reasoning effort that was silently dropped now rides
+    (2026-09-19 night, user ruling: fix it, don't visibility-coat
+    it).** `reasoningEffortFor` maps `none` (drops the request) and
+    every other value verbatim (provider-owned vocabulary); chat
+    sends `reasoning_effort`, responses sends `reasoning.effort`;
+    any 400 naming reasoning/effort triggers one strip-and-retry
+    fallback PER TRANSPORT (loop chat, loop responses, single-shot
+    chat — the single-shot branch duplicates the shape deliberately,
+    per its no-restructure rule); `validateRun` rejects non-string
+    variants. Caution that survived review: never normalize the
+    value (gateways are case-sensitive to their own presets).
+
 
 ## Paths & config
 
