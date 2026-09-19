@@ -1347,6 +1347,17 @@ class JobRunner:
             f"{last_pulse_age:.0f}s ago (last: {last_pulse_desc}). "
             f"Re-run once, or stop it?"
         )
+        # Slot guard (hygiene B4): one question per delegation. A
+        # pending record of ANY family (permission ask, soft-limit,
+        # ceiling) owns the slot — overwriting it would destroy a
+        # live ask. Fail fast instead; the caller treats False as
+        # "no one to ask".
+        try:
+            _existing = await self._soft_record(delegation)
+        except Exception:  # noqa: BLE001
+            _existing = None
+        if _existing is not None and _existing.get("status") == "pending":
+            return False
         try:
             await store.create(
                 delegation_id=delegation.delegation_id,
@@ -1412,10 +1423,11 @@ class JobRunner:
         is no store to ask through (caller falls back to fail-fast).
 
         One question per turn GLOBALLY (supervisor step 2): when a
-        soft-limit record already exists for this delegation (e.g. a
-        pulsed-rerun question filed after a first attempt died),
-        do not file a second — return False so the caller fails
-        fast instead of stacking questions.
+        record already exists for this delegation — a pending ask of
+        any family, or a resolved soft-limit one (e.g. a pulsed-rerun
+        question filed after a first attempt died) — do not file a
+        second: return False so the caller fails fast instead of
+        stacking questions or destroying the live ask (hygiene B4).
         """
         store = self._soft_store()
         if store is None:
@@ -1424,7 +1436,14 @@ class JobRunner:
             existing = await self._soft_record(delegation)
         except Exception:  # noqa: BLE001
             existing = None
-        if existing is not None and _is_soft_limit_record(existing):
+        if existing is not None and (
+            existing.get("status") == "pending"
+            or _is_soft_limit_record(existing)
+        ):
+            # Hygiene B4: ANY pending record owns the slot (a
+            # permission ask too, not just a soft one) — overwriting
+            # would destroy the live ask. Resolved records keep the
+            # old rule (soft → no re-ask; anything else → may file).
             return False
         question = (
             f"Specialist '{delegation.agent}' has been running "

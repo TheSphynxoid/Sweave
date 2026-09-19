@@ -423,14 +423,27 @@ class EscalationStore:
         Batch semantics (TOOL_CARDS_PLAN §3 step 3, locked by test):
 
         * ``answers`` (optional list) answers the batch positionally.
-          A partial post (fewer answers than questions) PERSISTS on
-          ``rec["answers"]`` WITHOUT resolving — status stays
-          ``pending``, no resolved event and no flag clear fire, so
-          the UI can post per-question answers as they land.
-        * When every question has an answer, status flips to
-          ``answered``, ``response`` becomes the joined answers
-          ("1) ... 2) ..."), and the resolved event + flag clear
-          fire (all-at-once ruling).
+          A partial post PERSISTS on ``rec["answers"]`` WITHOUT
+          resolving — status stays ``pending``, no resolved event
+          and no flag clear fire, so the UI can post per-question
+          answers as they land.
+        * RESOLVE RULE (emptiness rule, 2026-09-17 bug fix): the
+          record resolves to ``answered`` ONLY when the stored
+          answers array is FULL-LENGTH **AND every slot is
+          non-empty** (strip()). A full-length array with "" empty
+          slots (the wizard preview posting ["A", "", ""] for
+          unfilled inputs) is a PARTIAL post: it persists what is
+          non-empty and stays pending, so ``waitEscalation`` /
+          ``_wait_for_escalation`` can never be unblocked by an
+          unfilled slot.
+        * OVERWRITE RULE (2026-09-17): an incoming non-empty slot
+          value OVERWRITES the stored one (re-answering works); an
+          incoming EMPTY slot PRESERVES the stored value (the
+          wizard's "" placeholders never erase a prior partial
+          answer).
+        * When the record resolves, ``response`` becomes the
+          joined answers ("1) ... 2) ...") and the resolved event
+          + flag clear fire (all-at-once ruling).
         * Legacy ``response`` (no ``answers``) is the 1-element
           batch's answer — resolves exactly as before.
 
@@ -444,27 +457,59 @@ class EscalationStore:
             if rec["status"] != "pending":
                 # Already answered or timed out; treat the second answer
                 # as a no-op (the MCP path is the only caller and it
-                # holds the lock; this guard is for safety).
-                return dict(rec)
+                # holds the lock; this guard is for safety). Additive
+                # resolved flags (hygiene B4) so the caller can tell a
+                # live steer from a late no-op instead of reading a
+                # 200 as "steered".
+                out = dict(rec)
+                out["resolved"] = False
+                out["resolved_reason"] = f"already_{rec['status']}"
+                return out
             questions = _projected_questions(rec)
             if answers:
-                stored = list(rec.get("answers") or [])
-                for i, a in enumerate(answers[: len(questions)]):
-                    a = str(a)
-                    if i >= len(stored):
-                        stored.extend([""] * (i - len(stored) + 1))
-                    if not str(stored[i]).strip():
-                        stored[i] = a
+                # OVERWRITE RULE (2026-09-17 fix): an incoming NON-
+                # empty slot value OVERWRITES the stored one (re-
+                # answering works); an incoming EMPTY slot PRESERVES
+                # the stored value (the wizard's "" placeholders
+                # never erase an earlier partial answer).
+                stored = [str(a) for a in (rec.get("answers") or [])]
+                for i, incoming in enumerate(answers[: len(questions)]):
+                    incoming = str(incoming or "").strip()
+                    if not incoming:
+                        continue  # wizard "" -> preserve stored[i]
+                    while len(stored) <= i:
+                        stored.append("")  # lazily pad skipped slots
+                    stored[i] = incoming
+                # Fillup is NOT stored (the record stays short until a
+                # later slot is non-empty) - matches the locked
+                # unpadded partial shape.
                 rec["answers"] = stored
             else:
                 rec["answers"] = [str(response)]
-            if len(rec["answers"]) < len(questions):
-                # Partial post: persist without resolving (locked
-                # semantics — per-question UI posts land incrementally).
+            # RESOLVE RULE (2026-09-17 emptiness fix): full length AND
+            # every slot non-empty (stripped). A full-length array with
+            # "" placeholders (the wizard preview posting ["A", "",
+            # ""]) is a PARTIAL post: persist what is non-empty and
+            # stay pending, never unblocking waitEscalation /
+            # _wait_for_escalation on an unfilled slot.
+            if len(questions) <= 1:
+                # Legacy 1-elem batch: the bare answer resolves exactly
+                # as before (byte-identical).
+                partial = not any(
+                    str(a or "").strip() for a in rec["answers"]
+                )
+            else:
+                # Batch: full length AND every slot non-empty.
+                partial = len(rec["answers"]) < len(questions) or any(
+                    not str(a or "").strip() for a in rec["answers"][: len(questions)]
+                )
+            if partial:
+                # Partial post: persist WITHOUT resolving (all-at-once
+                # ruling; per-question posts stay incremental).
                 await self._persist(delegation_id)
-                partial = dict(rec)
-                partial["resolved"] = False
-                return partial
+                partial_rec = dict(rec)
+                partial_rec["resolved"] = False
+                return partial_rec
             rec["status"] = "answered"
             rec["response"] = _joined_response(rec["answers"], questions)
             rec["answered_at"] = _now_iso()
@@ -493,7 +538,10 @@ class EscalationStore:
             if rec is None:
                 return None
             if rec["status"] != "pending":
-                return dict(rec)
+                out = dict(rec)
+                out["resolved"] = False
+                out["resolved_reason"] = f"already_{rec['status']}"
+                return out
             rec["status"] = "timeout"
             rec["response"] = "no answer received"
             rec["answered_at"] = _now_iso()
@@ -543,7 +591,10 @@ class EscalationStore:
             if rec is None:
                 return None
             if rec["status"] != "pending":
-                return dict(rec)
+                out = dict(rec)
+                out["resolved"] = False
+                out["resolved_reason"] = f"already_{rec['status']}"
+                return out
             rec["status"] = "skipped"
             # Batch: skip = the WHOLE batch -> best judgment.
             _qs = _projected_questions(rec)
@@ -596,7 +647,10 @@ class EscalationStore:
             if rec is None:
                 return None
             if rec["status"] != "pending":
-                return dict(rec)
+                out = dict(rec)
+                out["resolved"] = False
+                out["resolved_reason"] = f"already_{rec['status']}"
+                return out
             rec["status"] = "seen"
             rec["response"] = "seen by orchestrator at synthesis — no action needed"
             rec["answered_at"] = _now_iso()

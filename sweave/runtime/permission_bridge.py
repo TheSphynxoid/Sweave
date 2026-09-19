@@ -359,6 +359,38 @@ async def resolve_hijack_request(
             f"opencode asks {permission} for {patterns}"
             + (f" (command: {command})" if command else "")
         )
+        # Slot guard (hygiene B4): one record per delegation. A pending
+        # occupant whose requestID is not ours — a soft-limit/ceiling
+        # question, another permission ask, or a legacy record with no
+        # ID at all — must never be destroyed by this ask's create.
+        # Same-requestID reuses still flow through create_or_reuse
+        # below. Refusing fails this ask closed (the serve-side ask
+        # times out on its own clock); destroying would corrupt a
+        # stranger's verdict or strand their live question.
+        try:
+            occupying = await escalation_store.get(
+                delegation_id=state["delegation_id"]
+            )
+        except Exception:
+            occupying = None
+        _occupant_id = (occupying.get("metadata") or {}).get("requestID") if occupying else None
+        if (
+            occupying is not None
+            and occupying.get("status") == "pending"
+            and _occupant_id != request_id
+        ):
+            logger.warning(
+                "permission_bridge: slot occupied by %s (requestID %s); "
+                "refusing to overwrite for %s",
+                occupying.get("kind"),
+                (occupying.get("metadata") or {}).get("requestID"),
+                request_id,
+            )
+            return {
+                "status": "error",
+                "reason": "slot_occupied",
+                "response": "reject",
+            }
         # Atomic claim (incident 2026-09-11): the stall branch races
         # us on the same ask, and create() overwrites per
         # delegation_id — a double-ferried event must reuse, never
@@ -386,6 +418,7 @@ async def resolve_hijack_request(
         except Exception as e:  # noqa: BLE001
             logger.warning("permission_bridge: escalation create failed: %s", e)
             return {"status": "error", "reason": str(e)}
+        store_errors = 0
         while True:
             await asyncio.sleep(0.5)
             try:
@@ -394,11 +427,30 @@ async def resolve_hijack_request(
                         delegation_id=state["delegation_id"]
                     )
                 ) or {}
+                store_errors = 0
             except Exception:
-                esc = {}
+                # Store failure is NOT a resolution: the old code broke
+                # out instantly and auto-rejected a live human question
+                # with no audit trail. Retry with a consecutive-error
+                # budget (~60s); past it, fail closed LOUDLY as
+                # store_error (distinguishable from a human deny) so
+                # forensics can tell error-reject from human-reject.
+                store_errors += 1
+                if store_errors >= 120:
+                    logger.warning(
+                        "permission_bridge: escalation store unreadable "
+                        "for ~60s on %s; failing closed",
+                        state["delegation_id"],
+                    )
+                    esc = {}
+                    break
+                continue
             if esc.get("status") != "pending":
                 break
         status = str(esc.get("status", ""))
+        if not status:
+            # Store-error exit above (esc == {}): fail closed, loudly.
+            status = "store_error"
         if status == "answered":
             low = str(esc.get("response", "") or "").strip().lower()
             if "always" in low:
@@ -409,6 +461,28 @@ async def resolve_hijack_request(
                 response_value = "once"
         else:
             response_value = "reject"
+        # Ownership verify (hygiene B4): a NON-EMPTY record carrying
+        # a DIFFERENT requestID must never be POSTed under our id —
+        # that would steer a stranger's ask with their decision. The
+        # store_error path (esc == {}) is exempt: there is no
+        # stranger's decision to steal, and the POST target (serve
+        # session + request id) comes from the plugin payload, not
+        # the record — reject is our own fail-closed default. Records
+        # without any requestID (legacy shapes) are unattributable
+        # and pass through to the historical behavior.
+        _answer_id = (esc.get("metadata") or {}).get("requestID") if esc else None
+        if esc and _answer_id is not None and _answer_id != request_id:
+            logger.warning(
+                "permission_bridge: slot changed hands mid-wait "
+                "(want %s, have %s); refusing to reply",
+                request_id,
+                (esc.get("metadata") or {}).get("requestID"),
+            )
+            return {
+                "status": "error",
+                "reason": "slot_changed",
+                "response": "reject",
+            }
     if base_url and created:
         # The stall branch owns the reply when it recorded first
         # (``created`` False): skip our POST or the same request id
