@@ -306,12 +306,12 @@ async def test_bind_failure_traced(monkeypatch, tmp_path: Path):
 async def test_first_turn_failure_persists_partial(tmp_path: Path):
     """Childless hard failure with streamed partials: a non-final
     round-0 message keeps the narration, then the error bubble."""
+    from sweave.projects import ProjectManager
     from tests.test_chat_loop import (
         _assistant_messages,
         _build_chat_loop,
         _new_session,
     )
-    from sweave.projects import ProjectManager
 
     pm = ProjectManager(base_path=tmp_path / "projects")
     session = _new_session(pm, tmp_path)
