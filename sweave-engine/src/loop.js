@@ -127,7 +127,7 @@ export function historyToProviderMessages(entries) {
   const omitted = (entries || []).length - clean.length;
   const out = [];
   if (omitted > 0) {
-    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars) });
+    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars, capped.droppedTurns) });
   }
   for (const m of clean) {
     if (m.role === "user") {
@@ -512,6 +512,14 @@ export async function runLoop(loopCtx) {
   let streakStart = 0;
   let failedIters = 0;
   let toolCallCount = 0;
+  // Last failing tool's error text (capped) for the resumption
+  // handoff: a keep/stop follow-up (or human) resumes from the
+  // actual wall, not from totals alone.
+  let lastToolError = "";
+  const noteToolError = (t) => {
+    const s = String(t === undefined || t === null ? "" : t);
+    if (s) lastToolError = s.slice(0, 500);
+  };
   const filesTouched = [];
   const noteFile = (p) => {
     if (!p || filesTouched.length >= 50 || filesTouched.includes(p)) return;
@@ -532,6 +540,7 @@ export async function runLoop(loopCtx) {
       toolCalls: toolCallCount,
       filesTouched: [...filesTouched],
       failedIterations: failedIters,
+      lastError: lastToolError || null,
     },
   });
   // Duplicate call-id guard: providers occasionally reuse an id
@@ -651,7 +660,11 @@ export async function runLoop(loopCtx) {
       const offered = isSweaveKnown ? offeredSweave.has(call.name) : execNames.has(call.name);
       const isSweave = isSweaveKnown && offered;
       if (!offered) {
-        const errText = `rejected: unknown tool ${JSON.stringify(call.name)}`;
+        // Name what IS offered: a guessing model burns a full round
+        // per unknown name without it.
+        const offeredNames = [...execNames, ...offeredSweave].sort().join(", ");
+        const errText = `rejected: unknown tool ${JSON.stringify(call.name)} (offered this turn: ${offeredNames || "none"})`;
+        noteToolError(errText);
         emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
         emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
@@ -664,7 +677,11 @@ export async function runLoop(loopCtx) {
         lastRepeat = { key: repeatKey, count: 1 };
       }
       if (lastRepeat.count >= DOOM_REPEATS && !isSweave) {
-        const errText = "rejected: doom_loop suspected (identical call 3x) — try a different approach";
+        // Name the stuck call and point at concrete outs: a bare
+        // "try something else" re-roll cost the 2026-09-15 turn 20
+        // wasted iterations on whitespace-identical edits.
+        const errText = `rejected: doom_loop suspected — ${call.name} with identical arguments ${DOOM_REPEATS}x in a row (the last result stands). Try a different approach: read the target first, narrow the scope, or pick another tool`;
+        noteToolError(errText);
         emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
         emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
@@ -675,10 +692,10 @@ export async function runLoop(loopCtx) {
         emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
         const result = await callSweaveTool(call.name, call.args, { ...sweaveCtx, session });
         const text = result.text;
-        if (result.ok) {
-          iterSuccess += 1;
+        if (result.ok) {          iterSuccess += 1;
           emit({ event: "tool.completed", callID: callId, tool: call.name, state: { status: "completed", input: call.args, output: text, ...toolStateExtra(call.name, call.args, { ok: true, output: text }) } });
         } else {
+          noteToolError(text);
           emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: text, ...toolStateExtra(call.name, call.args, { ok: false, error: text }) } });
         }
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: text, at: Date.now() });
@@ -693,6 +710,7 @@ export async function runLoop(loopCtx) {
       emit({ event: "tool.started", callID: callId, tool: call.name, state: { status: "pending", input: call.args } });
       if (gate.verdict === "deny") {
         const errText = `permission denied: ${gate.permission} for ${gate.patterns.join(", ")}`;
+        noteToolError(errText);
         emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
         continue;
@@ -701,6 +719,7 @@ export async function runLoop(loopCtx) {
         const answer = mapPermissionResponse(await resolveAsk({ ...execCtxBase }, gate, call.name, callId, call.args || {}));
         if (answer === "reject") {
           const errText = `permission rejected: ${gate.permission} for ${gate.patterns.join(", ")}`;
+          noteToolError(errText);
           emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args) } });
           store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
           continue;
@@ -726,6 +745,7 @@ export async function runLoop(loopCtx) {
       } else {
         if (isPath && target) noteFile(absPath || target);
         const errText = settled.partial ? `${settled.error}\nPartial output:\n${settled.partial}` : settled.error;
+        noteToolError(errText);
         emit({ event: "tool.failed", callID: callId, tool: call.name, state: { status: "error", input: call.args, error: errText, ...toolStateExtra(call.name, call.args, settled) } });
         store.append(session, { id: newMessageId("msg"), role: "tool", toolCallId: callId, name: call.name, content: errText, at: Date.now() });
       }

@@ -498,10 +498,15 @@ async function globSearch(cwd, pattern, root) {
   return ok(withTime.map((r) => r.relPath).join("\n"));
 }
 
-async function grepSearch(cwd, pattern, path, include) {
+async function grepSearch(cwd, pattern, path, include, literal) {
+  let source = String(pattern === undefined ? "" : pattern);
+  // Literal mode: escape regex metacharacters so the pattern matches
+  // verbatim — models otherwise burn rounds escaping dots/brackets
+  // by hand (and usually get it wrong once first).
+  if (literal) source = source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   let re;
   try {
-    re = new RegExp(pattern);
+    re = new RegExp(source);
   } catch (e) {
     return fail(`grep: invalid regex: ${e.message}`);
   }
@@ -748,13 +753,15 @@ export const EXEC_TOOL_DEFS = [
   },
   {
     name: "grep",
-    description: "Regex search across files (max 100 matches).",
+    description:
+      "Regex search across files (max 100 matches). Pass literal:true to match the pattern as plain text (no regex escaping burns).",
     parameters: {
       type: "object",
       properties: {
         pattern: { type: "string" },
         path: { type: "string" },
         include: { type: "string" },
+        literal: { type: "boolean", description: "Match pattern verbatim, not as regex" },
       },
       required: ["pattern"],
     },
@@ -943,7 +950,7 @@ async function executeToolInner(name, a, { cwd, session, signal, saveSession }) 
       result = await globSearch(cwd, a.pattern || "", a.path);
       break;
     case "grep":
-      result = await grepSearch(cwd, a.pattern || "", a.path, a.include);
+      result = await grepSearch(cwd, a.pattern || "", a.path, a.include, a.literal);
       break;
     case "todo": {
       result = await todoWrite(session, a.todos);

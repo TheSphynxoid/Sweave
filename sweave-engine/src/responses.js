@@ -22,7 +22,7 @@ export function historyToResponsesInput(entries) {
   const omitted = (entries || []).length - clean.length;
   const out = [];
   if (omitted > 0) {
-    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars) });
+    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars, capped.droppedTurns) });
   }
   for (const m of clean) {
     if (m.role === "user") {

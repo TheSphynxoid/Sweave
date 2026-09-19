@@ -283,7 +283,9 @@ async function runTurn(sessionId, body, res) {
   if (_capped.droppedMessages > 0) {
     history.unshift({
       role: "user",
-      content: historyTruncationNote(_capped.droppedMessages, _capped.droppedChars),
+      content: historyTruncationNote(
+        _capped.droppedMessages, _capped.droppedChars, _capped.droppedTurns
+      ),
     });
   }
 

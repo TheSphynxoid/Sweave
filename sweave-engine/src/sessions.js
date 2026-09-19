@@ -222,10 +222,11 @@ function entryChars(m) {
   return n;
 }
 
-export function historyTruncationNote(omittedMessages, droppedChars) {
+export function historyTruncationNote(omittedMessages, droppedChars, omittedTurns) {
+  const turns = omittedTurns > 0 ? ` across ~${omittedTurns} earlier turn(s)` : "";
   return (
     `[sweave history note: ${omittedMessages} message(s) omitted ` +
-    `to fit context (${droppedChars} chars; tool calls without ` +
+    `to fit context (${droppedChars} chars${turns}; tool calls without ` +
     `answers are never replayed); earlier work is out of scope — ` +
     `continue from what is shown]`
   );
@@ -236,15 +237,17 @@ export function capHistory(entries) {
   let chars = list.reduce((n, m) => n + entryChars(m), 0);
   let droppedMessages = 0;
   let droppedChars = 0;
+  let droppedTurns = 0;
   while (
     (list.length > HISTORY_MAX_MESSAGES || chars > HISTORY_MAX_CHARS) &&
     list.length > 1
   ) {
     const m = list.shift();
     droppedMessages += 1;
+    if (m && m.role === "user") droppedTurns += 1;
     const c = entryChars(m);
     droppedChars += c;
     chars -= c;
   }
-  return { entries: list, droppedMessages, droppedChars };
+  return { entries: list, droppedMessages, droppedChars, droppedTurns };
 }
