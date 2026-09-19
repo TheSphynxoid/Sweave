@@ -148,7 +148,7 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
       } catch {}
       return;
     }
-    const { output, usage } = await runLoop({
+    const { output, usage, variantStripped } = await runLoop({
       session,
       saveSession: () => store.save(),
       store,
@@ -165,7 +165,7 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
     // user_message_id (protocol v3): lets the orchestrator name this
     // turn's prompt in a later /revert (edit = history rewrite, never
     // a session rotation).
-    emit({ event: "done", output, user_message_id: userMessageId || null, model_used: { provider: body.model.provider, model_id: body.model.model_id }, session_fresh: Boolean(sessionFresh) });
+    emit({ event: "done", output, user_message_id: userMessageId || null, model_used: { provider: body.model.provider, model_id: body.model.model_id }, session_fresh: Boolean(sessionFresh), ...(variantStripped ? { variant_stripped: variantStripped } : {}) });
     const hasUsage = usage && (usage.input > 0 || usage.output > 0);
     emit({
       event: "tokens_used",
@@ -306,6 +306,9 @@ async function runTurn(sessionId, body, res) {
   // Single-shot thinking capture (agent parity, same as the loop):
   // reasoning persists on the journal entry for resume replay.
   let singleReasoning = "";
+  // Compat-strip signal for the failure taxonomy (function scope:
+  // `step` below lives inside the try block).
+  let ssCompatStripped = null;
   if (resolved.flavor === "responses") {
     // Responses flavor: same downstream events, different wire. The
     // small tail below mirrors the chat path's (append + done +
@@ -350,6 +353,9 @@ async function runTurn(sessionId, body, res) {
       });
       output = step.text;
       usage = step.usage;
+      if (step.reasoningCompatStripped) {
+        ssCompatStripped = step.reasoningCompatStripped;
+      }
     } catch (err) {
       // Terminal provider failure on the responses flavor: end the
       // turn loudly HERE (failed record + error SSE + res.end),
@@ -399,6 +405,7 @@ async function runTurn(sessionId, body, res) {
       user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
       session_fresh: sessionFresh,
+      ...(ssCompatStripped ? { variant_stripped: ssCompatStripped } : {}),
     });
     sseEvent(res, {
       event: "tokens_used",
@@ -486,6 +493,8 @@ async function runTurn(sessionId, body, res) {
       },
     };
     let upstream;
+    // Compat-strip signal (same taxonomy as the loop transports).
+    let ssStripped = null;
     try {
       upstream = await withProviderRetry(() => ssFetchOnce(true), retryOpts);
     } catch (err) {
@@ -501,6 +510,7 @@ async function runTurn(sessionId, body, res) {
           );
         } catch {}
         upstream = await withProviderRetry(() => ssFetchOnce(false), retryOpts);
+        ssStripped = `effort:${ssEffortReq.effort}`;
       } else {
         throw err;
       }
@@ -576,6 +586,7 @@ async function runTurn(sessionId, body, res) {
       user_message_id: userMsg.id,
       model_used: { provider: model.provider, model_id: model.model_id },
       session_fresh: sessionFresh,
+      ...(ssStripped ? { variant_stripped: ssStripped } : {}),
     });
     // tokens_used terminal — identical shape to the M1.9 audit anchor.
     // cost is null (unknown) until provider costing lands — a numeric
@@ -665,7 +676,20 @@ const server = createServer(async (req, res) => {
         const turn = live.get(body.session_id);
         if (turn && !turn.finished) turn.controller.abort(new Error("client-closed"));
       });
-      await runTurn(body.session_id, body, res);
+      // Hang backstop (incident 2026-09-19 night: a ReferenceError
+      // past committed SSE headers skipped every res.end below and
+      // held the client's socket until the turn timeout — the same
+      // shape as the 2026-09-14 zen-suite hang this file already
+      // guards in two places). Whatever runTurn does or throws, the
+      // stream always ends here; already-ended is a no-op via the
+      // writableEnded guard.
+      try {
+        await runTurn(body.session_id, body, res);
+      } finally {
+        try {
+          if (!res.writableEnded) res.end();
+        } catch {}
+      }
       return;
     }
     if (req.method === "POST" && url.pathname === "/abort") {

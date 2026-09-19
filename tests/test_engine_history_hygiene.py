@@ -624,6 +624,8 @@ async def test_variant_effort_fallback_strips_and_succeeds(
     assert len(HITS) == 2
     assert HITS[0]["reasoning"] == {"summary": "auto", "effort": "bogus-effort"}
     assert HITS[1]["reasoning"] == "ABSENT"
+    # Effort strip signal reaches metadata for bucket classification.
+    assert result.metadata.get("variant_stripped") == "effort:bogus-effort"
 
 
 @needs_node
@@ -744,6 +746,9 @@ async def test_reasoning_compat_fallback(stub_url, tmp_path_factory, tmp_path):
     assert not any(
         isinstance(i, dict) and i.get("type") == "reasoning" for i in second_input
     )
+    # The stripped signal reaches the harness metadata for the
+    # two-bucket taxonomy (reasoning-items only here — no variant).
+    assert result.metadata.get("variant_stripped") == "reasoning-items"
 
 
 @needs_node

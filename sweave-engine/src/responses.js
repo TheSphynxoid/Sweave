@@ -144,7 +144,13 @@ export async function providerResponsesStream({
       ? input.filter((i) => !(i && i.type === "reasoning"))
       : input;
     const out = await attempt(stripped, true);
-    out.reasoningCompatRetry = true;
+    // Name WHAT was stripped for the orchestrator's failure taxonomy
+    // (provider-fault vs out-of-sync needs the value, not just the
+    // fact): the effort value, the replayed items, or both.
+    const strippedWhat = [];
+    if (effortReq && !effortReq.none) strippedWhat.push(`effort:${effortReq.effort}`);
+    if (carriesReasoning) strippedWhat.push("reasoning-items");
+    out.reasoningCompatStripped = strippedWhat.join("+") || true;
     return out;
   }
 }

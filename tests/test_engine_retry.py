@@ -307,6 +307,8 @@ async def test_variant_effort_sent_and_stripped_on_400(
     assert STUB["hits"] == 2
     assert STUB["bodies"][0].get("reasoning_effort") == "high"
     assert "reasoning_effort" not in STUB["bodies"][1]
+    # The stripped effort value reaches the harness metadata.
+    assert result.metadata.get("variant_stripped") == "effort:high"
 
 
 @needs_node

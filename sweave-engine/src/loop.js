@@ -253,6 +253,9 @@ async function providerChatStream({ baseURL, key, provider, modelId, modelVarian
       signal,
     });
   let resp = await doFetch(true);
+  // Compat-strip signal for the orchestrator's failure taxonomy
+  // (provider-fault vs out-of-sync needs the stripped value).
+  let compatStripped = null;
   if (!resp.ok && resp.status === 400 && effortReq && !effortReq.none) {
     const probe = await resp.text().catch(() => "");
     if (shouldStripReasoningFeatures(
@@ -265,6 +268,7 @@ async function providerChatStream({ baseURL, key, provider, modelId, modelVarian
         );
       } catch {}
       resp = await doFetch(false);
+      compatStripped = `effort:${effortReq.effort}`;
     } else {
       throw providerHttpError(resp.status, resp.headers, probe.slice(0, 300));
     }
@@ -329,7 +333,7 @@ async function providerChatStream({ baseURL, key, provider, modelId, modelVarian
       return { id: c.id || `call_${Date.now().toString(36)}_${i}`, name: c.name, args };
     });
   if (onToolDelta) onToolDelta(calls);
-  return { text, calls, usage };
+  return { text, calls, usage, reasoningCompatStripped: compatStripped };
 }
 
 let callCounter = 0;
@@ -518,6 +522,10 @@ export async function runLoop(loopCtx) {
   };
   const execCtxBase = { session, saveSession, emit, sweaveCtx, isAborted, cwd, signal };
 
+  // Compat-strip signal for the orchestrator's failure taxonomy
+  // (provider-fault vs out-of-sync needs the stripped value, not
+  // just the fact). Declared beside the other turn totals.
+  let variantStripped = null;
   let totalIn = 0;
   let totalOut = 0;
   let totalReason = 0;
@@ -635,6 +643,11 @@ export async function runLoop(loopCtx) {
     });
     stepText = stepResult.text;
     stepCalls = stepResult.calls;
+    // Compat-strip signal for the orchestrator's failure taxonomy
+    // (first strip wins; later steps ride the stripped shape).
+    if (!variantStripped && stepResult.reasoningCompatStripped) {
+      variantStripped = stepResult.reasoningCompatStripped;
+    }
     for (const c of stepCalls) {
       // Fill missing ids BEFORE the collision check: an id-less call
       // would otherwise diverge between the appended assistant entry
@@ -840,5 +853,6 @@ export async function runLoop(loopCtx) {
   return {
     output: finalText,
     usage: { input: totalIn, output: totalOut, reasoning: totalReason, cache_read: totalCacheRead, cache_write: 0, context_input: maxIn },
+    variantStripped,
   };
 }

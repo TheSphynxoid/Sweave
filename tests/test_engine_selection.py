@@ -651,6 +651,107 @@ async def test_engine_attempt_plain_resume_traces_resumed(
 
 
 # ---------------------------------------------------------------------------
+# Two-bucket variant taxonomy: stripped effort classifies out-of-sync
+# ---------------------------------------------------------------------------
+
+
+def _script_with_stripped(stripped: str):
+    from sweave.harness.base import AgentResult
+
+    async def script(message, trace):
+        result = AgentResult(success=True, output="did it stripped")
+        result.metadata["variant_stripped"] = stripped
+        return result
+
+    return script
+
+
+@pytest.mark.asyncio
+async def test_variant_refused_verified_means_drift(monkeypatch, tmp_path: Path):
+    """A registry-advertised value refused by the provider traces
+    variant_refused {verified True, bucket out-of-sync} with a
+    re-sync remedy — provider-side drift, not a mystery."""
+    seen: list = []
+    _register_fake(monkeypatch, _script_with_stripped("effort:max"), seen)
+    runtime = _runtime()
+    trace = _Trace()
+    delegation = _delegation()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_1"),
+        delegation=delegation,
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        model_ref={"provider": "opencode-go", "model_id": "glm-5.3-flash",
+                   "variant": "max"},
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert fallback is None
+    assert out == "did it stripped"
+    refused = [p for e, p in trace.events if e == "variant_refused"]
+    assert len(refused) == 1
+    assert refused[0]["value"] == "max"
+    assert refused[0]["verified"] is True
+    assert refused[0]["bucket"] == "out-of-sync"
+    assert "sync" in refused[0]["remedy"]
+
+
+@pytest.mark.asyncio
+async def test_variant_refused_unverified_names_remedy(monkeypatch, tmp_path: Path):
+    """An unadvertised value refused traces verified False with the
+    advertised list (or custom-confirm) as remedy — knowledge gap,
+    same out-of-sync bucket."""
+    seen: list = []
+    _register_fake(monkeypatch, _script_with_stripped("effort:bogus"), seen)
+    runtime = _runtime()
+    trace = _Trace()
+    delegation = _delegation()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_2"),
+        delegation=delegation,
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        model_ref={"provider": "opencode-go", "model_id": "glm-5.3-flash",
+                   "variant": "bogus"},
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert fallback is None
+    refused = [p for e, p in trace.events if e == "variant_refused"]
+    assert len(refused) == 1
+    assert refused[0]["verified"] is False
+    assert refused[0]["bucket"] == "out-of-sync"
+
+
+@pytest.mark.asyncio
+async def test_no_strip_no_variant_event(monkeypatch, tmp_path: Path):
+    """Control: no stripped signal, no variant_refused event."""
+    from sweave.harness.base import AgentResult
+
+    seen: list = []
+
+    async def script(message, trace):
+        return AgentResult(success=True, output="clean")
+
+    _register_fake(monkeypatch, script, seen)
+    runtime = _runtime()
+    trace = _Trace()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_3"),
+        delegation=_delegation(),
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert (out, fallback) == ("clean", None)
+    assert "variant_refused" not in [e for e, _ in trace.events]
+
+
+# ---------------------------------------------------------------------------
 # v2/tasks override: validation helper + JobRunner transient channel
 # ---------------------------------------------------------------------------
 

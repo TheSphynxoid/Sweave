@@ -1173,6 +1173,61 @@ class SpecialistRuntime:
                     )
             except Exception:  # noqa: BLE001
                 pass
+            # Two-bucket variant taxonomy: the sidecar names which
+            # reasoning features it stripped for gateway compat. A
+            # stripped EFFORT value classifies here — provider-fault
+            # (5xx/timeout/auth) never reaches this branch, so any
+            # refusal is knowledge-side (out-of-sync family): either
+            # the provider drifted past a registry-advertised value
+            # (verified=True) or the value was never advertised
+            # (verified=False — custom, brand-new, or typo). Both
+            # carry their remedy; neither is a mystery.
+            try:
+                _stripped = (result.metadata or {}).get("variant_stripped")
+                _efforts = [
+                    part.split(":", 1)[1]
+                    for part in str(_stripped or "").split("+")
+                    if part.startswith("effort:")
+                ]
+                if _stripped and _efforts and used_ref is not None:
+                    from sweave.models_variants import effort_variants_for
+
+                    _uref = dict(used_ref)
+                    _value = _efforts[0]
+                    _known = effort_variants_for(
+                        _uref.get("provider"), _uref.get("model_id")
+                    )
+                    _verified = _known is not None and _value in _known
+                    if _verified:
+                        _remedy = (
+                            "provider refused a registry-advertised value "
+                            "(likely provider-side drift): re-run "
+                            "`sweave models sync` and retry"
+                        )
+                    elif _known is not None:
+                        _remedy = (
+                            f"model advertises effort values {_known} — "
+                            "pick one of those, or confirm the custom value "
+                            "with the provider"
+                        )
+                    else:
+                        _remedy = (
+                            "model unknown to the registry — re-run "
+                            "`sweave models sync`, or confirm a custom "
+                            "provider/model"
+                        )
+                    trace.append(
+                        "variant_refused",
+                        {
+                            "value": _value,
+                            "model": model_str or None,
+                            "verified": _verified,
+                            "bucket": "out-of-sync",
+                            "remedy": _remedy,
+                        },
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
             # Post-send backfill (best-effort, like the opencode
             # path): the binding already persisted pre-send above;

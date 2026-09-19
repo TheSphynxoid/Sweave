@@ -555,8 +555,12 @@ class SweaveEngineProcess:
             # a later /revert rewrites (protocol v3). Captured from the
             # `done` event into the result metadata — the runtime traces
             # it per delegation so edit-rerun can rewrite history.
+            # `variant_stripped` (two-bucket taxonomy): which reasoning
+            # features the sidecar dropped for gateway compat — the
+            # runtime classifies provider-fault vs out-of-sync from it.
             user_message_id: str | None = None
             session_fresh = False
+            variant_stripped: str | None = None
             try:
                 async with self._client.stream(
                     "POST", "/run", json=body, timeout=turn_timeout + 30.0
@@ -731,6 +735,9 @@ class SweaveEngineProcess:
                             # true resume.
                             if event.get("session_fresh") is True:
                                 session_fresh = True
+                            stripped = event.get("variant_stripped")
+                            if isinstance(stripped, str) and stripped:
+                                variant_stripped = stripped
                             pass
             except ProtocolMismatch:
                 raise
@@ -761,6 +768,8 @@ class SweaveEngineProcess:
                 result.metadata["user_message_id"] = user_message_id
             if session_fresh:
                 result.metadata["session_fresh"] = True
+            if variant_stripped:
+                result.metadata["variant_stripped"] = variant_stripped
             return result
         except ProtocolMismatch:
             raise
