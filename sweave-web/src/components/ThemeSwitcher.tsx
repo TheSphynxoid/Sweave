@@ -11,7 +11,6 @@ import { useMemo, useState } from "react";
 import { Palette, Check, Sun, Moon, Monitor } from "lucide-react";
 import {
   PRESETS,
-  type ChatBackdrop,
   type PresetName,
   type ThemeMode,
   SYSTEM_PRESET_NAME,
@@ -101,14 +100,8 @@ function PresetGroup({
   );
 }
 
-const BACKDROP_OPTIONS: readonly { id: ChatBackdrop; label: string; hint: string }[] = [
-  { id: "glow", label: "Glow", hint: "Soft ambient glow" },
-  { id: "nebula", label: "Nebula", hint: "Cosmic clouds + starfield" },
-  { id: "none", label: "None", hint: "Flat background" },
-];
-
 export function ThemeSwitcher() {
-  const { theme, setPreset, setCustom, resetCustom, backdrop, setBackdrop } = useTheme();
+  const { theme, setPreset, setCustom, resetCustom } = useTheme();
   const [query, setQuery] = useState("");
 
   const choose = (preset: PresetName) => setPreset(preset);
@@ -175,28 +168,6 @@ export function ThemeSwitcher() {
         <DropdownMenuSeparator />
         <PresetGroup mode="light" active={theme.preset} query={query} onChoose={choose} />
         <PresetGroup mode="dark" active={theme.preset} query={query} onChoose={choose} />
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Chat backdrop</DropdownMenuLabel>
-        <div className="flex gap-1.5 px-2 pb-1" role="group" aria-label="Chat backdrop">
-          {BACKDROP_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              type="button"
-              onClick={() => setBackdrop(opt.id)}
-              aria-pressed={backdrop === opt.id}
-              data-testid={`theme-backdrop-${opt.id}`}
-              title={opt.hint}
-              className={cn(
-                "flex-1 rounded-md border px-2 py-1.5 text-xs transition-colors",
-                backdrop === opt.id
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted",
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="flex items-center justify-between">
           <span>Customize</span>

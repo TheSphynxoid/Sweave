@@ -275,16 +275,7 @@ button {
 /* Ambient backdrop for the thread: a soft primary glow pooled at the
  * top of the pane so the workspace reads as a live "agentic" surface
  * instead of a flat card. Pinned to the non-scrolling Root so it
- * stays put while messages scroll beneath it.
- *
- * Texture axis (`data-chat-backdrop` on :root, owned by
- * `applyBackdropToDocument`): `glow` (default, this rule), `nebula`
- * (violet/cyan/magenta gas clouds + a sparse starfield over the same
- * base glow), `none`.
- * Bubbles stay solid surfaces above the pattern, so text contrast is
- * unaffected; the clouds sit at low baked opacity and the white stars
- * gracefully vanish on light presets. Static images — no motion,
- * to disable under prefers-reduced-motion. */
+ * stays put while messages scroll beneath it. */
 .chat-thread-ambient {
   background:
     radial-gradient(
@@ -292,41 +283,6 @@ button {
       color-mix(in oklch, var(--color-primary) 12%, transparent),
       transparent 62%
     );
-}
-
-:root[data-chat-backdrop="none"] .chat-thread-ambient {
-  background: none;
-}
-
-:root[data-chat-backdrop="nebula"] .chat-thread-ambient {
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='%23ffffff' fill-opacity='0.5'%3E%3Ccircle cx='18' cy='30' r='1.1'/%3E%3Ccircle cx='66' cy='12' r='0.8'/%3E%3Ccircle cx='112' cy='44' r='1.3'/%3E%3Ccircle cx='158' cy='20' r='0.9'/%3E%3Ccircle cx='204' cy='52' r='1.2'/%3E%3Ccircle cx='36' cy='96' r='0.8'/%3E%3Ccircle cx='88' cy='118' r='1.1'/%3E%3Ccircle cx='140' cy='92' r='0.8'/%3E%3Ccircle cx='188' cy='126' r='1.3'/%3E%3Ccircle cx='228' cy='100' r='0.9'/%3E%3Ccircle cx='12' cy='168' r='1.2'/%3E%3Ccircle cx='58' cy='196' r='0.9'/%3E%3Ccircle cx='104' cy='176' r='1.1'/%3E%3Ccircle cx='152' cy='208' r='0.8'/%3E%3Ccircle cx='200' cy='184' r='1.2'/%3E%3Ccircle cx='230' cy='222' r='0.9'/%3E%3Ccircle cx='80' cy='66' r='0.7'/%3E%3Ccircle cx='170' cy='150' r='0.7'/%3E%3C/g%3E%3C/svg%3E"),
-    radial-gradient(
-      34rem 24rem at 14% 10%,
-      rgba(124, 58, 237, 0.24),
-      transparent 65%
-    ),
-    radial-gradient(
-      38rem 26rem at 86% 26%,
-      rgba(34, 211, 238, 0.16),
-      transparent 65%
-    ),
-    radial-gradient(
-      60rem 38rem at 55% 110%,
-      rgba(236, 72, 153, 0.10),
-      transparent 65%
-    ),
-    radial-gradient(
-      70rem 40rem at 50% -14%,
-      color-mix(in oklch, var(--color-primary) 12%, transparent),
-      transparent 62%
-    );
-  background-size:
-    240px 240px,
-    auto,
-    auto,
-    auto,
-    auto;
 }
 
 @media (prefers-reduced-motion: reduce) {

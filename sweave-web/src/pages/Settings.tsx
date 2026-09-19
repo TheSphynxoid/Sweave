@@ -104,7 +104,7 @@ export function SettingsPage() {
 }
 
 function AppearanceSettings() {
-  const { theme, setPreset, setCustom, resetCustom, backdrop, setBackdrop } = useTheme();
+  const { theme, setPreset, setCustom, resetCustom } = useTheme();
   const [customOpen, setCustomOpen] = useState(false);
   const customCount = Object.keys(theme.custom).length;
 
@@ -226,49 +226,6 @@ function AppearanceSettings() {
               />
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      <Card className="md:col-span-2">
-        <CardHeader>
-          <CardTitle className="text-sm">Chat backdrop</CardTitle>
-          <CardDescription>
-            Texture behind the chat thread. Bubbles stay solid, so text contrast is unaffected.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div
-            className="inline-flex rounded-lg border p-1"
-            role="group"
-            aria-label="Chat backdrop"
-            data-testid="settings-backdrop"
-          >
-            {(
-              [
-                { id: "glow", label: "Glow", hint: "Soft ambient glow (default)" },
-                { id: "nebula", label: "Nebula", hint: "Cosmic clouds + starfield" },
-                { id: "none", label: "None", hint: "Flat background" },
-              ] as const
-            ).map((opt) => {
-              const isActive = backdrop === opt.id;
-              return (
-                <button
-                  key={opt.id}
-                  type="button"
-                  data-testid={`settings-backdrop-${opt.id}`}
-                  aria-pressed={isActive}
-                  title={opt.hint}
-                  onClick={() => setBackdrop(opt.id)}
-                  className={cn(
-                    "rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
-                    isActive ? "bg-primary text-primary-foreground" : "hover:bg-muted",
-                  )}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
         </CardContent>
       </Card>
 

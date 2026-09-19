@@ -17,14 +17,10 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import type { ReactNode } from "react";
 import {
   type ActiveTheme,
-  type ChatBackdrop,
   loadActiveTheme,
   saveActiveTheme,
   applyThemeToDocument,
   resolveSystemPresetName,
-  loadBackdrop,
-  saveBackdrop,
-  applyBackdropToDocument,
 } from "./switcher";
 import { type PresetName, SYSTEM_PRESET_NAME } from "./tokens";
 import type { CustomOverride } from "./tokens";
@@ -38,25 +34,17 @@ interface ThemeContextValue {
   isSystem: boolean;
   /** Concrete preset name currently in effect (resolves "system"). */
   effectivePresetName: PresetName;
-  /** Chat-thread backdrop texture (glow default; nebula/none opt-in). */
-  backdrop: ChatBackdrop;
-  setBackdrop: (backdrop: ChatBackdrop) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<ActiveTheme>(() => loadActiveTheme());
-  const [backdrop, setBackdropState] = useState<ChatBackdrop>(() => loadBackdrop());
 
   // Apply on every change (and on mount).
   useEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
-
-  useEffect(() => {
-    applyBackdropToDocument(backdrop);
-  }, [backdrop]);
 
   // When "system" is selected, re-apply immediately if the OS flips
   // light/dark so the UI tracks the OS without a reload.
@@ -95,17 +83,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const setBackdrop = useCallback((next: ChatBackdrop) => {
-    saveBackdrop(next);
-    setBackdropState(next);
-  }, []);
-
   const isSystem = theme.preset === SYSTEM_PRESET_NAME;
   const effectivePresetName = isSystem ? resolveSystemPresetName() : theme.preset;
 
   return (
     <ThemeContext.Provider
-      value={{ theme, setPreset, setCustom, resetCustom, isSystem, effectivePresetName, backdrop, setBackdrop }}
+      value={{ theme, setPreset, setCustom, resetCustom, isSystem, effectivePresetName }}
     >
       {children}
     </ThemeContext.Provider>

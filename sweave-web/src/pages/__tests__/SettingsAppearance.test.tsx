@@ -104,15 +104,4 @@ describe("Settings without an active project", () => {
     activateTab("Project");
     expect(await screen.findByText(/No active project/)).toBeTruthy();
   });
-
-  it("offers the chat backdrop switch and persists the pick", async () => {
-    renderPage();
-    const group = await screen.findByTestId("settings-backdrop");
-    expect(group).toBeTruthy();
-    fireEvent.click(screen.getByTestId("settings-backdrop-nebula"));
-    expect(window.localStorage.getItem("sweave.theme.backdrop")).toBe("nebula");
-    expect(document.documentElement.getAttribute("data-chat-backdrop")).toBe("nebula");
-    fireEvent.click(screen.getByTestId("settings-backdrop-glow"));
-    expect(window.localStorage.getItem("sweave.theme.backdrop")).toBe("glow");
-  });
 });
