@@ -157,6 +157,41 @@ function fail(error) {
   return { ok: false, error: String(error) };
 }
 
+/**
+ * Map a filesystem throw to a typed tool failure (never a turn kill).
+ *
+ * A wrong path (directory as a file, missing file, denied file) is a
+ * NORMAL tool error the model adjusts to — not a turn failure. Before
+ * this mapping, any fs throw past the narrow pre-checks (EISDIR on
+ * `write`, TOCTOU deletes, EACCES) escaped `executeTool` as a
+ * rejection, and loop.js treats a rejected tool as turn-fatal: the
+ * whole turn failed AND the journal kept an unanswered assistant
+ * call (the 2026-09-19 session-poison class). Errno shapes:
+ * EISDIR (used a directory as a file), EACCES/EPERM, ENOENT, ENOSPC,
+ * ENAMETOOLONG; anything else rides the raw first line.
+ */
+function fsFail(verb, target, err) {
+  const code = (err && (err.code || (err.cause && err.cause.code))) || "";
+  const where = target ? `: ${target}` : "";
+  switch (code) {
+    case "EISDIR":
+      return fail(`${verb}: is a directory${where}`);
+    case "EACCES":
+    case "EPERM":
+      return fail(`${verb}: permission denied${where}`);
+    case "ENOENT":
+      return fail(`${verb}: no such file or directory${where}`);
+    case "ENOSPC":
+      return fail(`${verb}: disk full${where}`);
+    case "ENAMETOOLONG":
+      return fail(`${verb}: name too long${where}`);
+    default: {
+      const msg = err && err.message ? String(err.message).split("\n")[0] : String(err);
+      return fail(`${verb}: ${msg}${where}`);
+    }
+  }
+}
+
 function truncateOutput(text) {
   if (text.length <= MAX_OUTPUT_CHARS) return { text, truncated: false };
   return {
@@ -193,7 +228,14 @@ async function readPath(cwd, filePath, offset, limit) {
     return ok(lines.join("\n"));
   }
   if (st.size > 4 * 1024 * 1024) return fail("read: file too large (>4MB)");
-  const raw = await fsp.readFile(abs, "utf8");
+  let raw;
+  try {
+    raw = await fsp.readFile(abs, "utf8");
+  } catch (e) {
+    // TOCTOU delete, EACCES, or a stat-raced directory: a normal
+    // tool failure, never a turn kill.
+    return fsFail("read", filePath, e);
+  }
   if (raw.includes("\0")) return fail("read: binary file");
   const lines = raw.split("\n");
   const total = lines.length;
@@ -216,8 +258,10 @@ async function editPath(cwd, filePath, oldString, newString, replaceAll) {
   let raw;
   try {
     raw = await fsp.readFile(abs, "utf8");
-  } catch {
-    return fail(`edit: no such file: ${filePath}`);
+  } catch (e) {
+    // EISDIR here is the "used a directory as a file" case — name
+    // it, don't misreport "no such file".
+    return fsFail("edit", filePath, e);
   }
   if (typeof oldString !== "string" || !oldString) return fail("edit: oldString must be non-empty");
   const count = raw.split(oldString).length - 1;
@@ -235,7 +279,11 @@ async function editPath(cwd, filePath, oldString, newString, replaceAll) {
     return fail(`edit: oldString matches ${count} times; use replaceAll or add context`);
   }
   const next = replaceAll ? raw.split(oldString).join(newString) : raw.replace(oldString, newString);
-  await fsp.writeFile(abs, next, "utf8");
+  try {
+    await fsp.writeFile(abs, next, "utf8");
+  } catch (e) {
+    return fsFail("edit", filePath, e);
+  }
   return ok(`edited ${filePath} (${count} replacement${count === 1 ? "" : "s"})`);
 }
 
@@ -335,8 +383,14 @@ async function writePath(cwd, filePath, content) {
   const abs = resolve(cwd, filePath);
   // Pre-write old-capture BEFORE the bytes change (never after).
   const old = await captureOldWrite(abs);
-  await fsp.mkdir(join(abs, ".."), { recursive: true });
-  await fsp.writeFile(abs, content === undefined ? "" : String(content), "utf8");
+  try {
+    await fsp.mkdir(join(abs, ".."), { recursive: true });
+    await fsp.writeFile(abs, content === undefined ? "" : String(content), "utf8");
+  } catch (e) {
+    // The "used a directory as a file" case lands here as EISDIR —
+    // a normal tool failure, never a turn kill.
+    return fsFail("write", filePath, e);
+  }
   return { ...ok(`wrote ${filePath}`), _old: old };
 }
 
@@ -825,6 +879,22 @@ case "edit": {
 export async function executeTool(name, args, execCtx) {
   const { cwd, session, signal } = execCtx;
   const a = args || {};
+  // Totality guard: NO tool failure may escape as a rejection. loop.js
+  // treats a rejected tool as turn-fatal (whole turn dies + the
+  // journal keeps an unanswered assistant call — the 2026-09-19
+  // poison class). Every throw below becomes a typed `fail` the
+  // model adjusts to; only abort control signals propagate (the
+  // turn-stop race owns them, never the tool result).
+  try {
+    return await executeToolInner(name, a, { cwd, session, signal });
+  } catch (e) {
+    if (e && (e.code === "aborted" || e.name === "AbortError")) throw e;
+    const msg = e && e.message ? String(e.message).split("\n")[0] : String(e);
+    return fail(`${name}: ${msg}`);
+  }
+}
+
+async function executeToolInner(name, a, { cwd, session, signal }) {
   let result;
   switch (name) {
     case "read": {

@@ -634,6 +634,23 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     same night: the `engine_failed_before_work` cut is 200→500
     chars so the upstream reason survives into traces.
 
+16. **A wrong path is a tool error, never a turn kill**
+    (incident 2026-09-19 follow-up: using a directory as a file
+    killed the whole turn instead of failing the call). fs throws
+    past the narrow pre-checks (`writeFile` EISDIR on a directory,
+    TOCTOU deletes, EACCES) escaped `executeTool` as rejections,
+    and loop.js treats a rejected tool as turn-fatal — which ALSO
+    minted the item-15 poison (unanswered assistant call in the
+    journal). `fsFail()` (`sweave-engine/src/tools.js`) maps errno
+    to typed failures (EISDIR/EACCES/EPERM/ENOENT/ENOSPC/
+    ENAMETOOLONG + raw first line) at every fallible fs site, and
+    `executeTool` has a totality guard: nothing escapes as a
+    rejection except abort control signals (the turn-stop race
+    owns them). Pinned by `tests/test_engine_tool_failure.py`
+    (failing call + text follow-up per test: write/edit on a
+    directory, read-missing, bash non-zero — turn succeeds past
+    each; write/edit fail pre-fix).
+
 
 ## Paths & config
 
