@@ -172,7 +172,14 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
       // input stays the billed sum across steps; context_input is
       // the fire-risk size. Compaction triggers read this.
       context_input: usage.context_input || 0,
-      cost: 0,
+      // No provider costing on the native path (hygiene B6): a
+      // numeric 0 reads as provider-certified Free downstream and
+      // hides real spend. null = unknown → rates estimate/unpriced.
+      cost: null,
+      // Turn anchor (hygiene B6): names the prompt unit so readers
+      // join tokens by id instead of position (failed turns emit no
+      // anchor, which used to shift every later turn's attribution).
+      user_message_id: userMessageId || null,
       ...(hasUsage ? {} : { estimated: true }),
     });
     try {
@@ -374,6 +381,9 @@ async function runTurn(sessionId, body, res) {
     });
     sseEvent(res, {
       event: "tokens_used",
+      // Turn anchor (hygiene B6): the prompt unit id for id-keyed
+      // token attribution downstream.
+      user_message_id: userMsg.id,
       ...(usage
         ? {
             input: usage.prompt_tokens || 0,
@@ -383,7 +393,9 @@ async function runTurn(sessionId, body, res) {
             cache_write: 0,
             // Single-shot turn: one request, so peak context == billed.
             context_input: usage.prompt_tokens || 0,
-            cost: 0,
+            // Native path has no provider costing (hygiene B6):
+            // null = unknown (rates estimate), never certified Free.
+            cost: null,
           }
         : {
             input: 0,
@@ -392,7 +404,7 @@ async function runTurn(sessionId, body, res) {
             cache_read: 0,
             cache_write: 0,
             context_input: 0,
-            cost: 0,
+            cost: null,
             estimated: true,
           }),
     });
@@ -504,7 +516,8 @@ async function runTurn(sessionId, body, res) {
       session_fresh: sessionFresh,
     });
     // tokens_used terminal — identical shape to the M1.9 audit anchor.
-    // cost is 0 until a pricing table lands (tokens are real).
+    // cost is null (unknown) until provider costing lands — a numeric
+    // 0 would read as certified Free downstream (hygiene B6).
     let tokens;
     if (usage) {
       tokens = {
@@ -515,7 +528,7 @@ async function runTurn(sessionId, body, res) {
         cache_write: 0,
         // Single-shot turn: one request, so peak context == billed.
         context_input: usage.prompt_tokens || 0,
-        cost: 0,
+        cost: null,
       };
     } else {
       tokens = {
@@ -525,11 +538,11 @@ async function runTurn(sessionId, body, res) {
         cache_read: 0,
         cache_write: 0,
         context_input: 0,
-        cost: 0,
+        cost: null,
         estimated: true,
       };
     }
-    sseEvent(res, { event: "tokens_used", ...tokens });
+    sseEvent(res, { event: "tokens_used", ...tokens, user_message_id: userMsg.id });
     res.end();
     void abortedRemotely;
   } catch (err) {

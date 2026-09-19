@@ -218,6 +218,79 @@ def test_error_tool_result_marks_error_status(tmp_path: Path):
     assert t["result"] == "old file"
 
 
+def test_reasoning_attributed_by_id_not_position(tmp_path: Path):
+    """Hygiene B6: an empty-reasoning first turn must not shift the
+    second turn's thinking onto it (the old positional join did)."""
+    session = {
+        "id": _SID,
+        "messages": [
+            {"id": "u1", "role": "user", "content": "t1", "at": 1},
+            {"id": "a1", "role": "assistant", "content": "r1", "at": 2},
+            {"id": "u2", "role": "user", "content": "t2", "at": 3},
+            {"id": "a2", "role": "assistant", "content": "r2", "at": 4},
+        ],
+    }
+    jp = _journal(tmp_path, {_SID: session})
+    trace = [
+        {"event": "engine_user_message", "id": "u1"},
+        {"event": "tokens_used", "input": 10, "output": 1},
+        {"event": "engine_user_message", "id": "u2"},
+        {"event": "reasoning", "text": "second-turn thinking"},
+        {"event": "tokens_used", "input": 20, "output": 2},
+    ]
+    blocks = render_transcript_blocks(_SID, trace, journal_path=jp)
+    assert blocks[0]["reasoning"] == ""
+    assert blocks[1]["reasoning"] == "second-turn thinking"
+
+
+def test_tokens_attributed_by_id_when_present(tmp_path: Path):
+    """Hygiene B6: tokens_used carrying user_message_id joins by id
+    even when arrival order disagrees with turn order (a failed turn
+    emits no anchor, which used to shift every neighbour)."""
+    session = {
+        "id": _SID,
+        "messages": [
+            {"id": "u1", "role": "user", "content": "t1", "at": 1},
+            {"id": "a1", "role": "assistant", "content": "r1", "at": 2},
+            {"id": "u2", "role": "user", "content": "t2", "at": 3},
+            {"id": "a2", "role": "assistant", "content": "r2", "at": 4},
+        ],
+    }
+    jp = _journal(tmp_path, {_SID: session})
+    trace = [
+        {"event": "engine_user_message", "id": "u1"},
+        {"event": "engine_user_message", "id": "u2"},
+        {"event": "tokens_used", "input": 20, "output": 2, "user_message_id": "u2"},
+        {"event": "tokens_used", "input": 10, "output": 1, "user_message_id": "u1"},
+    ]
+    blocks = render_transcript_blocks(_SID, trace, journal_path=jp)
+    assert blocks[0]["tokens"]["input"] == 10
+    assert blocks[1]["tokens"]["input"] == 20
+
+
+def test_dangling_call_flags_result_missing(tmp_path: Path):
+    """Hygiene B6: an assistant call with no journaled result (abort /
+    crash poison) keeps status unknown for back-compat but carries
+    result_missing so renderers can name it never-completed."""
+    session = {
+        "id": _SID,
+        "messages": [
+            {"id": "u1", "role": "user", "content": "go", "at": 1},
+            {
+                "id": "a1", "role": "assistant", "content": "", "model": "m/m",
+                "toolCalls": [{"id": "c-dangle", "name": "bash", "args": {}}],
+                "at": 2,
+            },
+        ],
+    }
+    jp = _journal(tmp_path, {_SID: session})
+    blocks = render_transcript_blocks(_SID, [], journal_path=jp)
+    (t,) = blocks[0]["tools"]
+    assert t["status"] == "unknown"
+    assert t["result_missing"] is True
+    assert t["result"] is None
+
+
 def test_unknown_shapes_degrade_never_raise(tmp_path: Path):
     session = {
         "id": _SID,

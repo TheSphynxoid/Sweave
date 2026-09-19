@@ -119,6 +119,24 @@ def test_absent_vs_zero_distinct():
     assert zero["source"] == "provider"  # present 0 -> actual
 
 
+def test_null_cost_is_unknown_never_certified_free():
+    """Hygiene B6: the native engine emits cost:null (no provider
+    costing) — null must flow to the rates estimate, never read as
+    provider-certified Free the way numeric 0 does."""
+    from sweave.stats.pricing import price_for_events
+
+    meta = {"cost": {"input": 1.0, "output": 4.0}}
+    out = price_for_events([_ev(input=10, output=5, cost=None)], "x/m", meta)
+    assert out["source"] == "rates"
+    assert out["estimated"] is True
+    assert out["free"] is False
+    # Without rates either: unpriced, never zeros.
+    out = price_for_events([_ev(input=10, output=5, cost=None)], "x/m", {})
+    assert out["source"] == "none"
+    assert out["estimated_cost"] is None
+    assert out["free"] is None
+
+
 def test_output_shape_keys():
     from sweave.stats.pricing import price_for_events
 

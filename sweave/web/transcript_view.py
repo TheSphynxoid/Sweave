@@ -124,8 +124,14 @@ def _tool_from_journal(
         # terminal state (the loop appends it only after the tool
         # returns; an absent result = the turn never ran it to
         # completion). Status names the honest shape; an unknown
-        # result shape degrades to ``unknown``.
+        # result shape degrades to ``unknown``. The additive
+        # ``result_missing`` flag (hygiene B6) lets renderers tell a
+        # never-completed call (abort/timeout/crash poison — the wire
+        # now sanitizes these, the journal still shows them) from an
+        # unrecognized shape: both stay ``unknown`` for
+        # back-compat, the flag names the difference.
         "status": ("completed" if result is not None else "unknown"),
+        "result_missing": result is None,
         "args": args,
         # Timeline shape (2026-09-18: bare-"bash" fix). The renderer
         # (ToolTimelineRow) reads input/output/detail — the journal
@@ -191,14 +197,24 @@ def render_transcript_blocks(
     if not isinstance(messages, list):
         return None
 
-    # Trace-side turn attribution: `reasoning` chunks ride per-turn
-    # (the journal does not persist them), delimited by the traced
-    # `engine_user_message` markers; `tokens_used` events arrive one
-    # per turn in order. Both only JOIN — never drive (a trace that
-    # disagrees with the journal still projects blocks from the
+    # Trace-side turn attribution. `reasoning` chunks ride per-turn
+    # (the journal does not persist them). Preferred join: the traced
+    # `engine_user_message` marker id == the journal user message id
+    # (protocol v3). Legacy fallback: positional order (markers and
+    # `tokens_used` events arrived one per turn in order). The
+    # positional join LIES whenever a turn is missing its anchor —
+    # an empty-reasoning turn was dropped from the list entirely and
+    # a failed turn emits no `tokens_used`, shifting every later
+    # turn's attribution onto its neighbour (hygiene B6). So: when
+    # ANY id-carrying anchor exists, join by id; positional only for
+    # id-less (pre-v3) traces. Both only JOIN — never drive (a trace
+    # that disagrees with the journal still projects blocks from the
     # journal; missing trace sides are empty, not broken).
+    reasoning_by_id: dict[str, list[str]] = {}
     reasoning_turns: list[list[str]] = []
+    token_by_id: dict[str, dict[str, Any]] = {}
     token_turns: list[dict[str, Any]] = []
+    current_id: str | None = None
     current_reasoning: list[str] | None = None
     for ev in trace_events or []:
         try:
@@ -208,6 +224,16 @@ def render_transcript_blocks(
         if name == "engine_user_message":
             if current_reasoning:
                 reasoning_turns.append(current_reasoning)
+                if current_id is not None:
+                    reasoning_by_id.setdefault(current_id, []).extend(
+                        current_reasoning
+                    )
+            mid = ev.get("id")
+            current_id = str(mid) if isinstance(mid, str) and mid else None
+            if current_id is not None:
+                # Every marked turn owns an entry (possibly empty) so
+                # an empty-reasoning turn still anchors its neighbours.
+                reasoning_by_id.setdefault(current_id, [])
             current_reasoning = []
         elif name == "reasoning":
             if current_reasoning is None:
@@ -226,8 +252,26 @@ def render_transcript_blocks(
                     "context_input": ev.get("context_input", 0),
                 }
             )
+            # The sidecar names the turn's prompt unit on tokens_used
+            # (protocol v3, hygiene B6); older anchors lack it.
+            tid = ev.get("user_message_id")
+            if isinstance(tid, str) and tid:
+                token_by_id[tid] = {
+                    "input": ev.get("input", 0),
+                    "output": ev.get("output", 0),
+                    "reasoning": ev.get("reasoning", 0),
+                    "cache_read": ev.get("cache_read", 0),
+                    "cache_write": ev.get("cache_write", 0),
+                    "context_input": ev.get("context_input", 0),
+                }
     if current_reasoning:
         reasoning_turns.append(current_reasoning)
+        if current_id is not None:
+            reasoning_by_id.setdefault(current_id, []).extend(current_reasoning)
+    # NOTE: reasoning that predates every marker (id-less prefix with
+    # marked turns later) stays positional-only and is dropped when
+    # the id join wins — unattributable is unattributable; the
+    # alternative (positional) misattributes with confidence.
 
     blocks: list[dict[str, Any]] = []
     # Index tool RESULT messages by toolCallId (the journal separates
@@ -263,9 +307,24 @@ def render_transcript_blocks(
                 "failed": False,
                 "error": None,
             }
-            rid = reasoning_turns[turn_index] if turn_index < len(reasoning_turns) else []
+            _uid = current["user_message_id"]
+            if reasoning_by_id:
+                rid = reasoning_by_id.get(_uid, [])
+            else:
+                rid = (
+                    reasoning_turns[turn_index]
+                    if turn_index < len(reasoning_turns)
+                    else []
+                )
             current["reasoning"] = _clip("".join(rid), MAX_REASONING_CHARS)
-            tid = token_turns[turn_index] if turn_index < len(token_turns) else None
+            if token_by_id:
+                tid = token_by_id.get(_uid)
+            else:
+                tid = (
+                    token_turns[turn_index]
+                    if turn_index < len(token_turns)
+                    else None
+                )
             current["tokens"] = dict(tid) if tid else None
             turn_index += 1
         elif current is not None and role == "assistant":
