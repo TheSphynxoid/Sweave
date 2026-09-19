@@ -651,6 +651,43 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     directory, read-missing, bash non-zero — turn succeeds past
     each; write/edit fail pre-fix).
 
+17. **Hygiene sweep 2026-09-20 (user asked for an issue-prediction
+    pass; three audit tracks, "fix them all" ruling — 8 commits).**
+    Turn-fatal throws: permission-create failure now fails closed
+    as a typed deny (`loop.js` resolveAsk), sweave-tool catches
+    rethrow abort (turn-would-not-stop), `executeTool` totality
+    extends to non-array `tool_calls`/`cwd` validation/runGit
+    60s+no-stdin/no-prompt/1MB-cap/todo-persist/duplicate-id
+    rewrite; retry splits 400s (transient-text retries,
+    deterministic fails fast) + 408. Harness truthfulness:
+    opencode streams carry turn_timeout+30 (the 1000s default beat
+    the 4h fuse), 400/409/after-work cuts all 500, SSE non-dict
+    skipped, protocol drift logs distinctly. Escalation slot: one
+    record per delegation — bridge refuses occupied slots and never
+    POSTs changed-hands ones, wait retries store errors ~60s then
+    fails closed as store_error, filers return False on any pending
+    record, late answers carry resolved flags. History: 400-msg /
+    500K-char pre-flight ceiling (prompt-inclusive, both flavors
+    wire identically), atomic journal writes, corrupt-entry drop at
+    load, `session_fresh` on done → `session_recreated_after_
+    journal_loss` trace. Consumers: transcript joins by
+    user_message_id (positional only for id-less traces) +
+    result_missing flag, native cost 0→null (was certified-Free),
+    frozen tool rows read aborted on terminal delegations,
+    child_wait_timeout trace + PARTIAL synthesis section,
+    round-0 partials persist before error bubbles, parent gate
+    honors delegation budget, escalation reads retry boundedly
+    with store-unreadable attribution, all four bind sites trace
+    session_bind_failed, opencode splitter resyncs + carry
+    feedback + EOF counting. Tests: hygiene/history/slot/retry/
+    opencode-splitter/b6 suites (every behavior fail-first pinned
+    except the opencode-timeout thread-through, which mirrors the
+    proven engine pattern). Deliberately NOT changed: model
+    `variant` stays ignored-but-visible (in model_used), full
+    fail-open holds on broken stores (bounded fuse wins, loudly
+    attributed instead), multi-slot escalations (schema change —
+    guards fail fast instead).
+
 
 ## Paths & config
 
