@@ -12,10 +12,11 @@
 // dropped, never sent.
 
 import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import { sanitizeHistory } from "./sessions.js";
 
 export function historyToResponsesInput(entries) {
   const out = [];
-  for (const m of entries) {
+  for (const m of sanitizeHistory(entries)) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {

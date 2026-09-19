@@ -93,3 +93,61 @@ export class SessionStore {
     this.save();
   }
 }
+
+/**
+ * Drop unanswered tool calls from replayed history (both flavors).
+ *
+ * A turn that dies mid-tool-loop (abort, timeout, crash/restart after
+ * the assistant entry was appended but before every tool output
+ * landed) leaves an assistant function_call/tool_calls entry with no
+ * matching tool output in the journal. Replaying it verbatim makes
+ * the NEXT turn on that session fail deterministically before any
+ * work: Console Go 400s the chat flavor ("assistant message with
+ * 'tool_calls' must be followed by tool messages...") and the
+ * Responses flavor ("No tool output found for function call ...").
+ * Sessions are immortal and resumed across delegations, so one
+ * poisoned turn bricks the session for every future specialist
+ * (2026-09-19: 17/358 journals poisoned, two fix-round delegations
+ * failing loud with truncated "[inval..." errors).
+ *
+ * Rule: keep only calls that have a matching tool output. An
+ * assistant entry left with zero calls keeps its text (as plain
+ * content) or is dropped when empty. Failed assistant entries are
+ * already excluded downstream; this covers the non-failed dangling
+ * case. Write-time repair is deliberately NOT attempted: a
+ * crash/restart poison can never be fixed at write time (the process
+ * is gone), so the read-time sanitize is the load-bearing fix.
+ *
+ * Lives here (not loop.js) so both mappers — loop.js chat and
+ * responses.js — share one choke point without an import cycle.
+ */
+export function sanitizeHistory(entries) {
+  const answered = new Set();
+  for (const m of entries || []) {
+    if (m && m.role === "tool" && m.toolCallId) answered.add(m.toolCallId);
+  }
+  const out = [];
+  for (const m of entries || []) {
+    if (
+      m &&
+      m.role === "assistant" &&
+      !m.failed &&
+      Array.isArray(m.toolCalls) &&
+      m.toolCalls.length > 0
+    ) {
+      const kept = m.toolCalls.filter((tc) => tc && answered.has(tc.id));
+      if (kept.length === m.toolCalls.length) {
+        out.push(m);
+      } else if (kept.length > 0) {
+        out.push({ ...m, toolCalls: kept });
+      } else if (m.content) {
+        const { toolCalls: _dropped, ...rest } = m;
+        out.push({ ...rest, toolCalls: [] });
+      }
+      // else: empty + fully unanswered — drop the message entirely.
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
+}

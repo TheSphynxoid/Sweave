@@ -4,6 +4,16 @@ Each group below is one branch of work. When a group's trigger fires (the trigge
 table in `AGENTS.md` points here), read the whole group before you start. New
 gotchas land here — grouped by branch, not appended as a numbered list.
 
+## Opencode harness & wire protocol
+
+1. **An engine `permission.asked` is answerable ONLY via the escalation JSON its round-trip keys to — and that JSON is invisible to every UI surface** (2026-09-18, fix child `42a848a03cf0`). Two transports exist and they are NOT symmetric:
+   - opencode serves → in-band plugin ferries `permission.asked` to `POST /api/permission/hijack` → `resolve_hijack_request` creates the blocking escalation (kind=permission) and waits/polls on it;
+   - the native engine sidecar → `loop.js` emits the SSE event and calls `callEnginePermission` (`sweave.js`) → `POST /api/engine/permission` (`wait:false`) + `GET /api/delegations/{id}/escalation` polling.
+2. Symptom when the round-trip is missed: the SSE `permission.asked` rides the trace (looks handled), `waiting_with_progress` holds the turn open with `holds: 0` (supervisor sees quiet, no pending question anywhere), the delegation store has no escalation record under any project (the ask was keyed to the bare delegation id, not a project store), and `~/.sweave/escalations/{id}.json` is the ONLY place the live ask exists. The UI answer card never renders (the Children lane reads project stores), so the human sees a stuck turn with no button — and reads the run as discarded when it is WEDGED, not dead. The turn does NOT end: the engine-side approval cache holds it open indefinitely (no deadline per M1.11).
+3. **Keying: engine asks key the escalation under the delegation id string only** (`resolve_engine_permission` takes `payload.delegation_id`), while the opencode bridge keys through `lookup_session` and resolves project + roots for scope. A bare-keyed record is invisible to surfaces that scan project stores for `kind=permission` pending asks.
+4. **Verify by effect, never by trace presence**: a `permission.asked` trace event proves the ask was MADE, never that it is ANSWERABLE. Check `~/.sweave/escalations/{id}.json` (status `pending` + `response` null) + `GET /api/delegations/{id}/escalation` before assuming the ask is live for the human — and remember the GET is flat-keyed too: it finds the record, the UI's per-project scan does not.
+5. **Recovery meanwhile (manual):** `POST /api/delegations/{id}/answer` (or `/skip` with confirmed) against the escalation the engine created; the child is still running underneath (engine-side approval map holds the turn open — nothing died) and proceeds on the answer. A deny/skip forces the tool call to fail, which is the honest path for an out-of-scope scratch write (`C:\tmp\...`): the fixer writes in its own worktree or fails, never escapes.
+
 ## Server ops — start/stop/restart, ports, config reload
 
 1. `start_server.py`/`stop_server.py` resolve `web.pid` **relative to CWD** — run them
@@ -598,6 +608,32 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     stays as fallback/forensics. Pin the mid-run record in
     tests, not just the settled one (`test_stop_session_bind.py`:
     the hooked id must be on the store row while the turn runs).
+
+15. **A turn that dies mid-tool-loop poisons its session for every
+    later turn — sanitize at read time** (incident 2026-09-19:
+    two fix-round delegations failed loud with
+    `engine_failed_before_work: provider_error: provider 400` on
+    BOTH flavors; the 200-char trace cut read as a model outage
+    ("[inval..."), while the journal held the truth: responses
+    "No tool output found for function call ...", chat
+    "assistant message with 'tool_calls' must be followed by tool
+    messages..."). The assistant entry is appended BEFORE tools
+    execute, so an abort/timeout/crash between the two leaves an
+    unanswered call in the journal — and sessions resume across
+    delegations, so every later turn replays the poison and 400s
+    before any work (live scan: 17/358 journals, zero orphans).
+    `sanitizeHistory()` (`sweave-engine/src/sessions.js`) keeps
+    only calls with a matching tool output, applied in BOTH
+    history mappers (loop.js chat + responses.js) — the single
+    choke point covering loop and single-shot paths. Write-time
+    repair is deliberately absent: crash poison can never be
+    fixed at write time (the process is gone). Pinned by
+    `tests/test_engine_history_hygiene.py` (pre-seeded poisoned
+    journal, real sidecar, both flavors serve + answered pairs
+    preserved; fails on the pre-fix mappers). Companion fix the
+    same night: the `engine_failed_before_work` cut is 200→500
+    chars so the upstream reason survives into traces.
+
 
 ## Paths & config
 

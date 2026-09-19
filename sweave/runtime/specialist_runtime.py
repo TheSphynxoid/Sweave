@@ -1189,7 +1189,12 @@ class SpecialistRuntime:
                     # wrap doesn't nest ("[chat error: ... [chat
                     # error: ...]]" reads as two failures).
                     err = err[len("[chat error:"):-1].strip()
-                return None, f"engine_failed_before_work: {err[:200]}"
+                # Slice at 500 (not 200): the sidecar already caps
+                # its SSE error text at 500, and a shorter cut hid
+                # the load-bearing reason twice on 2026-09-19 (both
+                # provider 400s truncated to "[inval..." read as a
+                # model outage instead of dangling tool-call history).
+                return None, f"engine_failed_before_work: {err[:500]}"
             return (
                 result.error
                 or result.output
