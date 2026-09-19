@@ -688,6 +688,26 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     attributed instead), multi-slot escalations (schema change —
     guards fail fast instead).
 
+18. **Retrospective review 2026-09-20 (two-reader pass over the
+    hygiene sweep, "fix them all" follow-up — commit `bb62f8d`).**
+    Caught 11 real flaws the sweep itself introduced: the ceiling
+    severed validated pairs (order MUST be cap-then-sanitize, plus
+    an orphan-tool second pass — verified live with a straddling
+    repro); the todo-saveSession wire was cut inside executeTool
+    (false commit claim); missing call ids diverged assistant vs
+    tool records; the 400 retry over-matched bare digits; an
+    uncoded abort hid in waitEscalation; round-0 partials duplicated
+    onto the error bubble (clear buffers like the children path);
+    the slot guard wedged on ID-less legacy occupants (now
+    kind-scoped: non-permission kinds always refuse, ID-less
+    permission corpses are reclaimable); the bridge wait is
+    elapsed-bounded (5s, flapping can't reset it); transcript joins
+    per-turn with unconditional marker anchoring; opencode counts
+    corrupt pieces immediately (balanced pieces never complete).
+    Review discipline that paid: fail-first repros for every fix,
+    and reading the diff against the commit claims (one claim was
+    false).
+
 
 ## Paths & config
 
