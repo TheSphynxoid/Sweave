@@ -11,7 +11,7 @@
 // function_call / function_call_output); unknown item shapes are
 // dropped, never sent.
 
-import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import { ENGINE_USER_AGENT, SESSION_HEADER, reasoningEffortFor, shouldStripReasoningFeatures } from "./providers.js";
 import { sanitizeHistory, capHistory, historyTruncationNote } from "./sessions.js";
 
 export function historyToResponsesInput(entries) {
@@ -85,6 +85,7 @@ export async function providerResponsesStream({
   baseURL,
   key,
   modelId,
+  modelVariant,
   sessionId,
   input,
   defs,
@@ -92,7 +93,18 @@ export async function providerResponsesStream({
   onToken,
   onReasoning,
 }) {
-  const attempt = (clientInput) =>
+  // Reasoning-effort request from the model's +variant suffix (agent
+  // parity with the opencode harness, which sends variant natively).
+  // `none` drops the reasoning key (thinking not requested);
+  // otherwise effort rides verbatim next to the summary unlock.
+  const effortReq = reasoningEffortFor(modelVariant);
+  const reasoningParam = (strip) => {
+    if (strip) return undefined;
+    if (effortReq && effortReq.none) return undefined;
+    if (effortReq) return { summary: "auto", effort: effortReq.effort };
+    return { summary: "auto" };
+  };
+  const attempt = (clientInput, stripReasoning) =>
     providerResponsesAttempt({
       baseURL,
       key,
@@ -103,36 +115,35 @@ export async function providerResponsesStream({
       signal,
       onToken,
       onReasoning,
+      reasoning: reasoningParam(stripReasoning),
     });
   try {
-    return await attempt(input);
+    return await attempt(input, false);
   } catch (err) {
-    // Compat fallback: a gateway that rejects replayed `reasoning`
-    // input items 400s here. Strip them and retry ONCE within the
-    // same turn — an incompatible gateway degrades to thinking-less
-    // turns (logged, session-tagged) instead of bricking every turn
-    // on the session. Only fires when the error names reasoning and
-    // the input actually carried it; everything else rethrows.
-    const text = `${(err && err.message) || ""}\n${(err && err.body) || ""}`;
+    // Compat fallback: a gateway rejecting replayed `reasoning`
+    // input items OR an unknown `effort` value 400s here. Strip both
+    // and retry ONCE within the same turn — an incompatible gateway
+    // degrades to default-effort thinking-less turns (logged,
+    // session-tagged) instead of bricking every turn on the
+    // session. Only fires when the error names reasoning/effort and
+    // the attempt actually sent such features; everything rethrows.
     const carriesReasoning =
       Array.isArray(input) &&
       input.some((i) => i && i.type === "reasoning");
-    if (
-      !err ||
-      err.status !== 400 ||
-      !/reasoning/i.test(text) ||
-      !carriesReasoning
-    ) {
+    const sentFeatures = carriesReasoning || Boolean(effortReq && !effortReq.none);
+    if (!shouldStripReasoningFeatures(err, sentFeatures)) {
       throw err;
     }
     try {
       process.stderr.write(
-        `sweave-engine:${sessionId || "unknown"}: reasoning input rejected (400); ` +
-          `retrying thinking-less once\n`
+        `sweave-engine:${sessionId || "unknown"}: reasoning features rejected (400); ` +
+          `retrying default-effort thinking-less once\n`
       );
     } catch {}
-    const stripped = input.filter((i) => !(i && i.type === "reasoning"));
-    const out = await attempt(stripped);
+    const stripped = Array.isArray(input)
+      ? input.filter((i) => !(i && i.type === "reasoning"))
+      : input;
+    const out = await attempt(stripped, true);
     out.reasoningCompatRetry = true;
     return out;
   }
@@ -148,6 +159,7 @@ async function providerResponsesAttempt({
   signal,
   onToken,
   onReasoning,
+  reasoning,
 }) {
   const resp = await fetch(`${baseURL}/responses`, {
     method: "POST",
@@ -167,10 +179,10 @@ async function providerResponsesAttempt({
       // opens the reasoning channel and inlines thinking into
       // output_text (observed live on muse-spark-contributor: 7.5k
       // reasoning tokens, zero reasoning events, thinking fragments
-      // leading the persisted reply). Effort is deliberately unset
-      // (gateway default); summary only unlocks the plaintext
-      // deltas, parsed above into `reasoning` SSE, never output.
-      reasoning: { summary: "auto" },
+      // leading the persisted reply). The caller's `reasoning`
+      // object carries summary + optional +variant effort (absent
+      // for thinking-off `none` and on the compat retry).
+      ...(reasoning ? { reasoning } : {}),
       ...(defs && defs.length > 0 ? { tools: responsesToolDefs(defs) } : {}),
     }),
     signal,

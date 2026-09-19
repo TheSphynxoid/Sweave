@@ -390,6 +390,22 @@ async def test_run_validation_400s(sidecar):
         resp = await client.post("/run", json=bad)
         assert resp.status_code == 400
         assert "bad:model" in resp.json()["reason"]
+        # Variant must be a string when present (an object would
+        # serialize garbage into the provider body).
+        bad = dict(
+            good, model={"provider": "p", "model_id": "m", "variant": {"x": 1}}
+        )
+        resp = await client.post("/run", json=bad)
+        assert resp.status_code == 400
+        assert "bad:model" in resp.json()["reason"]
+        # String variants (incl. thinking-off) validate clean.
+        ok = dict(
+            good,
+            session_id="v2",
+            model={"provider": "p", "model_id": "m", "variant": "high"},
+        )
+        resp = await client.post("/run", json=ok)
+        assert resp.status_code != 400
 
 
 @needs_node

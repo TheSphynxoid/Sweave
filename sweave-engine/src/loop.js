@@ -32,7 +32,7 @@ import {
   toolStateExtra,
 } from "./tools.js";
 import { callEnginePermission, callSweaveTool, sweaveToolsFor } from "./sweave.js";
-import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import { ENGINE_USER_AGENT, SESSION_HEADER, reasoningEffortFor, shouldStripReasoningFeatures } from "./providers.js";
 import {
   historyToResponsesInput,
   providerResponsesStream,
@@ -168,7 +168,7 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta, maxRetries, logPrefix }) {
+async function providerStream({ baseURL, key, provider, modelId, modelVariant, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta, maxRetries, logPrefix }) {
   // `messages` is flavor-appropriate input (chat messages or Responses
   // input items — the caller maps history for the resolved flavor).
   // Both transports return { text, calls: [{id, name, args}], usage }.
@@ -185,6 +185,7 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
         baseURL,
         key,
         modelId,
+        modelVariant,
         sessionId,
         input: messages,
         defs,
@@ -198,6 +199,7 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
       key,
       provider,
       modelId,
+      modelVariant,
       sessionId,
       messages,
       defs,
@@ -219,27 +221,54 @@ async function providerStream({ baseURL, key, provider, modelId, flavor, session
   });
 }
 
-async function providerChatStream({ baseURL, key, provider, modelId, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta }) {
-  const resp = await fetch(`${baseURL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key || "no-key"}`,
-      "User-Agent": ENGINE_USER_AGENT,
-      [SESSION_HEADER]: sessionId || "unknown",
-      ...(provider === "openrouter"
-        ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
-        : {}),
-    },
-    body: JSON.stringify({
-      model: modelId,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-      ...(defs.length > 0 ? { tools: defs.map((d) => ({ type: "function", function: d })) } : {}),
-    }),
-    signal,
-  });
+async function providerChatStream({ baseURL, key, provider, modelId, modelVariant, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta }) {
+  // Reasoning-effort request from the model's +variant suffix (agent
+  // parity with the opencode harness). `none` sends nothing (thinking
+  // not requested); otherwise the value rides verbatim as
+  // `reasoning_effort`, with a strip-and-retry fallback below for
+  // gateways that reject it.
+  const effortReq = reasoningEffortFor(modelVariant);
+  const doFetch = (withEffort) =>
+    fetch(`${baseURL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key || "no-key"}`,
+        "User-Agent": ENGINE_USER_AGENT,
+        [SESSION_HEADER]: sessionId || "unknown",
+        ...(provider === "openrouter"
+          ? { "HTTP-Referer": "https://github.com/sweave", "X-Title": "Sweave Engine" }
+          : {}),
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...(withEffort && effortReq && !effortReq.none
+          ? { reasoning_effort: effortReq.effort }
+          : {}),
+        ...(defs.length > 0 ? { tools: defs.map((d) => ({ type: "function", function: d })) } : {}),
+      }),
+      signal,
+    });
+  let resp = await doFetch(true);
+  if (!resp.ok && resp.status === 400 && effortReq && !effortReq.none) {
+    const probe = await resp.text().catch(() => "");
+    if (shouldStripReasoningFeatures(
+      { status: 400, message: probe, body: probe }, true
+    )) {
+      try {
+        process.stderr.write(
+          `sweave-engine:${sessionId || "unknown"}: reasoning_effort rejected (400); ` +
+            `retrying default-effort once\n`
+        );
+      } catch {}
+      resp = await doFetch(false);
+    } else {
+      throw providerHttpError(resp.status, resp.headers, probe.slice(0, 300));
+    }
+  }
   if (!resp.ok || !resp.body) {
     const text = await resp.text().catch(() => "");
     throw providerHttpError(resp.status, resp.headers, text.slice(0, 300));
@@ -590,6 +619,7 @@ export async function runLoop(loopCtx) {
       key: resolved.key,
       provider: model.provider,
       modelId: model.model_id,
+      modelVariant: model.variant,
       flavor: resolved.flavor,
       sessionId: session.id,
       messages,

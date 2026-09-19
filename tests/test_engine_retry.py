@@ -41,7 +41,7 @@ needs_node = pytest.mark.skipif(node_missing, reason="node not on PATH")
 # ---------------------------------------------------------------------------
 
 
-STUB: dict = {"script": [], "hits": 0}
+STUB: dict = {"script": [], "hits": 0, "bodies": []}
 
 
 class _StubHandler(BaseHTTPRequestHandler):
@@ -52,8 +52,11 @@ class _StubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        if length:
-            self.rfile.read(length)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            STUB["bodies"].append(json.loads(raw.decode("utf-8")))
+        except ValueError:
+            STUB["bodies"].append({})
         STUB["hits"] += 1
         if STUB["script"]:
             status, headers, body = STUB["script"].pop(0)
@@ -279,6 +282,31 @@ async def test_408_retries(sidecar, tmp_path: Path):
     assert result.success, result.error
     assert result.output == "recovered"
     assert STUB["hits"] == 2
+
+
+@needs_node
+async def test_variant_effort_sent_and_stripped_on_400(
+    sidecar, tmp_path: Path
+):
+    """Agent parity for +variant: `reasoning_effort` rides the chat
+    body; a gateway rejecting it gets one stripped retry (2 hits,
+    second body bare) and the turn still succeeds."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["script"] = [
+        (400, {}, '{"error": "Invalid value for reasoning_effort: high"}')
+    ]
+    STUB["hits"] = 0
+    STUB["bodies"] = []
+    proc = await SweaveEngineHarness().attach(
+        "eng_retry_effort", _spec(tmp_path, model="openrouter/retry-probe+high")
+    )
+    result, _ = await _send(proc)
+    assert result.success, result.error
+    assert result.output == "recovered"
+    assert STUB["hits"] == 2
+    assert STUB["bodies"][0].get("reasoning_effort") == "high"
+    assert "reasoning_effort" not in STUB["bodies"][1]
 
 
 @needs_node

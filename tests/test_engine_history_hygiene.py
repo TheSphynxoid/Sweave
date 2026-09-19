@@ -161,7 +161,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self._read_json()
         if self.path == "/responses":
-            HITS.append({"flavor": "responses", "input": body.get("input", [])})
+            HITS.append(
+                {
+                    "flavor": "responses",
+                    "input": body.get("input", []),
+                    "reasoning": body.get("reasoning", "ABSENT"),
+                }
+            )
             if RSCRIPT:
                 step = RSCRIPT.pop(0)
                 if "fail400" in step:
@@ -236,7 +242,13 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/chat/completions":
-            HITS.append({"flavor": "chat", "messages": body.get("messages", [])})
+            HITS.append(
+                {
+                    "flavor": "chat",
+                    "messages": body.get("messages", []),
+                    "effort": body.get("reasoning_effort", "ABSENT"),
+                }
+            )
             self._send_sse(
                 [
                     _sse({"choices": [{"delta": {"content": "CHAT OK"}}]}),
@@ -552,6 +564,85 @@ async def test_session_fresh_named_on_done(stub_url, tmp_path_factory, tmp_path)
         second = await proc.send(_message("two"), trace=_Trace())
         assert second.success, second.error
         assert "session_fresh" not in second.metadata
+
+
+@needs_node
+async def test_variant_effort_rides_responses_body(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """Agent parity for +variant: `reasoning.effort` rides the
+    responses body next to the summary unlock."""
+    HITS.clear()
+    RSCRIPT.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_effort", _spec(RESP_MODEL + "+high", tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert HITS[0]["reasoning"] == {"summary": "auto", "effort": "high"}
+
+
+@needs_node
+async def test_variant_none_drops_reasoning_key(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """`+none` means thinking not requested: no reasoning key at all."""
+    HITS.clear()
+    RSCRIPT.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_no_think", _spec(RESP_MODEL + "+none", tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert HITS[0]["reasoning"] == "ABSENT"
+
+
+@needs_node
+async def test_variant_effort_fallback_strips_and_succeeds(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """A gateway rejecting the effort value 400s once; the turn
+    retries without any reasoning key and succeeds (2 hits)."""
+    HITS.clear()
+    RSCRIPT.clear()
+    RSCRIPT.append({"fail400": "Invalid reasoning effort 'bogus-effort'"})
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_effort_fb", _spec(RESP_MODEL + "+bogus-effort", tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "RESP OK"
+    assert len(HITS) == 2
+    assert HITS[0]["reasoning"] == {"summary": "auto", "effort": "bogus-effort"}
+    assert HITS[1]["reasoning"] == "ABSENT"
+
+
+@needs_node
+async def test_variant_effort_rides_chat_body(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """Agent parity for +variant on chat: `reasoning_effort` rides
+    the chat-completions body."""
+    HITS.clear()
+    RSCRIPT.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, {}):
+        proc = await SweaveEngineHarness().attach(
+            "eng_effort_chat", _spec(CHAT_MODEL + "+high", tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    assert HITS[0]["effort"] == "high"
 
 
 @needs_node

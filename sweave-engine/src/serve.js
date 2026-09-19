@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
 import { SessionStore, newMessageId, capHistory, sanitizeHistory, historyTruncationNote, REASONING_MAX_CHARS } from "./sessions.js";
-import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
+import { resolveProvider, KNOWN_TOOLS, TOOL_BASELINE, SWEAVE_NATIVE_TOOLS, ENGINE_USER_AGENT, SESSION_HEADER, reasoningEffortFor, shouldStripReasoningFeatures } from "./providers.js";
 import {
   historyToResponsesInput,
   providerResponsesStream,
@@ -77,6 +77,12 @@ function validateRun(body) {
   if (!body.model || typeof body.model !== "object") return "bad:model (must be a ModelRef object)";
   if (!body.model.provider) return "bad:model (engine needs a resolved provider)";
   if (!body.model.model_id) return "bad:model (engine needs a model_id)";
+  // The +variant suffix (reasoning effort) rides verbatim to the
+  // transports; it must be a string when present (never an object —
+  // that shape would serialize garbage into the provider body).
+  if (body.model.variant !== undefined && typeof body.model.variant !== "string") {
+    return "bad:model (variant must be a string when present)";
+  }
   if (typeof body.turn_timeout !== "number" || !(body.turn_timeout > 0)) {
     return "bad:turn_timeout (must be > 0 seconds)";
   }
@@ -316,6 +322,7 @@ async function runTurn(sessionId, body, res) {
         baseURL: resolved.baseURL,
         key: resolved.key,
         modelId: body.model.model_id,
+        modelVariant: body.model.variant,
         sessionId,
         input: historyToResponsesInput(entries),
         defs: [],
@@ -430,8 +437,14 @@ async function runTurn(sessionId, body, res) {
     // MID-stream stays terminal — loud, session kept, and a user retry
     // continues the same session (the no-rotation backstop).
     const maxRetries = body.max_retries ?? DEFAULT_MAX_RETRIES;
-    const upstream = await withProviderRetry(async () => {
-      const resp = await fetch(`${resolved.baseURL}/chat/completions`, {
+    // Reasoning-effort request from the model's +variant suffix
+    // (agent parity with the opencode harness). Same strip-and-retry
+    // fallback as the loop's chat transport (serve.js deliberately
+    // duplicates the small shape instead of sharing it — see the
+    // responses branch above on why this branch is not refactored).
+    const ssEffortReq = reasoningEffortFor(body.model.variant);
+    const ssFetchChat = (withEffort) =>
+      fetch(`${resolved.baseURL}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -447,15 +460,21 @@ async function runTurn(sessionId, body, res) {
           messages: history,
           stream: true,
           stream_options: { include_usage: true },
+          ...(withEffort && ssEffortReq && !ssEffortReq.none
+            ? { reasoning_effort: ssEffortReq.effort }
+            : {}),
         }),
         signal: controller.signal,
       });
+    const ssFetchOnce = async (withEffort) => {
+      const resp = await ssFetchChat(withEffort);
       if (!resp.ok || !resp.body) {
         const text = await resp.text().catch(() => "");
         throw providerHttpError(resp.status, resp.headers, text.slice(0, 300));
       }
       return resp;
-    }, {
+    };
+    const retryOpts = {
       maxRetries,
       signal: controller.signal,
       onRetry: ({ attempt, waitMs, error }) => {
@@ -465,7 +484,27 @@ async function runTurn(sessionId, body, res) {
           );
         } catch {}
       },
-    });
+    };
+    let upstream;
+    try {
+      upstream = await withProviderRetry(() => ssFetchOnce(true), retryOpts);
+    } catch (err) {
+      if (
+        ssEffortReq &&
+        !ssEffortReq.none &&
+        shouldStripReasoningFeatures(err, true)
+      ) {
+        try {
+          process.stderr.write(
+            `sweave-engine:${sessionId}: reasoning_effort rejected (400); ` +
+              `retrying default-effort once\n`
+          );
+        } catch {}
+        upstream = await withProviderRetry(() => ssFetchOnce(false), retryOpts);
+      } else {
+        throw err;
+      }
+    }
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";

@@ -206,3 +206,37 @@ export function resolveProvider(provider, modelId) {
 export const TOOL_BASELINE = ["read", "edit", "write", "bash", "glob", "grep", "todo", "git"];
 export const SWEAVE_NATIVE_TOOLS = ["defer", "list_specialists", "ask_human", "escalate"];
 export const KNOWN_TOOLS = new Set([...TOOL_BASELINE, ...SWEAVE_NATIVE_TOOLS]);
+
+/**
+ * Map a model `+variant` suffix to a reasoning-effort request.
+ *
+ * Returns `{ effort }` (verbatim value: low/medium/high/minimal/max/
+ * xhigh and future provider-specific values ride as-is — the request
+ * either applies or fails loud with a compat fallback, never silent),
+ * `{ none: true }` for thinking-off, or null when absent/empty.
+ * Verbatim passthrough is deliberate: the variant registry is
+ * provider-owned and grows without us (yesterday's unknown value is
+ * tomorrow's effort level); the strip-and-retry fallback at each
+ * transport keeps a wrong guess to one wasted call, never a bricked
+ * turn.
+ */
+export function reasoningEffortFor(variant) {
+  if (variant === undefined || variant === null) return null;
+  const v = String(variant).trim();
+  if (!v) return null;
+  if (v.toLowerCase() === "none") return { none: true };
+  return { effort: v };
+}
+
+/**
+ * True when a provider 400 names reasoning/effort AND the attempt
+ * actually sent reasoning features (replayed thinking or an effort
+ * request). Guards the strip-and-retry fallback: without the sent
+ * flag, an unrelated 400 mentioning "effort" would burn a pointless
+ * second attempt.
+ */
+export function shouldStripReasoningFeatures(err, sent) {
+  if (!err || err.status !== 400 || !sent) return false;
+  const text = `${err.message || ""}\n${err.body || ""}`;
+  return /reasoning|effort/i.test(text);
+}
