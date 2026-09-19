@@ -902,8 +902,6 @@ case "edit": {
  * test output to files (review-hardening step 2, 2026-09-15).
  */
 export async function executeTool(name, args, execCtx) {
-  const { cwd, session, signal } = execCtx;
-  const a = args || {};
   // Totality guard: NO tool failure may escape as a rejection. loop.js
   // treats a rejected tool as turn-fatal (whole turn dies + the
   // journal keeps an unanswered assistant call — the 2026-09-19
@@ -911,7 +909,8 @@ export async function executeTool(name, args, execCtx) {
   // model adjusts to; only abort control signals propagate (the
   // turn-stop race owns them, never the tool result).
   try {
-    return await executeToolInner(name, a, { cwd, session, signal });
+    const { cwd, session, signal, saveSession } = execCtx || {};
+    return await executeToolInner(name, args || {}, { cwd, session, signal, saveSession });
   } catch (e) {
     if (e && (e.code === "aborted" || e.name === "AbortError")) throw e;
     const msg = e && e.message ? String(e.message).split("\n")[0] : String(e);

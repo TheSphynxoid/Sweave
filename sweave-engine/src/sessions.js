@@ -132,11 +132,19 @@ export class SessionStore {
  *
  * Rule: keep only calls that have a matching tool output. An
  * assistant entry left with zero calls keeps its text (as plain
- * content) or is dropped when empty. Failed assistant entries are
- * already excluded downstream; this covers the non-failed dangling
+ * content) or is dropped when empty. A second pass drops orphan
+ * tool outputs (a result whose call has no surviving assistant
+ * entry — the context ceiling severs pairs oldest-first, and
+ * replaying the output half alone 400s both flavors
+ * deterministically). Failed assistant entries are already
+ * excluded downstream; this covers the non-failed dangling
  * case. Write-time repair is deliberately NOT attempted: a
  * crash/restart poison can never be fixed at write time (the process
  * is gone), so the read-time sanitize is the load-bearing fix.
+ *
+ * ORDERING: callers must cap FIRST (capHistory) and sanitize
+ * SECOND — capping a sanitized history severs pairs the sanitize
+ * had just validated.
  *
  * Lives here (not loop.js) so both mappers — loop.js chat and
  * responses.js — share one choke point without an import cycle.
@@ -169,7 +177,22 @@ export function sanitizeHistory(entries) {
       out.push(m);
     }
   }
-  return out;
+  // Orphan-output pass: a tool result whose call has no surviving
+  // assistant entry (ceiling-severed, or an id-less stray) replays
+  // as an unattributed function_call_output / tool message — a
+  // deterministic 400 on both flavors. Drop it; an output that
+  // cannot be attributed is meaningless downstream.
+  const keptIds = new Set();
+  for (const m of out) {
+    if (m && m.role === "assistant" && !m.failed && Array.isArray(m.toolCalls)) {
+      for (const tc of m.toolCalls) {
+        if (tc && tc.id) keptIds.add(tc.id);
+      }
+    }
+  }
+  return out.filter(
+    (m) => !(m && m.role === "tool" && !keptIds.has(m.toolCallId))
+  );
 }
 
 // Pre-flight history ceiling (hygiene B5): immortal sessions grow
@@ -199,11 +222,12 @@ function entryChars(m) {
   return n;
 }
 
-export function historyTruncationNote(droppedMessages, droppedChars) {
+export function historyTruncationNote(omittedMessages, droppedChars) {
   return (
-    `[sweave history note: ${droppedMessages} oldest message(s) ` +
-    `(${droppedChars} chars) omitted to fit context; earlier work is ` +
-    `out of scope — continue from what is shown]`
+    `[sweave history note: ${omittedMessages} message(s) omitted ` +
+    `to fit context (${droppedChars} chars; tool calls without ` +
+    `answers are never replayed); earlier work is out of scope — ` +
+    `continue from what is shown]`
   );
 }
 

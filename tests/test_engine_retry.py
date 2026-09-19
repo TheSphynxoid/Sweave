@@ -250,6 +250,24 @@ async def test_deterministic_400_fails_fast(sidecar, tmp_path: Path):
 
 
 @needs_node
+async def test_digit_only_400_text_fails_fast(sidecar, tmp_path: Path):
+    """Review fix: a bare status digit inside deterministic 400 text
+    ("exceeds maximum 500 items") must not buy backoff — the digit
+    pattern alone never retries a 400."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    STUB["script"] = [
+        (400, {}, '{"error": "bad request: exceeds maximum 500 items"}')
+    ]
+    STUB["hits"] = 0
+    proc = await SweaveEngineHarness().attach("eng_retry_400n", _spec(tmp_path))
+    result, _ = await _send(proc)
+    assert not result.success
+    assert "400" in (result.error or "")
+    assert STUB["hits"] == 1
+
+
+@needs_node
 async def test_408_retries(sidecar, tmp_path: Path):
     """408 Request Timeout is timeout-class: retry, then succeed."""
     from sweave.harness.engine import SweaveEngineHarness

@@ -15,12 +15,16 @@ import { ENGINE_USER_AGENT, SESSION_HEADER } from "./providers.js";
 import { sanitizeHistory, capHistory, historyTruncationNote } from "./sessions.js";
 
 export function historyToResponsesInput(entries) {
-  const { entries: capped, droppedMessages, droppedChars } = capHistory(sanitizeHistory(entries));
+  // Cap FIRST, sanitize SECOND (sessions.js ordering rule): capping
+  // a sanitized history severs validated pairs into replay poison.
+  const capped = capHistory(entries || []);
+  const clean = sanitizeHistory(capped.entries);
+  const omitted = (entries || []).length - clean.length;
   const out = [];
-  if (droppedMessages > 0) {
-    out.push({ role: "user", content: historyTruncationNote(droppedMessages, droppedChars) });
+  if (omitted > 0) {
+    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars) });
   }
-  for (const m of capped) {
+  for (const m of clean) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {

@@ -246,6 +246,46 @@ def _sidecar_with_journal(stub_url: str, tmp_path_factory, journal: dict):
         stop_sidecar(proc)
 
 
+def _straddling_journal() -> dict:
+    """Review fix (cap/sever interaction): an answered pair sitting
+    exactly on the ceiling cut — the assistant half is dropped as
+    oldest while the tool half survives. The mapper must drop the
+    orphan output too; replaying it alone 400s both flavors."""
+    now = int(time.time() * 1000)
+    msgs = [
+        {
+            "id": "msg_old_asst",
+            "role": "assistant",
+            "content": "",
+            "toolCalls": [{"id": "call_straddle", "name": "bash", "args": {}}],
+            "model": "m/m",
+            "at": now,
+        },
+        {
+            "id": "msg_old_tool",
+            "role": "tool",
+            "toolCallId": "call_straddle",
+            "name": "bash",
+            "content": "old output",
+            "at": now + 1,
+        },
+    ]
+    # 398 fillers + live prompt = 401 total -> the ceiling drops
+    # exactly the assistant half, stranding its tool output.
+    for i in range(398):
+        msgs.append(
+            {"id": f"msg_f_{i}", "role": "user", "content": f"f{i}", "at": now + 2 + i}
+        )
+    return {
+        "eng_straddle": {
+            "id": "eng_straddle",
+            "created": now,
+            "revert": None,
+            "messages": msgs,
+        }
+    }
+
+
 def _fat_journal(n_pairs: int = 205) -> dict:
     """A journal past the pre-flight ceiling (400 msgs): tiny text pairs."""
     now = int(time.time() * 1000)
@@ -461,3 +501,47 @@ async def test_session_fresh_named_on_done(stub_url, tmp_path_factory, tmp_path)
         second = await proc.send(_message("two"), trace=_Trace())
         assert second.success, second.error
         assert "session_fresh" not in second.metadata
+
+
+@needs_node
+async def test_straddling_pair_drops_orphan_output_chat(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """Review fix: ceiling severs an answered pair (assistant dropped,
+    tool survives) — the orphan output must not reach the chat wire."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, _straddling_journal()):
+        proc = await SweaveEngineHarness().attach(
+            "eng_straddle", _spec(CHAT_MODEL, tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    tools = [
+        m for m in HITS[0]["messages"] if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    assert all(t.get("tool_call_id") != "call_straddle" for t in tools)
+
+
+@needs_node
+async def test_straddling_pair_drops_orphan_output_responses(
+    stub_url, tmp_path_factory, tmp_path
+):
+    """Same severed pair on the responses wire: no unattributed
+    function_call_output."""
+    HITS.clear()
+    from sweave.harness.engine import SweaveEngineHarness
+
+    with _sidecar_with_journal(stub_url, tmp_path_factory, _straddling_journal()):
+        proc = await SweaveEngineHarness().attach(
+            "eng_straddle", _spec(RESP_MODEL, tmp_path, tools=[])
+        )
+        result = await proc.send(_message("continue"), trace=_Trace())
+    assert result.success, result.error
+    outputs = [
+        i
+        for i in HITS[0]["input"]
+        if isinstance(i, dict) and i.get("type") == "function_call_output"
+    ]
+    assert all(o.get("call_id") != "call_straddle" for o in outputs)

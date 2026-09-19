@@ -214,9 +214,9 @@ export async function callListSpecialists() {
     return { ok: false, text: `error: ${e.name || "Error"}: ${e.message}` };
   }
 }
-
-async function waitEscalation(delegationId, isAborted, signal) {  for (;;) {
-    if (isAborted()) throw new Error("aborted");
+async function waitEscalation(delegationId, isAborted, signal) {
+  for (;;) {
+    if (isAborted()) throw Object.assign(new Error("aborted"), { code: "aborted" });
     if (signal && signal.aborted) throw Object.assign(new Error("aborted"), { code: "aborted" });
     await sleep(2000);
     let rec = null;

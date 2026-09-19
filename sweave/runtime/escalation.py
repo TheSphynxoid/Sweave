@@ -544,6 +544,7 @@ class EscalationStore:
                 await self._persist(delegation_id)
                 partial_rec = dict(rec)
                 partial_rec["resolved"] = False
+                partial_rec["resolved_reason"] = "partial"
                 return partial_rec
             rec["status"] = "answered"
             rec["response"] = _joined_response(rec["answers"], questions)

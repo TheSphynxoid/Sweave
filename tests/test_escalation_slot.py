@@ -18,6 +18,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,6 +154,106 @@ async def test_bridge_slot_changed_never_posts(tmp_path, monkeypatch):
     assert out["status"] == "error"
     assert out["reason"] == "slot_changed"
     assert posted == []
+
+
+async def test_bridge_reclaims_id_less_permission_corpse(tmp_path, monkeypatch):
+    """Review fix: a pending PERMISSION occupant with no requestID is
+    a pre-ID-era corpse — the new ask reclaims the slot (no live
+    waiter can own an ID-less record), answers normally."""
+    from sweave.runtime import permission_bridge as pb
+
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True)
+    pb.register_session("ses_corpse", "http://127.0.0.1:4101", proj, "chat-corpse")
+    store = EscalationStore(base_dir=tmp_path / "esc", timeout_seconds=None)
+    await store.create(
+        delegation_id="chat-corpse",
+        question="Permission required: legacy ask with no id.",
+        options=["allow once", "always allow", "deny"],
+        kind="permission",
+        audience="human",
+        metadata={"permission": "external_directory"},
+    )
+    posted: list = []
+
+    async def fake_reply(client, base_url, session_id, request_id, value):
+        posted.append((base_url, session_id, request_id, value))
+        return 200
+
+    monkeypatch.setattr(
+        "sweave.runtime.permission_watch.reply_permission_request", fake_reply
+    )
+
+    async def _run_bridge():
+        return await pb.resolve_hijack_request(
+            {
+                "session_id": "ses_corpse",
+                "request_id": "per_new",
+                "permission": "external_directory",
+                "patterns": [str(tmp_path / "elsewhere" / "*")],
+                "metadata": {},
+            },
+            escalation_store=store,
+            project_manager=_FakeProjects([_FakeProject("proj", str(proj), None)]),
+        )
+
+    bridge_task = asyncio.ensure_future(_run_bridge())
+    await asyncio.sleep(0.2)
+    # The human answers the NEW ask (which replaced the corpse).
+    answered = await store.answer(delegation_id="chat-corpse", response="allow once")
+    assert answered is not None and answered["resolved"] is True
+    out = await bridge_task
+    assert out["status"] == "answered"
+    assert out["response"] == "once"
+    assert posted == [("http://127.0.0.1:4101", "ses_corpse", "per_new", "once")]
+
+
+async def test_bridge_store_error_fails_closed_fast(tmp_path, monkeypatch):
+    """Review fix: an unreadable store fails closed as store_error on
+    a ~5s elapsed budget (not 60s, and never unbounded on flapping)
+    — distinguishable from a human deny, and still POSTed so the
+    serve ask resolves instead of hanging."""
+
+    class _DeadStore:
+        async def create_or_reuse(self, **kwargs):
+            return {"status": "pending"}, True
+
+        async def get(self, *, delegation_id: str):
+            raise OSError("disk gone")
+
+    from sweave.runtime import permission_bridge as pb
+
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True)
+    pb.register_session("ses_dead", "http://127.0.0.1:4102", proj, "chat-dead")
+    posted: list = []
+
+    async def fake_reply(client, base_url, session_id, request_id, value):
+        posted.append((base_url, session_id, request_id, value))
+        return 200
+
+    monkeypatch.setattr(
+        "sweave.runtime.permission_watch.reply_permission_request", fake_reply
+    )
+    import time
+
+    t0 = time.monotonic()
+    out = await pb.resolve_hijack_request(
+        {
+            "session_id": "ses_dead",
+            "request_id": "per_x",
+            "permission": "external_directory",
+            "patterns": [str(tmp_path / "elsewhere" / "*")],
+            "metadata": {},
+        },
+        escalation_store=_DeadStore(),
+        project_manager=_FakeProjects([_FakeProject("proj", str(proj), None)]),
+    )
+    elapsed = time.monotonic() - t0
+    assert out["status"] == "store_error"
+    assert out["response"] == "reject"
+    assert elapsed < 30.0  # ~5s budget, nowhere near the old 60s
+    assert posted == [("http://127.0.0.1:4102", "ses_dead", "per_x", "reject")]
 
 
 async def test_soft_filers_respect_permission_ask(tmp_path):

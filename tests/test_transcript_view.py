@@ -268,6 +268,54 @@ def test_tokens_attributed_by_id_when_present(tmp_path: Path):
     assert blocks[1]["tokens"]["input"] == 20
 
 
+def test_mixed_trace_falls_back_per_turn(tmp_path: Path):
+    """Review fix: with SOME id anchors present, unanchored turns
+    still join positionally instead of going empty."""
+    session = {
+        "id": _SID,
+        "messages": [
+            {"id": "u1", "role": "user", "content": "t1", "at": 1},
+            {"id": "a1", "role": "assistant", "content": "r1", "at": 2},
+            {"id": "u2", "role": "user", "content": "t2", "at": 3},
+            {"id": "a2", "role": "assistant", "content": "r2", "at": 4},
+        ],
+    }
+    jp = _journal(tmp_path, {_SID: session})
+    # Only u2 is anchored; u1's thinking arrives before any marker
+    # (legacy prefix bucket) and must still attribute positionally.
+    trace = [
+        {"event": "reasoning", "text": "early thinking"},
+        {"event": "engine_user_message", "id": "u2"},
+        {"event": "reasoning", "text": "late thinking"},
+    ]
+    blocks = render_transcript_blocks(_SID, trace, journal_path=jp)
+    assert blocks[0]["reasoning"] == "early thinking"
+    assert blocks[1]["reasoning"] == "late thinking"
+
+
+def test_legacy_empty_turn_anchors_positionally(tmp_path: Path):
+    """Review fix: on id-less traces an empty-reasoning turn still
+    occupies its positional slot (neighbours used to shift onto it)."""
+    session = {
+        "id": _SID,
+        "messages": [
+            {"id": "u1", "role": "user", "content": "t1", "at": 1},
+            {"id": "a1", "role": "assistant", "content": "r1", "at": 2},
+            {"id": "u2", "role": "user", "content": "t2", "at": 3},
+            {"id": "a2", "role": "assistant", "content": "r2", "at": 4},
+        ],
+    }
+    jp = _journal(tmp_path, {_SID: session})
+    trace = [
+        {"event": "engine_user_message"},
+        {"event": "engine_user_message"},
+        {"event": "reasoning", "text": "second-turn thinking"},
+    ]
+    blocks = render_transcript_blocks(_SID, trace, journal_path=jp)
+    assert blocks[0]["reasoning"] == ""
+    assert blocks[1]["reasoning"] == "second-turn thinking"
+
+
 def test_dangling_call_flags_result_missing(tmp_path: Path):
     """Hygiene B6: an assistant call with no journaled result (abort /
     crash poison) keeps status unknown for back-compat but carries

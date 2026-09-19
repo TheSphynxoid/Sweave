@@ -222,7 +222,13 @@ def render_transcript_blocks(
         except Exception:  # noqa: BLE001 — never raise on trace shapes
             continue
         if name == "engine_user_message":
-            if current_reasoning:
+            # Review fix: anchor EVERY marker unconditionally (even an
+            # empty buffer), not just truthy ones — an empty-reasoning
+            # turn must still occupy its positional slot or every
+            # later neighbour shifts. The `is not None` guard keeps
+            # the pre-first-marker prefix out of the list (there is no
+            # turn before the first marker to attribute it to).
+            if current_reasoning is not None:
                 reasoning_turns.append(current_reasoning)
                 if current_id is not None:
                     reasoning_by_id.setdefault(current_id, []).extend(
@@ -308,8 +314,14 @@ def render_transcript_blocks(
                 "error": None,
             }
             _uid = current["user_message_id"]
-            if reasoning_by_id:
-                rid = reasoning_by_id.get(_uid, [])
+            # Review fix: per-turn fallback, not a global switch. A
+            # turn WITH an id anchor joins by id; a turn without one
+            # (pre-v3 journals, synthetic orphan blocks) falls back to
+            # positional. The old global switch discarded positional
+            # data for every unanchored turn the moment ANY anchor
+            # existed.
+            if _uid and _uid in reasoning_by_id:
+                rid = reasoning_by_id[_uid]
             else:
                 rid = (
                     reasoning_turns[turn_index]
@@ -317,8 +329,8 @@ def render_transcript_blocks(
                     else []
                 )
             current["reasoning"] = _clip("".join(rid), MAX_REASONING_CHARS)
-            if token_by_id:
-                tid = token_by_id.get(_uid)
+            if _uid and _uid in token_by_id:
+                tid = token_by_id[_uid]
             else:
                 tid = (
                     token_turns[turn_index]

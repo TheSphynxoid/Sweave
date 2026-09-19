@@ -27,10 +27,16 @@ export const DEFAULT_MAX_RETRIES = 3;
 
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 524]);
 
+// Digit substrings match counts/ids inside deterministic 400 text
+// ("exceeds maximum 500 items") — kept for status-less/classic
+// paths but NEVER sufficient alone for a 400 retry (see
+// isRetryable's 400 branch).
+const RETRYABLE_STATUS_PATTERN = /408|429|500|502|503|504|524/i;
+
 // Message-shape subset of opencode's RETRYABLE_MESSAGE_PATTERNS (the
 // patterns our providers actually emit; SDK-vendor prefixes omitted).
 const RETRYABLE_PATTERNS = [
-  /408|429|500|502|503|504|524/i,
+  RETRYABLE_STATUS_PATTERN,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
   /overloaded|service unavailable|service_unavailable|service-unavailable|unavailable|internal error|internal_error|internal server error|server error|server_error|server-error|provider returned error|provider_returned_error|provider-returned-error/i,
   /terminated|fetch failed|failed to fetch|network[-_\s]error|upstream connect|connection error|connection refused|connection lost|socket connection was closed|socket hang up|reset before headers|getaddrinfo|enotfound|eai_again|econnrefused|econnreset|etimedout/i,
@@ -75,8 +81,17 @@ export function isRetryable(err) {
   if (matchesAny(text, NEVER_PATTERNS)) return false;
   // 400 is split: deterministic bad-requests (flavor errors, poisoned
   // history) fail fast; transient-text 400s (overload/unavailable
-  // blips) ride the normal backoff.
-  if (status === 400) return matchesAny(text, RETRYABLE_PATTERNS);
+  // blips) ride the normal backoff. The digit-substring pattern is
+  // excluded here — a bare "500" inside deterministic text ("exceeds
+  // maximum 500 items") must not buy 14s of backoff. Bare
+  // "unavailable" stays: the live "Model is unavailable" blip is the
+  // shape that must retry, and the cost of over-matching it is
+  // bounded backoff, never poison.
+  if (status === 400) {
+    return RETRYABLE_PATTERNS.some(
+      (p) => p !== RETRYABLE_STATUS_PATTERN && p.test(text)
+    );
+  }
   if (typeof status === "number" && RETRYABLE_STATUS.has(status)) return true;
   return isRetryableMessage(text);
 }

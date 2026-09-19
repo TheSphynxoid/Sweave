@@ -2325,6 +2325,19 @@ class ChatLoop:
                             "ChatLoop: round_partial_persisted trace append failed for %s",
                             delegation.delegation_id,
                         )
+                    # Mirror the children path: the buffers are spent.
+                    # _finish() below recomputes thinking/segments/tools
+                    # from these same live structures — without clearing,
+                    # every row would render twice (once on the partial,
+                    # once on the final error bubble).
+                    del segments[:]
+                    tools_by_call.clear()
+                    tools_order.clear()
+                    _live_entry = self._active_turns.get(session_id)
+                    if _live_entry is not None:
+                        _live_entry.stream_text = ""
+                        _live_entry.thinking_text = ""
+                        _live_entry.tools = []
                 return await _finish(
                     delegation_id=delegation.delegation_id,
                     error_text=first_turn_text,

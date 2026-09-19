@@ -112,13 +112,6 @@ def _parse_spec_model(model: str):
         return None
 
 
-#: Bound for fed-back unparseable SSE pieces (hygiene B7): a piece
-#: past this size can never be a split object completing next chunk —
-#: it is corrupt. Counted once and dropped instead of poisoning every
-#: later parse.
-_SSE_CARRY_CAP = 1_000_000
-
-
 def _split_json_stream(
     chunk: str, carry: str = ""
 ) -> tuple[list[str], str]:
@@ -501,21 +494,24 @@ class OpenCodeProcess:
                 ) as response:
                     response.raise_for_status()
                     carry = ""
-                    # Hygiene B7: pieces the splitter cut but that don't
-                    # parse are fed back as carry (bounded) so the next
-                    # chunk can complete them; whatever still dangles
-                    # at EOF is counted (never silently dropped).
+                    # Hygiene B7 (review-corrected): pieces the splitter
+                    # emits are brace-balanced, so appending more bytes
+                    # can never repair one that fails to parse — it is
+                    # corrupt, not split (split-in-flight text stays in
+                    # `carry` by construction). Count corrupt pieces
+                    # immediately and drop them; a dangling carry at EOF
+                    # (truncated final object) is counted below. Neither
+                    # is ever silently dropped.
                     dropped_pieces = 0
                     async for chunk in response.aiter_text():
                         if not chunk:
                             continue
                         pieces, carry = _split_json_stream(chunk, carry)
-                        failed_pieces: list[str] = []
                         for piece in pieces:
                             try:
                                 obj = json.loads(piece)
                             except json.JSONDecodeError:
-                                failed_pieces.append(piece)
+                                dropped_pieces += 1
                                 continue
                             if not isinstance(obj, dict):
                                 continue
@@ -676,16 +672,6 @@ class OpenCodeProcess:
                                                 "OpenCodeProcess.send: unknown-part "
                                                 "trace failed: %s", trace_err
                                             )
-                        # Feed unparseable pieces back as carry (in
-                        # order, bounded): the next chunk may complete
-                        # them. A permanently-bad piece is counted once
-                        # here instead of poisoning every later parse.
-                        if failed_pieces:
-                            failed_text = "".join(failed_pieces)
-                            if len(failed_text) > _SSE_CARRY_CAP:
-                                dropped_pieces += 1
-                            else:
-                                carry = failed_text + carry
                     # EOF: a dangling carry (truncated final object)
                     # never parses — count it instead of dropping it
                     # silently. It surfaces in the no-terminal error

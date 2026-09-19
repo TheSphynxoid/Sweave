@@ -346,4 +346,12 @@ async def test_first_turn_failure_persists_partial(tmp_path: Path):
     assert "repo layout" in partial.content
     assert "stalled" in final.content
     assert final.metadata.get("turn_final", True) is not False
+    # Review fix: the rows live on the partial exactly once — the
+    # final error bubble must not duplicate them.
+    partial_tools = partial.metadata.get("tools") or []
+    assert [t.get("callID") for t in partial_tools] == ["call_p1"]
+    assert "thinking" in partial.metadata
+    assert final.metadata.get("tools") is None
+    assert final.metadata.get("thinking") is None
+    assert final.metadata.get("segments") is None
     assert orig is not None  # keep linters honest about the wrapper shape

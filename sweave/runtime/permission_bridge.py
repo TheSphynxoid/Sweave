@@ -359,25 +359,37 @@ async def resolve_hijack_request(
             f"opencode asks {permission} for {patterns}"
             + (f" (command: {command})" if command else "")
         )
-        # Slot guard (hygiene B4): one record per delegation. A pending
-        # occupant whose requestID is not ours — a soft-limit/ceiling
-        # question, another permission ask, or a legacy record with no
-        # ID at all — must never be destroyed by this ask's create.
-        # Same-requestID reuses still flow through create_or_reuse
-        # below. Refusing fails this ask closed (the serve-side ask
-        # times out on its own clock); destroying would corrupt a
-        # stranger's verdict or strand their live question.
+        # Slot guard (hygiene B4, kind-scoped in review): one record
+        # per delegation. Refuse when the pending occupant is either
+        # (a) NOT a permission ask — a human question / notice owns
+        # its slot unconditionally (no-timeout questions can pend for
+        # days by ruling; nothing auto-clears them), or (b) a
+        # permission ask carrying a DIFFERENT requestID (a stranger's
+        # live ask). A permission occupant WITHOUT any requestID is
+        # a pre-ID-era corpse: no live waiter can own it (every
+        # waiter since IDs existed keys on its own), so this ask may
+        # reclaim the slot via create_or_reuse below. Same-requestID
+        # reuses always flow through. Refusing fails this ask closed
+        # (the serve-side ask times out on its own clock).
         try:
             occupying = await escalation_store.get(
                 delegation_id=state["delegation_id"]
             )
         except Exception:
             occupying = None
-        _occupant_id = (occupying.get("metadata") or {}).get("requestID") if occupying else None
+        _occupant_id = (
+            (occupying.get("metadata") or {}).get("requestID")
+            if occupying
+            else None
+        )
+        _occupant_kind = occupying.get("kind") if occupying else None
         if (
             occupying is not None
             and occupying.get("status") == "pending"
-            and _occupant_id != request_id
+            and (
+                _occupant_kind != "permission"
+                or (_occupant_id is not None and _occupant_id != request_id)
+            )
         ):
             logger.warning(
                 "permission_bridge: slot occupied by %s (requestID %s); "
@@ -418,7 +430,14 @@ async def resolve_hijack_request(
         except Exception as e:  # noqa: BLE001
             logger.warning("permission_bridge: escalation create failed: %s", e)
             return {"status": "error", "reason": str(e)}
-        store_errors = 0
+        # Review fix: bound the wait by ELAPSED time (5s), not by
+        # consecutive-error count — a flapping store (error /
+        # success-pending alternating) reset the old counter forever
+        # and hung unbounded inside a fire-and-forget plugin POST.
+        # Past the budget, fail closed LOUDLY as store_error
+        # (distinguishable from a human deny) so forensics can tell
+        # error-reject from human-reject.
+        store_deadline = asyncio.get_running_loop().time() + 5.0
         while True:
             await asyncio.sleep(0.5)
             try:
@@ -427,19 +446,11 @@ async def resolve_hijack_request(
                         delegation_id=state["delegation_id"]
                     )
                 ) or {}
-                store_errors = 0
             except Exception:
-                # Store failure is NOT a resolution: the old code broke
-                # out instantly and auto-rejected a live human question
-                # with no audit trail. Retry with a consecutive-error
-                # budget (~60s); past it, fail closed LOUDLY as
-                # store_error (distinguishable from a human deny) so
-                # forensics can tell error-reject from human-reject.
-                store_errors += 1
-                if store_errors >= 120:
+                if asyncio.get_running_loop().time() >= store_deadline:
                     logger.warning(
                         "permission_bridge: escalation store unreadable "
-                        "for ~60s on %s; failing closed",
+                        "for ~5s on %s; failing closed",
                         state["delegation_id"],
                     )
                     esc = {}

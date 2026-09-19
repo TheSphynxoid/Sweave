@@ -120,12 +120,16 @@ function withTimeout(promise, ms, onTimeout) {
 }
 
 export function historyToProviderMessages(entries) {
-  const { entries: capped, droppedMessages, droppedChars } = capHistory(sanitizeHistory(entries));
+  // Cap FIRST, sanitize SECOND (sessions.js ordering rule): capping
+  // a sanitized history severs validated pairs into replay poison.
+  const capped = capHistory(entries || []);
+  const clean = sanitizeHistory(capped.entries);
+  const omitted = (entries || []).length - clean.length;
   const out = [];
-  if (droppedMessages > 0) {
-    out.push({ role: "user", content: historyTruncationNote(droppedMessages, droppedChars) });
+  if (omitted > 0) {
+    out.push({ role: "user", content: historyTruncationNote(omitted, capped.droppedChars) });
   }
-  for (const m of capped) {
+  for (const m of clean) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content || "" });
     } else if (m.role === "assistant" && !m.failed) {
@@ -585,6 +589,11 @@ export async function runLoop(loopCtx) {
     stepText = stepResult.text;
     stepCalls = stepResult.calls;
     for (const c of stepCalls) {
+      // Fill missing ids BEFORE the collision check: an id-less call
+      // would otherwise diverge between the appended assistant entry
+      // (undefined) and the tool result (generated) — an unmatchable
+      // orphan pair downstream.
+      if (c && !c.id) c.id = newCallId();
       if (c && c.id && seenCallIds.has(c.id)) c.id = newCallId();
       if (c && c.id) seenCallIds.add(c.id);
     }

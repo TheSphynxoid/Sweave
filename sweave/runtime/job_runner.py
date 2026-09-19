@@ -1982,8 +1982,10 @@ class JobRunner:
                     failed gets ONE human decision (re-run once on
                     keep — same tree, resumed session — or stop),
                     never an automatic retry and never a second
-                    question (one-question-per-turn is global: an
-                    existing soft record means ask nothing).
+                    question (one-question-per-turn is global: any
+                    pending record, or an existing soft record, means
+                    ask nothing — _ask_pulsed_rerun enforces the same
+                    slot guard).
                     """
                     if self._soft_store() is None:
                         return None
@@ -1991,7 +1993,10 @@ class JobRunner:
                         existing = await self._soft_record(delegation)
                     except Exception:  # noqa: BLE001
                         existing = None
-                    if existing is not None and _is_soft_limit_record(existing):
+                    if existing is not None and (
+                        existing.get("status") == "pending"
+                        or _is_soft_limit_record(existing)
+                    ):
                         return None
                     pulsed = self._last_pulse(trace)
                     if pulsed is None or pulsed[0] > self.BEACON_WINDOW_SECONDS:
@@ -2381,9 +2386,9 @@ class JobRunner:
         ``turn_timeout``).
 
         The wait is bounded by the delegation's budget (explicit
-        ``budget`` arg, else the per-delegation overlay — never the
-        bare runner singleton) so a stuck join-set child can't wedge the
-        parent forever -- if the timeout hits we proceed and the
+        ``budget`` arg, else the per-delegation overlay, else the
+        runner singleton as final fallback) so a stuck join-set child
+        can't wedge the parent forever -- if the timeout hits we proceed and the
         parent transitions normally; the late-arriving child is
         silently absorbed (the parent's record is the audit
         source-of-truth for the chain). One exception (soft-cap
