@@ -264,6 +264,9 @@ class _Trace:
     def append(self, name, payload):
         self.events.append((name, payload))
 
+    def of(self, name):
+        return [p for n, p in self.events if n == name]
+
 
 @needs_node
 async def test_responses_poisoned_session_serves(stub_url, tmp_path_factory, tmp_path):

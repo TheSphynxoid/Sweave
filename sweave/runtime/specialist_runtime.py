@@ -630,8 +630,10 @@ class SpecialistRuntime:
         # uses — never a second independent clock (incident
         # f774d84b: the inner attempt died at its hardcoded 1800
         # while the outer re-armed over the corpse). None = harness
-        # default (legacy/tests). The opencode path ignores it
-        # (separate timer stack, step 4 scope).
+        # default (legacy/tests). The opencode path forwards it as
+        # the per-request socket budget (budget+30, P0-2 2026-09-20:
+        # the 1000s client default used to win the race on 4h
+        # budgets with a bare ReadTimeout).
         turn_timeout: float | None = None,
         # Session-bind hook (Stop-button fix, incident 2026-09-17):
         # invoked with the bound session id as soon as the turn's
@@ -735,6 +737,7 @@ class SpecialistRuntime:
                 on_reasoning=on_reasoning,
                 on_tool=on_tool,
                 on_session_bound=on_session_bound,
+                turn_timeout=turn_timeout,
             )
         # Unreachable: the registry check above accepts only registered
         # names, and the two adapters are the only ones registered.
@@ -1204,14 +1207,16 @@ class SpecialistRuntime:
             if probe.tool_started > 0:
                 # The engine died AFTER tools ran (kill mid-turn with
                 # partial work). Falling back would re-run those side
-                # effects — surface the failure loudly instead.
+                # effects — surface the failure loudly instead. Cut at
+                # 500 like engine_failed_before_work (P1-5): the
+                # evidence for "safe to resume?" lives in the tail.
                 return (
                     f"[chat error: engine_failed_after_work: "
-                    f"{type(e).__name__}: {str(e)[:200]} "
+                    f"{type(e).__name__}: {str(e)[:500]} "
                     f"({probe.tool_started} tool(s) already ran; not "
                     f"falling back to avoid double-execution)]"
                 ), None
-            return None, f"{type(e).__name__}: {str(e)[:200]}"
+            return None, f"{type(e).__name__}: {str(e)[:500]}"
 
     async def _run_opencode(
         self,
@@ -1242,6 +1247,10 @@ class SpecialistRuntime:
         # Session-bind hook: see run(). Fired after _ensure_session
         # resolves the turn's session, before any turn message.
         on_session_bound: Callable[[str], Any] | None = None,
+        # Per-turn socket budget (P0-2): the outer wait's budget rides
+        # down to the stream call as budget+30 so httpx never wins the
+        # race with a bare ReadTimeout. None = client default (legacy).
+        turn_timeout: float | None = None,
     ) -> str:
         """Run one delegation on the opencode harness. Returns the
         agent's text output.
@@ -1478,6 +1487,7 @@ class SpecialistRuntime:
                 on_tool=on_tool,
                 delegation_id=delegation.delegation_id,
                 t0=t_start,
+                turn_timeout=turn_timeout,
             )
             # Record which model was actually used for this delegation
             # (M1.4+M1.5 step 1: surface the resolved ModelRef on the
@@ -1667,6 +1677,10 @@ class SpecialistRuntime:
         stall_seconds: float | None = None,
         delegation_id: str | None = None,
         t0: float | None = None,
+        # Per-request socket budget (P0-2): budget+30 so the outer
+        # wait fires first with the truthful timeout text. None =
+        # the client's own default (legacy/tests).
+        turn_timeout: float | None = None,
     ) -> str:
         """Send one message and return the agent's text output.
 
@@ -1778,11 +1792,26 @@ class SpecialistRuntime:
             # too, and trace both phases so the next silent death is
             # classifiable from the trace alone.
             loop = asyncio.get_running_loop()
+            # P0-2: the socket budget rides the outer wait's budget
+            # (budget+30 drain tail, engine-path parity) — never the
+            # client's fixed default, which used to win the race on
+            # multi-hour budgets with a bare ReadTimeout.
+            stream_timeout: float | None = None
+            try:
+                if (
+                    turn_timeout is not None
+                    and not isinstance(turn_timeout, bool)
+                    and float(turn_timeout) > 0
+                ):
+                    stream_timeout = float(turn_timeout) + 30.0
+            except (TypeError, ValueError):
+                stream_timeout = None
             raw_cm = process._client.stream(
                 "POST",
                 f"/session/{wire_session_id}/message",
                 json=body,
                 headers=headers,
+                **({"timeout": stream_timeout} if stream_timeout else {}),
             )
             t_open = loop.time()
             # Pre-model phase: legit serve warmup (tool-loop steps,

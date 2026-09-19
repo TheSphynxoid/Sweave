@@ -209,6 +209,7 @@ def _pid_alive(pid: int) -> bool:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                creationflags=creationflags_no_window(),
             )
             return f'"{pid}"' in (out.stdout or "")
         os.kill(pid, 0)
@@ -241,6 +242,7 @@ def _sidecar_cmdline(pid: int) -> str | None:
                 capture_output=True,
                 text=True,
                 timeout=15,
+                creationflags=creationflags_no_window(),
             )
             text = (out.stdout or "").strip()
             if text:
@@ -251,6 +253,7 @@ def _sidecar_cmdline(pid: int) -> str | None:
                 capture_output=True,
                 text=True,
                 timeout=15,
+                creationflags=creationflags_no_window(),
             )
             return (out.stdout or "").strip() or None
         data = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
@@ -296,6 +299,7 @@ def _kill_sidecar_pid(pid: int) -> None:
             capture_output=True,
             timeout=30,
             check=True,
+            creationflags=creationflags_no_window(),
         )
     else:
         import signal
@@ -564,7 +568,7 @@ class SweaveEngineProcess:
                         return AgentResult(
                             success=False,
                             output="",
-                            error=f"engine turn_active: {detail[:200]}",
+                            error=f"engine turn_active: {detail[:500]}",
                         )
                     if resp.status_code == 400:
                         detail = (await resp.aread()).decode(
@@ -573,7 +577,7 @@ class SweaveEngineProcess:
                         return AgentResult(
                             success=False,
                             output="",
-                            error=f"engine bad_request: {detail[:300]}",
+                            error=f"engine bad_request: {detail[:500]}",
                         )
                     resp.raise_for_status()
                     # Drain to EOF: the sidecar sends tokens_used AFTER
@@ -587,6 +591,11 @@ class SweaveEngineProcess:
                         try:
                             event = json.loads(line[5:].strip())
                         except (ValueError, json.JSONDecodeError):
+                            continue
+                        # The sidecar only emits dict events; a non-dict
+                        # (or null) here would AttributeError the turn
+                        # below — skip it instead of dying on it.
+                        if not isinstance(event, dict):
                             continue
                         kind = event.get("event")
                         if kind == "token":
@@ -839,6 +848,17 @@ class SweaveEngineHarness(Harness):
                 resp = await client.get("/health")
                 _check_version(resp.headers)
                 return resp.status_code == 200
+        except ProtocolMismatch as pm_err:
+            # Distinct from merely-unhealthy: a version drift means a
+            # stale sidecar (SWEAVE_ENGINE_URL or a survivor); the
+            # sweep spawns a second one instead of reporting drift.
+            # Log loudly so the drift is visible, not silent.
+            logger.warning(
+                "SweaveEngineHarness.health_check: protocol mismatch "
+                "(stale sidecar?): %s",
+                pm_err,
+            )
+            return False
         except Exception:  # noqa: BLE001
             return False
 

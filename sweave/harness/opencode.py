@@ -282,14 +282,13 @@ class OpenCodeProcess:
         self.base_url = base_url
         self._session_id = session_id
         self.pid = process.pid
-        # Per-request timeout deliberately ABOVE the turn timeout
-        # (JobRunner/ChatLoop default 900s): the asyncio.wait_for around
-        # the turn must fire first so failures surface with the clear
-        # "turn_timeout_exceeded_900s" / "orchestrator turn exceeded 900s"
-        # message. At 300s the httpx ReadTimeout won the race and users
-        # got the cryptic "[chat error: ReadTimeout: ]" instead
-        # (2026-09-10: 4 consecutive 300s zero-byte stalls on a wedged
-        # free-tier model). Override via spec.env if needed.
+        # Client-level default socket timeout. This is the FLOOR for
+        # callers that name no per-turn budget — the per-request
+        # budget (turn_timeout+30, computed in send()/_send_message
+        # from the turn's own budget) overrides it whenever the turn
+        # knows its budget (P0-2 2026-09-20: the fixed 1000s default
+        # used to beat the outer 4h fuse with a bare ReadTimeout).
+        # Override via spec.env if needed.
         self._client = httpx.AsyncClient(base_url=base_url, timeout=1000.0)
         self._session_created = False
 
@@ -461,12 +460,29 @@ class OpenCodeProcess:
             # sum above is steps×context, this is the fire-risk size).
             max_input = 0
             total_cost = 0.0
+            # P0-2: per-request socket budget from the turn budget
+            # (budget+30 drain tail, engine-path parity). The fixed
+            # client default (1000s) used to win the race on multi-hour
+            # budgets with a bare ReadTimeout. Absent/invalid keeps the
+            # client default (legacy/tests).
+            stream_timeout: float | None = None
+            try:
+                _budget = (message.metadata or {}).get("turn_timeout")
+                if (
+                    _budget is not None
+                    and not isinstance(_budget, bool)
+                    and float(_budget) > 0
+                ):
+                    stream_timeout = float(_budget) + 30.0
+            except (TypeError, ValueError, AttributeError):
+                stream_timeout = None
             try:
                 async with self._client.stream(
                     "POST",
                     f"/session/{session_id}/message",
                     json=body,
                     headers=self._default_headers(),
+                    **({"timeout": stream_timeout} if stream_timeout else {}),
                 ) as response:
                     response.raise_for_status()
                     carry = ""
