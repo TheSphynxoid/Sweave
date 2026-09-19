@@ -80,6 +80,14 @@ def test_split_stream_partial_carries_over():
     assert carry2 == ''
 
 
+def test_split_stream_resyncs_after_stray_closer():
+    """Hygiene B7: a stray `}` (separator noise) no longer eats the
+    next object — depth clamps at zero instead of going negative."""
+    out, carry = _split_json_stream('{"a":1}} {"b":2}')
+    assert out == ['{"a":1}', '{"b":2}']
+    assert carry == ''
+
+
 # --- OpenCodeProcess: v2 send with mocked httpx ---------------------------
 
 
@@ -328,3 +336,26 @@ async def test_send_reuses_session_id_across_calls(tmp_path: Path):
     await process.send(Message(type="user", content="two"))
     assert session_calls == 1
     assert message_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_send_counts_unparseable_pieces_in_error(tmp_path: Path):
+    """Hygiene B7: a brace-balanced but invalid piece plus a
+    terminal-less stream fails as incomplete_turn AND names the
+    dropped piece count — never a silent drop."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/session":
+            return httpx.Response(200, json={"id": "ses_drop"})
+        if request.url.path == "/session/ses_drop/message":
+            chunk = (
+                '{"info": {"role": "assistant"},"parts":[{"type":"text","text":"hi"}]}'
+                '{"zzz":}'
+            )
+            return httpx.Response(200, content=chunk)
+        return httpx.Response(404)
+
+    process = _make_process_with_transport(_make_spec(tmp_path), handler)
+    result = await process.send(Message(type="user", content="x"))
+    assert result.success is False
+    assert "no terminal flag set" in (result.error or "")
+    assert "1 stream piece(s) unparseable" in (result.error or "")

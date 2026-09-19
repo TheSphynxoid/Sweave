@@ -112,6 +112,13 @@ def _parse_spec_model(model: str):
         return None
 
 
+#: Bound for fed-back unparseable SSE pieces (hygiene B7): a piece
+#: past this size can never be a split object completing next chunk —
+#: it is corrupt. Counted once and dropped instead of poisoning every
+#: later parse.
+_SSE_CARRY_CAP = 1_000_000
+
+
 def _split_json_stream(
     chunk: str, carry: str = ""
 ) -> tuple[list[str], str]:
@@ -152,6 +159,14 @@ def _split_json_stream(
                 start = i
             depth += 1
         elif ch == "}":
+            # Hygiene B7: resync on unbalanced closers. A stray `}`
+            # (separator noise between objects) used to drive depth
+            # negative, which silently ate the NEXT object (its `{`
+            # never armed `start`). Clamp at zero instead.
+            if depth <= 0:
+                depth = 0
+                start = -1
+                continue
             depth -= 1
             if depth == 0 and start >= 0:
                 pieces.append(text[start : i + 1])
@@ -486,15 +501,21 @@ class OpenCodeProcess:
                 ) as response:
                     response.raise_for_status()
                     carry = ""
+                    # Hygiene B7: pieces the splitter cut but that don't
+                    # parse are fed back as carry (bounded) so the next
+                    # chunk can complete them; whatever still dangles
+                    # at EOF is counted (never silently dropped).
+                    dropped_pieces = 0
                     async for chunk in response.aiter_text():
                         if not chunk:
                             continue
                         pieces, carry = _split_json_stream(chunk, carry)
+                        failed_pieces: list[str] = []
                         for piece in pieces:
                             try:
                                 obj = json.loads(piece)
                             except json.JSONDecodeError:
-                                # Partial chunk; next read will complete it.
+                                failed_pieces.append(piece)
                                 continue
                             if not isinstance(obj, dict):
                                 continue
@@ -655,6 +676,22 @@ class OpenCodeProcess:
                                                 "OpenCodeProcess.send: unknown-part "
                                                 "trace failed: %s", trace_err
                                             )
+                        # Feed unparseable pieces back as carry (in
+                        # order, bounded): the next chunk may complete
+                        # them. A permanently-bad piece is counted once
+                        # here instead of poisoning every later parse.
+                        if failed_pieces:
+                            failed_text = "".join(failed_pieces)
+                            if len(failed_text) > _SSE_CARRY_CAP:
+                                dropped_pieces += 1
+                            else:
+                                carry = failed_text + carry
+                    # EOF: a dangling carry (truncated final object)
+                    # never parses — count it instead of dropping it
+                    # silently. It surfaces in the no-terminal error
+                    # below when the turn dies for it.
+                    if carry.strip():
+                        dropped_pieces += 1
             except httpx.HTTPStatusError as e:
                 upstream = e.response.text.strip() if e.response is not None else ""
                 return AgentResult(
@@ -712,13 +749,21 @@ class OpenCodeProcess:
                 # explicit completion flag. Whether we have partial
                 # output or no output at all, the safe call is
                 # "incomplete turn" rather than "the answer".
+                # Hygiene B7: name dropped pieces when they exist — a
+                # turn that did work but lost its terminal part to a
+                # mangled stream reads differently from an empty one.
+                piece_note = (
+                    f" ({dropped_pieces} stream piece(s) unparseable)"
+                    if dropped_pieces
+                    else ""
+                )
                 return AgentResult(
                     success=False,
                     output="",
                     error=(
                         "opencode serve: no terminal flag set "
                         "(stream ended without info.time.completed + info.finish; "
-                        "mid-stream or empty response?)"
+                        f"mid-stream or empty response?){piece_note}"
                     ),
                 )
             return AgentResult(success=True, output=output, metadata={})
