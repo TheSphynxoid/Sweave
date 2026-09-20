@@ -30,7 +30,7 @@ def test_different_projects_dont_share_lock(tmp_project_manager: ProjectManager,
 def test_concurrent_writes_to_same_project_dont_corrupt(
     tmp_project_manager: ProjectManager, tmp_path: Path
 ):
-    """Many threads save the same session many times. Final state must be a valid JSON file."""
+    """Many threads append to the same session. Final state must be valid."""
     pm = tmp_project_manager
     project_path = tmp_path / "p-conc"
     project_path.mkdir(parents=True, exist_ok=True)
@@ -39,8 +39,7 @@ def test_concurrent_writes_to_same_project_dont_corrupt(
 
     def writer(n: int) -> None:
         for i in range(50):
-            s.add_message("user", f"thread-{n}-msg-{i}")
-            pm.save_session(s)
+            pm.append_message(s.id, "user", f"thread-{n}-msg-{i}")
 
     threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
     for t in threads:
@@ -50,7 +49,8 @@ def test_concurrent_writes_to_same_project_dont_corrupt(
 
     sfile = pm.projects_dir / "p-conc" / "sessions" / f"{s.id}.json"
     data = __import__("json").loads(sfile.read_text(encoding="utf-8"))
-    # We can't predict the exact count (race), but the file must parse and
-    # contain all 4*50 messages somewhere in its history.
     assert data["id"] == s.id
-    assert len(data["messages"]) > 0
+    # Every append wrote exactly one line: 4 threads x 50 appends.
+    mfile = pm.projects_dir / "p-conc" / "sessions" / f"{s.id}.messages.jsonl"
+    lines = [ln for ln in mfile.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 200

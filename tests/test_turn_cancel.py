@@ -441,7 +441,7 @@ async def test_cancel_returns_settled_bubble_instead_of_500(tmp_path: Path):
         agent="orchestrator",
         metadata={"delegation_id": did, "turn_final": True},
     )
-    pm.save_session(session)
+    pm.save_messages(session)
     await store.add(
         Delegation(
             agent="orchestrator", task="q", project_name="demo",
@@ -452,7 +452,7 @@ async def test_cancel_returns_settled_bubble_instead_of_500(tmp_path: Path):
     did = rec.delegation_id
     # Re-point the bubble at the real delegation id.
     session.messages[-1].metadata["delegation_id"] = did
-    pm.save_session(session)
+    pm.save_messages(session)
 
     async def _done():
         return None
@@ -475,7 +475,7 @@ async def test_cancel_with_no_bubble_still_raises(tmp_path: Path):
     chat = _chat_loop(pm, stores, _stub_runtime(), tmp_path)
     session = pm.create_session("demo", session_name="s-empty")
     session.add_message(role="user", content="q")
-    pm.save_session(session)
+    pm.save_messages(session)
     await store.add(
         Delegation(
             agent="orchestrator", task="q", project_name="demo",

@@ -60,9 +60,11 @@ def _mock_opencode_env():
 # ---------------------------------------------------------------------------
 
 
-def test_session_schema_version_default_is_1():
+def test_session_schema_version_default_is_2():
+    # Lazy-load split: new sessions are schema v2 (meta/jsonl);
+    # legacy files without the key still read as v1 (next test).
     s = Session(id="s1", project_name="p", name="n")
-    assert s.schema_version == 1
+    assert s.schema_version == 2
     assert s.orchestrator_session_id is None
 
 

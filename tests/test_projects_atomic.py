@@ -15,18 +15,22 @@ def test_save_session_is_atomic(tmp_project_manager: ProjectManager, tmp_path: P
     project_path.mkdir(parents=True, exist_ok=True)
     pm.create_project("p-atomic", project_path)
     s = pm.create_session("p-atomic", "S1")
-    s.add_message("user", "hello")
-    pm.save_session(s)
+    pm.append_message(s.id, "user", "hello")
 
-    # Canonical file exists
+    # Canonical meta file exists
     sfile = pm.projects_dir / "p-atomic" / "sessions" / f"{s.id}.json"
     assert sfile.exists()
+    # Bodies live beside it, one row per line
+    mfile = pm.projects_dir / "p-atomic" / "sessions" / f"{s.id}.messages.jsonl"
+    assert mfile.exists()
     # No leftover tmp files
     leftovers = list((pm.projects_dir / "p-atomic" / "sessions").glob("*.tmp"))
     assert leftovers == [], f"tmp leftovers: {leftovers}"
-    # File is valid JSON (the whole point of atomic write)
+    # Meta is valid JSON without bodies (lazy-load split)
     data = json.loads(sfile.read_text(encoding="utf-8"))
     assert data["id"] == s.id
+    assert "messages" not in data
+    assert data["message_count"] == 1
 
 
 def test_load_skips_stray_tmp_files(tmp_project_manager: ProjectManager, tmp_path: Path):
@@ -86,11 +90,15 @@ def test_load_reads_utf8_session_content(tmp_project_manager: ProjectManager, tm
     project_path.mkdir(parents=True, exist_ok=True)
     pm.create_project("p-emoji", project_path)
     s = pm.create_session("p-emoji", "S1")
-    s.add_message("assistant", "I'm \U0001F916 the orchestrator, ready to help")
-    pm.save_session(s)
+    pm.append_message(s.id, "assistant", "I'm \U0001F916 the orchestrator, ready to help")
 
     pm._projects.clear()
     pm._sessions.clear()
     pm.load()  # must not raise
     assert s.id in pm._sessions
+    # Boot is meta-only; bodies fault on open (lazy-load split).
+    assert pm._sessions[s.id].messages == []
+    assert pm.get_session(s.id).messages[-1].content == (
+        "I'm \U0001F916 the orchestrator, ready to help"
+    )
     assert "\U0001F916" in pm._sessions[s.id].messages[-1].content

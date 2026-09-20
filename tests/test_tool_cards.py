@@ -349,7 +349,10 @@ def test_rows_round_trip_through_the_project_manager_json(tmp_path):
             metadata={"tools": [row]},
         )
     )
-    pm.save_session(session)
+    pm.save_messages(session)
+    # Force a re-fault from disk (drop the resident copy first).
+    pm._bodies.pop(session.id, None)
+    session.messages = []
     reloaded = pm.get_session(session.id)
     saved = reloaded.messages[-1].metadata["tools"][0]
     assert saved["detail"] == row["detail"]

@@ -189,6 +189,10 @@ class _FakeManager:
 
         return SimpleNamespace(**self._session)
 
+    def get_session_meta(self, session_id: str):
+        # Meta-only read (titling never needs bodies).
+        return self.get_session(session_id)
+
     def rename_session(self, session_id: str, name: str):
         self.renamed.append((session_id, name))
         self._session["name"] = name
