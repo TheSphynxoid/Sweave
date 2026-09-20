@@ -48,6 +48,11 @@ TITLE_ATTEMPTED_KEY = "title_attempted"
 TITLE_MAX_WORDS = 6
 TITLE_MAX_CHARS = 60
 TITLE_TIMEOUT_S = 90.0
+#: Per-attempt budget inside the overall timeout. Free tiers queue:
+#: a working-but-slow model (2min+ observed) must not eat the whole
+#: budget while faster candidates wait behind it — skip past it and
+#: let a 1s row land the title. Cosmetic latency beats completeness.
+TITLE_ATTEMPT_TIMEOUT_S = 45.0
 TITLE_USER_CHARS = 500
 TITLE_REPLY_CHARS = 500
 TITLE_MAX_ATTEMPTS = 3
@@ -281,6 +286,9 @@ async def request_title(
         return None
     prompt = build_title_prompt(user_text, reply_text)
     title: str | None = None
+    if not models:
+        logger.warning("titling: no candidate models for %s", session_id)
+        return None
     for model in models:
         try:
             text = await asyncio.wait_for(
@@ -291,10 +299,13 @@ async def request_title(
                     timeout,
                     harness_factory=harness_factory,
                 ),
-                timeout=timeout + 30.0,
+                timeout=TITLE_ATTEMPT_TIMEOUT_S,
             )
         except Exception as turn_err:  # noqa: BLE001 — next candidate
-            logger.info("titling: turn failed on %s: %s", model, turn_err)
+            # WARNING (not info): uvicorn's default level hides info,
+            # and these lines are the only forensics for a title
+            # that never lands.
+            logger.warning("titling: turn failed on %s: %s", model, turn_err)
             continue
         title = clean_title(text)
         if title:
