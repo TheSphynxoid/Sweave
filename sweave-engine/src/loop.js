@@ -172,7 +172,7 @@ export function needsLoop(body) {
   return false;
 }
 
-async function providerStream({ baseURL, key, provider, modelId, modelVariant, flavor, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta, maxRetries, logPrefix }) {
+async function providerStream({ baseURL, key, provider, modelId, modelVariant, flavor, anthropicAuth, sessionId, messages, defs, signal, onToken, onReasoning, onToolDelta, maxRetries, logPrefix }) {
   // `messages` is flavor-appropriate input (chat messages or Responses
   // input items — the caller maps history for the resolved flavor).
   // Both transports return { text, calls: [{id, name, args}], usage }.
@@ -204,6 +204,7 @@ async function providerStream({ baseURL, key, provider, modelId, modelVariant, f
         key,
         modelId,
         modelVariant,
+        anthropicAuth,
         sessionId,
         input: messages,
         defs,
@@ -650,6 +651,7 @@ export async function runLoop(loopCtx) {
       modelId: model.model_id,
       modelVariant: model.variant,
       flavor: resolved.flavor,
+      anthropicAuth: resolved.anthropicAuth,
       sessionId: session.id,
       messages,
       defs: all,

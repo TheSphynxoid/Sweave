@@ -70,7 +70,11 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             HITS.append(
                 {
-                    "auth": self.headers.get("Authorization", ""),
+                    "auth": self.headers.get("Authorization", "ABSENT"),
+                    "api_key": self.headers.get("x-api-key", "ABSENT"),
+                    "anthropic_version": self.headers.get(
+                        "anthropic-version", "ABSENT"
+                    ),
                     "model": body.get("model", ""),
                     "max_tokens": body.get("max_tokens", "ABSENT"),
                     "thinking": body.get("thinking", "ABSENT"),
@@ -215,6 +219,9 @@ def sidecar(stub_url, tmp_path_factory):
             # it reaches the flavor gate (not auth_missing).
             "SWEAVE_ENGINE_BASE_OPENCODE": stub_url,
             "SWEAVE_ENGINE_KEY_OPENCODE": "test-msg-key",
+            # Same for the thinkingmachines header test below.
+            "SWEAVE_ENGINE_BASE_THINKINGMACHINES": stub_url,
+            "SWEAVE_ENGINE_KEY_THINKINGMACHINES": "test-tinker-key",
             "SWEAVE_API_URL": stub_url,
             "SWEAVE_MCP_TOKEN": "stub-token",
         },
@@ -381,6 +388,26 @@ async def test_google_flavor_still_fails_loud(sidecar, stub_url):
     assert not result.success
     assert "google" in (result.error or "")
     assert HITS == []
+
+
+@needs_node
+async def test_thinkingmachines_uses_anthropic_headers(sidecar, stub_url):
+    """First-party Anthropic-native endpoint: x-api-key +
+    anthropic-version, never Bearer — and the Inkling model id rides
+    the messages wire."""
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append({"text": "TINKER OK"})
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(_spec("thinkingmachines/Inkling"))
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "TINKER OK"
+    assert HITS[0]["api_key"] == "test-tinker-key"
+    assert HITS[0]["anthropic_version"] == "2023-06-01"
+    assert HITS[0]["auth"] == "ABSENT"
+    assert HITS[0]["model"] == "Inkling"
 
 
 @needs_node

@@ -251,13 +251,26 @@ export async function providerMessagesStream({
   signal,
   onToken,
   onReasoning,
+  // First-party Anthropic-native endpoints (thinkingmachines tinker)
+  // authenticate like Anthropic itself. Gateway-family endpoints
+  // keep Bearer. The flag rides resolveProvider — transports never
+  // guess auth from the URL.
+  anthropicAuth,
 }) {
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${key || "no-key"}`,
-    "User-Agent": ENGINE_USER_AGENT,
-    [SESSION_HEADER]: sessionId || "unknown",
-  };
+  const headers = anthropicAuth
+    ? {
+        "Content-Type": "application/json",
+        "x-api-key": key || "no-key",
+        "anthropic-version": "2023-06-01",
+        "User-Agent": ENGINE_USER_AGENT,
+        [SESSION_HEADER]: sessionId || "unknown",
+      }
+    : {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key || "no-key"}`,
+        "User-Agent": ENGINE_USER_AGENT,
+        [SESSION_HEADER]: sessionId || "unknown",
+      };
   const invoke = async (maxTokens, withThinking) => {
     // Thinking config is recomputed per maxTokens level: budget
     // values derive from it, so a halved ceiling keeps

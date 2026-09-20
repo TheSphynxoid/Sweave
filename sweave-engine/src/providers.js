@@ -24,6 +24,35 @@ export const SESSION_HEADER = "x-opencode-session";
 const TABLE = {
   openrouter: { baseURL: "https://openrouter.ai/api/v1", envKeys: ["OPENROUTER_API_KEY"] },
   zai: { baseURL: "https://api.z.ai/api/paas/v4", envKeys: ["ZAI_API_KEY", "Z_AI_API_KEY"] },
+  // Z.AI coding plan (separate subscription, separate key): same
+  // vendor, DIFFERENT endpoint (/coding/ infix — models.dev api +
+  // doc link). OpenAI-compatible chat flavor, like zai. No sibling
+  // key fallback: a regular ZAI key is not a coding-plan key, and a
+  // 401 names the missing plan instead of a wrong key. Key sources:
+  // explicit env, ZHIPU_API_KEY (models.dev canonical), opencode
+  // auth-store bootstrap (entry exists on real machines).
+  "zai-coding-plan": {
+    baseURL: "https://api.z.ai/api/coding/paas/v4",
+    envKeys: ["ZAI_CODING_PLAN_API_KEY", "ZHIPU_API_KEY"],
+  },
+  // Thinking Machines tinker (first-party Anthropic-native API:
+  // models.dev api + https://tinker-docs.thinkingmachines.ai/tinker/
+  // compatible-apis/anthropic/). Messages flavor with Anthropic auth
+  // headers. Live proof still open (needs one $0-shaped probe or
+  // approved micro-turn); until then this entry is endpoint + shape
+  // per public docs, hermetic green.
+  thinkingmachines: {
+    baseURL: "https://tinker.thinkingmachines.dev/services/tinker-prod/anthropic/api/v1",
+    envKeys: ["TINKER_API_KEY"],
+    anthropicAuth: true,
+    // The whole endpoint speaks Anthropic: unknown future ids are
+    // attempted on messages (not chat) — the per-provider default
+    // overrides the gateway-wide chat fallback.
+    defaultFlavor: "messages",
+    flavors: {
+      messages: new Set(["Inkling"]),
+    },
+  },
   ollama: { baseURL: "http://localhost:11434/v1", key: false, envKeys: [] },
   gmicloud: { baseURL: "https://api.gmi-serving.com/v1", envKeys: ["GMI_API_KEY"] },
   nvidia: { baseURL: "https://integrate.api.nvidia.com/v1", envKeys: ["NVIDIA_API_KEY"] },
@@ -164,7 +193,7 @@ export function resolveProvider(provider, modelId) {
       reason: `provider ${JSON.stringify(provider)} has no OpenAI-compatible surface mapped (native protocol pending)`,
     };
   }
-  let flavor = "chat";
+  let flavor = spec.defaultFlavor || "chat";
   if (spec.flavors && modelId) {
     let known = false;
     for (const [name, ids] of Object.entries(spec.flavors)) {
@@ -191,30 +220,31 @@ export function resolveProvider(provider, modelId) {
     }
     // Drift telemetry (hygiene 2026-09-20): the flavor tables are
     // hardcoded and the provider catalog drifts — an unknown id is
-    // still ATTEMPTED on chat/completions (a Go 4xx surfaces loudly
-    // anyway), but the attempt is named on stderr so a wrong-flavor
-    // guess is diagnosable instead of mysterious.
+    // still ATTEMPTED (a loud 4xx surfaces anyway), but the attempt
+    // is named on stderr so a wrong-flavor guess is diagnosable
+    // instead of mysterious.
     if (!known) {
       try {
         process.stderr.write(
-          `sweave-engine: model ${JSON.stringify(modelId)} not in the ${provider} flavor table; attempting chat/completions\n`
+          `sweave-engine: model ${JSON.stringify(modelId)} not in the ${provider} flavor table; attempting ${flavor}\n`
         );
       } catch {}
     }
   }
   const baseURL = baseOverride || spec.baseURL;
+  const anthropicAuth = spec.anthropicAuth === true;
   if (spec.key === false) {
-    return { ok: true, baseURL, key: null, via: "no-key (local serve)", flavor };
+    return { ok: true, baseURL, key: null, via: "no-key (local serve)", flavor, anthropicAuth };
   }
   const explicit = process.env[`SWEAVE_ENGINE_KEY_${provider.toUpperCase().replace(/[^A-Z0-9]/gi, "_")}`];
-  if (explicit) return { ok: true, baseURL, key: explicit, via: "env:SWEAVE_ENGINE_KEY_*", flavor };
+  if (explicit) return { ok: true, baseURL, key: explicit, via: "env:SWEAVE_ENGINE_KEY_*", flavor, anthropicAuth };
   for (const k of spec.envKeys) {
-    if (process.env[k]) return { ok: true, baseURL, key: process.env[k], via: `env:${k}`, flavor };
+    if (process.env[k]) return { ok: true, baseURL, key: process.env[k], via: `env:${k}`, flavor, anthropicAuth };
   }
   const own = sweaveStoreKey(provider);
-  if (own) return { ok: true, baseURL, key: own.key, via: own.via, flavor };
+  if (own) return { ok: true, baseURL, key: own.key, via: own.via, flavor, anthropicAuth };
   const boot = bootstrapKey(provider);
-  if (boot) return { ok: true, baseURL, key: boot.key, via: boot.via, flavor };
+  if (boot) return { ok: true, baseURL, key: boot.key, via: boot.via, flavor, anthropicAuth };
   return {
     ok: false,
     code: "auth_missing",
@@ -227,6 +257,12 @@ export function resolveProvider(provider, modelId) {
 export const TOOL_BASELINE = ["read", "edit", "write", "bash", "glob", "grep", "todo", "git"];
 export const SWEAVE_NATIVE_TOOLS = ["defer", "list_specialists", "ask_human", "escalate"];
 export const KNOWN_TOOLS = new Set([...TOOL_BASELINE, ...SWEAVE_NATIVE_TOOLS]);
+
+// First-party Anthropic-native endpoints (thinkingmachines tinker:
+// models.dev api + doc link in the entry below) authenticate like
+// Anthropic itself (`x-api-key` + `anthropic-version`), NOT Bearer.
+// `anthropicAuth: true` switches the messages transport's header
+// set; every other transport ignores the flag.
 
 /**
  * Map a model `+variant` suffix to a reasoning-effort request.
