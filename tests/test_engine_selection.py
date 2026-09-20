@@ -751,6 +751,32 @@ async def test_no_strip_no_variant_event(monkeypatch, tmp_path: Path):
     assert "variant_refused" not in [e for e, _ in trace.events]
 
 
+@pytest.mark.asyncio
+async def test_variant_refused_verified_claude(monkeypatch, tmp_path: Path):
+    """Messages-flavor strip classifies identically: a refused
+    registry-advertised Claude effort traces verified True."""
+    seen: list = []
+    _register_fake(monkeypatch, _script_with_stripped("effort:high"), seen)
+    runtime = _runtime()
+    trace = _Trace()
+    out, fallback = await runtime._run_engine_attempt(
+        specialist=_specialist(session_id="eng_old_4"),
+        delegation=_delegation(),
+        worktree_path=tmp_path,
+        message="do the thing",
+        trace=trace,  # type: ignore[arg-type]
+        model_ref={"provider": "opencode", "model_id": "claude-sonnet-4-6",
+                   "variant": "high"},
+        project_dir=tmp_path,
+        permission_roots=[],
+    )
+    assert fallback is None
+    refused = [p for e, p in trace.events if e == "variant_refused"]
+    assert len(refused) == 1
+    assert refused[0]["verified"] is True
+    assert refused[0]["bucket"] == "out-of-sync"
+
+
 # ---------------------------------------------------------------------------
 # v2/tasks override: validation helper + JobRunner transient channel
 # ---------------------------------------------------------------------------

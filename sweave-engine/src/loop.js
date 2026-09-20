@@ -203,6 +203,7 @@ async function providerStream({ baseURL, key, provider, modelId, modelVariant, f
         baseURL,
         key,
         modelId,
+        modelVariant,
         sessionId,
         input: messages,
         defs,

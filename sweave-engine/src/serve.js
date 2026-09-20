@@ -335,6 +335,7 @@ async function runTurn(sessionId, body, res) {
               baseURL: resolved.baseURL,
               key: resolved.key,
               modelId: body.model.model_id,
+              modelVariant: body.model.variant,
               sessionId,
               input: mappedInput,
               defs: [],

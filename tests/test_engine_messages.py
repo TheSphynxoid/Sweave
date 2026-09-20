@@ -73,6 +73,8 @@ class _Handler(BaseHTTPRequestHandler):
                     "auth": self.headers.get("Authorization", ""),
                     "model": body.get("model", ""),
                     "max_tokens": body.get("max_tokens", "ABSENT"),
+                    "thinking": body.get("thinking", "ABSENT"),
+                    "effort": body.get("effort", "ABSENT"),
                     "user_agent": self.headers.get("User-Agent", ""),
                     "session": self.headers.get("x-opencode-session", ""),
                     "tools": body.get("tools", "ABSENT"),
@@ -379,3 +381,93 @@ async def test_google_flavor_still_fails_loud(sidecar, stub_url):
     assert not result.success
     assert "google" in (result.error or "")
     assert HITS == []
+
+
+@needs_node
+async def test_variant_high_sends_adaptive_thinking(sidecar, stub_url):
+    """Ported from opencode's variants(): sonnet-4-6 class +high →
+    adaptive thinking + top-level effort (no display key pre-4.7)."""
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append({"text": "THINKING OK"})
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec("opencode/claude-sonnet-4-6+high")
+    )
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "THINKING OK"
+    assert HITS[0]["thinking"] == {"type": "adaptive"}
+    assert HITS[0]["effort"] == "high"
+
+
+@needs_node
+async def test_variant_max_sends_budget_on_older_claude(sidecar, stub_url):
+    """haiku-3-5 (pre-adaptive) +max → computed budgetTokens from our
+    max_tokens ceiling (min(31999, 32000-1)), opencode's formula."""
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append({"text": "BUDGET OK"})
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec("opencode/claude-3-5-haiku+max")
+    )
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    thinking = HITS[0]["thinking"]
+    assert thinking["type"] == "enabled"
+    assert thinking["budgetTokens"] == 31999
+    assert HITS[0]["effort"] == "ABSENT"
+
+
+@needs_node
+async def test_thinking_rejection_strips_and_succeeds(sidecar, stub_url):
+    """A gateway rejecting the thinking shape 400s once; the turn
+    retries without thinking/effort keys and succeeds (2 hits)."""
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append(
+        {"fail_status": 400, "fail_body": {"error": {"type": "invalid_request_error", "message": "thinking configuration not supported"}}}
+    )
+    SCRIPT.append({"text": "RECOVERED"})
+    from sweave.harness.engine import SweaveEngineHarness
+
+    proc = await SweaveEngineHarness().spawn(
+        _spec("opencode/claude-sonnet-4-6+high")
+    )
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    assert result.output == "RECOVERED"
+    assert len(HITS) == 2
+    assert HITS[0]["thinking"] == {"type": "adaptive"}
+    assert HITS[1]["thinking"] == "ABSENT"
+    assert HITS[1]["effort"] == "ABSENT"
+    assert result.metadata.get("variant_stripped") == "effort:high"
+
+
+@needs_node
+async def test_minimax_toggle_variants(sidecar, stub_url):
+    """minimax-m3 (toggle class): +thinking → adaptive without effort;
+    +none → no thinking key (interface default would think anyway)."""
+    from sweave.harness.engine import SweaveEngineHarness
+
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append({"text": "ON"})
+    proc = await SweaveEngineHarness().spawn(_spec("opencode-go/minimax-m3+thinking"))
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    assert HITS[0]["thinking"] == {"type": "adaptive"}
+    assert HITS[0]["effort"] == "ABSENT"
+
+    HITS.clear()
+    SCRIPT.clear()
+    SCRIPT.append({"text": "OFF"})
+    proc = await SweaveEngineHarness().spawn(_spec(MSG_MODEL + "+none"))
+    result = await proc.send(_message("hi"), trace=_Trace())
+    assert result.success, result.error
+    # Ported from opencode's minimax branch: their anthropic
+    # interface defaults thinking ON, so none is explicit.
+    assert HITS[0]["thinking"] == {"type": "disabled"}

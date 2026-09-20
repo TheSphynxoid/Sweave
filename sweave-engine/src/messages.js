@@ -22,8 +22,13 @@
 // - thinking blocks are DROPPED from mapped history (replaying them
 //   needs server-issued signatures we never store; fabricated ones
 //   400). Journal persistence still serves the transcript.
-// - +variant effort is NOT sent (Anthropic budgets are token counts,
-//   not low/high presets — inventing a mapping burns real turns).
+// - +variant effort IS sent, ported from opencode's own variants()
+//   (sst/opencode transform.ts — same gateway family, same shapes):
+//   adaptive-listed values ride {thinking:{type:adaptive}, effort},
+//   older high/max compute budgetTokens from our max_tokens, minimax
+//   toggle/none mapped, unknowns ride adaptive+verbatim with the
+//   thinking strip-retry as backstop. Refusals classify via the
+//   variant_refused taxonomy event (provider-fault vs out-of-sync).
 // - max_tokens defaults to 32000 (the ecosystem anchor: the
 //   pre-marker opencode body carried max_tokens:32000) with a
 //   halve-till-4096 strip-retry on max_tokens 400s.
@@ -34,6 +39,99 @@ import { providerHttpError } from "./retry.js";
 
 export const MESSAGES_DEFAULT_MAX_TOKENS = 32000;
 export const MESSAGES_MIN_MAX_TOKENS = 4096;
+
+// --- Reasoning-effort mapping (ported from opencode's variants(),
+// sst/opencode transform.ts — the same gateway family, so the same
+// shapes apply). Anthropic budgets are token counts, not preset
+// names, which is why a verbatim `reasoning_effort` (the chat/responses
+// approach) cannot work here: SOMETHING must convert names to numbers,
+// and this is opencode's conversion.
+
+function anthropicUsesModernAdaptiveThinking(apiId) {
+  if (!String(apiId || "").toLowerCase().includes("claude-")) return false;
+  // Family-first (claude-opus-4.7) and version-first (claude-4.7-opus);
+  // minors capped at two digits so release dates (claude-opus-4-20250514)
+  // never read as versions. Unparseable → modern (opencode default).
+  const version = /claude-(?:[a-z]+-)?(\d+)(?:[.-](\d{1,2}))?(?:[.@-]|$)/i.exec(
+    String(apiId)
+  );
+  if (!version) return true;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 4 || (major === 4 && minor >= 7);
+}
+
+function anthropicAdaptiveEfforts(apiId) {
+  if (anthropicUsesModernAdaptiveThinking(apiId)) {
+    return ["low", "medium", "high", "xhigh", "max"];
+  }
+  const id = String(apiId || "");
+  if (
+    [
+      "opus-4-6", "opus-4.6", "4-6-opus", "4.6-opus",
+      "sonnet-4-6", "sonnet-4.6", "4-6-sonnet", "4.6-sonnet",
+    ].some((v) => id.includes(v))
+  ) {
+    return ["low", "medium", "high", "max"];
+  }
+  return null;
+}
+
+/**
+ * Convert a `+variant` suffix to Anthropic thinking config for the
+ * request body, given the model's id and the request's max_tokens.
+ * Returns `{}` (nothing sent) when thinking stays default/off.
+ *
+ * Rules mirror opencode's variants() for the anthropic transports:
+ * - `none`: omitted (default = no extended thinking), except minimax
+ *   whose anthropic interface defaults thinking ON → explicit disabled.
+ * - `thinking` (minimax toggle): adaptive without an effort value.
+ * - adaptive-listed values: `{thinking:{type:"adaptive"[+summarized
+ *   on omitted-display models]}, effort}` — effort rides TOP-LEVEL,
+ *   exactly as opencode sends it.
+ * - high/max on older budget-only models: computed budgetTokens from
+ *   OUR max_tokens (opencode uses the model's output limit; ours is
+ *   the tighter, always-valid bound: budget < max_tokens holds by
+ *   construction, including after max_tokens halving).
+ * - anything else: adaptive + verbatim effort (gateway decides; the
+ *   thinking strip-retry below protects).
+ */
+export function thinkingFor(modelId, variant, maxTokens) {
+  const id = String(modelId || "");
+  const v = variant === undefined || variant === null ? "" : String(variant).trim();
+  const isMinimax = id.toLowerCase().includes("minimax");
+  if (!v || v.toLowerCase() === "none") {
+    if (isMinimax && v) return { thinking: { type: "disabled" } };
+    return {};
+  }
+  if (v.toLowerCase() === "thinking") return { thinking: { type: "adaptive" } };
+  const adaptive = anthropicAdaptiveEfforts(id);
+  if (adaptive && adaptive.includes(v)) {
+    return {
+      thinking: {
+        type: "adaptive",
+        ...(anthropicUsesModernAdaptiveThinking(id)
+          ? { display: "summarized" }
+          : {}),
+      },
+      effort: v,
+    };
+  }
+  if ((v === "high" || v === "max") && Number.isFinite(maxTokens)) {
+    const cap = Math.max(1024, Math.floor(maxTokens) - 1);
+    const budget =
+      v === "high"
+        ? Math.min(16000, Math.floor(cap / 2))
+        : Math.min(31999, cap);
+    return {
+      thinking: { type: "enabled", budgetTokens: Math.max(1024, budget) },
+    };
+  }
+  return {
+    thinking: { type: "adaptive", display: "summarized" },
+    effort: v,
+  };
+}
 
 export function historyToMessagesInput(entries) {
   // Cap FIRST, sanitize SECOND (sessions.js ordering rule — same
@@ -146,6 +244,7 @@ export async function providerMessagesStream({
   baseURL,
   key,
   modelId,
+  modelVariant,
   sessionId,
   input,
   defs,
@@ -159,7 +258,14 @@ export async function providerMessagesStream({
     "User-Agent": ENGINE_USER_AGENT,
     [SESSION_HEADER]: sessionId || "unknown",
   };
-  const invoke = async (maxTokens) => {
+  const invoke = async (maxTokens, withThinking) => {
+    // Thinking config is recomputed per maxTokens level: budget
+    // values derive from it, so a halved ceiling keeps
+    // budget < max_tokens valid on every attempt.
+    const thinking = withThinking
+      ? thinkingFor(modelId, modelVariant, maxTokens)
+      : {};
+    const sentThinking = Object.keys(thinking).length > 0;
     const resp = await fetch(`${baseURL}/messages`, {
       method: "POST",
       headers,
@@ -168,6 +274,7 @@ export async function providerMessagesStream({
         max_tokens: maxTokens,
         messages: input,
         stream: true,
+        ...thinking,
         ...(defs && defs.length > 0 ? { tools: messagesToolDefs(defs) } : {}),
       }),
       signal,
@@ -182,22 +289,46 @@ export async function providerMessagesStream({
         err.headers = resp.headers;
       } catch {}
       err.body = text.slice(0, 500);
+      err.sentThinking = sentThinking;
       throw err;
     }
     return resp;
   };
-  // max_tokens strip-retry (same self-healing philosophy as the
-  // reasoning fallbacks): a fixed default above a model's ceiling
-  // 400s deterministically. Halve till the floor, once per level,
-  // loudly; the floor failing means a real problem, not a guess.
+  // Two self-healing retries, same philosophy as the reasoning
+  // fallbacks: a fixed max_tokens above a model's ceiling 400s
+  // deterministically (halve till the floor), and a gateway that
+  // rejects our thinking shape 400s deterministically (strip it
+  // once). Both are loud on stderr, session-tagged; the floor (or a
+  // second thinking 400) failing means a real problem, not a guess.
   let maxTokens = MESSAGES_DEFAULT_MAX_TOKENS;
+  let thinkingOn = true;
+  let strippedEffort = null;
   let resp;
   for (;;) {
     try {
-      resp = await invoke(maxTokens);
+      resp = await invoke(maxTokens, thinkingOn);
       break;
     } catch (err) {
       const text = `${(err && err.message) || ""}\n${(err && err.body) || ""}`;
+      if (
+        err &&
+        err.status === 400 &&
+        thinkingOn &&
+        /thinking|effort|signature/i.test(text)
+      ) {
+        thinkingOn = false;
+        strippedEffort =
+          modelVariant !== undefined && modelVariant !== null
+            ? `effort:${String(modelVariant).trim()}`
+            : "thinking-config";
+        try {
+          process.stderr.write(
+            `sweave-engine:${sessionId || "unknown"}: thinking config rejected (400); ` +
+              `retrying without it once\n`
+          );
+        } catch {}
+        continue;
+      }
       if (
         err &&
         err.status === 400 &&
@@ -320,5 +451,5 @@ export async function providerMessagesStream({
     inputTokens || outputTokens
       ? { prompt_tokens: inputTokens, completion_tokens: outputTokens }
       : null;
-  return { text, calls, usage };
+  return { text, calls, usage, reasoningCompatStripped: strippedEffort };
 }
