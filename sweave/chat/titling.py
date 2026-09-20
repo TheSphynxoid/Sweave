@@ -52,13 +52,23 @@ def is_default_name(name: Any) -> bool:
     return isinstance(name, str) and DEFAULT_NAME_RE.match(name) is not None
 
 
+#: Trailing words that dangle after a word-count cut ("Fix the
+#: login with", "Status update: backends are not yet" is fine but
+#: "retested with" is not). Dropped from the tail so cuts land on
+#: content words.
+DANGLING_TAIL_WORDS = frozenset(
+    "a an the and or with for of to in on at by from is are was were be as &".split()
+)
+
+
 def clean_title(text: Any) -> str | None:
     """Normalize one model reply into a session title (or None).
 
     Strips quotes/preamble ("Title:"-style prefixes), collapses
     whitespace, caps at TITLE_MAX_WORDS words + TITLE_MAX_CHARS
-    chars. Degenerate outputs (empty, error-shaped, absurdly long
-    single tokens) degrade to None — the timestamp stands.
+    chars — both cuts land on word boundaries with no dangling tail
+    words, never mid-word. Degenerate outputs (empty, error-shaped)
+    degrade to None — the timestamp stands.
     """
     if not isinstance(text, str):
         return None
@@ -77,9 +87,13 @@ def clean_title(text: Any) -> str | None:
     words = cleaned.split()
     if len(words) > TITLE_MAX_WORDS:
         words = words[:TITLE_MAX_WORDS]
+    while len(words) > 1 and words[-1].lower().rstrip(":") in DANGLING_TAIL_WORDS:
+        words.pop()
     cleaned = " ".join(words)
     if len(cleaned) > TITLE_MAX_CHARS:
-        cleaned = cleaned[:TITLE_MAX_CHARS].rstrip()
+        cut = cleaned[:TITLE_MAX_CHARS].rsplit(" ", 1)[0]
+        cleaned = cut if cut else cleaned[:TITLE_MAX_CHARS]
+    cleaned = cleaned.strip()
     if not cleaned or len(cleaned) > 200:
         return None
     return cleaned or None
@@ -96,16 +110,35 @@ def build_title_prompt(user_text: str, reply_text: str) -> str:
     )
 
 
+#: Non-chat model families (embedders, rerankers, STT/TTS, image
+#: generators) whose meta modalities still claim text. A title turn
+#: on one returns vectors, not prose — and clean_title would happily
+#: persist "[0.12, -0.4, ..." as a session name. Substring match on
+#: the qualified id; over-exclusion only shrinks the candidate pool
+#: (safe direction), and the silent absorb covers the rest.
+NON_CHAT_PATTERNS = (
+    "embed",
+    "bge",
+    "rerank",
+    "whisper",
+    "tts",
+    "flux",
+    "sdxl",
+    "dall-e",
+    "stable-diffusion",
+)
+
+
 def free_text_candidates(
     meta_path: Path | None = None,
 ) -> list[tuple[str, str]]:
     """Cheapest $0 text-capable ``(provider, model)`` pairs, sorted.
 
     Reads ``models.meta.json`` (cost + modalities): input cost 0,
-    text in/out. Excludes ``gemini*`` ids (google flavor has no
-    engine transport — attempting one burns an attempt). Sorted by
-    (provider, model) for determinism. Never raises (missing file
-    reads as no candidates).
+    text in/out, minus NON_CHAT_PATTERNS. Excludes ``gemini*`` ids
+    (google flavor has no engine transport — attempting one burns
+    an attempt). Sorted by (provider, model) for determinism. Never
+    raises (missing file reads as no candidates).
     """
     if meta_path is None:
         meta_path = Path(__file__).resolve().parents[2] / "models.meta.json"
@@ -133,9 +166,12 @@ def free_text_candidates(
             modalities.get("output") or []
         ):
             continue
-        provider, model_id = qualified.split("/", 1)
-        if "gemini" in model_id.lower():
+        lowered = qualified.lower()
+        if "gemini" in lowered:
             continue
+        if any(pattern in lowered for pattern in NON_CHAT_PATTERNS):
+            continue
+        provider, model_id = qualified.split("/", 1)
         out.append((provider, model_id))
     out.sort()
     return out
@@ -165,10 +201,18 @@ def resolve_title_models(
     if credential_source is None:
         # Default to the real credential tiers (env → sweave →
         # opencode-legacy), same predicate the Providers tab uses.
+        # CredentialStore is cheap to construct (home-anchored reads,
+        # no writes).
         try:
+            from sweave.credentials import CredentialStore
             from sweave.credentials import credential_source as real_source
 
-            credential_source = real_source
+            _store = CredentialStore()
+
+            def _source(provider: str) -> Any | None:
+                return real_source(provider, _store)
+
+            credential_source = _source
         except Exception:  # noqa: BLE001 — no tiers, no attempt
             return []
     picked: list[str] = []

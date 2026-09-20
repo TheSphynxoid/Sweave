@@ -45,6 +45,13 @@ def test_clean_title_matrix():
         titling_mod.clean_title("one two three four five six seven eight")
         == "one two three four five six"
     )
+    # Cuts land on content words, never dangling tails or mid-word.
+    assert titling_mod.clean_title("Fix merge reviewed and retested with") == (
+        "Fix merge reviewed and retested"
+    )
+    assert titling_mod.clean_title("Status update backends are not yet") == (
+        "Status update backends are not yet"
+    )
     assert titling_mod.clean_title("") is None
     assert titling_mod.clean_title(None) is None
     assert titling_mod.clean_title("[chat error: boom]") is None
@@ -80,6 +87,7 @@ def test_free_text_candidates_cheapest_first(tmp_path: Path):
             "opencode/fast-free": _entry(0),
             "openrouter/paid": _entry(1.0),
             "imgonly/pic": _entry(0, text_capable=False),
+            "nvidia/baai/bge-m3": _entry(0),
         },
     )
     got = titling_mod.free_text_candidates(meta_path=meta)
@@ -87,6 +95,8 @@ def test_free_text_candidates_cheapest_first(tmp_path: Path):
     assert ("opencode", "slow-free") in got
     assert all(provider != "openrouter" for provider, _ in got)
     assert all(provider != "imgonly" for provider, _ in got)
+    # Embedders never title (vectors are not prose).
+    assert all("bge" not in model for _, model in got)
 
 
 def test_free_text_candidates_missing_file(tmp_path: Path):
