@@ -302,8 +302,11 @@
   `sweave version`; sidecar `/health` names its part version.
   Seeded by the script itself: engine 0.2.0 (journal shards),
   backend 0.1.1, web 0.1.0 (`engine-v0.2.0`, `backend-v0.1.1`
-  tags cut). Gates: 8 new tests (`tests/test_versioning.py`) +
-  health version pin green, 14/14 `run.py --check`.
+   tags cut). Gates: 8 new tests (`tests/test_versioning.py`) +
+   health version pin green, 14/14 `run.py --check`.
+   Web surface (same day): Settings → System shows the matrix
+   (`VersionMatrix` card over `GET /api/version`, 3 vitest,
+   `npm run build` green).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

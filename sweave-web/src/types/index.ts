@@ -500,6 +500,20 @@ export interface HarnessInfo {
 }
 
 /**
+ * Part + contract version matrix (per-part versioning ruling
+ * 2026-09-20). From `GET /api/version`: parts identify
+ * (backend/engine/web), contracts gate compatibility
+ * (engine_protocol, delegation_schema). Null = unreadable server-side.
+ */
+export interface VersionMatrix {
+  backend: string | null;
+  engine: string | null;
+  web: string | null;
+  engine_protocol: string;
+  delegation_schema: number;
+}
+
+/**
  * Provider credential availability (2026-09-14 credential-ownership:
  * `~/.sweave/credentials.json` canonical). From `GET /api/providers`:
  * the absolute catalog (universe) annotated with availability.

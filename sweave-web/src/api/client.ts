@@ -35,6 +35,7 @@ import type {
   SpecialistSummary,
   StatsSummary,
   TurnSnapshot,
+  VersionMatrix,
   Worktree,
 } from "@/types";
 
@@ -482,6 +483,12 @@ class ApiClient {
   async listHarnesses(): Promise<HarnessInfo[]> {
     const r = await this.client.get<{ harnesses: HarnessInfo[] }>("/harnesses");
     return r.data.harnesses;
+  }
+
+  /** Part + contract version matrix (per-part versioning ruling 2026-09-20). */
+  async getVersions(): Promise<VersionMatrix> {
+    const r = await this.client.get<VersionMatrix>("/version");
+    return r.data;
   }
 
   /** Routing rules + scalars (turn_retries lives in rules.yaml). */

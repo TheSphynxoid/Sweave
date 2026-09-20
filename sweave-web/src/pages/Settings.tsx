@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CustomColorEditor } from "@/components/CustomColorEditor";
 import { ModelWithEffort } from "@/components/EffortSelect";
+import { VersionMatrix } from "@/components/VersionMatrix";
 import { cn } from "@/utils/cn";
 import type { HarnessInfo, ModelsConfig, ProviderAvailability } from "@/types";
 
@@ -96,6 +97,7 @@ export function SettingsPage() {
           <div className="space-y-3">
             <RuntimeSettings />
             <SystemSettings harnesses={harnesses} />
+            <VersionMatrix />
           </div>
         </TabsContent>
       </Tabs>
