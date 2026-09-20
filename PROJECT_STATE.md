@@ -273,7 +273,25 @@
   (doom/stuckness/volume) still fail fast. 11 new tests
   (`tests/test_ceiling_soft_cap.py`); 1228 pytest green;
   `run.py --check` 13/13. Sidecar message now names the
-  keep/stop follow-up; restart to pick up.
+   keep/stop follow-up; restart to pick up.
+- ✅ **Engine sessions hygiene (2026-09-20, user ruling: run the
+  whole thing)** — audit over the live journal (358 sessions,
+  5,182 calls: bash 48% / read 28% / glob 2%) → 3 step commits:
+  (1) tool-truth charters (orchestrator `{{tools}}` rendered
+  per-turn on engine + at agent-map build on opencode;
+  opencode-only tools labeled; caller_delegation_id fiction
+  removed from charter + sweave.js errors; ask_human batch
+  schema); (2) tool ergonomics (numbered read lines, teaching
+  git rejections + status default, glob slash-walk + literal +
+  scoping docs, cmd Unix-ism pointer, write content guard);
+  (3) journal surgery (per-session shards, debounced appends,
+  turn-end flush, legacy import + empty-GC,
+  ensure-after-validate; transcript reader shard-first).
+  Gates: 1369 pytest green (4 pre-existing failures, all
+  outside the batch — UI-thread SessionPicker/vitest red, go/zen
+  group interference proven on clean HEAD, lifecycle timing
+  flake), `run.py --check` 13/13. Restart the sidecar to pick
+  up (journal migrates itself on first boot).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
@@ -1930,6 +1948,17 @@ The user wants:
   (restart + probe turn + parentage check) is still open.
 - **Rulings**: SPA stays (DESIGN R4 note); R6 training-fuel note
   (verdicts-as-labels, verifier stack) in DESIGN R6.
+- **Rulings round 2 (2026-09-18, Q1–Q8, user-locked)** — detail in
+  the plans; orchestrator owns execution order from here (Q8):
+  Q1 badge = additive list-row summary; Q2 bundle = capped read
+  endpoint over the existing off-record .diff file; Q3 fix_assignee
+  = reviewer's WHO-does-the-fix call, assignee-only PATCH; Q4
+  request = backstop-shaped child spawn (fix endpoint = wrong
+  tool); Q5 fuse trips to escalation; Q6 waves trigger on blocking
+  synthesis defers, sponsorship from records; Q7 spawn_round v14
+  attribution; review-first, waves as own milestone. Delegated
+  2026-09-18: backend track 19c7253f321b + frontend track
+  075008f7179c (locked endpoint shapes in REVIEW plan).
 
 The current implementation is clean, working, and reliable. All reported bugs
 have been fixed and verified.

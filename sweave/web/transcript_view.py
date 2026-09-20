@@ -2,9 +2,10 @@
 step 2a — engine journal -> per-turn blocks).
 
 Projects the native-engine sidecar journal
-(``~/.sweave/engine/sessions.json``, ``SWEAVE_ENGINE_DATA_DIR``
-override) into per-turn blocks for the delegation detail fold's
-ADDITIVE ``transcript`` key. One block per ``/run`` turn (the
+(``~/.sweave/engine`` — sharded ``sessions/<id>.json`` since the
+2026-09-20 journal surgery, legacy single-file ``sessions.json``
+before that; ``SWEAVE_ENGINE_DATA_DIR`` override) into per-turn
+blocks for the delegation detail fold's ADDITIVE ``transcript`` key. One block per ``/run`` turn (the
 journal's ``user`` message opens the turn; ``user_message_id`` —
 protocol v3, carried by the ``done`` SSE event and traced per turn as
 ``engine_user_message`` — names the prompt unit).
@@ -49,6 +50,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 #: Anti-bloat caps (trace attribution: reasoning lives in the trace,
 #: so long reasoning is bounded here — sizes bound growth, not trust).
@@ -88,6 +90,43 @@ def _load_journal(path: Path) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     return raw
+
+
+def _read_session_file(path: Path) -> dict[str, Any] | None:
+    """Load one sharded session file. Corrupt/missing -> None (degrade)."""
+    try:
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — never raise; corrupt journal degrades
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _load_session(journal_path: Path, session_id: str) -> dict[str, Any] | None:
+    """Load one engine session: sharded file first, legacy journal second.
+
+    Shard layout (2026-09-20 journal surgery): ``<dir>/sessions/<id>.json``
+    where ``<dir>`` is the data dir (``journal_path`` itself when it is a
+    dir, else its parent). Legacy single-file ``sessions.json`` (explicit
+    file fixtures, pre-change sidecars) stays readable. Both degrade to
+    ``None`` the same way.
+    """
+    try:
+        base = journal_path if journal_path.is_dir() else journal_path.parent
+        shard = base / "sessions" / (quote(session_id, safe="") + ".json")
+        session = _read_session_file(shard)
+        if session is not None:
+            return session
+        if journal_path.is_dir():
+            return None
+        journal = _load_journal(journal_path)
+        if journal is None:
+            return None
+        session = journal.get(session_id)
+        return session if isinstance(session, dict) else None
+    except Exception:  # noqa: BLE001 — never raise; corrupt journal degrades
+        return None
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -187,11 +226,8 @@ def render_transcript_blocks(
     """
     if not engine_session_id:
         return None
-    journal = _load_journal(journal_path or engine_journal_path())
-    if journal is None:
-        return None
-    session = journal.get(engine_session_id)
-    if not isinstance(session, dict):
+    session = _load_session(journal_path or engine_journal_path(), engine_session_id)
+    if session is None:
         return None
     messages = session.get("messages")
     if not isinstance(messages, list):

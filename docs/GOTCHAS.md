@@ -557,8 +557,10 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    (`test_slow_streak_survives_burst_rule`, ~122s by construction).
 
 10. **The specialist transcript is a JOIN of two sources — never
-   one** (2026-09-16, view step 2a). The engine sidecar journal
-   (`~/.sweave/engine/sessions.json`) holds prompt + text + tool
+    one** (2026-09-16, view step 2a). The engine sidecar journal
+    (`~/.sweave/engine/sessions/<id>.json` — sharded per session
+    since the 2026-09-20 surgery, single-file `sessions.json`
+    before that) holds prompt + text + tool
    calls, but NOT reasoning or tokens; the delegation trace holds
    reasoning chunks (`reasoning`, per turn delimited by
    `engine_user_message`) + `tokens_used`. Both degrade
@@ -735,6 +737,49 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     per its no-restructure rule); `validateRun` rejects non-string
     variants. Caution that survived review: never normalize the
     value (gateways are case-sensitive to their own presets).
+
+21. **Engine sessions hygiene 2026-09-20 (journal surgery +
+    tool-truth charters — user asked for a sessions sanity pass,
+    "run the whole thing" ruling).** Audit base: live journal, 358
+    sessions / 5,182 tool calls (bash 48%, read 28%, glob 2%).
+    (a) Charters advertised tools the engine never offers
+    (route_task/worktree/memory/hindsight on the orchestrator,
+    hindsight_* on specialists) — the orchestrator prompt now
+    carries a rendered per-turn `{{tools}}` truth line (engine
+    renders per new session in SpecialistRuntime, opencode renders
+    at agent-map build in mcp_config; opencode-only tools labeled
+    as such, never removed — the seed is shared). The
+    `caller_delegation_id` charter paragraph + all three sweave.js
+    error strings now say identity is injected (the old text
+    ordered the model to do the impossible); ask_human schema no
+    longer demands a dummy `question` for batch calls. The MCP
+    server is deliberately untouched (its tests pin
+    caller_delegation_id as required — correctly, that path has
+    no metadata channel). (b) Read lines are N:-numbered (16%
+    edit-miss rate; numbers are reference-only, the edit
+    description says so); git rejections name the allowed
+    verbs/flags and an omitted verb defaults to status; glob
+    always recurses (`src/*.ts` matched nothing before), gains
+    `literal`, and teaches scoping in its description; cmd.exe
+    Unix-ism failures get a read/grep pointer (89 hits, all
+    09-14/09-15 — the grounding worked, zero since); write
+    rejects missing content instead of creating empty files.
+    (c) Journal surgery: one file per session
+    (`sessions/<id>.json`), lazy boot index, 250ms debounced
+    appends, immediate ensure, sync flush on every turn end
+    (catches reordered append-then-finish). `save()` keeps the
+    FULL-checkpoint contract: direct mutations (todoWrite's
+    `s.todos =`, the revert pointer) bypass append's dirty mark,
+    so dirty-only would silently drop them. Legacy single-file
+    imports once (state-carrying only — 116 zero-msg dead entries
+    stayed behind) and renames to `.migrated`; boot GC drops
+    state-less empties (todos/revert survive); serve.js ensures
+    AFTER validation so failed turns mint nothing.
+    transcript_view.py reads shard-first, legacy second. Flake
+    record: go/zen provider files fail in-group on clean HEAD too
+    (stub 501s — group interference, each passes solo);
+    test_tool_lifecycle_2c flakes under parallel-test CPU load
+    (passes repeated file-runs); both pre-existing, neither mine.
 
 
 ## Paths & config

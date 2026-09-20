@@ -1,14 +1,23 @@
 // Durable engine session store (ruling 3: restarts without dropping
-// sessions). JSON file under the engine data dir; doubles as the
-// resume-from-partial journal. History entries carry engine message
-// ids (msg_*) so POST /revert can name its target.
+// sessions). One JSON file per session under `<dataDir>/sessions/`
+// (journal surgery 2026-09-20: the old single `sessions.json` grew to
+// 22MB and was rewritten synchronously on EVERY append — every tool
+// call of every iteration blocked the whole sidecar on a 22MB sync
+// write). Sessions load lazily (boot indexes ids only) and appends
+// flush debounced (250ms); `ensure` still persists immediately (the
+// harness binding depends on it) and every turn end flushes
+// synchronously. A legacy single-file journal is imported once on
+// first boot (non-empty sessions only — 116 zero-msg dead entries
+// stayed behind in the live 22MB file) and renamed
+// `sessions.json.migrated`. History entries carry engine message ids
+// (msg_*) so POST /revert can name its target.
 //
 // Pointer semantics (opencode parity): revert records
 // { to_message } — the listing still returns everything, and the NEXT
 // /run builds history truncated after to_message (the prompt replaces
 // the reverted tail).
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 let counter = 0;
@@ -20,53 +29,51 @@ export function newMessageId(prefix) {
 
 export class SessionStore {
   constructor(dataDir) {
+    this.dir = dataDir;
+    this.shardDir = join(dataDir, "sessions");
+    // Legacy single-file journal: migration source only (see below —
+    // never written after the first sharded boot).
     this.file = join(dataDir, "sessions.json");
+    // In-memory materializations (lazily loaded — boot indexes ids
+    // only, so a 22MB journal costs one readdir, not a full parse).
     this.sessions = new Map();
+    this.known = new Set();
+    // Shards with unwritten appends + the debounce timer. The timer
+    // is unref'd: a pending flush never holds the process open, and
+    // every turn end flushes synchronously (serve.js finish()).
+    this.dirty = new Set();
+    this.saveTimer = null;
     try {
       mkdirSync(dataDir, { recursive: true });
-      if (existsSync(this.file)) {
-        const raw = JSON.parse(readFileSync(this.file, "utf8"));
-        let scrubbed = false;
-        for (const [id, s] of Object.entries(raw)) {
-          // Always-grants are memory-only (per-run ruling 2026-09-15):
-          // they live in loop.js's sessionApprovals map, never here.
-          // Scrub legacy `approvals` arrays so a restart wipes them
-          // even for journals written before the ruling.
-          if (s && typeof s === "object" && "approvals" in s) {
-            delete s.approvals;
-            scrubbed = true;
+      mkdirSync(this.shardDir, { recursive: true });
+      this.migrateLegacy();
+      for (const f of readdirSync(this.shardDir)) {
+        if (typeof f === "string" && f.endsWith(".json")) {
+          try {
+            this.known.add(decodeURIComponent(f.slice(0, -5)));
+          } catch {
+            this.known.add(f.slice(0, -5));
           }
-          // Shape validation (hygiene B5): a torn/hand-edited entry
-          // (string, array, null, or object without a messages
-          // array) used to poison every later append/historyForRun
-          // with a TypeError. Drop it loudly — one corrupt session
-          // recreates on demand, never bricks the boot.
-          if (!s || typeof s !== "object" || !Array.isArray(s.messages)) {
-            try {
-              process.stderr.write(`sweave-engine: dropping corrupt session ${JSON.stringify(id)}\n`);
-            } catch {}
-            scrubbed = true;
-            continue;
-          }
-          this.sessions.set(id, s);
         }
-        // Persist the scrub so the stale bytes don't linger either.
-        if (scrubbed) this.save();
       }
+      this.gcEmpty();
     } catch {
       // Corrupt journal degrades to empty (sessions recreate on
       // demand, same as the opencode 404-recreate path) — never boot-fail.
     }
   }
 
-  save() {
+  shardPath(id) {
+    return join(this.shardDir, `${encodeURIComponent(id)}.json`);
+  }
+
+  writeShard(id) {
+    const s = this.sessions.get(id);
+    if (!s) return;
     try {
-      // Atomic write (tmp + rename): a crash mid-write must never
-      // tear the whole journal (which would read back as corrupt and
-      // silently amnesia every session on the next boot).
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.sessions)), "utf8");
-      renameSync(tmp, this.file);
+      const tmp = `${this.shardPath(id)}.tmp`;
+      writeFileSync(tmp, JSON.stringify(s), "utf8");
+      renameSync(tmp, this.shardPath(id));
     } catch (e) {
       // Loud, not silent: a lost journal means turns succeed and
       // then vanish on restart. The in-memory session still serves.
@@ -76,19 +83,193 @@ export class SessionStore {
     }
   }
 
+  // Immediate checkpoint (the old save() contract: saveSession
+  // callbacks, /revert, tests). Flushes dirty shards AND every
+  // in-memory session — direct mutations (todoWrite's `s.todos =`,
+  // the revert pointer) bypass append()'s dirty mark, so a
+  // dirty-only flush would silently drop them. Turn-hot appends
+  // still ride the debounced path; this runs at turn boundaries,
+  // reverts, and todo saves (rare, small loaded set — never the
+  // whole journal).
+  save() {
+    if (this.saveTimer) {
+      try {
+        clearTimeout(this.saveTimer);
+      } catch {}
+      this.saveTimer = null;
+    }
+    const ids = new Set([...this.dirty, ...this.sessions.keys()]);
+    for (const id of ids) this.writeShard(id);
+    this.dirty.clear();
+  }
+
+  // Turn-end flush (serve.js finish() calls this on every turn end —
+  // the debounce window never outlives the turn that filled it).
+  flush() {
+    this.save();
+  }
+
+  scheduleSave() {
+    if (this.saveTimer) return;
+    try {
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null;
+        this.save();
+      }, 250);
+      if (this.saveTimer && typeof this.saveTimer.unref === "function") {
+        this.saveTimer.unref();
+      }
+    } catch {
+      this.saveTimer = null;
+    }
+  }
+
+  // One-time import of a pre-shard single-file journal. Non-empty
+  // valid sessions become shards (kept OUT of memory — get() loads
+  // them on demand); empty/corrupt entries stay behind; an existing
+  // shard always wins (it was written after any migration). The
+  // legacy file is renamed away exactly once, so this never re-runs.
+  migrateLegacy() {
+    let raw;
+    try {
+      if (!existsSync(this.file)) return;
+      raw = JSON.parse(readFileSync(this.file, "utf8"));
+    } catch {
+      try {
+        renameSync(this.file, `${this.file}.corrupt-${Date.now()}`);
+      } catch {}
+      try {
+        process.stderr.write("sweave-engine: legacy journal unparseable, quarantined\n");
+      } catch {}
+      return;
+    }
+    if (!raw || typeof raw !== "object") {
+      try {
+        renameSync(this.file, `${this.file}.corrupt-${Date.now()}`);
+      } catch {}
+      return;
+    }
+    let moved = 0;
+    let skipped = 0;
+    for (const [id, s] of Object.entries(raw)) {
+      if (s && typeof s === "object" && "approvals" in s) delete s.approvals;
+      if (!s || typeof s !== "object" || !Array.isArray(s.messages)) {
+        skipped += 1;
+        continue;
+      }
+      // Dead weight stays behind — unless it carries state (todos,
+      // revert) worth keeping despite having no messages yet.
+      const carriesState =
+        s.messages.length > 0 ||
+        (Array.isArray(s.todos) && s.todos.length > 0) ||
+        s.revert;
+      if (!carriesState || this.known.has(id)) {
+        skipped += 1;
+        continue;
+      }
+      this.sessions.set(id, s);
+      this.writeShard(id);
+      this.sessions.delete(id);
+      this.known.add(id);
+      moved += 1;
+    }
+    try {
+      renameSync(this.file, `${this.file}.migrated`);
+    } catch {}
+    try {
+      process.stderr.write(`sweave-engine: migrated legacy journal (${moved} sessions, ${skipped} empty/invalid skipped)\n`);
+    } catch {}
+  }
+
+  // Drop dead-weight shards (hygiene 2026-09-20): every real turn
+  // appends its user message immediately after ensure, so a shard
+  // with no messages, no todos, and no revert pointer is a
+  // validation/auth failure that minted a session and died — the
+  // 116/358 class in the live journal. Anything carrying state
+  // (todos, revert) survives regardless. Boot-only; turns never
+  // create empties anymore (serve.js ensures after validation).
+  gcEmpty() {
+    let dropped = 0;
+    const isEmpty = (s) =>
+      Array.isArray(s.messages) &&
+      s.messages.length === 0 &&
+      (!Array.isArray(s.todos) || s.todos.length === 0) &&
+      !s.revert;
+    for (const id of [...this.known]) {
+      let s = this.sessions.get(id);
+      if (!s) s = this.loadShard(id, { retain: false });
+      if (s && isEmpty(s)) {
+        try {
+          unlinkSync(this.shardPath(id));
+        } catch {}
+        this.sessions.delete(id);
+        this.known.delete(id);
+        dropped += 1;
+      } else if (s) {
+        this.sessions.delete(id); // index-only; reload on demand
+      }
+    }
+    if (dropped > 0) {
+      try {
+        process.stderr.write(`sweave-engine: dropped ${dropped} empty sessions\n`);
+      } catch {}
+    }
+  }
+
+  // Read one shard into memory (null when absent/unusable — the
+  // caller recreates on demand). Corrupt shards are quarantined
+  // (renamed, never re-read) so one torn write can't poison every
+  // later turn on that session.
+  loadShard(id, { retain = true } = {}) {
+    let s;
+    try {
+      s = JSON.parse(readFileSync(this.shardPath(id), "utf8"));
+    } catch {
+      return null;
+    }
+    if (s && typeof s === "object" && "approvals" in s) {
+      delete s.approvals;
+      if (retain) this.dirty.add(id);
+    }
+    // Shape validation (hygiene B5): a torn/hand-edited entry used
+    // to poison every later append/historyForRun with a TypeError.
+    // Quarantine it loudly — one corrupt session recreates on
+    // demand, never bricks the boot.
+    if (!s || typeof s !== "object" || !Array.isArray(s.messages)) {
+      try {
+        process.stderr.write(`sweave-engine: dropping corrupt session ${JSON.stringify(id)}\n`);
+      } catch {}
+      try {
+        renameSync(this.shardPath(id), `${this.shardPath(id)}.corrupt-${Date.now()}`);
+      } catch {}
+      this.known.delete(id);
+      return null;
+    }
+    if (retain) this.sessions.set(id, s);
+    return s;
+  }
+
   get(id) {
-    return this.sessions.get(id) || null;
+    const mem = this.sessions.get(id);
+    if (mem) return mem;
+    if (!this.known.has(id)) return null;
+    return this.loadShard(id);
   }
 
   ensure(id) {
     let s = this.sessions.get(id);
+    if (!s && this.known.has(id)) s = this.loadShard(id);
     if (!s) {
       s = { id, messages: [], revert: null, created: Date.now() };
       this.sessions.set(id, s);
-      this.save();
+      this.known.add(id);
     } else if (s && typeof s === "object" && "approvals" in s) {
       delete s.approvals;
     }
+    // Immediate (not debounced): the harness binding persists this
+    // id before the turn runs — a crash must not lose the creation.
+    // One small file, never the whole journal.
+    this.writeShard(id);
     return s;
   }
 
@@ -111,7 +292,21 @@ export class SessionStore {
   append(session, entry) {
     session.messages.push(entry);
     session.updated = Date.now();
-    this.save();
+    // Turn-hot path (every assistant/tool message of every
+    // iteration): mark dirty + debounced flush. A crash inside the
+    // window loses at most 250ms of tail — the read-time sanitize
+    // (not write-time repair) is the load-bearing poison fix, and
+    // every turn end flushes synchronously (serve.js finish()).
+    if (session && session.id) {
+      // Alias guard: persist the object the caller actually
+      // mutated, never a stale stored twin.
+      if (this.sessions.get(session.id) !== session) {
+        this.sessions.set(session.id, session);
+        this.known.add(session.id);
+      }
+      this.dirty.add(session.id);
+    }
+    this.scheduleSave();
   }
 }
 

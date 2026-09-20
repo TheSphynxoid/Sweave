@@ -2,7 +2,8 @@
 
 The no-rotation invariant makes sessions immortal — the
 orchestrator's plan (its todo list) must be equally durable. The
-journal (`sessions.json`) persists the whole session object
+journal (sharded ``sessions/<id>.json`` since the 2026-09-20 journal
+surgery) persists the whole session object
 including `todos`; every tool execution is followed synchronously
 by append+save, so no explicit todo save path is needed. This
 test pins the guarantee end-to-end at the store level: write
@@ -68,7 +69,7 @@ def _node(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
 def test_todos_survive_store_reload(tmp_path: Path):
     wrote = _node(tmp_path, "write")
     assert wrote.returncode == 0, wrote.stderr
-    assert (tmp_path / "sessions.json").exists()
+    assert (tmp_path / "sessions" / "eng_probe.json").exists()
     read = _node(tmp_path, "read")
     assert read.returncode == 0, read.stderr
     assert "todos durable" in read.stdout

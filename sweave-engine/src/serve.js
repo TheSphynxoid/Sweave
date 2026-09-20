@@ -198,7 +198,6 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
   } catch (err) {
     clearTimeout(timer);
     if (turn.finished) return;
-    finish();
     const code = (err && err.code) || "provider_error";
     store.append(session, {
       id: newMessageId("msg"),
@@ -208,6 +207,9 @@ async function runLoopTurn(sessionId, session, body, res, turn, finish, timer, u
       error: code === "aborted" ? "turn aborted" : String((err && err.message) || err),
       at: Date.now(),
     });
+    // Append-then-finish (see finish()): the failed record is
+    // journaled before the turn-end flush runs.
+    finish();
     emit({ event: "error", code, message: String((err && err.message) || err).slice(0, 500) });
     try {
       res.end();
@@ -222,7 +224,6 @@ async function runTurn(sessionId, body, res) {
   // no charter, trace claims session_resumed). Capture freshness
   // BEFORE ensure so every done event can name it.
   const sessionFresh = !store.get(sessionId);
-  const session = store.ensure(sessionId);
   const model = body.model;
   const turnTimeoutMs = Math.max(1, body.turn_timeout) * 1000;
 
@@ -233,6 +234,10 @@ async function runTurn(sessionId, body, res) {
     res.end();
     return;
   }
+  // ensure AFTER validation (hygiene 2026-09-20): auth/validation
+  // failures used to mint permanent zero-msg sessions (116/358 in
+  // the live journal) — a failed turn must not create a session.
+  const session = store.ensure(sessionId);
 
   const userMsg = {
     id: newMessageId("msg"),
@@ -249,6 +254,13 @@ async function runTurn(sessionId, body, res) {
   const finish = () => {
     turn.finished = true;
     if (live.get(sessionId) === turn) live.delete(sessionId);
+    // Turn-end flush (journal surgery 2026-09-20): appends ride a
+    // 250ms debounce, so the window never outlives the turn — every
+    // end path runs through here AFTER its journal writes (catch
+    // sites append-then-finish, never the reverse).
+    try {
+      store.flush();
+    } catch {}
   };
 
   let timer = null;
@@ -395,7 +407,6 @@ async function runTurn(sessionId, body, res) {
       // silence on a provider 404). Mirrors the chat branch below.
       clearTimeout(timer);
       if (turn.finished) return; // timeout/abort path already answered
-      finish();
       const failed = err && err.message === "turn_timeout";
       const text = `provider ${String((err && err.message) || err).slice(0, 300)}`;
       store.append(session, {
@@ -406,6 +417,9 @@ async function runTurn(sessionId, body, res) {
         error: failed ? `turn_timeout_exceeded_${body.turn_timeout}s` : text,
         at: Date.now(),
       });
+      // Append-then-finish (see finish()): the failed record is
+      // journaled before the turn-end flush runs.
+      finish();
       if (!(err && err.name === "AbortError") && !failed) {
         sseEvent(res, { event: "error", code: "provider_error", message: text });
       }
@@ -650,7 +664,6 @@ async function runTurn(sessionId, body, res) {
   } catch (err) {
     clearTimeout(timer);
     if (turn.finished) return;
-    finish();
     const failed = err && err.message === "turn_timeout";
     store.append(session, {
       id: assistantId,
@@ -660,6 +673,9 @@ async function runTurn(sessionId, body, res) {
       error: failed ? `turn_timeout_exceeded_${body.turn_timeout}s` : String((err && err.message) || err),
       at: Date.now(),
     });
+    // Append-then-finish (see finish()): the failed record is
+    // journaled before the turn-end flush runs.
+    finish();
     if (err && err.name === "AbortError" && !failed) {
       sseEvent(res, { event: "error", code: "aborted", message: "turn aborted" });
     } else if (!failed) {
