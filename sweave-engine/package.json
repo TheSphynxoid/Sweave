@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Sweave-native execution sidecar (best-offer harness). Zero-dependency Node HTTP server speaking the versioned engine protocol (see ../sweave/engine/protocol.py).",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "serve": "node src/serve.js --port 0"
   }

@@ -238,6 +238,9 @@ async function readPath(cwd, filePath, offset, limit) {
   }
   if (raw.includes("\0")) return fail("read: binary file");
   const lines = raw.split("\n");
+  // A trailing newline is a terminator, not a line: without this a
+  // 3-line file reports 4 lines and numbers a phantom empty "4: ".
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
   const total = lines.length;
   const start = Math.max(0, (offset || 1) - 1);
   // Opencode parity: omitted limit pages (default window), it never
@@ -245,7 +248,13 @@ async function readPath(cwd, filePath, offset, limit) {
   // dumping 607K chars into history. Explicit limits still win.
   const effLimit = limit || DEFAULT_READ_LIMIT;
   const slice = lines.slice(start, start + effLimit);
-  let text = slice.join("\n");
+  // 1-based line numbers ride every content line (hygiene 2026-09-20:
+  // models hand-counted lines to build edit oldStrings — a 16% miss
+  // rate in the live journal). Reference only: the N: prefix is NOT
+  // file content and must never be copied into edit oldString (the
+  // read description says so; the edit hint names the line range).
+  const numbered = slice.map((ln, i) => `${start + i + 1}: ${ln}`);
+  let text = numbered.join("\n");
   const last = start + slice.length;
   if (last < total) {
     text += `\n\n(Showing lines ${start + 1}-${last} of ${total}. Use offset=${last + 1} to continue.)`;
@@ -380,6 +389,11 @@ async function captureOldWrite(abs) {
 }
 
 async function writePath(cwd, filePath, content) {
+  // Missing content writes nothing (hygiene 2026-09-20: the old
+  // coerce-to-empty silently created empty files on arg drops).
+  if (content === undefined || content === null) {
+    return fail(`write: 'content' is required (missing — nothing was written${filePath ? ` to ${filePath}` : ""})`);
+  }
   const abs = resolve(cwd, filePath);
   // Pre-write old-capture BEFORE the bytes change (never after).
   const old = await captureOldWrite(abs);
@@ -472,9 +486,17 @@ function runBash(cwd, command, timeoutMs, signal) {
               error: `bash: timed out after ${timeout}ms (partial output kept)`,
               partial: out.text,
             });
-          } else {
-            settle({ ok: false, error: `bash: exit ${error.code}: ${out.text.slice(-2000)}` });
+        } else {
+          let errText = `bash: exit ${error.code}: ${out.text.slice(-2000)}`;
+          // cmd.exe Unix-ism pointer (hygiene 2026-09-20: 89
+          // head/pwd-class failures on 09-14/09-15, zero since the
+          // shell grounding landed — this is the backstop, not the
+          // fix; it fires only on cmd's own diagnostic).
+          if (/is not recognized as an internal/i.test(out.text)) {
+            errText += `\n(hint: this shell has no Unix tools (head/tail/grep/pwd do not exist here) — use the read/grep tools for inspection, and match the shell named in the bash tool description)`;
           }
+          settle({ ok: false, error: errText });
+        }
         } else {
           settle(ok(out.text));
         }
@@ -487,11 +509,21 @@ function runBash(cwd, command, timeoutMs, signal) {
   });
 }
 
-async function globSearch(cwd, pattern, root) {
+async function globSearch(cwd, pattern, root, literal) {
   // Pure-JS glob over **, *, ?. Returns paths sorted by mtime desc
   // (opencode GlobTool parity: modification-time order).
+  // Hygiene 2026-09-20: the walk ALWAYS recurses (the old
+  // slash-gate skipped recursion for patterns like `src/*.ts`,
+  // which then matched nothing — silent empty, the top glob
+  // complaint in the live journal). Anchored matching keeps
+  // `src/*.ts` scoped: it tests against the repo-relative path,
+  // so only paths under src/ can match.
+  let effPattern = String(pattern || "");
+  // Literal mode (grep parity): exact basename-or-relpath equality,
+  // no wildcard interpretation — file names with dots/brackets
+  // otherwise need hand-escaping (and usually get it wrong once).
+  // Compared inside the walk (no regex involved at all).
   const base = root ? resolve(cwd, root) : cwd;
-  const hasDoubleStar = pattern.includes("**");
   const results = [];
   async function walk(dir, rel) {
     let entries;
@@ -504,11 +536,12 @@ async function globSearch(cwd, pattern, root) {
       if (e.name === "node_modules" || e.name === ".git") continue;
       const relPath = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (hasDoubleStar) await walk(join(dir, e.name), relPath);
-        else if (!pattern.includes("/")) await walk(join(dir, e.name), relPath);
+        await walk(join(dir, e.name), relPath);
       } else {
-        const name = hasDoubleStar ? relPath : e.name;
-        if (patternMatches(pattern, name, true) || patternMatches(pattern, relPath, true)) {
+        const hit = literal
+          ? effPattern === e.name || effPattern === relPath
+          : patternMatches(effPattern, e.name, true) || patternMatches(effPattern, relPath, true);
+        if (hit) {
           results.push({ relPath, abs: join(dir, e.name) });
         }
       }
@@ -622,32 +655,36 @@ const GIT_FLAG_DENY_PREFIX = ["--upload-pack", "--exec", "-c", "--config"];
 
 function runGit(cwd, verb, args, signal) {
   return new Promise((resolvePromise) => {
-    if (!GIT_VERBS.has(verb)) {
-      resolvePromise({ ok: false, error: `rejected: unknown git verb ${JSON.stringify(verb)}` });
+    // Omitted verb defaults to status (hygiene 2026-09-20: 4 live
+    // turns called git with no verb at all — all wanted read-only
+    // state, and status is the safe shape of that).
+    const v = verb || "status";
+    if (!GIT_VERBS.has(v)) {
+      resolvePromise({ ok: false, error: `rejected: unknown git verb ${JSON.stringify(verb)} (allowed: ${[...GIT_VERBS].join(", ")})` });
       return;
     }
     const rawArgs = Array.isArray(args) ? args : [];
     for (const a of rawArgs) {
       if (typeof a !== "string") {
-        resolvePromise({ ok: false, error: "rejected: git args must be strings" });
+        resolvePromise({ ok: false, error: `rejected: git args must be strings (e.g. ["--oneline"], not ${JSON.stringify(a)})` });
         return;
       }
       if (GIT_FLAG_DENY_PREFIX.some((d) => a === d || a.startsWith(d + "="))) {
-        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a}` });
+        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a} (allowed flags: ${[...GIT_FLAG_ALLOW].join(", ")}; fused -n20 / --flag=value forms ok)` });
         return;
       }
       // Bare "-n"/"--flag value" splits ride as separate argv entries;
       // "-n20"/"--flag=value" fused forms carry their payload inline.
       const fused = a.startsWith("-") && !GIT_FLAG_ALLOW.has(a) && !/^(-n\d+|--[A-Za-z-]+=.+)$/.test(a);
       if (fused) {
-        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a}` });
+        resolvePromise({ ok: false, error: `rejected: git flag denied: ${a} (allowed flags: ${[...GIT_FLAG_ALLOW].join(", ")}; fused -n20 / --flag=value forms ok)` });
         return;
       }
     }
     // Default paging (read->2000 doctrine): `log` pages -n 20
     // --oneline unless args say otherwise; explicit wins.
     let finalArgs = [...rawArgs];
-    if (verb === "log") {
+    if (v === "log") {
       const hasN = finalArgs.some((a) => /^-n(\d+)?$/.test(a) || a === "--max-count");
       if (!hasN) finalArgs = ["-n", "20", "--oneline", ...finalArgs];
     }
@@ -668,7 +705,7 @@ function runGit(cwd, verb, args, signal) {
       if (signal && typeof AbortSignal !== "undefined" && signal instanceof AbortSignal) {
         spawnOpts.signal = signal;
       }
-      child = spawn("git", [verb, ...finalArgs], spawnOpts);
+      child = spawn("git", [v, ...finalArgs], spawnOpts);
     } catch (e) {
       resolvePromise({ ok: false, error: `git: failed to start (${e && e.message ? e.message : e}) — is git installed and on PATH?` });
       return;
@@ -719,7 +756,7 @@ export const EXEC_TOOL_DEFS = [
   {
     name: "read",
     description:
-      "Read a file (offset/limit, 1-based; omitted limit pages 2000 lines — use offset to continue) or list a directory.",
+      "Read a file (offset/limit, 1-based; omitted limit pages 2000 lines — use offset to continue) or list a directory. File lines carry N: numbers for reference (never include the prefix in edit oldString).",
     parameters: {
       type: "object",
       properties: {
@@ -732,7 +769,7 @@ export const EXEC_TOOL_DEFS = [
   },
   {
     name: "edit",
-    description: "Exact-string file edit (oldString must match verbatim).",
+    description: "Exact-string file edit (oldString must match verbatim — read the region first and copy content exactly, without N: line-number prefixes).",
     parameters: {
       type: "object",
       properties: {
@@ -770,12 +807,13 @@ export const EXEC_TOOL_DEFS = [
   },
   {
     name: "glob",
-    description: "Find files by pattern (sorted by modification time).",
+    description: "Find files by pattern (sorted by modification time). Patterns match the basename or the repo-relative path: *.ts searches everywhere, src/*.ts scopes to src/. Pass literal:true to match the pattern as plain text.",
     parameters: {
       type: "object",
       properties: {
         pattern: { type: "string" },
         path: { type: "string" },
+        literal: { type: "boolean", description: "Match pattern verbatim, not as a glob" },
       },
       required: ["pattern"],
     },
@@ -976,7 +1014,7 @@ async function executeToolInner(name, a, { cwd, session, signal, saveSession }) 
     case "bash":
       return runBash(cwd, a.command || "", a.timeout, signal);
     case "glob":
-      result = await globSearch(cwd, a.pattern || "", a.path);
+      result = await globSearch(cwd, a.pattern || "", a.path, a.literal);
       break;
     case "grep":
       result = await grepSearch(cwd, a.pattern || "", a.path, a.include, a.literal);

@@ -166,8 +166,10 @@ export function resolveProvider(provider, modelId) {
   }
   let flavor = "chat";
   if (spec.flavors && modelId) {
+    let known = false;
     for (const [name, ids] of Object.entries(spec.flavors)) {
       if (!ids.has(modelId)) continue;
+      known = true;
       // The engine speaks chat/completions, the Responses API, and
       // the Anthropic Messages API. Remaining flavors (google)
       // fail loud here with code "bad_request" naming the pending
@@ -186,6 +188,18 @@ export function resolveProvider(provider, modelId) {
           `needs the ${name} transport (pending; engine speaks ` +
           `chat/completions + responses + messages)`,
       };
+    }
+    // Drift telemetry (hygiene 2026-09-20): the flavor tables are
+    // hardcoded and the provider catalog drifts — an unknown id is
+    // still ATTEMPTED on chat/completions (a Go 4xx surfaces loudly
+    // anyway), but the attempt is named on stderr so a wrong-flavor
+    // guess is diagnosable instead of mysterious.
+    if (!known) {
+      try {
+        process.stderr.write(
+          `sweave-engine: model ${JSON.stringify(modelId)} not in the ${provider} flavor table; attempting chat/completions\n`
+        );
+      } catch {}
     }
   }
   const baseURL = baseOverride || spec.baseURL;
