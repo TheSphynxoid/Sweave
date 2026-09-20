@@ -226,6 +226,12 @@ async def delete_session(session_id: str) -> dict:
     return {"success": True}
 
 
+async def rename_session(session_id: str, name: str) -> dict:
+    """Rename a session (manual rename + auto-titling share it)."""
+    session = project_manager.rename_session(session_id, name)
+    return session.to_dict()
+
+
 async def add_message(session_id: str, message: MessageCreate) -> dict:
     """Add a message to a session."""
     session = project_manager.get_session(session_id)

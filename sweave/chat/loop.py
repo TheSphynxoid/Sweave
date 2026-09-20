@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sweave.projects import ProjectManager, Session
+from sweave.chat import titling as titling_mod
 from sweave.runtime.delegation_store import (
     CANCELLED_BY_USER_ERROR,
     Delegation,
@@ -967,7 +968,9 @@ class ChatLoop:
             )
             self._turn_tasks[session_id] = task
             self._turn_delegations[session_id] = delegation_id
-            return await asyncio.shield(task)
+            result = await asyncio.shield(task)
+            self._maybe_request_title(session_id, user_content, result)
+            return result
         except asyncio.CancelledError:
             # The HTTP handler is being cancelled (client refresh /
             # disconnect). The turn task keeps running detached and
@@ -979,6 +982,89 @@ class ChatLoop:
                 session_id,
             )
             raise
+
+    def _maybe_request_title(
+        self,
+        session_id: str,
+        user_content: str,
+        result: Any,
+    ) -> None:
+        """Fire-and-forget session auto-title after a successful turn.
+
+        Fires once ever per session: only when the turn persisted a
+        final real reply, the name is still the timestamp default, and
+        no attempt was recorded. Marks the attempt BEFORE firing (the
+        driver re-verifies the name post-turn, so a user rename
+        mid-flight always wins). Never raises — titling must not
+        break the turn it follows.
+        """
+        try:
+            if not isinstance(result, dict):
+                return
+            metadata = result.get("metadata") or {}
+            if not metadata.get("turn_final"):
+                return
+            content = result.get("content") or ""
+            if not isinstance(content, str) or not content.strip():
+                return
+            if content.strip().startswith("[chat error:"):
+                return
+            session = self.project_manager.get_session(session_id)
+            if session is None:
+                return
+            if not titling_mod.is_default_name(session.name):
+                return
+            context = session.context
+            if not isinstance(context, dict):
+                context = {}
+                session.context = context
+            if context.get(titling_mod.TITLE_ATTEMPTED_KEY):
+                return
+            context[titling_mod.TITLE_ATTEMPTED_KEY] = True
+            try:
+                self.project_manager.save_session(session)
+            except Exception:  # noqa: BLE001 — flag best-effort
+                pass
+            explicit: str | None = None
+            try:
+                resolver = self.project_config_resolver
+                cfg = resolver(session.project_name) if resolver else None
+                titling_cfg = getattr(cfg, "titling", None) if cfg else None
+                explicit = getattr(titling_cfg, "model", None) or None
+            except Exception:  # noqa: BLE001 — auto resolution covers
+                explicit = None
+            worktree: Any = None
+            try:
+                if self.project_dir_resolver is not None:
+                    worktree = self.project_dir_resolver(session.project_name)
+            except Exception:  # noqa: BLE001
+                worktree = None
+            task = asyncio.ensure_future(
+                titling_mod.request_title(
+                    project_manager=self.project_manager,
+                    publish=self._emit,
+                    session_id=session_id,
+                    user_text=user_content,
+                    reply_text=content,
+                    models=titling_mod.resolve_title_models(explicit=explicit),
+                    worktree_path=worktree,
+                )
+            )
+
+            def _log_task_failure(done_task: Any) -> None:
+                try:
+                    exc = done_task.exception()
+                except Exception:  # noqa: BLE001 — cancelled etc.
+                    return
+                if exc is not None:
+                    logger.warning("ChatLoop: title task failed: %s", exc)
+
+            try:
+                task.add_done_callback(_log_task_failure)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as title_err:  # noqa: BLE001 — never break turns
+            logger.warning("ChatLoop: title scheduling failed: %s", title_err)
 
     async def rerun_turn(
         self,

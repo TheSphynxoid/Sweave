@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -75,6 +75,18 @@ class ModelsConfig(BaseModel):
     providers: dict[str, list[str]] = Field(default_factory=dict)
     default: str | None = None
 
+
+class TitlingConfig(BaseModel):
+    """Session auto-title configuration (global-only, never overlaid).
+
+    ``model`` is an optional qualified ``provider/model`` used for
+    the background title micro-turn. None = automatic: the cheapest
+    text-capable $0 model that is engine-reachable and keyed right
+    now (free-tier-first, never paid). The picker constrains nothing
+    at runtime — an unreachable pick fails the silent micro-turn and
+    the timestamp name stands.
+    """
+    model: str | None = None
 
 class RoutingRule(BaseModel):
     """Single routing rule."""
@@ -207,6 +219,14 @@ class SweaveConfig(BaseSettings):
     git: GitConfig = Field(default_factory=GitConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    titling: TitlingConfig = Field(default_factory=TitlingConfig)
+
+    @field_validator("titling", mode="before")
+    @classmethod
+    def _coerce_titling(cls, value: Any) -> Any:
+        # A hand-written empty `titling:` key parses as a null
+        # mapping — coerce to defaults instead of crashing the load.
+        return {} if value is None else value
 
     @classmethod
     def from_yaml(cls, path: Path) -> SweaveConfig:

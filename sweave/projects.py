@@ -566,6 +566,22 @@ class ProjectManager:
     def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
+    def rename_session(self, session_id: str, name: str) -> Session:
+        """Rename a session (manual rename + auto-titling share it).
+
+        Raises LookupError for unknown ids, ValueError for blank
+        names. Names are capped at 120 chars (UI rows).
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise LookupError(f"Session '{session_id}' not found")
+        cleaned = (name or "").strip()
+        if not cleaned:
+            raise ValueError("Session name must be non-empty")
+        session.name = cleaned[:120]
+        self.save_session(session)
+        return session
+
     def list_sessions(self, project_name: str | None = None) -> list[Session]:
         if project_name:
             return [s for s in self._sessions.values() if s.project_name == project_name]

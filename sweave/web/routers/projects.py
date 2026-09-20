@@ -24,6 +24,7 @@ from sweave.api.projects import (
     get_session,
     list_projects,
     list_sessions,
+    rename_session,
     set_active_project,
     set_active_session,
     update_permission_roots,
@@ -78,6 +79,10 @@ class ProjectCreateRequest(BaseModel):
 class SessionCreateRequest(BaseModel):
     name: str
     project_name: Optional[str] = None
+
+
+class SessionRenameRequest(BaseModel):
+    name: str
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +388,34 @@ async def api_delete_session(
         {"id": session_id, "project_name": project_name},
     )
     return result
+
+
+@router.patch("/api/sessions/{session_id}")
+async def api_rename_session(
+    session_id: str,
+    request: SessionRenameRequest,
+    state: AppState = Depends(get_state),
+):
+    """Rename a session (manual rename + auto-titling share it).
+
+    404 for unknown ids, 400 for blank names. Publishes
+    ``session.renamed`` so open UIs refresh the name without reload.
+    """
+    try:
+        session = await rename_session(session_id, request.name)
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await state.publish(
+        "session.renamed",
+        {
+            "id": session["id"],
+            "name": session["name"],
+            "project_name": session["project_name"],
+        },
+    )
+    return {"success": True, "session": session}
 
 
 @router.post("/api/sessions/{session_id}/messages")

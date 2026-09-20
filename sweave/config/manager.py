@@ -480,6 +480,60 @@ class ConfigManager:
             path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
         )
 
+    def set_titling_model(self, model: str | None) -> str | None:
+        """Persist the session-titling model override (or clear it).
+
+        None clears back to automatic (cheapest $0 engine-reachable).
+        A set value must be qualified ``provider/model`` — validated
+        lightly here (reachability is the turn's problem, silently
+        absorbed: a bad pick keeps the timestamp, never fails chat).
+        Writes a line-preserving ``titling:`` block the same way
+        :meth:`_persist_config_default` does for ``models:``.
+        """
+        import re
+
+        from sweave.runtime.locking import atomic_write_text_sync
+
+        value: str | None = None
+        if model is not None:
+            value = str(model).strip()
+            if not value:
+                value = None
+        if value is not None and "/" not in value:
+            raise ValueError(
+                f"titling model must be qualified as 'provider/model' "
+                f"(got {model!r})"
+            )
+        path = Path(self.config_path)
+        lines = (
+            path.read_text(encoding="utf-8").splitlines()
+            if path.exists()
+            else []
+        )
+        out: list[str] = []
+        in_titling = False
+        for line in lines:
+            if re.match(r"^titling\s*:\s*(#.*)?$", line):
+                # Drop the whole block; re-added below iff a value is
+                # set. An emptied header parses as a null mapping and
+                # would fail validation on the next load.
+                in_titling = True
+                continue
+            if in_titling:
+                if line.strip() and not line.startswith((" ", "\t")):
+                    in_titling = False
+                else:
+                    continue
+            out.append(line)
+        if value is not None:
+            if out and out[-1].strip():
+                out.append("")
+            out.append("titling:")
+            out.append(f"  model: {value}")
+        atomic_write_text_sync(path, "\n".join(out) + ("\n" if out else ""))
+        self._sync_reload()
+        return value
+
     def _sync_reload(self) -> None:
         """Programmatic hot-reload after a registry write.
 

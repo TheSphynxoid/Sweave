@@ -16,6 +16,7 @@
  *   project.deleted        -> ["projects"], ["sessions", <name>]
  *   session.created        -> ["sessions", <project_name>]
  *   session.deleted        -> ["sessions", <project_name>]
+ *   session.renamed        -> ["sessions", <project_name>]
  *   active_session.changed -> [] (the AppProvider refetches
  *                              the active session itself; the
  *                              queries are not affected)
@@ -30,6 +31,7 @@ export type WSEventName =
   | "project.deleted"
   | "session.created"
   | "session.deleted"
+  | "session.renamed"
   | "active_session.changed";
 
 export interface WSEventLike {
@@ -50,7 +52,8 @@ export function invalidationsForEvent(env: WSEventLike): ReadonlyArray<readonly 
       return [["projects"]];
     }
     case "session.created":
-    case "session.deleted": {
+    case "session.deleted":
+    case "session.renamed": {
       const projectName = env.data?.project_name;
       if (typeof projectName === "string" && projectName) {
         return [["sessions", projectName]];

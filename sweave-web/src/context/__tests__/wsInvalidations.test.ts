@@ -52,6 +52,22 @@ describe("invalidationsForEvent", () => {
     expect(keys).toEqual([["sessions", "p1"]]);
   });
 
+  it("session.renamed invalidates only the owning project's session list", () => {
+    const keys = invalidationsForEvent({
+      event: "session.renamed",
+      data: { id: "s1", name: "New title", project_name: "p1" },
+    });
+    expect(keys).toEqual([["sessions", "p1"]]);
+  });
+
+  it("session.renamed with no project_name invalidates nothing", () => {
+    const keys = invalidationsForEvent({
+      event: "session.renamed",
+      data: { id: "s1", name: "New title" },
+    });
+    expect(keys).toEqual([]);
+  });
+
   it("session.created with no project_name invalidates nothing", () => {
     // Defensive: a malformed event should not cascade-invalidate
     // the entire query cache. Returning an empty list keeps the

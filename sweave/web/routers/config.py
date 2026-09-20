@@ -38,6 +38,10 @@ class HarnessDefaultUpdateRequest(BaseModel):
     harness: str
 
 
+class TitlingModelUpdateRequest(BaseModel):
+    model: Optional[str] = None
+
+
 @router.get("/api/config")
 async def get_config(state: AppState = Depends(get_state)):
     return state.config_manager.get().model_dump(exclude_none=True)
@@ -209,6 +213,23 @@ async def set_harness_default(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"success": True, "harness": value}
+
+
+@router.put("/api/titling/model")
+async def set_titling_model(
+    request: TitlingModelUpdateRequest, state: AppState = Depends(get_state)
+):
+    """Set the session-titling model override (or clear it).
+
+    A qualified ``provider/model`` pins the background title
+    micro-turn; null clears back to automatic (cheapest $0
+    engine-reachable text model). Global-only, never overlaid.
+    """
+    try:
+        value = state.config_manager.set_titling_model(request.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"success": True, "model": value}
 
 
 @router.get("/api/harnesses")
