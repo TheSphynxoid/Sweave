@@ -362,15 +362,34 @@ def _sweave_agent_map() -> dict[str, Any]:
     from ``runtime/agent_permission.py``.
     """
     from sweave.agents.loader import load_seed_agents
+    from sweave.engine.protocol import OPENCODE_HARNESS_NAME
     from sweave.runtime.agent_permission import render_agent_permission_profile
+    from sweave.runtime.prompt_template import render_prompt_template
+    from sweave.runtime.specialist_runtime import offered_tools_line
 
     seeds = load_seed_agents()
     orch = seeds.get("orchestrator")
+    # The orchestrator seed carries the per-turn ``{{tools}}`` truth
+    # line (charter hygiene 2026-09-20): render it here with the
+    # opencode-harness offer so the pinned native agent never shows
+    # raw template syntax (the engine path renders per new session
+    # in SpecialistRuntime; unknown names stay verbatim either way).
+    orch_prompt = (orch.prompt if orch else "") or ""
+    if "{{" in orch_prompt:
+        orch_prompt = render_prompt_template(
+            orch_prompt,
+            {
+                "tools": offered_tools_line(
+                    harness_name=OPENCODE_HARNESS_NAME,
+                    is_orchestrator=True,
+                )
+            },
+        )
     return {
         ORCHESTRATOR_AGENT_NAME: {
             "description": (orch.description if orch else "") or "Sweave orchestrator: decomposes work and delegates to specialists.",
             "mode": "primary",
-            "prompt": (orch.prompt if orch else "") or "",
+            "prompt": orch_prompt,
             "permission": render_agent_permission_profile(is_orchestrator=True),
         },
         SPECIALIST_AGENT_NAME: {

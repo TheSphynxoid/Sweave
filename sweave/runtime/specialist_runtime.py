@@ -993,14 +993,14 @@ class SpecialistRuntime:
                 # Role charter, new sessions only (reused sessions
                 # remember it — same session-memory rule as the
                 # opencode path, minus the per-message agent pin the
-                # protocol has no field for). Specialists render
-                # {{var}} templates fresh like the opencode path.
+                # protocol has no field for). Templated charters
+                # (``{{var}}``) render fresh, orchestrator included:
+                # its prompt carries the per-turn ``{{tools}}`` truth
+                # line (no worktree vars — orchestrator turns are
+                # in-tree), so a raw send would teach a stale tool
+                # list for the life of the session.
                 charter = specialist.system_prompt or ""
-                if (
-                    charter
-                    and not specialist.is_orchestrator
-                    and has_template_vars(charter)
-                ):
+                if charter and has_template_vars(charter):
                     context = build_template_context(
                         specialist=specialist,
                         delegation=delegation,
