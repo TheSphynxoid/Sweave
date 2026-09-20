@@ -100,7 +100,7 @@ export const SWEAVE_TOOL_DEFS = [
   {
     name: "ask_human",
     description:
-      "Ask the human a blocking question (waits for the answer). Batch: pass questions: [{question, options?}] (max 5) to ask several at once — one card, every question answered before the turn continues.",
+      "Ask the human a blocking question (waits for the answer). Single: pass question (+ options). Batch: pass questions: [{question, options?}] (max 5) to ask several at once — one card, every question answered before the turn continues. Either question or questions is required.",
     parameters: {
       type: "object",
       properties: {
@@ -121,7 +121,6 @@ export const SWEAVE_TOOL_DEFS = [
             "Optional batch form (max 5). Wins over question/options; the human answers every question before the turn proceeds.",
         },
       },
-      required: ["question"],
     },
   },
   {
@@ -168,7 +167,7 @@ export async function callDefer(args, runCtx) {
   if (!caller) {
     return {
       ok: false,
-      text: "rejected: 'caller_delegation_id' is required (the orchestrator's own delegation id; set it in the tool call)",
+      text: "rejected: no delegation identity on this turn (runtime wiring — end your turn and report it; do not invent an id)",
     };
   }
   if (a.estimate !== undefined && (typeof a.estimate !== "object" || a.estimate === null)) {
@@ -293,7 +292,7 @@ export async function callAskHuman(args, runCtx) {
   if (!caller) {
     return {
       ok: false,
-      text: "rejected: 'caller_delegation_id' is required (the asking delegation's id; set it in the tool call)",
+      text: "rejected: no delegation identity on this turn (runtime wiring — end your turn and report it; do not invent an id)",
     };
   }
   const body = { question: a.question, caller_delegation_id: caller, kind: "question", audience: "human" };
@@ -347,7 +346,7 @@ export async function callEscalate(args, runCtx) {
   if (!caller) {
     return {
       ok: false,
-      text: "rejected: 'caller_delegation_id' is required (the escalating delegation's id; set it in the tool call)",
+      text: "rejected: no delegation identity on this turn (runtime wiring — end your turn and report it; do not invent an id)",
     };
   }
   const body = {

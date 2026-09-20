@@ -30,7 +30,7 @@ prompt: |
 
   ## Tools Available
   - {{tools}}
-  - Long-term memory: hindsight_recall, hindsight_retain, hindsight_reflect
+  - Long-term memory (opencode-harness turns only): hindsight_recall, hindsight_retain, hindsight_reflect
   - Blocked or need a human decision? Use `escalate` to reach the orchestrator and state it in your final summary
 
   ## Guidelines

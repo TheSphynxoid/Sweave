@@ -63,7 +63,12 @@ def test_orchestrator_agent_prompt_comes_from_yaml():
     assert orch["prompt"]
     assert "Sweave Orchestrator" in orch["prompt"]
     if seed is not None and seed.prompt:
-        assert orch["prompt"] == seed.prompt
+        # Charter hygiene (2026-09-20): the pinned agent carries the
+        # seed prompt with the per-turn ``{{tools}}`` truth line
+        # rendered for the opencode harness — never raw template
+        # syntax, and the offered tools named, not the stale prose.
+        assert "{{tools}}" not in orch["prompt"]
+        assert "defer" in orch["prompt"] and "list_specialists" in orch["prompt"]
 
 
 def test_agent_permissions_split_mcp_and_git():
