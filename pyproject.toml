@@ -1,6 +1,6 @@
 [project]
 name = "sweave"
-version = "0.1.2"
+version = "0.2.0"
 description = "Multi-agent orchestration platform with persistent specialist agents"
 readme = "README.md"
 requires-python = ">=3.11"

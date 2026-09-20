@@ -451,13 +451,25 @@ gotchas land here — grouped by branch, not appended as a numbered list.
    registry entry is removed so the workdir is still resolvable. Per-project
    aggregates persist at `~/.sweave/archived/{slug}.json`; `source` is derived at
    READ time ("store" rows win over "index" rows), never written into the index.
-   GET /api/delegations: `?archived=false|true|all` (default false = archived
-   hidden) + `?include_archived=true` adds the `archived_projects` aggregate rows.
-   Idempotency gotcha: a second server process (e.g. `run.py --check`) sweeps and
-   archives, but the LIVE server still holds its own in-memory copy of the same
-   `delegations.json` and rewrites the un-archived records on its next persist —
-   the flags re-apply on the next real server restart. Don't "fix" this by
-   restarting the live server mid-flight.
+    GET /api/delegations: `?archived=false|true|all` (default false = archived
+    hidden) + `?include_archived=true` adds the `archived_projects` aggregate rows.
+    Idempotency gotcha: a second server process (e.g. `run.py --check`) sweeps and
+    archives, but the LIVE server still holds its own in-memory copy of the same
+    `delegations.json` and rewrites the un-archived records on its next persist —
+    the flags re-apply on the next real server restart. Don't "fix" this by
+    restarting the live server mid-flight.
+
+3. **Session writes are split-brain by design (2026-09-20 lazy-load).**
+   `save_session` persists META only — an in-memory `add_message` followed
+   by `save_session` silently drops the row (no error; the meta just
+   heals its count from the resident list). New rows go through
+   `ProjectManager.append_message` (one jsonl line + meta bump); edits to
+   already-persisted rows (rerun supersede flags) go through
+   `save_messages` (explicit log rewrite). Tests that build rows in
+   memory must call `save_messages`, not `save_session`. Readers that
+   only need name/status/children/context must use `get_session_meta`
+   (never fault a transcript to check a name — the titling pre-check
+   did exactly that on every turn).
 
 ## Lifecycle & engine contracts
 

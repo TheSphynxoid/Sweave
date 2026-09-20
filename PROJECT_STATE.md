@@ -316,11 +316,25 @@
   (`models.dev-only (no serve overlay: opencode not found)`) +
   `overlay_skipped` instead of failing; both layers missing still
   fails loud (empty registry never written). UI renders the
-  server `detail` on failure. Gates: 2 new tests
-  (`tests/test_models_sync_overlay.py`, watched red→green) + 3
-  vitest (`ModelsSync.test.tsx`), endpoint funnel tests green,
-  live proof on this box (222 providers / 7868 models, no binary),
-  build green. Restart the server to pick up.
+   server `detail` on failure. Gates: 2 new tests
+   (`tests/test_models_sync_overlay.py`, watched red→green) + 3
+   vitest (`ModelsSync.test.tsx`), endpoint funnel tests green,
+   live proof on this box (222 providers / 7868 models, no binary),
+   build green. Restart the server to pick up.
+- ✅ **Session lazy-load (2026-09-20, user ruling: lazy-load before
+  search)** — session schema v1→v2: `{id}.json` meta only (+
+  `message_count`), bodies in `{id}.messages.jsonl`. Boot faults
+  zero transcripts; `get_session` faults one (LRU 50); list/active
+  stay meta-only (active returns Summary shape). Writes:
+  `append_message` O(1) hot path, `save_session` meta-only,
+  `save_messages` for history edits (rerun flags). Bridges +
+  titling use `get_session_meta`. Gates: 8 new tests
+  (`tests/test_session_lazy_load.py`) + migrated pins, 1420 pytest
+  green (6 pre-existing failures, all outside the slice: go/zen
+  suite-load flake proven solo-green, UI-thread vitest red
+  documented), `run.py --check` 14/14, live migration proof (25
+  sessions / 433 messages). Backend minor bump 0.1.2→0.2.0.
+  Restart the server to pick up (live data already migrated).
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env
