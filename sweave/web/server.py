@@ -85,7 +85,7 @@ def _add_child_to_session(child, project_manager) -> None:
     Defined at module level (rather than inside the lifespan) so the
     closure is reusable and easy to mock in tests.
     """
-    parent = project_manager.get_session(child.parent_session_id)
+    parent = project_manager.get_session_meta(child.parent_session_id)
     if parent is None:
         return
     # Re-attach the existing child if a re-submit happened (idempotency:

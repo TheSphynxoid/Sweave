@@ -1171,7 +1171,8 @@ class ChatLoop:
                 },
             )
             new_message_id = rerun_user_msg.id
-            self.project_manager.save_session(session)
+            # No save here: the single save_messages below covers the
+            # flags + the new row in one rewrite (one O(n), not two).
             await self._emit(
                 "message.added",
                 {
@@ -1194,7 +1195,10 @@ class ChatLoop:
             history_rewrite = await self._rewrite_superseded_history(
                 session=session, from_index=idx
             )
-        self.project_manager.save_session(session)
+        # History rewrite path: the supersede flags mutated already-
+        # persisted rows, so the log needs a full rewrite (rare) plus
+        # the meta bump save_messages carries.
+        self.project_manager.save_messages(session)
 
         delegation_id = f"chat-{uuid.uuid4().hex[:12]}"
         self._turn_inflight.add(session_id)
@@ -1845,13 +1849,13 @@ class ChatLoop:
             metadata["thinking"] = thinking
         if cancelled_tools:
             metadata["tools"] = cancelled_tools
-        assistant_msg = session.add_message(
+        assistant_msg = self.project_manager.append_message(
+            session_id,
             role="assistant",
             content=content,
             agent="orchestrator",
             metadata=metadata,
         )
-        self.project_manager.save_session(session)
         await self._emit(
             "message.added",
             {
@@ -1882,8 +1886,9 @@ class ChatLoop:
             if session is None:
                 raise ValueError(f"Session '{session_id}' not found")
             if existing_user_msg is None:
-                user_msg = session.add_message(role="user", content=user_content)
-                self.project_manager.save_session(session)
+                user_msg = self.project_manager.append_message(
+                    session_id, role="user", content=user_content
+                )
                 await self._emit(
                     "message.added",
                     {
@@ -3018,13 +3023,13 @@ class ChatLoop:
             metadata["segments"] = segments
         if tools:
             metadata["tools"] = tools
-        msg = session.add_message(
+        msg = self.project_manager.append_message(
+            session.id,
             role="assistant",
             content=text,
             agent="orchestrator",
             metadata=metadata,
         )
-        self.project_manager.save_session(session)
         await self._emit(
             "message.added",
             {"session_id": session_id, "message": msg.to_dict()},
@@ -3102,7 +3107,8 @@ class ChatLoop:
             metadata["segments"] = segments
         if tools:
             metadata["tools"] = tools
-        assistant_msg = session.add_message(
+        assistant_msg = self.project_manager.append_message(
+            session.id,
             role="assistant",
             content=assistant_content,
             agent="orchestrator",
@@ -3113,7 +3119,6 @@ class ChatLoop:
             # delegation_id is the join key.
             metadata=metadata,
         )
-        self.project_manager.save_session(session)
         await self._emit(
             "message.added",
             {

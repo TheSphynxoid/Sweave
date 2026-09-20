@@ -260,7 +260,7 @@ async def request_title(
     # reaching here; this is the belt-and-suspenders for direct
     # callers).
     try:
-        session = project_manager.get_session(session_id)
+        session = project_manager.get_session_meta(session_id)
     except Exception:  # noqa: BLE001
         return None
     if session is None or not is_default_name(session.name):
@@ -288,7 +288,7 @@ async def request_title(
     if not title:
         return None
     try:
-        session = project_manager.get_session(session_id)
+        session = project_manager.get_session_meta(session_id)
         if session is None or not is_default_name(session.name):
             return None
         renamed = project_manager.rename_session(session_id, title)

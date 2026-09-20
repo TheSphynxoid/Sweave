@@ -182,29 +182,38 @@ async def create_session(request: SessionCreate) -> dict:
     return session.to_dict()
 
 
+def _session_summary(s) -> dict:
+    """Meta-only summary row (the SessionSummary wire shape)."""
+    return {
+        "id": s.id,
+        "name": s.name,
+        "project_name": s.project_name,
+        "status": s.status,
+        "created_at": s.created_at.isoformat(),
+        "updated_at": s.updated_at.isoformat(),
+        "message_count": s.message_count,
+        "child_count": len(s.children),
+        "memory_bank": s.memory_bank,
+    }
+
+
 async def list_sessions(project_name: str | None = None) -> list[dict]:
-    """List sessions for a project."""
+    """List session METAS for a project (never faults transcripts)."""
     sessions = project_manager.list_sessions(project_name)
     active = project_manager.get_active_session()
+    active_id = active.id if active else None
     return [
-        {
-            "id": s.id,
-            "name": s.name,
-            "project_name": s.project_name,
-            "status": s.status,
-            "created_at": s.created_at.isoformat(),
-            "updated_at": s.updated_at.isoformat(),
-            "message_count": len(s.messages),
-            "child_count": len(s.children),
-            "memory_bank": s.memory_bank,
-            "active": active and active.id == s.id,
-        }
+        {**_session_summary(s), "active": s.id == active_id}
         for s in sessions
     ]
 
 
 async def get_session(session_id: str) -> dict | None:
-    """Get full session details including messages and children."""
+    """Get full session details including messages.
+
+    The one transcript-faulting read: opening a session pulls its
+    jsonl. List/active paths stay meta-only.
+    """
     session = project_manager.get_session(session_id)
     if not session:
         return None
@@ -233,12 +242,11 @@ async def rename_session(session_id: str, name: str) -> dict:
 
 
 async def add_message(session_id: str, message: MessageCreate) -> dict:
-    """Add a message to a session."""
-    session = project_manager.get_session(session_id)
-    if not session:
-        raise ValueError(f"Session '{session_id}' not found")
-
-    msg = session.add_message(
+    """Append a message to a session (O(1) jsonl append + meta bump)."""
+    # append_message raises ValueError for unknown ids (same contract
+    # the old get_session-None path raised).
+    msg = project_manager.append_message(
+        session_id,
         role=message.role,
         content=message.content,
         agent=message.agent,
@@ -246,14 +254,18 @@ async def add_message(session_id: str, message: MessageCreate) -> dict:
         tool_args=message.tool_args,
         tool_result=message.tool_result,
     )
-    project_manager.save_session(session)
     return msg.to_dict()
 
 
 async def get_active_session() -> dict | None:
+    """Active session as a SUMMARY (meta-only, never faults bodies).
+
+    The UI types this as SessionSummary and never reads messages
+    off it; the thread loads transcripts via get_session.
+    """
     session = project_manager.get_active_session()
     if session:
-        return session.to_dict()
+        return _session_summary(session)
     return None
 
 

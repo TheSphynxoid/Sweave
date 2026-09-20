@@ -4,12 +4,34 @@ import asyncio
 import json
 import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sweave.runtime.locking import atomic_write_json_sync
+from sweave.runtime.locking import (
+    atomic_write_json_sync,
+    atomic_write_text_sync,
+)
+
+
+#: Session storage schema v2 (lazy-load split): ``{id}.json`` carries the
+#: session meta (everything EXCEPT messages); bodies live in
+#: ``{id}.messages.jsonl`` (one ``Message.to_dict()`` per line) and fault
+#: in on ``get_session``. v1 files (embedded ``"messages"`` array)
+#: migrate once on load.
+SESSION_SCHEMA_VERSION = 2
+
+#: Suffix for the per-session message log beside ``{id}.json``.
+MESSAGES_SUFFIX = ".messages.jsonl"
+
+#: Cap for faulted-in transcripts. Only opened sessions occupy the
+#: cache (boot faults nothing), so this bounds a long-running server,
+#: not the working set. Eviction drops idle bodies only; a holder of
+#: an evicted object must re-``get_session`` (the ChatLoop's
+#: per-session lock serialises turns, so live turns never race it).
+BODY_CACHE_CAP = 50
 
 
 @dataclass
@@ -143,11 +165,10 @@ class Session:
     memory_bank: str = ""
 
     # M1.7 step 1: per-Session orchestrator binding.
-    # schema_version is bumped to 2 in step 4 once the
-    # last_memory_recall_ts / last_git_snapshot fields land. For now
-    # legacy session files (no schema_version) load as v1 with the
-    # field defaults below.
-    schema_version: int = 1
+    # Lazy-load split: schema v2 marks the meta/jsonl shape. Legacy
+    # session files (no schema_version, embedded "messages") load as
+    # v1 and migrate once on load (bodies split out, meta rewritten).
+    schema_version: int = SESSION_SCHEMA_VERSION
     # The orchestrator's durable opencode session id (M1.7 step 1;
     # replaces the per-Project Specialist.session_id binding that
     # M1.3 used). One orchestrator conversation per (project, session)
@@ -164,6 +185,10 @@ class Session:
     # doesn't want a flood of historical entries as their first view).
     last_memory_recall_ts: datetime | None = None
     last_git_snapshot: str | None = None
+    # Lazy-load split: mirrors the jsonl line count so list paths
+    # never fault bodies. Synced on load/append/rewrite; when bodies
+    # are resident, len(messages) is truth and the manager heals drift.
+    message_count: int = 0
 
     def __post_init__(self):
         if not self.memory_bank:
@@ -192,7 +217,13 @@ class Session:
         self.updated_at = datetime.now()
         return child
 
-    def to_dict(self) -> dict:
+    def to_dict(self, include_messages: bool = True) -> dict:
+        if include_messages:
+            messages = [m.to_dict() for m in self.messages]
+            count = len(self.messages)
+        else:
+            messages = None
+            count = self.message_count
         return {
             "id": self.id,
             "project_name": self.project_name,
@@ -202,10 +233,11 @@ class Session:
             "status": self.status,
             "current_agent": self.current_agent,
             "context": self.context,
-            "messages": [m.to_dict() for m in self.messages],
+            **({"messages": messages} if messages is not None else {}),
             "children": [c.to_dict() for c in self.children],
             "memory_bank": self.memory_bank,
             "schema_version": self.schema_version,
+            "message_count": count,
             "orchestrator_session_id": self.orchestrator_session_id,
             "last_memory_recall_ts": (
                 self.last_memory_recall_ts.isoformat()
@@ -215,17 +247,25 @@ class Session:
             "last_git_snapshot": self.last_git_snapshot,
         }
 
+    def meta_dict(self) -> dict:
+        """Meta-only shape: what ``{id}.json`` stores (no bodies)."""
+        return self.to_dict(include_messages=False)
+
     @classmethod
     def from_dict(cls, data: dict) -> "Session":
         # M1.7: legacy session files (pre-M1.7) lack schema_version /
         # orchestrator_session_id / last_memory_recall_ts /
         # last_git_snapshot; the dataclass defaults apply.
+        # Lazy-load split: v1 files carry an embedded "messages"
+        # array (migrated on load, never written); v2 files omit it
+        # and carry message_count instead.
         last_recall_raw = data.get("last_memory_recall_ts")
         last_recall = (
             datetime.fromisoformat(last_recall_raw)
             if isinstance(last_recall_raw, str)
             else last_recall_raw
         )
+        embedded = data.get("messages") or []
         session = cls(
             id=data["id"],
             project_name=data["project_name"],
@@ -237,11 +277,12 @@ class Session:
             context=data.get("context", {}),
             memory_bank=data.get("memory_bank", ""),
             schema_version=data.get("schema_version", 1),
+            message_count=data.get("message_count", len(embedded)),
             orchestrator_session_id=data.get("orchestrator_session_id"),
             last_memory_recall_ts=last_recall,
             last_git_snapshot=data.get("last_git_snapshot"),
         )
-        session.messages = [Message.from_dict(m) for m in data.get("messages", [])]
+        session.messages = [Message.from_dict(m) for m in embedded]
         session.children = [ChildSession.from_dict(c) for c in data.get("children", [])]
         return session
 
@@ -358,6 +399,10 @@ class ProjectManager:
         self.global_config_path = self.base_path / "config.json"
         self._projects: dict[str, Project] = {}
         self._sessions: dict[str, Session] = {}
+        # Body cache: session ids whose transcripts are resident.
+        # _sessions ALWAYS holds the meta shells; .messages is
+        # populated only for ids in _bodies (LRU, BODY_CACHE_CAP).
+        self._bodies: OrderedDict[str, None] = OrderedDict()
         self._active_project: str | None = None
         self._active_session: str | None = None
         # Per-project write locks. Created lazily. threading.Lock (not asyncio)
@@ -369,12 +414,18 @@ class ProjectManager:
         self._project_locks_meta = threading.Lock()
 
     def load(self):
-        """Load projects and sessions from disk.
+        """Load projects and session METAS from disk (lazy-load split).
 
-        Skips stray ``*.tmp`` files (left behind if a write was interrupted
-        before the atomic rename). Malformed project/session JSON is logged
-        and skipped so one bad file does not poison the whole load.
+        Boot faults zero message bytes: only ``{id}.json`` metas are
+        parsed. Transcripts fault in per session on ``get_session``.
+        v1 session files (embedded ``"messages"``) migrate once here:
+        bodies split to ``{id}.messages.jsonl``, meta rewritten
+        without them. Skips stray ``*.tmp`` files; malformed JSON is
+        logged and skipped so one bad file does not poison the load.
         """
+        # Fresh-boot semantics: drop any resident transcripts (a
+        # re-load must re-fault from disk, never serve stale lists).
+        self._bodies.clear()
         # Load global config
         if self.global_config_path.exists():
             try:
@@ -411,7 +462,7 @@ class ProjectManager:
                 continue
             self._projects[project.name] = project
 
-            # Load sessions for this project
+            # Load session metas for this project (no bodies)
             sessions_dir = project_dir / "sessions"
             if not sessions_dir.exists():
                 continue
@@ -421,14 +472,60 @@ class ProjectManager:
                     continue
                 try:
                     with open(session_file, encoding="utf-8") as f:
-                        session_data = json.load(f)
+                        meta = json.load(f)
                 except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 try:
-                    session = Session.from_dict(session_data)
+                    session = self._load_shell(sessions_dir, session_file, meta)
                 except (KeyError, ValueError):
                     continue
                 self._sessions[session.id] = session
+
+    @staticmethod
+    def _messages_path(session_file: Path) -> Path:
+        """The ``{id}.messages.jsonl`` beside a ``{id}.json`` meta."""
+        return session_file.with_name(session_file.stem + MESSAGES_SUFFIX)
+
+    def _load_shell(
+        self, sessions_dir: Path, session_file: Path, meta: dict
+    ) -> Session:
+        """Build a meta shell from a parsed ``{id}.json`` (no bodies).
+
+        v1 files (embedded ``"messages"`` array) migrate once: bodies
+        move to the jsonl, the meta is rewritten without them (atomic).
+        """
+        embedded = meta.get("messages")
+        if embedded:
+            data = dict(meta)
+            data.pop("messages", None)
+            lines = [json.dumps(m, ensure_ascii=False) for m in embedded]
+            atomic_write_text_sync(
+                self._messages_path(session_file),
+                "".join(line + "\n" for line in lines),
+            )
+            data["message_count"] = len(embedded)
+            data["schema_version"] = SESSION_SCHEMA_VERSION
+            atomic_write_json_sync(session_file, data)
+            meta = data
+        else:
+            if meta.get("message_count") is None:
+                # v2 file written before the count existed (or a
+                # hand-made meta): backfill from the jsonl line count.
+                messages_path = self._messages_path(session_file)
+                count = 0
+                try:
+                    with open(messages_path, encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                count += 1
+                except OSError:
+                    count = 0
+                meta = dict(meta)
+                meta["message_count"] = count
+                meta["schema_version"] = SESSION_SCHEMA_VERSION
+        session = Session.from_dict(meta)
+        session.messages = []
+        return session
 
     def save_global(self):
         """Save global config (atomic)."""
@@ -465,15 +562,109 @@ class ProjectManager:
         with self._lock_for(project.name):
             atomic_write_json_sync(config_file, project.to_dict())
 
-    def save_session(self, session: Session):
-        """Save session (atomic, per-project lock)."""
-        session.updated_at = datetime.now()
+    def _session_paths(self, session: Session) -> tuple[Path, Path]:
+        """Meta + messages paths for a session (dirs created)."""
         project_dir = self.projects_dir / session.project_name
         sessions_dir = project_dir / "sessions"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         session_file = sessions_dir / f"{session.id}.json"
+        return session_file, self._messages_path(session_file)
+
+    def save_session(self, session: Session):
+        """Save session META only (atomic, per-project lock).
+
+        Bodies are never rewritten here: new rows go through
+        :meth:`append_message` (one appended line), edits to history
+        through :meth:`save_messages` (explicit rewrite). If bodies
+        are resident the count is healed from the list first, so the
+        meta never drifts from a mutated in-memory transcript.
+        """
+        if session.id in self._bodies:
+            session.message_count = len(session.messages)
+        session.updated_at = datetime.now()
+        session_file, _ = self._session_paths(session)
         with self._lock_for(session.project_name):
-            atomic_write_json_sync(session_file, session.to_dict())
+            atomic_write_json_sync(session_file, session.meta_dict())
+
+    def save_messages(self, session: Session):
+        """Rewrite the message log from the resident transcript.
+
+        For history edits (rerun supersede flags, etc.) — the rare
+        path. The hot append path is :meth:`append_message`.
+        """
+        session_file, messages_path = self._session_paths(session)
+        with self._lock_for(session.project_name):
+            atomic_write_text_sync(
+                messages_path,
+                "".join(
+                    json.dumps(m.to_dict(), ensure_ascii=False) + "\n"
+                    for m in session.messages
+                ),
+            )
+            session.message_count = len(session.messages)
+            session.updated_at = datetime.now()
+            atomic_write_json_sync(session_file, session.meta_dict())
+        self._touch_body(session.id)
+
+    def append_message(self, session_id: str, role: str, content: str, **kwargs) -> Message:
+        """Append one message: fault bodies, add the row, append one
+        jsonl line, bump the meta count. O(1) in the transcript
+        length — this is the hot path (every send/receive)."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session '{session_id}' not found")
+        self._ensure_bodies(session)
+        msg = session.add_message(role=role, content=content, **kwargs)
+        session_file, messages_path = self._session_paths(session)
+        with self._lock_for(session.project_name):
+            with open(messages_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(msg.to_dict(), ensure_ascii=False) + "\n")
+            session.message_count = len(session.messages)
+            session.updated_at = datetime.now()
+            atomic_write_json_sync(session_file, session.meta_dict())
+        self._touch_body(session.id)
+        return msg
+
+    def _touch_body(self, session_id: str) -> None:
+        """Mark a transcript recently used, evicting idle bodies past
+        the cap. Eviction clears the list on the shell object; holders
+        of an evicted object must re-``get_session``."""
+        self._bodies[session_id] = None
+        self._bodies.move_to_end(session_id)
+        while len(self._bodies) > BODY_CACHE_CAP:
+            old_id, _ = self._bodies.popitem(last=False)
+            if old_id == session_id:
+                self._bodies[old_id] = None
+                break
+            old = self._sessions.get(old_id)
+            if old is not None:
+                old.messages = []
+
+    def _ensure_bodies(self, session: Session) -> Session:
+        """Fault a shell's transcript in from its jsonl (LRU-cached)."""
+        if session.id in self._bodies:
+            self._bodies.move_to_end(session.id)
+            return session
+        _, messages_path = self._session_paths(session)
+        rows: list[Message] = []
+        try:
+            with self._lock_for(session.project_name):
+                with open(messages_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            rows.append(Message.from_dict(json.loads(line)))
+        except FileNotFoundError:
+            # No log yet (meta-only session) = empty transcript.
+            rows = []
+        session.messages = rows
+        if len(rows) != session.message_count:
+            # Self-heal: a crash between the jsonl append and the meta
+            # write leaves the count behind; the log is truth.
+            session.message_count = len(rows)
+            self.save_session(session)
+        self._touch_body(session.id)
+        return session
 
     # Project operations
     def create_project(self, name: str, path: Path, description: str = "") -> Project:
@@ -530,9 +721,14 @@ class ProjectManager:
             shutil.rmtree(project_dir)
 
         # Also delete sessions from memory
+        doomed = {
+            sid for sid, s in self._sessions.items() if s.project_name == name
+        }
         self._sessions = {
             sid: s for sid, s in self._sessions.items() if s.project_name != name
         }
+        for sid in doomed:
+            self._bodies.pop(sid, None)
 
         del self._projects[name]
 
@@ -564,6 +760,20 @@ class ProjectManager:
         return session
 
     def get_session(self, session_id: str) -> Session | None:
+        """Return a session with its transcript faulted in."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        return self._ensure_bodies(session)
+
+    def get_session_meta(self, session_id: str) -> Session | None:
+        """Return the meta shell WITHOUT faulting bodies.
+
+        For callers that only need name/status/children/context
+        (bridges, titling pre-checks, counts) — never pulls the
+        transcript off disk. ``.messages`` is empty unless already
+        resident; use :meth:`get_session` for the transcript.
+        """
         return self._sessions.get(session_id)
 
     def rename_session(self, session_id: str, name: str) -> Session:
@@ -605,8 +815,12 @@ class ProjectManager:
         session = self._sessions[session_id]
         project_dir = self.projects_dir / session.project_name
         session_file = project_dir / "sessions" / f"{session_id}.json"
-        if session_file.exists():
-            session_file.unlink()
+        messages_path = self._messages_path(session_file)
+        with self._lock_for(session.project_name):
+            if session_file.exists():
+                session_file.unlink()
+            messages_path.unlink(missing_ok=True)
+        self._bodies.pop(session_id, None)
 
         del self._sessions[session_id]
 
