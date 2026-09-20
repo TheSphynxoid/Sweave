@@ -376,7 +376,15 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
         `Models synced: +${report.added}/−${report.removed} across ${report.providers} providers (${report.source}).`,
       );
     } catch (err) {
-      pushNotification("error", `Model sync failed: ${(err as Error).message}`);
+      // Prefer the server's reason (FastAPI `detail`) over axios's
+      // generic status text — a sync failure names its cause
+      // ("opencode not found", "empty registry refused") instead
+      // of reading as a bare code.
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data
+        ?.detail;
+      const reason =
+        typeof detail === "string" && detail ? detail : (err as Error).message;
+      pushNotification("error", `Model sync failed: ${reason}`);
     } finally {
       setSyncing(false);
     }
@@ -424,7 +432,7 @@ export function ModelsSettings({ models }: { models?: ModelsConfig }) {
                 onClick={() => void syncModels()}
                 disabled={syncing || saving}
                 data-testid="models-sync"
-                title="Regenerate the model registry from models.dev + the live serve overlay. Takes a minute; your default is preserved."
+                title="Regenerate the model registry from models.dev (the canonical source; the live serve overlay is added when opencode is installed). Takes a minute; your default is preserved."
                 className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"
               >
                 {syncing ? "Syncing…" : "Sync models"}

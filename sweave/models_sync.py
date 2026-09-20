@@ -26,9 +26,11 @@ additive and optional.
 
 ``sweave models sync`` orchestrates: fetch models.dev (falls back
 to serve-only generation with a warning when offline), scratch
-serve, merge, diff, write. Output is deterministic; re-syncs are
-no-op diffs. Refuses to write an empty registry. models.yaml is
-read at server startup — restart afterwards.
+serve when the binary exists (skipped with a warning when it does
+not — models.dev is the canonical source, the overlay only adds
+local-only rows), merge, diff, write. Output is deterministic;
+re-syncs are no-op diffs. Refuses to write an empty registry.
+models.yaml is read at server startup — restart afterwards.
 """
 
 from __future__ import annotations
@@ -502,23 +504,35 @@ def sync_registry(
     always carries the full variant lists either way.
 
     Returns a report dict (providers, models, variant_rows, added,
-    removed, source, overlay, meta). Raises on
-    binary/serve failures; the registry file is only touched after
+    removed, source, overlay, overlay_skipped, meta). Raises on
+    serve failures; the registry file is only touched after
     a successful fetch + build + non-empty guard. When models.dev
     is unreachable, falls back to serve-only generation (the old
-    behaviour) with a warning instead of failing.
+    behaviour) with a warning instead of failing. When the opencode
+    binary is absent, the serve overlay is skipped (models.dev is
+    the canonical source — the overlay only appends local-only
+    rows) with an honest ``source`` instead of failing.
     """
     emit = on_event or (lambda _msg: None)
     binary = resolve_opencode_binary()
-    if not binary:
-        raise RuntimeError("opencode executable not found on PATH")
-    port = pick_free_port(port_start)
-    emit(f"starting scratch opencode serve on 127.0.0.1:{port}")
-    proc = spawn_scratch_serve(binary, port)
-    try:
-        serve_models = fetch_serve_providers(port)
-    finally:
-        stop_scratch_serve(proc)
+    serve_models: dict[str, Any] = {}
+    overlay_skipped = False
+    if binary:
+        port = pick_free_port(port_start)
+        emit(f"starting scratch opencode serve on 127.0.0.1:{port}")
+        proc = spawn_scratch_serve(binary, port)
+        try:
+            serve_models = fetch_serve_providers(port)
+        finally:
+            stop_scratch_serve(proc)
+    else:
+        # No local binary: skip the overlay, don't fail the sync.
+        # models.dev is the canonical source (opencode's own data
+        # comes from there too); the overlay only ever ADDS
+        # local-only rows, so upstream-only output is complete, not
+        # degraded — the report names the shape honestly.
+        overlay_skipped = True
+        emit("warning: opencode executable not found on PATH; skipping the local serve overlay")
 
     import yaml
 
@@ -553,7 +567,11 @@ def sync_registry(
         upstream_registry = build_upstream_registry(models_dev)
         new_registry, overlay = apply_serve_overlay(upstream_registry, serve_models)
         meta = build_metadata(models_dev, serve_models)
-        source = "models.dev+serve"
+        source = (
+            "models.dev-only (no serve overlay: opencode not found)"
+            if overlay_skipped
+            else "models.dev+serve"
+        )
     except Exception as exc:  # noqa: BLE001
         emit(f"warning: models.dev unreachable ({exc}); falling back to serve-only")
         new_registry = build_registry(serve_models)
@@ -586,6 +604,7 @@ def sync_registry(
         "diff": diff,
         "overlay_rows": overlay_rows,
         "overlay": overlay,
+        "overlay_skipped": overlay_skipped,
         "source": source,
         "meta_path": str(meta_path),
         "meta_entries": len(meta),

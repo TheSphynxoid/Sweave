@@ -288,6 +288,7 @@ def api_regenerate_models(state: AppState = Depends(get_state)):
         "added": report["added"],
         "removed": report["removed"],
         "source": report["source"],
+        "overlay_skipped": report.get("overlay_skipped", False),
         "path": report["path"],
     }
 

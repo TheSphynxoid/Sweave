@@ -307,6 +307,20 @@
    Web surface (same day): Settings → System shows the matrix
    (`VersionMatrix` card over `GET /api/version`, 3 vitest,
    `npm run build` green).
+- ✅ **Models sync without opencode (2026-09-20, sync button 500)** —
+  the binary is gone from this box, and `sync_registry` raised
+  before any work (plus the UI showed axios's bare status text
+  instead of the server's reason). models.dev is the canonical
+  source (the overlay only appends local-only rows), so a missing
+  binary now skips the overlay with an honest `source`
+  (`models.dev-only (no serve overlay: opencode not found)`) +
+  `overlay_skipped` instead of failing; both layers missing still
+  fails loud (empty registry never written). UI renders the
+  server `detail` on failure. Gates: 2 new tests
+  (`tests/test_models_sync_overlay.py`, watched red→green) + 3
+  vitest (`ModelsSync.test.tsx`), endpoint funnel tests green,
+  live proof on this box (222 providers / 7868 models, no binary),
+  build green. Restart the server to pick up.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

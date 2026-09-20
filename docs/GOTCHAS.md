@@ -795,6 +795,18 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     for them). Tag shape `<part>-vX.Y.Z` is pinned by a tmp-repo
     test, not by convention-doc.
 
+23. **A missing local binary is a skipped layer, never a dead sync**
+    (2026-09-20: the Models sync button 500'd — opencode gone from
+    the box, `sync_registry` raised before any work, and the UI
+    showed axios's bare status text). models.dev is the canonical
+    source (the serve overlay only appends local-only rows), so an
+    absent binary skips the overlay with `source` naming the shape
+    + `overlay_skipped: true`; both layers missing still fails loud
+    via the non-empty guard (never an empty write). UI catch blocks
+    prefer the server `detail` over `(err as Error).message`
+    (axios names only the status). Pinned by
+    `tests/test_models_sync_overlay.py` + `ModelsSync.test.tsx`.
+
 
 ## Paths & config
 
