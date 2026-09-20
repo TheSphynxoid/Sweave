@@ -55,7 +55,13 @@ TITLE_TIMEOUT_S = 90.0
 TITLE_ATTEMPT_TIMEOUT_S = 45.0
 TITLE_USER_CHARS = 500
 TITLE_REPLY_CHARS = 500
-TITLE_MAX_ATTEMPTS = 3
+TITLE_MAX_ATTEMPTS = 4
+#: Provider preference inside the $0 class (probed 2026-09-20:
+#: openrouter :free rows answer in ~1s; nvidia's shelf is mostly
+#: end-of-lifed 410s plus one slow survivor; Zen free 401s on
+#: non-entitled keys). Rots safe: every failure is fast and silent,
+#: so a stale order only costs seconds, never correctness.
+FAST_PROVIDERS = ("openrouter",)
 
 
 def is_placeholder_name(name: Any) -> bool:
@@ -235,7 +241,15 @@ def resolve_title_models(
         except Exception:  # noqa: BLE001 — no tiers, no attempt
             return []
     picked: list[str] = []
-    for provider, model_id in candidates:
+    ordered = sorted(
+        candidates,
+        key=lambda pair: (
+            0 if pair[0] in FAST_PROVIDERS else 1,
+            pair[0],
+            pair[1],
+        ),
+    )
+    for provider, model_id in ordered:
         # No engine transport speaks the google flavor (resolve
         # would fail the turn pre-work): skip gemini rows even when
         # keyed. The silent absorb below would catch it, but picking
