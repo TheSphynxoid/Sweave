@@ -37,6 +37,10 @@ import {
   historyToResponsesInput,
   providerResponsesStream,
 } from "./responses.js";
+import {
+  historyToMessagesInput,
+  providerMessagesStream,
+} from "./messages.js";
 
 const MAX_ITERATIONS = 150;
 const DOOM_REPEATS = 3;
@@ -186,6 +190,19 @@ async function providerStream({ baseURL, key, provider, modelId, modelVariant, f
         key,
         modelId,
         modelVariant,
+        sessionId,
+        input: messages,
+        defs,
+        signal,
+        onToken,
+        onReasoning,
+      });
+    }
+    if (flavor === "messages") {
+      return providerMessagesStream({
+        baseURL,
+        key,
+        modelId,
         sessionId,
         input: messages,
         defs,
@@ -608,12 +625,15 @@ export async function runLoop(loopCtx) {
     // the single source — no cached slices to desync (a stale slice
     // once dropped the current prompt entirely: provider 400).
     // Mapped for the resolved flavor (chat messages vs Responses
-    // input items) — providerStream only transports.
+    // input items vs Anthropic messages blocks) — providerStream
+    // only transports.
     const rawHistory = store.historyForRun(session);
     const messages =
       resolved.flavor === "responses"
         ? historyToResponsesInput(rawHistory)
-        : historyToProviderMessages(rawHistory);
+        : resolved.flavor === "messages"
+          ? historyToMessagesInput(rawHistory)
+          : historyToProviderMessages(rawHistory);
     let stepText = "";
     let stepCalls = [];
     let stepUsage = null;

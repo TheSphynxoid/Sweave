@@ -17,6 +17,10 @@ import {
   historyToResponsesInput,
   providerResponsesStream,
 } from "./responses.js";
+import {
+  historyToMessagesInput,
+  providerMessagesStream,
+} from "./messages.js";
 import { extractReasoningDelta, historyToProviderMessages, needsLoop, runLoop } from "./loop.js";
 
 const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "3";
@@ -309,38 +313,62 @@ async function runTurn(sessionId, body, res) {
   // Compat-strip signal for the failure taxonomy (function scope:
   // `step` below lives inside the try block).
   let ssCompatStripped = null;
-  if (resolved.flavor === "responses") {
-    // Responses flavor: same downstream events, different wire. The
-    // small tail below mirrors the chat path's (append + done +
-    // tokens) deliberately — restructuring the chat try/catch to
-    // share it risks the timeout/abort semantics; duplication is
-    // the honest trade.
+  if (resolved.flavor === "responses" || resolved.flavor === "messages") {
+    // Responses + Messages flavors: same downstream events,
+    // different wire. The small tail below mirrors the chat path's
+    // (append + done + tokens) deliberately — restructuring the
+    // chat try/catch to share it risks the timeout/abort semantics;
+    // duplication is the honest trade.
     const entries = store
       .historyForRun(session)
       .filter((m) => m.id !== userMsg.id);
     entries.push({ role: "user", content: body.composed_prompt });
+    const isMessages = resolved.flavor === "messages";
+    const mappedInput = isMessages
+      ? historyToMessagesInput(entries)
+      : historyToResponsesInput(entries);
     try {
       const maxRetries = body.max_retries ?? DEFAULT_MAX_RETRIES;
-      const step = await withProviderRetry(() => providerResponsesStream({
-        baseURL: resolved.baseURL,
-        key: resolved.key,
-        modelId: body.model.model_id,
-        modelVariant: body.model.variant,
-        sessionId,
-        input: historyToResponsesInput(entries),
-        defs: [],
-        signal: controller.signal,
-        onToken: (t) => {
-          // Forward-only: the attempt's full text comes back as
-          // step.text. Accumulating here would duplicate the prefix
-          // across retries (each attempt replays from zero).
-          sseEvent(res, { event: "token", text: t });
-        },
-        onReasoning: (t) => {
-          singleReasoning += t;
-          sseEvent(res, { event: "reasoning", text: t });
-        },
-      }), {
+      const streamOnce = isMessages
+        ? () =>
+            providerMessagesStream({
+              baseURL: resolved.baseURL,
+              key: resolved.key,
+              modelId: body.model.model_id,
+              sessionId,
+              input: mappedInput,
+              defs: [],
+              signal: controller.signal,
+              onToken: (t) => {
+                sseEvent(res, { event: "token", text: t });
+              },
+              onReasoning: (t) => {
+                singleReasoning += t;
+                sseEvent(res, { event: "reasoning", text: t });
+              },
+            })
+        : () =>
+            providerResponsesStream({
+              baseURL: resolved.baseURL,
+              key: resolved.key,
+              modelId: body.model.model_id,
+              modelVariant: body.model.variant,
+              sessionId,
+              input: mappedInput,
+              defs: [],
+              signal: controller.signal,
+              onToken: (t) => {
+                // Forward-only: the attempt's full text comes back as
+                // step.text. Accumulating here would duplicate the prefix
+                // across retries (each attempt replays from zero).
+                sseEvent(res, { event: "token", text: t });
+              },
+              onReasoning: (t) => {
+                singleReasoning += t;
+                sseEvent(res, { event: "reasoning", text: t });
+              },
+            });
+      const step = await withProviderRetry(streamOnce, {
         maxRetries,
         signal: controller.signal,
         onRetry: ({ attempt, waitMs, error }) => {
@@ -357,8 +385,8 @@ async function runTurn(sessionId, body, res) {
         ssCompatStripped = step.reasoningCompatStripped;
       }
     } catch (err) {
-      // Terminal provider failure on the responses flavor: end the
-      // turn loudly HERE (failed record + error SSE + res.end),
+      // Terminal provider failure on the responses/messages flavor:
+      // end the turn loudly HERE (failed record + error SSE + res.end),
       // never re-throw past the already-committed SSE headers — a
       // throw lands in the request catch whose sendJson(500) cannot
       // run after headers, leaving the client blocked until the

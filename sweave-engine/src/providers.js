@@ -29,9 +29,10 @@ const TABLE = {
   nvidia: { baseURL: "https://integrate.api.nvidia.com/v1", envKeys: ["NVIDIA_API_KEY"] },
   // OpenCode Go ($10/mo subscription, API key from the Zen console):
   // public endpoints under /zen/go/v1 (opencode.ai/docs/go). The
-  // engine speaks chat/completions only — models on the sibling
-  // flavors fail loud in resolveProvider (named, at turn start),
-  // never as a mid-turn provider 400. Flavor source: the Go docs
+  // engine speaks chat/completions, the Responses API, and the
+  // Anthropic Messages API — models on the remaining flavors fail
+  // loud in resolveProvider (named, at turn start), never as a
+  // mid-turn provider 400. Flavor source: the Go docs
   // endpoint table; unknown future ids are ATTEMPTED on
   // chat/completions (a Go 4xx then surfaces loudly anyway).
   "opencode-go": {
@@ -167,8 +168,14 @@ export function resolveProvider(provider, modelId) {
   if (spec.flavors && modelId) {
     for (const [name, ids] of Object.entries(spec.flavors)) {
       if (!ids.has(modelId)) continue;
-      if (name === "responses") {
-        flavor = "responses";
+      // The engine speaks chat/completions, the Responses API, and
+      // the Anthropic Messages API. Remaining flavors (google)
+      // fail loud here with code "bad_request" naming the pending
+      // transport — a vocabulary-frozen code, never a new event
+      // shape. The gate runs before credentials so a keyed-but-
+      // unspeakable model still fails at turn start.
+      if (name === "responses" || name === "messages") {
+        flavor = name;
         break;
       }
       return {
@@ -177,7 +184,7 @@ export function resolveProvider(provider, modelId) {
         reason:
           `model ${JSON.stringify(modelId)} on ${JSON.stringify(provider)} ` +
           `needs the ${name} transport (pending; engine speaks ` +
-          `chat/completions + responses)`,
+          `chat/completions + responses + messages)`,
       };
     }
   }
