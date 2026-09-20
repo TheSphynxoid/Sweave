@@ -70,7 +70,7 @@ export function invalidationsForEvent(env: WSEventLike): ReadonlyArray<readonly 
     }
     default: {
       // Unknown events are ignored (the AppProvider only
-      // subscribes to the five known names, but defensiveness
+      // subscribes to the six known names, but defensiveness
       // is cheap and the test covers it).
       return [];
     }

@@ -1012,7 +1012,7 @@ class ChatLoop:
             session = self.project_manager.get_session(session_id)
             if session is None:
                 return
-            if not titling_mod.is_default_name(session.name):
+            if not titling_mod.is_placeholder_name(session.name):
                 return
             context = session.context
             if not isinstance(context, dict):

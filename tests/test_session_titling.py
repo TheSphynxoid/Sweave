@@ -29,12 +29,14 @@ def _mock_opencode_env(monkeypatch):
     monkeypatch.setenv("SWEAVE_MOCK_OPENCODE", "1")
 
 
-def test_is_default_name():
-    assert titling_mod.is_default_name("Session 2026-09-20 19:20") is True
-    assert titling_mod.is_default_name("Fix the login bug") is False
-    assert titling_mod.is_default_name("") is False
-    assert titling_mod.is_default_name(None) is False
-    assert titling_mod.is_default_name("Session yesterday") is False
+def test_is_placeholder_name():
+    assert titling_mod.is_placeholder_name("Session 2026-09-20 19:20") is True
+    # Both UI creation surfaces send this literal for an empty box.
+    assert titling_mod.is_placeholder_name("New session") is True
+    assert titling_mod.is_placeholder_name("Fix the login bug") is False
+    assert titling_mod.is_placeholder_name("") is False
+    assert titling_mod.is_placeholder_name(None) is False
+    assert titling_mod.is_placeholder_name("Session yesterday") is False
 
 
 def test_clean_title_matrix():
@@ -189,9 +191,10 @@ class _FakeManager:
 
         return SimpleNamespace(**self._session)
 
-    def get_session_meta(self, session_id: str):
-        # Meta-only read (titling never needs bodies).
-        return self.get_session(session_id)
+    # NOTE: no get_session_meta — the fake mirrors the real
+    # ProjectManager surface exactly, so invented APIs fail here
+    # instead of passing against a mirror (2026-09-20 incident:
+    # get_session_meta never existed in production).
 
     def rename_session(self, session_id: str, name: str):
         self.renamed.append((session_id, name))
@@ -320,7 +323,7 @@ def test_rename_endpoint_round_trip(client, tmp_path):
 
     project_manager.create_project("demo", path=tmp_path)
     session = project_manager.create_session("demo", session_name=None)
-    assert titling_mod.is_default_name(session.name)
+    assert titling_mod.is_placeholder_name(session.name)
 
     r = client.patch(f"/api/sessions/{session.id}", json={"name": "  Login fix  "})
     assert r.status_code == 200, r.text
@@ -356,7 +359,7 @@ def test_trigger_fires_once_on_default_name(tmp_path, monkeypatch):
     pm = ProjectManager(base_path=tmp_path / "projects")
     pm.create_project("demo", path=tmp_path)
     session = pm.create_session("demo")
-    assert titling_mod.is_default_name(session.name)
+    assert titling_mod.is_placeholder_name(session.name)
     chat = _build_chat_loop(pm=pm, send_responses=["hello back", "hello back"])
 
     calls: list = []
@@ -405,3 +408,30 @@ def test_trigger_skips_custom_names(tmp_path, monkeypatch):
     monkeypatch.setattr(loop_mod.titling_mod, "request_title", fake_request_title)
     asyncio.run(chat.run_turn(session_id=session.id, user_content="hi"))
     assert calls == []
+
+
+def test_trigger_fires_on_ui_placeholder_name(tmp_path, monkeypatch):
+    """The UI shape: both creation surfaces send literal
+    'New session' for an empty box — that is a placeholder, not a
+    user choice, so the title fires (the 2026-09-20 no-effect
+    incident: timestamp-only matching never fired in practice)."""
+    from sweave.projects import ProjectManager
+    from tests.test_chat_loop import _build_chat_loop
+
+    pm = ProjectManager(base_path=tmp_path / "projects")
+    pm.create_project("demo", path=tmp_path)
+    session = pm.create_session("demo", session_name="New session")
+    chat = _build_chat_loop(pm=pm, send_responses=["hello back", "hello back"])
+
+    calls: list = []
+
+    async def fake_request_title(**kwargs):
+        calls.append(kwargs)
+        return None
+
+    import sweave.chat.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod.titling_mod, "request_title", fake_request_title)
+    asyncio.run(chat.run_turn(session_id=session.id, user_content="hi"))
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == session.id

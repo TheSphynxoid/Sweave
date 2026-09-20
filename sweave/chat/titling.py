@@ -30,10 +30,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Timestamp-default detection (mirrors
-#: ``ProjectManager.create_session`` exactly — a user-typed identical
-#: string is accepted as default; vanishingly rare, harmless).
+#: Placeholder-name detection. Two shapes are title-eligible (never
+#: a user choice, so auto-titling may replace them):
+#: * the backend timestamp default (``Session 2026-.. ..:..``), used
+#:   when the name arrives empty;
+#: * the UI's literal ``"New session"`` (both creation surfaces send
+#:   it for an empty name box — the timestamp default is unreachable
+#:   from the UI).
+#: Anything else is a user-chosen name and is never overwritten.
 DEFAULT_NAME_RE = re.compile(r"^Session \d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+PLACEHOLDER_NAMES = frozenset({"New session"})
 
 #: Exactly-once marker in ``session.context`` (persisted with the
 #: session file, so restarts don't re-fire).
@@ -47,9 +53,17 @@ TITLE_REPLY_CHARS = 500
 TITLE_MAX_ATTEMPTS = 3
 
 
-def is_default_name(name: Any) -> bool:
-    """True for the untouched timestamp default (and nothing else)."""
-    return isinstance(name, str) and DEFAULT_NAME_RE.match(name) is not None
+def is_placeholder_name(name: Any) -> bool:
+    """True for placeholder names (timestamp default or the UI's
+    literal ``"New session"``) — and nothing else."""
+    if not isinstance(name, str):
+        return False
+    return name in PLACEHOLDER_NAMES or DEFAULT_NAME_RE.match(name) is not None
+
+
+#: Back-compat alias (renamed for honesty: the UI never produces the
+#: timestamp shape, so "default" lied about what it matches).
+is_default_name = is_placeholder_name
 
 
 #: Trailing words that dangle after a word-count cut ("Fix the
@@ -260,10 +274,10 @@ async def request_title(
     # reaching here; this is the belt-and-suspenders for direct
     # callers).
     try:
-        session = project_manager.get_session_meta(session_id)
+        session = project_manager.get_session(session_id)
     except Exception:  # noqa: BLE001
         return None
-    if session is None or not is_default_name(session.name):
+    if session is None or not is_placeholder_name(session.name):
         return None
     prompt = build_title_prompt(user_text, reply_text)
     title: str | None = None
@@ -288,8 +302,8 @@ async def request_title(
     if not title:
         return None
     try:
-        session = project_manager.get_session_meta(session_id)
-        if session is None or not is_default_name(session.name):
+        session = project_manager.get_session(session_id)
+        if session is None or not is_placeholder_name(session.name):
             return None
         renamed = project_manager.rename_session(session_id, title)
         event = {

@@ -1,7 +1,7 @@
 /**
  * R4.1 step 2: WS-event -> query-key invalidation contract.
  *
- * The AppProvider subscribes to five WS events and invalidates
+ * The AppProvider subscribes to six WS events and invalidates
  * the smallest set of React Query keys that need to refresh.
  * The mapping is extracted to ``wsInvalidations.ts`` (a pure
  * function) so the contract is testable without React or a

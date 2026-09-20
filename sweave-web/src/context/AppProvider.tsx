@@ -104,7 +104,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubs: Array<() => void> = [];
 
-    // Subscribe to the five known events. The invalidation
+    // Subscribe to the six known events. The invalidation
     // mapping lives in ``wsInvalidations.ts`` so it's a pure,
     // testable function; the AppProvider is just the wiring.
     for (const eventName of [
@@ -112,12 +112,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       "project.deleted",
       "session.created",
       "session.deleted",
+      "session.renamed",
       "active_session.changed",
     ] as const) {
       unsubs.push(
         subscribe(eventName, (env) => {
           for (const key of invalidationsForEvent(env)) {
             qc.invalidateQueries({ queryKey: key });
+          }
+          // session.renamed carries id+name: patch the active
+          // session's displayed name in place when it is the one
+          // renamed (functional update — no stale closure, no tab
+          // navigation, no extra fetch for two strings).
+          if (eventName === "session.renamed") {
+            const data = env.data as { id?: unknown; name?: unknown };
+            if (typeof data?.id === "string" && typeof data?.name === "string") {
+              const renamedId = data.id;
+              const renamedName = data.name;
+              setActiveSession((prev) =>
+                prev && prev.id === renamedId
+                  ? { ...prev, name: renamedName }
+                  : prev,
+              );
+            }
           }
           // The broadcast is observed, never followed: refresh
           // the query cache so the pill reads current on next
