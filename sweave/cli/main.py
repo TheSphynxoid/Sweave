@@ -462,6 +462,21 @@ def _check_hindsight_embedded() -> bool:
 
 
 @app.command()
+def version():
+    """Print the part + contract version matrix."""
+    from sweave.version import get_version_matrix
+
+    matrix = get_version_matrix()
+    table = Table(title="Sweave versions")
+    table.add_column("Part / contract", style="cyan")
+    table.add_column("Version", style="green")
+    for key in ("backend", "engine", "web", "engine_protocol", "delegation_schema"):
+        value = matrix.get(key)
+        table.add_row(key, str(value) if value is not None else "[red]unreadable[/red]")
+    console.print(table)
+
+
+@app.command()
 def config(
     show: bool = typer.Option(False, "--show", help="Show current config"),
     validate: bool = typer.Option(False, "--validate", help="Validate config"),

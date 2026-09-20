@@ -735,6 +735,7 @@ from sweave.web.routers import (
     specialists as _specialists_router,
     stats as _stats_router,
     tasks as _tasks_router,
+    version as _version_router,
     worktrees as _worktrees_router,
 )
 
@@ -751,6 +752,7 @@ for _r in (
     _specialists_router.router,
     _stats_router.router,
     _tasks_router.router,
+    _version_router.router,
     _worktrees_router.router,
 ):
     app.include_router(_r)

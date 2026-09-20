@@ -290,8 +290,20 @@
   Gates: 1369 pytest green (4 pre-existing failures, all
   outside the batch — UI-thread SessionPicker/vitest red, go/zen
   group interference proven on clean HEAD, lifecycle timing
-  flake), `run.py --check` 13/13. Restart the sidecar to pick
-  up (journal migrates itself on first boot).
+   flake), `run.py --check` 13/13. Restart the sidecar to pick
+   up (journal migrates itself on first boot).
+- ✅ **Per-part versioning (2026-09-20, user-locked: per-part +
+  contracts, automate mechanics, endpoint now)** — backend/engine/
+  web bump independently via `scripts/bump_versions.py` (patch =
+  fixes, minor = milestone/format/behavior, major reserved for
+  1.0; protocol + schema never bumped there; tags
+  `<part>-vX.Y.Z`); `sweave/version.py` is the single reader
+  behind `GET /api/version` (14th `run.py --check` probe) +
+  `sweave version`; sidecar `/health` names its part version.
+  Seeded by the script itself: engine 0.2.0 (journal shards),
+  backend 0.1.1, web 0.1.0 (`engine-v0.2.0`, `backend-v0.1.1`
+  tags cut). Gates: 8 new tests (`tests/test_versioning.py`) +
+  health version pin green, 14/14 `run.py --check`.
 
 ### Test Results (All Passing - verified 2026-09-10)
 - **602/602** in `pytest tests/` — fully green. The former "2 env

@@ -196,6 +196,16 @@ def run_tests(args):
                 },
                 lambda r: r.status_code == 200,
             ),
+            (
+                "GET /api/version",
+                "GET",
+                "/api/version",
+                None,
+                lambda r: r.status_code == 200
+                and "backend" in r.json()
+                and "engine" in r.json()
+                and "engine_protocol" in r.json(),
+            ),
         ]
     )
 

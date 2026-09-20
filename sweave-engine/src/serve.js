@@ -8,6 +8,7 @@
 // X-Sweave-Engine-Protocol.
 
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { withProviderRetry, providerHttpError, DEFAULT_MAX_RETRIES } from "./retry.js";
@@ -25,6 +26,19 @@ import { extractReasoningDelta, historyToProviderMessages, needsLoop, runLoop } 
 
 const PROTOCOL_VERSION = process.env.SWEAVE_ENGINE_PROTOCOL_VERSION || "3";
 const VERSION_HEADER = "X-Sweave-Engine-Protocol";
+
+// Sidecar part version (versioning ruling 2026-09-20): read once at
+// boot from the adjacent package.json so GET /health names the
+// running sidecar for bug reports. Missing/unparseable degrades to
+// 0.0.0 — version telemetry, never a boot gate.
+const ENGINE_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    return typeof pkg.version === "string" && pkg.version ? pkg.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 const args = process.argv.slice(2);
 function arg(name, fallback) {
@@ -695,6 +709,7 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 200, {
         protocol_version: PROTOCOL_VERSION,
         name: "sweave-engine",
+        version: ENGINE_VERSION,
         tools: TOOL_BASELINE,
         sweave_tools: SWEAVE_NATIVE_TOOLS,
       });

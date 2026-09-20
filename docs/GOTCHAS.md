@@ -781,6 +781,20 @@ gotchas land here — grouped by branch, not appended as a numbered list.
     test_tool_lifecycle_2c flakes under parallel-test CPU load
     (passes repeated file-runs); both pre-existing, neither mine.
 
+22. **Versions identify, contracts gate — never hand-type a version
+    twice** (versioning ruling 2026-09-20). The three part files
+    (`pyproject.toml`, both `package.json`) are written ONLY by
+    `scripts/bump_versions.py` and read ONLY by `sweave/version.py`
+    (single reader behind the endpoint + CLI). Adding a fourth
+    versioned thing means adding it to the matrix fn + a pin test,
+    never a second writer. Level judgment stays human (patch =
+    fixes, minor = milestone/format/behavior, major = 1.0
+    reserved) — the script automates mechanics (compute, write,
+    tag), never the level call. Protocol/schema bumps stay
+    user-locked outside the script entirely (it has no code path
+    for them). Tag shape `<part>-vX.Y.Z` is pinned by a tmp-repo
+    test, not by convention-doc.
+
 
 ## Paths & config
 

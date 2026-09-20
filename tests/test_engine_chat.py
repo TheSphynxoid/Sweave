@@ -346,6 +346,17 @@ async def test_health_carries_protocol_version(sidecar):
     assert resp.status_code == 200
     assert resp.headers["X-Sweave-Engine-Protocol"] == PROTOCOL_VERSION
     assert resp.json()["protocol_version"] == PROTOCOL_VERSION
+    # Versioning ruling 2026-09-20: /health names the running
+    # sidecar part version (bug-report matrix).
+    import json
+    from pathlib import Path
+
+    pkg = json.loads(
+        (Path(__file__).resolve().parents[1] / "sweave-engine" / "package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert resp.json()["version"] == pkg["version"]
 
 
 @needs_node
